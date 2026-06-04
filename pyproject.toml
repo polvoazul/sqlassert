@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "assql"
 version = "0.1.0"
 description = "Generate SQL assertions from unique join markers."
-readme = "unique-join-dbt-package-handoff.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "sqlglot>=28",

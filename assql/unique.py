@@ -124,8 +124,11 @@ def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJo
 
     rhs = join.this
     on = join.args.get("on")
-    if rhs is None or on is None:
-        return _UniqueJoinPlan(marker_index, f"in join {join_sql}, marked join has no ON predicate", join_sql)
+    using = join.args.get("using") or []
+    if rhs is None:
+        return _UniqueJoinPlan(marker_index, f"in join {join_sql}, marked join has no RHS relation", join_sql)
+    if on is None and not using:
+        return _UniqueJoinPlan(marker_index, f"in join {join_sql}, marked join has no ON or USING predicate", join_sql)
 
     rhs_names = _rhs_names(rhs)
     if not rhs_names:
@@ -135,7 +138,7 @@ def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJo
             join_sql,
         )
 
-    keys = _rhs_key_columns(on, rhs_names)
+    keys = _rhs_using_columns(using) if using else _rhs_key_columns(on, rhs_names)
     if not keys:
         return _UniqueJoinPlan(
             marker_index,
@@ -150,7 +153,7 @@ def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJo
         rhs=rhs,
         rhs_names=frozenset(rhs_names),
         keys=tuple(keys),
-        rhs_filter_columns=tuple(_rhs_filter_columns(on, rhs_names)),
+        rhs_filter_columns=tuple(_rhs_filter_columns(on, rhs_names) if on is not None else ()),
     )
 
 
@@ -165,6 +168,10 @@ def _validate_plan(connection: Any, plan: _UniqueJoinPlan) -> UniqueJoinCheckRes
         )
 
     if not isinstance(plan.rhs, exp.Table):
+        static_constraints = _static_unique_constraints(plan.rhs)
+        static_check = _validate_constraints(plan, key_names, static_constraints)
+        if static_check is not None:
+            return static_check
         return UniqueJoinCheckResult(
             marker_index=plan.marker_index,
             valid=False,
@@ -182,22 +189,9 @@ def _validate_plan(connection: Any, plan: _UniqueJoinPlan) -> UniqueJoinCheckRes
             unique_constraints=unique_constraints,
         )
 
-    covered_columns = _covered_rhs_column_names(plan)
-    for constraint in unique_constraints:
-        if all(column.lower() in covered_columns for column in constraint):
-            constrained_key_columns = tuple(constraint)
-            return UniqueJoinCheckResult(
-                marker_index=plan.marker_index,
-                valid=True,
-                reason=(
-                    f"RHS unique constraint ({', '.join(constrained_key_columns)}) "
-                    "is covered by inferred keys/filters "
-                    f"({', '.join(sorted(covered_columns))})"
-                ),
-                inferred_key_columns=key_names,
-                constrained_key_columns=constrained_key_columns,
-                unique_constraints=unique_constraints,
-            )
+    constraint_check = _validate_constraints(plan, key_names, unique_constraints)
+    if constraint_check is not None:
+        return constraint_check
 
     return UniqueJoinCheckResult(
         marker_index=plan.marker_index,
@@ -206,6 +200,30 @@ def _validate_plan(connection: Any, plan: _UniqueJoinPlan) -> UniqueJoinCheckRes
         inferred_key_columns=key_names,
         unique_constraints=unique_constraints,
     )
+
+
+def _validate_constraints(
+    plan: _UniqueJoinPlan,
+    key_names: tuple[str, ...],
+    unique_constraints: tuple[tuple[str, ...], ...],
+) -> UniqueJoinCheckResult | None:
+    covered_columns = _covered_rhs_column_names(plan)
+    for constraint in unique_constraints:
+        if all(column.lower() in covered_columns for column in constraint):
+            constrained_key_columns = tuple(constraint)
+            return UniqueJoinCheckResult(
+                marker_index=plan.marker_index,
+                valid=True,
+                reason=(
+                    f"RHS uniqueness proof ({', '.join(constrained_key_columns)}) "
+                    "is covered by inferred keys/filters "
+                    f"({', '.join(sorted(covered_columns))})"
+                ),
+                inferred_key_columns=key_names,
+                constrained_key_columns=constrained_key_columns,
+                unique_constraints=unique_constraints,
+            )
+    return None
 
 
 def _cannot_prove_reason(plan: _UniqueJoinPlan) -> str:
@@ -246,6 +264,18 @@ def _rhs_key_columns(on: exp.Expression, rhs_names: set[str]) -> list[exp.Column
             keys.append(rhs_column.copy())
             seen.add(key)
 
+    return keys
+
+
+def _rhs_using_columns(using: list[exp.Identifier]) -> list[exp.Column]:
+    keys = []
+    seen = set()
+    for identifier in using:
+        name = identifier.name
+        if name.lower() in seen:
+            continue
+        keys.append(exp.column(name))
+        seen.add(name.lower())
     return keys
 
 
@@ -303,6 +333,89 @@ def _covered_rhs_column_names(plan: _UniqueJoinPlan) -> set[str]:
         column.name.lower()
         for column in (*plan.keys, *plan.rhs_filter_columns)
     }
+
+
+def _static_unique_constraints(rhs: exp.Expression) -> tuple[tuple[str, ...], ...]:
+    if not isinstance(rhs, exp.Subquery) or not isinstance(rhs.this, exp.Select):
+        return ()
+
+    select = rhs.this
+    constraints = []
+    group_constraint = _group_by_constraint(select)
+    if group_constraint:
+        constraints.append(group_constraint)
+
+    distinct_constraint = _distinct_constraint(select)
+    if distinct_constraint:
+        constraints.append(distinct_constraint)
+
+    qualify_constraint = _qualify_row_number_constraint(select)
+    if qualify_constraint:
+        constraints.append(qualify_constraint)
+
+    return tuple(constraints)
+
+
+def _group_by_constraint(select: exp.Select) -> tuple[str, ...]:
+    group = select.args.get("group")
+    if not isinstance(group, exp.Group):
+        return ()
+    return _simple_output_columns(group.expressions)
+
+
+def _distinct_constraint(select: exp.Select) -> tuple[str, ...]:
+    if select.args.get("distinct") is None:
+        return ()
+    return _simple_output_columns(select.expressions)
+
+
+def _qualify_row_number_constraint(select: exp.Select) -> tuple[str, ...]:
+    qualify = select.args.get("qualify")
+    if not isinstance(qualify, exp.Qualify):
+        return ()
+
+    window = _row_number_window_filtered_to_one(qualify.this)
+    if window is None:
+        return ()
+    return _simple_output_columns(window.args.get("partition_by") or [])
+
+
+def _row_number_window_filtered_to_one(expression: exp.Expression) -> exp.Window | None:
+    if not isinstance(expression, exp.EQ):
+        return None
+
+    if _is_row_number_window(expression.this) and _is_one(expression.expression):
+        return expression.this
+    if _is_row_number_window(expression.expression) and _is_one(expression.this):
+        return expression.expression
+    return None
+
+
+def _is_row_number_window(expression: exp.Expression) -> bool:
+    return isinstance(expression, exp.Window) and isinstance(expression.this, exp.RowNumber)
+
+
+def _is_one(expression: exp.Expression) -> bool:
+    return isinstance(expression, exp.Literal) and not expression.is_string and expression.this == "1"
+
+
+def _simple_output_columns(expressions: Iterable[exp.Expression]) -> tuple[str, ...]:
+    columns = []
+    seen = set()
+    for expression in expressions:
+        name = _simple_output_column_name(expression)
+        if name and name.lower() not in seen:
+            columns.append(name)
+            seen.add(name.lower())
+    return tuple(columns)
+
+
+def _simple_output_column_name(expression: exp.Expression) -> str:
+    if isinstance(expression, exp.Alias):
+        return expression.alias
+    if isinstance(expression, exp.Column):
+        return expression.name
+    return ""
 
 
 def _unique_constraints(connection: Any, rhs: exp.Table) -> tuple[tuple[str, ...], ...]:

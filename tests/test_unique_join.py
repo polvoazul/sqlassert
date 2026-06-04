@@ -82,6 +82,16 @@ def test_single_column_pk_on_rhs(con: duckdb.DuckDBPyConnection):
     assert_valid(con, query, ("id",))
 
 
+def test_using_single_column_pk_on_rhs(con: duckdb.DuckDBPyConnection):
+    query = """
+            SELECT *
+            FROM uj_users
+            /**UNIQUE**/ JOIN uj_users u2
+                USING (id)
+            """
+    assert_valid(con, query, ("id",))
+
+
 def test_composite_pk_with_rhs_filter(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT COUNT(*)
@@ -92,7 +102,7 @@ def test_composite_pk_with_rhs_filter(con: duckdb.DuckDBPyConnection):
     assert_valid(con, query, ("order_id", "user_id"))
 
 
-def test_group_by_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
+def test_group_by_rhs_subquery(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT COUNT(*) FROM uj_sessions /**UNIQUE**/ INNER JOIN (
                 SELECT user_id, MAX(ts) AS max_ts
@@ -100,20 +110,20 @@ def test_group_by_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConn
                 GROUP BY user_id
             ) t ON uj_sessions.user_id = t.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN (SELECT user_id, MAX(ts) AS max_ts FROM uj_sessions GROUP BY user_id) AS t ON uj_sessions.user_id = t.user_id, we can't prove that RHS column user_id is unique")
+    assert_valid(con, query, ("user_id",))
 
 
-def test_select_distinct_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
+def test_select_distinct_rhs_subquery(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT COUNT(*) FROM uj_sessions /**UNIQUE**/ INNER JOIN (
                 SELECT DISTINCT user_id
                 FROM uj_sessions
             ) e ON uj_sessions.user_id = e.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN (SELECT DISTINCT user_id FROM uj_sessions) AS e ON uj_sessions.user_id = e.user_id, we can't prove that RHS column user_id is unique")
+    assert_valid(con, query, ("user_id",))
 
 
-def test_qualify_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
+def test_qualify_row_number_rhs_subquery(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT COUNT(*) FROM uj_sessions /**UNIQUE**/ INNER JOIN (
                 SELECT user_id
@@ -121,16 +131,16 @@ def test_qualify_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConne
                 QUALIFY row_number() OVER (PARTITION BY user_id ORDER BY ts) = 1
             ) s ON uj_sessions.user_id = s.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN (SELECT user_id FROM uj_sessions QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ts) = 1) AS s ON uj_sessions.user_id = s.user_id, we can't prove that RHS column user_id is unique")
+    assert_valid(con, query, ("user_id",))
 
 
-def test_view_over_pk_table_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
+def test_view_over_pk_table(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT COUNT(*)
             FROM uj_sessions /**UNIQUE**/ LEFT JOIN uj_active_customers
                 ON uj_sessions.user_id = uj_active_customers.id
             """
-    assert_invalid(con, query, "in join LEFT JOIN uj_active_customers ON uj_sessions.user_id = uj_active_customers.id, we can't prove that RHS column id is unique")
+    assert_valid(con, query, ("id",))
 
 
 def test_complex_cte_view_join_to_pk_rhs(con: duckdb.DuckDBPyConnection):
@@ -143,13 +153,13 @@ def test_complex_cte_view_join_to_pk_rhs(con: duckdb.DuckDBPyConnection):
     assert_valid(con, query, ("id",))
 
 
-def test_repeated_view_over_pk_table_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
+def test_repeated_view_over_pk_table(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT COUNT(*)
             FROM uj_sessions /**UNIQUE**/ LEFT JOIN uj_active_customers
                 ON uj_sessions.user_id = uj_active_customers.id
             """
-    assert_invalid(con, query, "in join LEFT JOIN uj_active_customers ON uj_sessions.user_id = uj_active_customers.id, we can't prove that RHS column id is unique")
+    assert_valid(con, query, ("id",))
 
 
 # ------------------------------------------------------------------------------
@@ -171,6 +181,15 @@ def test_no_unique_constraint_on_rhs(con: duckdb.DuckDBPyConnection):
             ON uj_sessions.user_id = s2.user_id
             """
     assert_invalid(con, query, "in join INNER JOIN uj_sessions AS s2 ON uj_sessions.user_id = s2.user_id, we can't prove that RHS column user_id is unique")
+
+
+def test_using_no_unique_constraint_on_rhs(con: duckdb.DuckDBPyConnection):
+    query = """
+            SELECT * FROM uj_sessions
+            /**UNIQUE**/ INNER JOIN uj_sessions s2
+                USING (user_id)
+            """
+    assert_invalid(con, query, "in join INNER JOIN uj_sessions AS s2 USING (user_id), we can't prove that RHS column user_id is unique")
 
 
 def test_group_by_extra_column_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
@@ -276,4 +295,4 @@ def test_connection_backed_result_reports_unique_constraint_reason(con: duckdb.D
 
     assert result.valid
     assert result.checks[0].constrained_key_columns == ("id",)
-    assert "unique constraint" in result.checks[0].reason
+    assert "uniqueness proof" in result.checks[0].reason
