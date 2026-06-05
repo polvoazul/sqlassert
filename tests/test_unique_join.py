@@ -30,6 +30,9 @@ def con() -> duckdb.DuckDBPyConnection:
         CREATE VIEW uj_active_customers AS
             SELECT id FROM uj_users WHERE name = 'bob';
 
+        CREATE VIEW uj_customer_ids AS
+            SELECT id AS customer_id FROM uj_users WHERE name = 'bob';
+
         CREATE VIEW myview AS
             WITH cte AS (
                 SELECT user_id as uid, GREATEST(qty, 100) as total_qty
@@ -143,6 +146,15 @@ def test_view_over_pk_table(con: duckdb.DuckDBPyConnection):
     assert_valid(con, query, ("id",))
 
 
+def test_view_alias_over_pk_table(con: duckdb.DuckDBPyConnection):
+    query = """
+            SELECT COUNT(*)
+            FROM uj_sessions /**UNIQUE**/ LEFT JOIN uj_customer_ids
+                ON uj_sessions.user_id = uj_customer_ids.customer_id
+            """
+    assert_valid(con, query, ("customer_id",))
+
+
 def test_complex_cte_view_join_to_pk_rhs(con: duckdb.DuckDBPyConnection):
     query = """
             SELECT SUM(total_qty)
@@ -172,7 +184,7 @@ def test_composite_pk_only_one_column_in_join_predicate(con: duckdb.DuckDBPyConn
             SELECT * FROM uj_sessions /**UNIQUE**/ INNER JOIN uj_orders
             ON uj_sessions.user_id = uj_orders.order_id
             """
-    assert_invalid(con, query, "in join INNER JOIN uj_orders ON uj_sessions.user_id = uj_orders.order_id, we can't prove that RHS column order_id is unique")
+    assert_invalid(con, query, 'in join: "INNER JOIN uj_orders ON uj_sessions.user_id = uj_orders.order_id", we can\'t prove that RHS column order_id is unique')
 
 
 def test_no_unique_constraint_on_rhs(con: duckdb.DuckDBPyConnection):
@@ -180,7 +192,7 @@ def test_no_unique_constraint_on_rhs(con: duckdb.DuckDBPyConnection):
             SELECT * FROM uj_sessions /**UNIQUE**/ INNER JOIN uj_sessions s2
             ON uj_sessions.user_id = s2.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN uj_sessions AS s2 ON uj_sessions.user_id = s2.user_id, we can't prove that RHS column user_id is unique")
+    assert_invalid(con, query, 'in join: "INNER JOIN uj_sessions AS s2 ON uj_sessions.user_id = s2.user_id", we can\'t prove that RHS column user_id is unique')
 
 
 def test_using_no_unique_constraint_on_rhs(con: duckdb.DuckDBPyConnection):
@@ -189,7 +201,7 @@ def test_using_no_unique_constraint_on_rhs(con: duckdb.DuckDBPyConnection):
             /**UNIQUE**/ INNER JOIN uj_sessions s2
                 USING (user_id)
             """
-    assert_invalid(con, query, "in join INNER JOIN uj_sessions AS s2 USING (user_id), we can't prove that RHS column user_id is unique")
+    assert_invalid(con, query, 'in join: "INNER JOIN uj_sessions AS s2 USING (user_id)", we can\'t prove that RHS column user_id is unique')
 
 
 def test_group_by_extra_column_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
@@ -199,7 +211,7 @@ def test_group_by_extra_column_is_not_metadata_provable(con: duckdb.DuckDBPyConn
                 GROUP BY user_id, ts
             ) g ON uj_sessions.user_id = g.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN (SELECT user_id FROM uj_sessions GROUP BY user_id, ts) AS g ON uj_sessions.user_id = g.user_id, we can't prove that RHS column user_id is unique")
+    assert_invalid(con, query, 'in join: "INNER JOIN (SELECT user_id FROM uj_sessions GROUP BY user_id, ts) AS g ON uj_sessions.user_id = g.user_id", we can\'t prove that RHS column user_id is unique')
 
 
 def test_nested_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConnection):
@@ -209,7 +221,7 @@ def test_nested_rhs_subquery_is_not_metadata_provable(con: duckdb.DuckDBPyConnec
                 FROM (SELECT user_id, ts FROM uj_sessions) s
             ) t ON uj_sessions.user_id = t.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN (SELECT user_id FROM (SELECT user_id, ts FROM uj_sessions) AS s) AS t ON uj_sessions.user_id = t.user_id, we can't prove that RHS column user_id is unique")
+    assert_invalid(con, query, 'in join: "INNER JOIN (SELECT user_id FROM (SELECT user_id, ts FROM uj_sessions) AS s) AS t ON uj_sessions.user_id = t.user_id", we can\'t prove that RHS column user_id is unique')
 
 
 def test_view_with_no_unique_guarantee(con: duckdb.DuckDBPyConnection):
@@ -217,7 +229,7 @@ def test_view_with_no_unique_guarantee(con: duckdb.DuckDBPyConnection):
             SELECT * FROM uj_sessions /**UNIQUE**/ INNER JOIN uj_sessions_view
             ON uj_sessions.user_id = uj_sessions_view.user_id
             """
-    assert_invalid(con, query, "in join INNER JOIN uj_sessions_view ON uj_sessions.user_id = uj_sessions_view.user_id, we can't prove that RHS column user_id is unique")
+    assert_invalid(con, query, 'in join: "INNER JOIN uj_sessions_view ON uj_sessions.user_id = uj_sessions_view.user_id", we can\'t prove that RHS column user_id is unique')
 
 
 def test_anti_join_not_supported(con: duckdb.DuckDBPyConnection):
@@ -225,7 +237,7 @@ def test_anti_join_not_supported(con: duckdb.DuckDBPyConnection):
             SELECT * FROM uj_sessions /**UNIQUE**/ ANTI JOIN uj_users
             ON uj_sessions.user_id = uj_users.id
             """
-    assert_invalid(con, query, "in join ANTI JOIN uj_users ON uj_sessions.user_id = uj_users.id, anti joins are not supported")
+    assert_invalid(con, query, 'in join: "ANTI JOIN uj_users ON uj_sessions.user_id = uj_users.id", anti joins are not supported')
 
 
 # ------------------------------------------------------------------------------
@@ -263,7 +275,7 @@ def test_multiple_unique_joins_unhappy_path(con: duckdb.DuckDBPyConnection):
     validation = validate_unique_joins(con, query)
 
     assert not validation.valid
-    assert validation.reason == "in join JOIN uj_sessions AS s2 ON uj_sessions.user_id = s2.user_id, we can't prove that RHS column user_id is unique"
+    assert validation.reason == 'in join: "JOIN uj_sessions AS s2 ON uj_sessions.user_id = s2.user_id", we can\'t prove that RHS column user_id is unique'
     assert len(validation.checks) == 2
     assert [check.valid for check in validation.checks] == [True, False]
     assert validation.checks[0].constrained_key_columns == ("id",)

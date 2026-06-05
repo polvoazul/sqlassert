@@ -118,7 +118,7 @@ def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJo
     if kind in {"ANTI", "SEMI"}:
         return _UniqueJoinPlan(
             marker_index,
-            f"in join {join_sql}, {kind.lower()} joins are not supported",
+            f'{_join_reason_prefix(join_sql)}, {kind.lower()} joins are not supported',
             join_sql,
         )
 
@@ -126,15 +126,15 @@ def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJo
     on = join.args.get("on")
     using = join.args.get("using") or []
     if rhs is None:
-        return _UniqueJoinPlan(marker_index, f"in join {join_sql}, marked join has no RHS relation", join_sql)
+        return _UniqueJoinPlan(marker_index, f"{_join_reason_prefix(join_sql)}, marked join has no RHS relation", join_sql)
     if on is None and not using:
-        return _UniqueJoinPlan(marker_index, f"in join {join_sql}, marked join has no ON or USING predicate", join_sql)
+        return _UniqueJoinPlan(marker_index, f"{_join_reason_prefix(join_sql)}, marked join has no ON or USING predicate", join_sql)
 
     rhs_names = _rhs_names(rhs)
     if not rhs_names:
         return _UniqueJoinPlan(
             marker_index,
-            f"in join {join_sql}, could not identify RHS relation name or alias",
+            f"{_join_reason_prefix(join_sql)}, could not identify RHS relation name or alias",
             join_sql,
         )
 
@@ -142,7 +142,7 @@ def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJo
     if not keys:
         return _UniqueJoinPlan(
             marker_index,
-            f"in join {join_sql}, could not infer RHS key columns from join predicate",
+            f"{_join_reason_prefix(join_sql)}, could not infer RHS key columns from join predicate",
             join_sql,
         )
 
@@ -167,19 +167,7 @@ def _validate_plan(connection: Any, plan: _UniqueJoinPlan) -> UniqueJoinCheckRes
             inferred_key_columns=key_names,
         )
 
-    if not isinstance(plan.rhs, exp.Table):
-        static_constraints = _static_unique_constraints(plan.rhs)
-        static_check = _validate_constraints(plan, key_names, static_constraints)
-        if static_check is not None:
-            return static_check
-        return UniqueJoinCheckResult(
-            marker_index=plan.marker_index,
-            valid=False,
-            reason=_cannot_prove_reason(plan),
-            inferred_key_columns=key_names,
-        )
-
-    unique_constraints = _unique_constraints(connection, plan.rhs)
+    unique_constraints = _relation_unique_constraints(connection, plan.rhs)
     if not unique_constraints:
         return UniqueJoinCheckResult(
             marker_index=plan.marker_index,
@@ -229,7 +217,11 @@ def _validate_constraints(
 def _cannot_prove_reason(plan: _UniqueJoinPlan) -> str:
     rhs_columns = _format_columns(tuple(key.name for key in plan.keys))
     verb = "is" if len(plan.keys) == 1 else "are"
-    return f"in join {plan.join_sql}, we can't prove that RHS {rhs_columns} {verb} unique"
+    return f"{_join_reason_prefix(plan.join_sql)}, we can't prove that RHS {rhs_columns} {verb} unique"
+
+
+def _join_reason_prefix(join_sql: str) -> str:
+    return f'in join: "{join_sql}"'
 
 
 def _join_sql(join: exp.Join, dialect: str) -> str:
@@ -335,11 +327,85 @@ def _covered_rhs_column_names(plan: _UniqueJoinPlan) -> set[str]:
     }
 
 
-def _static_unique_constraints(rhs: exp.Expression) -> tuple[tuple[str, ...], ...]:
-    if not isinstance(rhs, exp.Subquery) or not isinstance(rhs.this, exp.Select):
+def _relation_unique_constraints(
+    connection: Any,
+    relation: exp.Expression,
+    seen_views: frozenset[tuple[str, str]] = frozenset(),
+) -> tuple[tuple[str, ...], ...]:
+    if isinstance(relation, exp.Table):
+        constraints = _unique_constraints(connection, relation)
+        if constraints:
+            return constraints
+        return _view_unique_constraints(connection, relation, seen_views)
+
+    if isinstance(relation, exp.Subquery) and isinstance(relation.this, exp.Select):
+        return _select_unique_constraints(connection, relation.this, seen_views)
+
+    return ()
+
+
+def _view_unique_constraints(
+    connection: Any,
+    view: exp.Table,
+    seen_views: frozenset[tuple[str, str]],
+) -> tuple[tuple[str, ...], ...]:
+    schema_name = _table_schema(view) or "main"
+    view_key = (schema_name.lower(), view.name.lower())
+    if view_key in seen_views:
         return ()
 
-    select = rhs.this
+    view_sql = _view_sql(connection, view)
+    if not view_sql:
+        return ()
+
+    try:
+        expression = sqlglot.parse_one(view_sql, read="duckdb")
+    except SqlglotError:
+        return ()
+
+    if not isinstance(expression, exp.Create) or not isinstance(expression.expression, exp.Select):
+        return ()
+
+    return _select_unique_constraints(connection, expression.expression, seen_views | {view_key})
+
+
+def _view_sql(connection: Any, view: exp.Table) -> str:
+    schema_name = _table_schema(view)
+    if schema_name:
+        query = (
+            "select sql "
+            "from duckdb_views() "
+            "where view_name = ? "
+            "and schema_name = ? "
+            "and not internal "
+            "order by database_name, schema_name "
+            "limit 1"
+        )
+        params = (view.name, schema_name)
+    else:
+        query = (
+            "select sql "
+            "from duckdb_views() "
+            "where view_name = ? "
+            "and not internal "
+            "order by database_name, schema_name "
+            "limit 1"
+        )
+        params = (view.name,)
+
+    try:
+        row = connection.execute(query, params).fetchone()
+    except Exception:
+        return ""
+
+    return row[0] if row else ""
+
+
+def _select_unique_constraints(
+    connection: Any,
+    select: exp.Select,
+    seen_views: frozenset[tuple[str, str]],
+) -> tuple[tuple[str, ...], ...]:
     constraints = []
     group_constraint = _group_by_constraint(select)
     if group_constraint:
@@ -353,7 +419,83 @@ def _static_unique_constraints(rhs: exp.Expression) -> tuple[tuple[str, ...], ..
     if qualify_constraint:
         constraints.append(qualify_constraint)
 
+    constraints.extend(_projected_source_constraints(connection, select, seen_views))
+
+    return _dedupe_constraints(tuple(constraints))
+
+
+def _projected_source_constraints(
+    connection: Any,
+    select: exp.Select,
+    seen_views: frozenset[tuple[str, str]],
+) -> tuple[tuple[str, ...], ...]:
+    source = _single_select_source(select)
+    if source is None:
+        return ()
+
+    source_constraints = _relation_unique_constraints(connection, source, seen_views)
+    if not source_constraints:
+        return ()
+
+    projection = _projection_map(select.expressions)
+    if not projection:
+        return ()
+
+    constraints = []
+    for constraint in source_constraints:
+        mapped = []
+        for column in constraint:
+            output_name = projection.get(column.lower())
+            if output_name is None:
+                break
+            mapped.append(output_name)
+        else:
+            constraints.append(tuple(mapped))
+
     return tuple(constraints)
+
+
+def _single_select_source(select: exp.Select) -> exp.Expression | None:
+    if select.args.get("joins"):
+        return None
+
+    from_ = select.args.get("from_")
+    if not isinstance(from_, exp.From):
+        return None
+
+    source = from_.this
+    if isinstance(source, exp.Table | exp.Subquery):
+        return source
+    return None
+
+
+def _projection_map(expressions: list[exp.Expression]) -> dict[str, str]:
+    projection: dict[str, str] = {}
+    for expression in expressions:
+        source_name, output_name = _projection_column_names(expression)
+        if source_name and output_name and source_name.lower() not in projection:
+            projection[source_name.lower()] = output_name
+    return projection
+
+
+def _projection_column_names(expression: exp.Expression) -> tuple[str, str]:
+    if isinstance(expression, exp.Alias) and isinstance(expression.this, exp.Column):
+        return expression.this.name, expression.alias
+    if isinstance(expression, exp.Column):
+        return expression.name, expression.name
+    return "", ""
+
+
+def _dedupe_constraints(constraints: tuple[tuple[str, ...], ...]) -> tuple[tuple[str, ...], ...]:
+    deduped = []
+    seen = set()
+    for constraint in constraints:
+        key = tuple(column.lower() for column in constraint)
+        if key in seen:
+            continue
+        deduped.append(constraint)
+        seen.add(key)
+    return tuple(deduped)
 
 
 def _group_by_constraint(select: exp.Select) -> tuple[str, ...]:

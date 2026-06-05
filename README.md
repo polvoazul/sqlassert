@@ -101,7 +101,7 @@ The marker applies to the next join after the comment.
 Instead, it proves uniqueness using fast information available from the SQL and database metadata. If uniqueness cannot be proven, validation fails with a reason that names the join and RHS column:
 
 ```text
-in join: "INNER JOIN events ON sessions.event_id = events.id", we can't prove that RHS column id is unique
+in join "INNER JOIN events ON sessions.event_id = events.id", we can't prove that RHS column id is unique
 ```
 
 Supported uniqueness proofs today:
@@ -110,8 +110,9 @@ Supported uniqueness proofs today:
 - RHS `GROUP BY` subqueries, when the join covers the grouping keys.
 - RHS `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
 - RHS `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
+- Simple projection views and subqueries that preserve one of the proofs above.
 
-It also works across CTEs and views as expected.
+Views can inherit uniqueness when they are simple projections over a source relation with a supported proof. Filters preserve uniqueness; computed expressions, joins inside views, unions, and arbitrary subquery semantics are not guessed.
 
 Examples:
 
@@ -158,4 +159,4 @@ from users
   on users.id = sessions_ranked.user_id;
 ```
 
-Views do not currently inherit uniqueness from their underlying definitions. Arbitrary subquery semantics are not guessed. More compile-time SQL checks can be added under the same model: explicit syntax, fast validation, and clear reasons when a proof is missing.
+More compile-time SQL checks can be added under the same model: explicit syntax, fast validation, and clear reasons when a proof is missing.
