@@ -1,4 +1,4 @@
-from assql.unique import (
+from sqlassert.unique import (
     UniqueJoinCheckResult,
     UniqueJoinValidationResult,
     unique_assertions,

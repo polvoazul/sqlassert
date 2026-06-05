@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "assql"
+name = "sqlassert"
 version = "0.1.0"
 description = "Generate SQL assertions from unique join markers."
 readme = "README.md"

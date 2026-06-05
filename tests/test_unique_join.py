@@ -3,7 +3,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from assql import unique_assertions, validate_unique_joins
+from sqlassert import unique_assertions, validate_unique_joins
 
 
 @pytest.fixture

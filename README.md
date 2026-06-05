@@ -1,15 +1,15 @@
-# assql
+# sqlassert
 
-`assql` is a Python library for adding safety checks to SQL before you run it.
+`sqlassert` is a Python library for adding safety checks to SQL before you run it.
 
-The goal is to catch common query mistakes at test time or build time, using fast static and metadata-backed proofs instead of scanning production data. You can add `assql` to your test suite and validate important queries offline, making them more resilient independent of the current contents of your database.
+The goal is to catch common query mistakes at test time or build time, using fast static and metadata-backed proofs instead of scanning production data. You can add `sqlassert` to your test suite and validate important queries offline, making them more resilient independent of the current contents of your database.
 
 
 ```bash
-pip install assql # assert + sql => assql
+pip install sqlassert
 ```
 
-_Alpha warning: Today `assql` supports only one check: `/**UNIQUE**/` joins. It is also only tested on duckdb._
+_Alpha warning: Today `sqlassert` supports only one check: `/**UNIQUE**/` joins. It is also only tested on duckdb._
 
 ## Features
 
@@ -17,7 +17,7 @@ _Alpha warning: Today `assql` supports only one check: `/**UNIQUE**/` joins. It 
 
 Joins often accidentally multiply rows. A query may look correct against today’s data but silently break when the RHS relation later contains multiple matching rows.
 
-`assql` lets you mark joins that are expected to be unique. That is, the result of the join must never 'grow' the number of rows with respect to the LHS.
+`sqlassert` lets you mark joins that are expected to be unique. That is, the result of the join must never 'grow' the number of rows with respect to the LHS.
 
 ```sql
 select *
@@ -26,7 +26,7 @@ from sessions
   on sessions.user_id = users.id;
 ```
 
-The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `assql` reads the query separately and validates that the RHS is provably unique for the join keys.
+The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `sqlassert` reads the query separately and validates that the RHS is provably unique for the join keys.
 
 ## Usage
 
@@ -34,7 +34,7 @@ Run validation offline, before your application or analytics job executes the qu
 
 ```python
 import duckdb
-from assql import validate_unique_joins
+from sqlassert import validate_unique_joins
 
 con = duckdb.connect("warehouse.duckdb")
 
@@ -96,7 +96,7 @@ The marker applies to the next join after the comment.
 
 ## Proofs, Not Data Checks
 
-`assql` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
+`sqlassert` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
 
 Instead, it proves uniqueness using fast information available from the SQL and database metadata. If uniqueness cannot be proven, validation fails with a reason that names the join and RHS column:
 
