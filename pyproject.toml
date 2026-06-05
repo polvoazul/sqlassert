@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqlassert"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Generate SQL assertions from unique join markers."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,3 +20,5 @@ test = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools_scm]
