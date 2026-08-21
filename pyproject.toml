@@ -9,6 +9,7 @@ description = "Generate SQL assertions from unique join markers."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "clingo>=5.7",
   "sqlglot>=28",
 ]
 
@@ -22,3 +23,6 @@ test = [
 testpaths = ["tests"]
 
 [tool.setuptools_scm]
+
+[tool.poetry]
+version = "0.0.0"
