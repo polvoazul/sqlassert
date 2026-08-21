@@ -283,6 +283,47 @@ def test_multiple_unique_joins_unhappy_path(con: duckdb.DuckDBPyConnection):
     assert validation.checks[1].reason == validation.reason
 
 
+def test_unique_marker_in_cte_maps_to_cte_join(con: duckdb.DuckDBPyConnection):
+    query = """
+            WITH enriched_sessions AS (
+                SELECT *
+                FROM uj_sessions
+                /**UNIQUE**/ JOIN uj_users
+                    ON uj_sessions.user_id = uj_users.id
+            )
+            SELECT * FROM enriched_sessions
+            """
+    assert_valid(con, query, ("id",))
+
+
+def test_unique_marker_is_retained_with_other_join_comments(con: duckdb.DuckDBPyConnection):
+    query = """
+            SELECT *
+            FROM uj_sessions
+            /* explains why this join exists */
+            /**UNIQUE**/ JOIN uj_users
+                ON uj_sessions.user_id = uj_users.id
+            """
+    assert_valid(con, query, ("id",))
+
+
+def test_inline_unique_marker_maps_to_next_join(con: duckdb.DuckDBPyConnection):
+    query = """
+            SELECT * FROM uj_sessions /**UNIQUE**/ JOIN uj_users
+                ON uj_sessions.user_id = uj_users.id
+            """
+    assert_valid(con, query, ("id",))
+
+
+def test_non_marker_comment_does_not_create_assertion():
+    query = """
+            SELECT * FROM uj_sessions
+            /* unique */ JOIN uj_users
+                ON uj_sessions.user_id = uj_users.id
+            """
+    assert unique_assertions(query) == []
+
+
 def test_returns_no_assertions_without_marker():
     query = "select * from uj_sessions join uj_users on uj_sessions.user_id = uj_users.id"
     assert unique_assertions(query) == []

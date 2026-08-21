@@ -160,3 +160,8 @@ from users
 ```
 
 More compile-time SQL checks can be added under the same model: explicit syntax, fast validation, and clear reasons when a proof is missing.
+
+## Ideas / Todo
+
+- Exhaustive case statements that match all items of an enum / union data type.
+- Document that a Select should have a specific unique col combo

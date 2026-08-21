@@ -65,51 +65,47 @@ def unique_assertions(sql: str, dialect: str = "duckdb") -> list[str]:
 
 
 def _unique_join_plans(sql: str, dialect: str) -> list[_UniqueJoinPlan]:
-    marker_join_indexes = _marked_join_indexes(sql, dialect)
-    if not marker_join_indexes:
+    marker_count = len(MARKER.findall(sql))
+    if not marker_count:
         return []
 
     try:
-        expressions = [expression for expression in sqlglot.parse(sql, read=dialect) if expression]
+        expressions = [expression for expression in sqlglot.parse(_attach_markers_to_joins(sql, dialect), read=dialect) if expression]
     except SqlglotError:
-        return [
-            _UniqueJoinPlan(index, "SQL parse failed")
-            for index, _ in enumerate(marker_join_indexes)
-        ]
+        return [_UniqueJoinPlan(index, "SQL parse failed") for index in range(marker_count)]
 
-    joins: list[exp.Join] = []
-    for expression in expressions:
-        joins.extend(expression.find_all(exp.Join))
-
-    plans: list[_UniqueJoinPlan] = []
-    for marker_index, join_index in enumerate(marker_join_indexes):
-        if join_index is None or join_index >= len(joins):
-            plans.append(_UniqueJoinPlan(marker_index, "marker is not followed by a join"))
-            continue
-        plans.append(_plan_for_join(marker_index, joins[join_index], dialect))
+    joins = [
+        join
+        for expression in expressions
+        for join in expression.find_all(exp.Join)
+        for comment in join.comments or []
+        if _is_unique_marker(comment)
+    ]
+    plans = [_plan_for_join(index, join, dialect) for index, join in enumerate(joins)]
+    plans.extend(_UniqueJoinPlan(index, "marker is not followed by a join") for index in range(len(plans), marker_count))
     return plans
 
+def _is_unique_marker(comment: str) -> bool:
+    return comment.strip("* ").lower() == "unique"
 
-def _marked_join_indexes(sql: str, dialect: str) -> list[int | None]:
-    marker_offsets = [match.end() for match in MARKER.finditer(sql)]
-    if not marker_offsets:
-        return []
 
-    tokens = Tokenizer(dialect=dialect).tokenize(sql)
-    join_offsets = [
-        token.start
-        for token in tokens
-        if token.token_type is TokenType.JOIN
-    ]
+def _attach_markers_to_joins(sql: str, dialect: str) -> str:
+    markers = list(MARKER.finditer(sql))
+    join_tokens = [token for token in Tokenizer(dialect=dialect).tokenize(sql) if token.token_type is TokenType.JOIN]
+    replacements: list[tuple[int, int, str]] = []
 
-    indexes: list[int | None] = []
-    for marker_offset in marker_offsets:
-        next_join_index = next(
-            (index for index, join_offset in enumerate(join_offsets) if join_offset >= marker_offset),
-            None,
-        )
-        indexes.append(next_join_index)
-    return indexes
+    for marker in markers:
+        join = next((token for token in join_tokens if token.start >= marker.end()), None)
+        if join is None:
+            continue
+        # SQLGlot attaches a comment before JOIN to the preceding expression.
+        # A comment after JOIN is attached to the Join AST node.
+        replacements.append((marker.start(), marker.end(), ""))
+        replacements.append((join.end + 1, join.end + 1, " /**UNIQUE**/"))
+
+    for start, end, replacement in sorted(replacements, reverse=True):
+        sql = f"{sql[:start]}{replacement}{sql[end:]}"
+    return sql
 
 
 def _plan_for_join(marker_index: int, join: exp.Join, dialect: str) -> _UniqueJoinPlan:
@@ -225,9 +221,7 @@ def _join_reason_prefix(join_sql: str) -> str:
 
 
 def _join_sql(join: exp.Join, dialect: str) -> str:
-    join_sql = join.sql(dialect=dialect)
-    join_sql = re.sub(r"/\*\s*\*?\s*unique\s*\*?\s*\*/", "", join_sql, flags=re.IGNORECASE)
-    return " ".join(join_sql.split())
+    return " ".join(join.sql(dialect=dialect, comments=False).split())
 
 
 def _rhs_names(rhs: exp.Expression) -> set[str]:
