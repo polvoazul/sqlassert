@@ -18,7 +18,7 @@ from sqlassert import ir, naming
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.knowledge import ColumnKnowledge, Knowledge, RelationKnowledge, UniqueSetKnowledge
 from sqlassert.naming import ConstantNames
-from sqlassert.parsing import ParsedProgram, assertion_line, join_origin
+from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin
 from sqlassert.provenance import SQL, Origin, OriginRegistry
 
 

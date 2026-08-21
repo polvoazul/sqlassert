@@ -1,4 +1,4 @@
-from sqlassert.analysis import analyze
+from sqlassert.main import analyze
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.knowledge import (
     ColumnKnowledge,

@@ -9,17 +9,17 @@ from __future__ import annotations
 
 from sqlassert import engine
 from sqlassert.facts import ground_facts
-from sqlassert.binding import bind
+from sqlassert.ir.convert import bind
 from sqlassert.knowledge import Knowledge
 from sqlassert.naming import ConstantNames
-from sqlassert.parsing import parse_program
+from sqlassert.sql_parse import parse_program
 from sqlassert.provenance import OriginRegistry
 from sqlassert.reporting import Report, Reporter
 
 DEFAULT_DIALECT = "duckdb"
 
 
-def analyze(sql: str, knowledge: Knowledge | None = None, dialect: str = DEFAULT_DIALECT) -> Report:
+def analyze(sql: str, *, knowledge: Knowledge | None = None, dialect: str = DEFAULT_DIALECT) -> Report:
     """Prove the Unique Join Assertions in one SQL Program.
 
     `knowledge` supplies facts about relations the program does not declare;
