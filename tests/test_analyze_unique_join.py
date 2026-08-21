@@ -86,7 +86,7 @@ def test_supplied_knowledge_proves_a_relation_the_program_does_not_declare():
         /**UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """,
-        Knowledge(
+        knowledge=Knowledge(
             (
                 RelationKnowledge(
                     name="users",

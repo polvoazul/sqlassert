@@ -9,33 +9,35 @@ distinct names.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
-RELATION = "relation"
+RELATION = "rel"
 PLAN = "plan"
-INSTANCE = "instance"
-COLUMN = "column"
+INSTANCE = "rel"
+COLUMN = "col"
 KEY = "key"
 JOIN = "join"
-EXPRESSION = "expression"
-ASSERTION = "assertion"
+EXPRESSION = "expr"
+ASSERTION = "assert"
 
 _UNSAFE = re.compile(r"[^a-z0-9]+")
-_ANONYMOUS = "anon"
 
 
 @dataclass
 class ConstantNames:
     """Deterministic name generator, one per analysis."""
 
-    _counts: dict[str, int] = field(default_factory=dict)
+    _next_id: int = 0
 
     def new(self, kind: str, hint: str = "") -> str:
-        self._counts[kind] = self._counts.get(kind, 0) + 1
-        return f"{kind}_{_sanitize(hint)}_{self._counts[kind]}"
+        self._next_id += 1
+        sanitized = _sanitize(hint)
+        if sanitized:
+            return f"{kind}_{sanitized}_{self._next_id}"
+        return f"{kind}_{self._next_id}"
 
 
 def _sanitize(hint: str) -> str:
     sanitized = _UNSAFE.sub("_", hint.lower()).strip("_")
-    return sanitized or _ANONYMOUS
+    return sanitized

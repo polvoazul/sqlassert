@@ -16,14 +16,14 @@ PACKAGE = Path(__file__).parents[1] / "sqlassert"
 
 FORBIDDEN_IMPORTS = {
     # The bound IR and its inputs are plain immutable values.
-    "ir.py": ("sqlglot", "clingo"),
+    "ir/model.py": ("sqlglot", "clingo"),
     "knowledge.py": ("sqlglot", "clingo"),
     "provenance.py": ("sqlglot", "clingo"),
     "diagnostics.py": ("sqlglot", "clingo"),
     "naming.py": ("sqlglot", "clingo"),
     # SQL analysis never sees the solver.
-    "parsing.py": ("clingo",),
-    "binding.py": ("clingo",),
+    "sql_parse.py": ("clingo",),
+    "ir/convert.py": ("clingo",),
     # Property reasoning and reporting never see the parser.
     "facts.py": ("sqlglot",),
     "engine.py": ("sqlglot",),
