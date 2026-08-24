@@ -1,142 +1,224 @@
 """Parse SQL text into a SQL Program: Create Statements plus at most one Root
-Select, with Unique Join Assertion markers preserved.
+Select, with Unique Join Assertion markers resolved onto the joins they mark.
 
-Markers are rewritten so that SQLGlot attaches them to the Join node they mark,
-carrying their source line with them. SQLGlot objects stop at this boundary;
-only the IR parser reads them.
+The marker is real syntax, not a comment we go looking for: a custom dialect
+tokenizes `/**UNIQUE**/` as a token of its own and the join rule consumes it, so
+the grammar is what requires a marker to sit immediately before its join. The
+line is then recorded on the `Join` node, and nothing downstream re-reads SQL
+text. SQLGlot objects stop at this boundary; only the IR parser reads them.
 """
 
 from __future__ import annotations
-
-import re
 from dataclasses import dataclass
+from functools import lru_cache
+import enum
+import re
 
 import sqlglot
 from sqlglot import exp
-from sqlglot.errors import SqlglotError
-from sqlglot.tokens import Token, TokenType, Tokenizer
+from sqlglot.dialects.dialect import Dialect
+from sqlglot.errors import ParseError, SqlglotError
+from sqlglot.tokens import Token, TokenType
 
 from sqlassert import diagnostics as diag
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.provenance import SQL, Origin
 
-MARKER = re.compile(re.escape("/**unique**/"), flags=re.IGNORECASE)
-_ATTACHED = re.compile(r"^\*unique@(\d+)\*$", flags=re.IGNORECASE)
+# Where a resolved assertion is recorded on its Join node.
+_ASSERTED_AT = "sqlassert.asserted_at"
+
+# A comment opening with `/**` is how an author writes an assertion.
+_MARKER_SHAPED = re.compile(r"/\*\*.*?\*/", re.DOTALL)
+
+
+class SqlassertToken(enum.Enum):
+    """Token types sqlassert adds to a dialect.
+
+    Deliberately a plain Enum: SQLGlot's own `TokenType` is an `IntEnum`, so a
+    member of ours sharing its integer value would compare equal to a real token
+    type and be swallowed by SQLGlot's keyword sets. A plain member can equal
+    nothing but itself, which also means no rule but ours can consume it.
+    """
+
+    SQLASSERT_UNIQUE = enum.auto()
+
+
+# Every marker sqlassert understands, and the token each becomes. The single
+# source of truth: the dialect tokenizes exactly these, and `_unrecognized`
+# reports anything else shaped like one.
+MARKERS = {"/**UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE}
+
+
+class UnattachedMarker(ParseError):
+    """A marker that does not mark a join."""
+
+    def __init__(self, message: str, line: int, text: str) -> None:
+        super().__init__(message)
+        self.line = line
+        self.text = text
+
+
+@lru_cache(maxsize=None)
+def sqlassert_dialect(base: str) -> type[Dialect]:
+    """The named dialect, plus Unique Join Assertion markers as real syntax.
+
+    Cached because SQLGlot registers every dialect class by name, so one class
+    per base dialect must be built once rather than per analysis.
+    """
+    parent = type(Dialect.get_or_raise(base))
+
+    class _Tokenizer(parent.Tokenizer):  # type: ignore[name-defined]
+        KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}
+
+    class _Parser(parent.Parser):  # type: ignore[name-defined]
+        def _parse_join(self, *args, **kwargs):
+            if not self._match(SqlassertToken.SQLASSERT_UNIQUE):
+                return super()._parse_join(*args, **kwargs)
+
+            line = self._prev.line
+            unattached = UnattachedMarker(
+                f"the unique join marker on line {line} is not followed by the JOIN keyword",
+                line,
+                self._prev.text,
+            )
+
+            # A comma join carries no JOIN keyword to mark, and multiplies rows
+            # by definition. Marking one is a mistake, not an assertion.
+            if self._curr is not None and self._curr.token_type is TokenType.COMMA:
+                raise unattached
+
+            join = super()._parse_join(*args, **kwargs)
+            if join is None:
+                raise unattached
+
+            join.meta[_ASSERTED_AT] = line
+            return join
+
+    return type(
+        f"SqlAssert{parent.__name__}",
+        (parent,),
+        {"Tokenizer": _Tokenizer, "Parser": _Parser},
+    )
 
 
 @dataclass(frozen=True)
 class ParsedProgram:
+    """One SQL Program. Sequence arguments may be any iterable; what is stored
+    is always an immutable tuple."""
+
     create_statements: tuple[exp.Expression, ...] = ()
     root_select: exp.Query | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "create_statements", tuple(self.create_statements))
+        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
 
-@dataclass(frozen=True)
+
 class SqlParser:
     """Parses SQL text of one dialect into a SQL Program."""
 
-    dialect: str
+    def __init__(self, dialect: str) -> None:
+        self.dialect = dialect
+        self.dialect_class = sqlassert_dialect(dialect)
 
     def parse(self, sql: str) -> ParsedProgram:
-        return _parse_program(sql, self.dialect)
+        # Reported first, and on every path: a mistyped marker is invisible to
+        # the grammar, so nothing later in parsing can notice it.
+        diagnostics = _unrecognized_markers(sql)
 
+        try:
+            statements = [ statement for statement in sqlglot.parse(sql, read=self.dialect_class) if statement ]
+        except UnattachedMarker as error:
+            return ParsedProgram(diagnostics=[*diagnostics, self._unattached(error)])
+        except SqlglotError as error:
+            return ParsedProgram(diagnostics=[*diagnostics, self._unparseable(sql, error)])
 
-def _parse_program(sql: str, dialect: str) -> ParsedProgram:
-    marked, reported = _attach_markers(sql, dialect)
-    reported = list(reported)
+        creates: list[exp.Expression] = []
+        selects: list[exp.Query] = []
 
-    try:
-        statements = [statement for statement in sqlglot.parse(marked, read=dialect) if statement]
-    except SqlglotError as error:
-        reported.append(Diagnostic(diag.SQL_PARSE_FAILED, f"SQL could not be parsed: {error}"))
-        return ParsedProgram(diagnostics=tuple(reported))
+        for statement in statements:
+            if isinstance(statement, exp.Create):
+                creates.append(statement)
+            elif isinstance(statement, exp.Query):
+                selects.append(statement)
+            else:
+                diagnostics.append(
+                    Diagnostic(
+                        diag.UNSUPPORTED_STATEMENT,
+                        f"statement is not a create statement or a root select: {statement.sql(dialect=self.dialect)}",
+                    )
+                )
 
-    creates: list[exp.Expression] = []
-    selects: list[exp.Query] = []
-
-    for statement in statements:
-        if isinstance(statement, exp.Create):
-            creates.append(statement)
-        elif isinstance(statement, exp.Query):
-            selects.append(statement)
-        else:
-            reported.append(
+        if len(selects) > 1:
+            diagnostics.append(
                 Diagnostic(
-                    diag.UNSUPPORTED_STATEMENT,
-                    f"statement is not a create statement or a root select: {statement.sql(dialect=dialect)}",
+                    diag.MULTIPLE_ROOT_SELECTS,
+                    f"a SQL program allows at most one root select, found {len(selects)}",
                 )
             )
+            return ParsedProgram(creates, None, diagnostics)
 
-    if len(selects) > 1:
-        reported.append(
-            Diagnostic(
-                diag.MULTIPLE_ROOT_SELECTS,
-                f"a SQL program allows at most one root select, found {len(selects)}",
-            )
+        return ParsedProgram(creates, selects[0] if selects else None, diagnostics)
+
+    def _unattached(self, error: UnattachedMarker) -> Diagnostic:
+        return Diagnostic(diag.UNATTACHED_MARKER, str(error), Origin(SQL, error.text, error.line))
+
+    def _unparseable(self, sql: str, error: SqlglotError) -> Diagnostic:
+        """A parse failure, naming a marker when the program contains one.
+
+        A marker somewhere the join rule never runs breaks the grammar outright,
+        and the reader should not have to hunt for SQL that is not broken.
+        """
+        marker = self._marker_token(sql)
+        if marker is None:
+            return Diagnostic(diag.SQL_PARSE_FAILED, f"SQL could not be parsed: {error}")
+        return Diagnostic(
+            diag.SQL_PARSE_FAILED,
+            f"SQL could not be parsed, and a unique join marker is on line {marker.line}: {error}",
+            Origin(SQL, marker.text, marker.line),
         )
-        return ParsedProgram(tuple(creates), None, tuple(reported))
 
-    return ParsedProgram(tuple(creates), selects[0] if selects else None, tuple(reported))
+    def _marker_token(self, sql: str) -> Token | None:
+        try:
+            tokens = self.dialect_class.Tokenizer().tokenize(sql)
+        except SqlglotError:
+            return None
+        return next(
+            (token for token in tokens if token.token_type is SqlassertToken.SQLASSERT_UNIQUE),
+            None,
+        )
+
+
+def _unrecognized_markers(sql: str) -> list[Diagnostic]:
+    """Comments shaped like a marker that are not one.
+
+    `/**…*/` is assertion syntax, so a comment written that way and left
+    unrecognized is far likelier a mistyped marker than a note — and a mistyped
+    marker that was silently ignored would read to its author as a proof.
+    """
+    recognized = ", ".join(sorted(MARKERS))
+    return [
+        Diagnostic(
+            diag.UNRECOGNIZED_MARKER,
+            f"{match.group(0)!r} on line {_line_of(sql, match.start())} is not a sqlassert marker; "
+            f"the markers are {recognized}",
+            Origin(SQL, match.group(0), _line_of(sql, match.start())),
+        )
+        for match in _MARKER_SHAPED.finditer(sql)
+        if match.group(0).upper() not in MARKERS
+    ]
+
+
+def _line_of(sql: str, offset: int) -> int:
+    return sql.count("\n", 0, offset) + 1
 
 
 def assertion_line(join: exp.Join) -> int | None:
     """The source line asserting this join is unique, if it is asserted at all."""
-    for comment in join.comments or []:
-        match = _ATTACHED.match(comment.strip())
-        if match:
-            return int(match.group(1))
-    return None
+    return join.meta.get(_ASSERTED_AT)
 
 
 def join_origin(join: exp.Join, dialect: str) -> Origin:
-    """A readable origin for an asserted join, with the marker comment removed."""
-    unmarked = join.copy()
-    unmarked.comments = [comment for comment in unmarked.comments or [] if not _ATTACHED.match(comment.strip())]
-    return Origin(SQL, unmarked.sql(dialect=dialect), assertion_line(join))
-
-
-def _attach_markers(sql: str, dialect: str) -> tuple[str, tuple[Diagnostic, ...]]:
-    """Move each marker to just after the JOIN keyword it marks.
-
-    SQLGlot attaches a comment written before JOIN to the preceding expression,
-    but attaches one written after JOIN to the Join node itself. A marker never
-    reaches across a statement boundary: rather than silently asserting an
-    unrelated join, an unattached marker is reported.
-    """
-    tokens = Tokenizer(dialect=dialect).tokenize(sql)
-    joins = [token for token in tokens if token.token_type is TokenType.JOIN]
-    boundaries = [token.start for token in tokens if token.token_type is TokenType.SEMICOLON]
-
-    edits: list[tuple[int, int, str]] = []
-    unattached: list[Diagnostic] = []
-
-    for marker in MARKER.finditer(sql):
-        line = sql.count("\n", 0, marker.start()) + 1
-        join = _marked_join(joins, boundaries, marker.end())
-        if join is None:
-            unattached.append(
-                Diagnostic(
-                    diag.UNATTACHED_MARKER,
-                    f"the unique join marker on line {line} does not mark a join",
-                    Origin(SQL, marker.group(0), line),
-                )
-            )
-            continue
-        edits.append((marker.start(), marker.end(), ""))
-        edits.append((join.end + 1, join.end + 1, f" /**UNIQUE@{line}**/"))
-
-    for start, end, replacement in sorted(edits, reverse=True):
-        sql = f"{sql[:start]}{replacement}{sql[end:]}"
-    return sql, tuple(unattached)
-
-
-def _marked_join(joins: list[Token], boundaries: list[int], after: int) -> Token | None:
-    """The first join following an offset within the same statement."""
-    return next(
-        (
-            join
-            for join in joins
-            if join.start >= after and not any(after <= boundary < join.start for boundary in boundaries)
-        ),
-        None,
-    )
+    """A readable origin for an asserted join."""
+    return Origin(SQL, join.sql(dialect=dialect), assertion_line(join))

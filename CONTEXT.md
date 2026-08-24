@@ -12,6 +12,10 @@ _Avoid_: Check, annotation
 An assertion that a join cannot increase the number of rows contributed by its left-hand input.
 _Avoid_: Unique join marker, duplicate check
 
+**Marker**:
+The comment syntax an author writes to state an assertion, such as `/**UNIQUE**/`. The marker is the syntax; the assertion is the property it states. A comment shaped like a marker but not recognized as one is reported rather than ignored, because a marker its author believed in is worse than no marker at all.
+_Avoid_: Assertion, annotation, hint
+
 **Property**:
 A semantic statement about a relation or query construct that can be established from query structure and catalog knowledge.
 _Avoid_: Rule, flag

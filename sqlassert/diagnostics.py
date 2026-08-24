@@ -15,6 +15,7 @@ MULTIPLE_ROOT_SELECTS = "multiple-root-selects"
 SQL_PARSE_FAILED = "sql-parse-failed"
 UNANALYZED_ASSERTION = "unanalyzed-assertion"
 UNATTACHED_MARKER = "unattached-marker"
+UNRECOGNIZED_MARKER = "unrecognized-marker"
 UNSUPPORTED_STATEMENT = "unsupported-statement"
 
 

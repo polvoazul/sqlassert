@@ -7,6 +7,8 @@ defect this engine can have.
 
 from __future__ import annotations
 
+import pytest
+
 from sqlassert import Outcome, analyze
 
 
@@ -77,38 +79,114 @@ def test_a_duplicate_declaration_is_an_explicit_program_diagnostic():
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_marker_never_reaches_a_join_in_a_later_statement():
-    report = analyze(
-        """
-        /**UNIQUE**/ CREATE TABLE users (id INTEGER PRIMARY KEY);
+MISPLACED_MARKERS = [
+    ("before a comma", "SELECT * FROM a /**UNIQUE**/ , b", "unattached-marker"),
+    ("trailing with no join", "SELECT * FROM a /**UNIQUE**/", "unattached-marker"),
+    ("in the select list", "SELECT /**UNIQUE**/ 1", "unattached-marker"),
+    ("before a create statement", "/**UNIQUE**/ CREATE TABLE t (id INTEGER);", "sql-parse-failed"),
+    ("before a select", "/**UNIQUE**/ SELECT * FROM t", "sql-parse-failed"),
+    ("after the join keyword", "SELECT * FROM a JOIN /**UNIQUE**/ b ON a.x = b.x", "sql-parse-failed"),
+    (
+        "with the join in a later statement",
+        "/**UNIQUE**/ CREATE TABLE users (id INTEGER PRIMARY KEY);\n"
+        "SELECT * FROM sessions JOIN users ON sessions.user_id = users.id",
+        "sql-parse-failed",
+    ),
+]
 
-        SELECT *
-        FROM sessions
-        JOIN users
-            ON sessions.user_id = users.id
+
+@pytest.mark.parametrize(("label", "sql", "code"), MISPLACED_MARKERS)
+def test_a_marker_that_does_not_mark_a_join_is_reported(label: str, sql: str, code: str):
+    """However a marker is misplaced, it is named and nothing is proved.
+
+    The grammar requires a marker to sit immediately before its join. Some
+    misplacements are caught by the join rule and some break parsing outright,
+    so the code differs — but an assertion is never silently dropped, and the
+    diagnostic always points at the marker's own line.
+    """
+    report = analyze(sql)
+
+    assert report.assertions == (), label
+    assert not report.proved, label
+    assert [diagnostic.code for diagnostic in report.diagnostics] == [code], label
+    assert [diagnostic.origin.line for diagnostic in report.diagnostics] == [1], label
+    assert "marker" in report.diagnostics[0].message, label
+
+
+@pytest.mark.parametrize(
+    "join",
+    ["JOIN", "INNER JOIN", "LEFT JOIN", "LEFT OUTER JOIN", "FULL OUTER JOIN", "CROSS JOIN"],
+)
+def test_a_marker_reaches_its_join_through_join_modifier_keywords(join: str):
+    report = analyze(
+        f"""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+
+        SELECT * FROM sessions /**UNIQUE**/ {join} users ON sessions.user_id = users.id
+        """
+    )
+
+    assert len(report.assertions) == 1
+    assert not report.diagnostics
+
+
+UNRECOGNIZED_MARKERS = [
+    ("spaced", "/** UNIQUE **/"),
+    ("extra spaces", "/**  UNIQUE  **/"),
+    ("one closing star", "/**UNIQUE*/"),
+    ("three closing stars", "/**UNIQUE***/"),
+    ("an unknown term", "/**UNIQE**/"),
+    ("a doc comment", "/** explains this join **/"),
+]
+
+
+@pytest.mark.parametrize(("label", "comment"), UNRECOGNIZED_MARKERS)
+def test_a_comment_shaped_like_a_marker_is_reported(label: str, comment: str):
+    """`/**...*/` is assertion syntax, so a near miss is likelier a mistyped
+    marker than a note. Silently ignoring one would read to its author as a
+    proof of a join nobody checked."""
+    report = analyze(
+        f"""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+
+        SELECT * FROM sessions {comment} JOIN users ON sessions.user_id = users.id
+        """
+    )
+
+    assert report.assertions == (), label
+    assert not report.proved, label
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unrecognized-marker"], label
+
+
+@pytest.mark.parametrize("comment", ["/* unique */", "/*UNIQUE*/", "/* explains this join */", "-- a note"])
+def test_an_ordinary_comment_is_not_mistaken_for_a_marker(comment: str):
+    report = analyze(
+        f"""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+
+        SELECT * FROM sessions {comment}
+        JOIN users ON sessions.user_id = users.id
         """
     )
 
     assert report.assertions == ()
-    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unattached-marker"]
-    assert not report.proved
+    assert not report.diagnostics
+    assert report.proved
 
 
-def test_an_assertion_this_analysis_cannot_reach_is_reported_not_dropped():
+@pytest.mark.parametrize("marker", ["/**UNIQUE**/", "/**unique**/", "/**Unique**/"])
+def test_a_marker_is_recognized_whatever_its_case(marker: str):
     report = analyze(
-        """
+        f"""
         CREATE TABLE users (id INTEGER PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
 
-        WITH joined AS (
-            SELECT *
-            FROM sessions
-            /**UNIQUE**/ JOIN users
-                ON sessions.user_id = users.id
-        )
-        SELECT * FROM joined
+        SELECT * FROM sessions {marker} JOIN users ON sessions.user_id = users.id
         """
     )
 
-    assert not report.proved
-    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unanalyzed-assertion"]
+    assert report.proved
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
