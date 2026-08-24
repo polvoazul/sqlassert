@@ -90,28 +90,42 @@ class IrParser:
     # Declaration pass ---------------------------------------------------------
 
     def _declare(self, statement: exp.Create) -> None:
-        table = _created_table(statement)
-        if table is None:
+        name = self._extract_table_name(statement)
+        if name is None:
             return
 
-        name = _qualified_name(table)
         origin = Origin(SQL, statement.sql(dialect=self.dialect))
-
-        if name.lower() in self._definitions:
-            # Which declaration governs is unknown, so the relation contributes
-            # no Knowledge at all rather than the first declaration's.
-            self._declared = [known for known in self._declared if known.name.lower() != name.lower()]
-            self._diagnostics.append(
-                Diagnostic(diag.DUPLICATE_DECLARATION, f"relation {name} is declared more than once", origin)
-            )
+        if self._reject_duplicate(name, origin):
             return
 
-        self._definition(name, origin)
-        if (statement.kind or "").upper() == "TABLE":
-            self._declared.append(self._table_knowledge(name, statement))
+        self._register_definition(name, origin)
+        self._register_table_knowledge(name, statement)
+
+    def _extract_table_name(self, statement: exp.Create) -> str | None:
+        table = _created_table(statement)
+        return _qualified_name(table) if table is not None else None
+
+    def _reject_duplicate(self, name: str, origin: Origin) -> bool:
+        """True, having recorded a diagnostic, if `name` was already declared.
+
+        Which declaration governs is unknown, so the relation contributes no
+        Knowledge at all rather than the first declaration's.
+        """
+        if name.lower() not in self._definitions:
+            return False
+
+        self._declared = [known for known in self._declared if known.name.lower() != name.lower()]
+        self._diagnostics.append(
+            Diagnostic(diag.DUPLICATE_DECLARATION, f"relation {name} is declared more than once", origin)
+        )
+        return True
+
+    def _register_table_knowledge(self, name: str, statement: exp.Create) -> None:
         # A view's relational plan arrives with a later slice. Until then it
         # declares a relation with no properties, so joins against it stay
         # UNKNOWN rather than being approximated.
+        if (statement.kind or "").upper() == "TABLE":
+            self._declared.append(self._table_knowledge(name, statement))
 
     def _table_knowledge(self, name: str, statement: exp.Create) -> RelationKnowledge:
         columns: list[ColumnKnowledge] = []
@@ -134,7 +148,7 @@ class IrParser:
             origin=Origin(SQL, statement.sql(dialect=self.dialect)),
         )
 
-    def _definition(self, name: str, origin: Origin) -> ir.RelationDefinition:
+    def _register_definition(self, name: str, origin: Origin) -> ir.RelationDefinition:
         key = name.lower()
         if key not in self._definitions:
             self._definitions[key] = ir.RelationDefinition(
@@ -172,7 +186,7 @@ class IrParser:
         return self._opaque_relation(source, origin_id)
 
     def _scan(self, table: exp.Table, origin_id: str) -> ir.Scan:
-        definition = self._definition(_qualified_name(table), self.origins.resolve(origin_id))
+        definition = self._register_definition(_qualified_name(table), self.origins.resolve(origin_id))
         instance = ir.RelationInstance(
             id=self.names.new(naming.INSTANCE, table.alias or table.name),
             definition_id=definition.id,
