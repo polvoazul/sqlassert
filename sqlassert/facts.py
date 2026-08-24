@@ -20,6 +20,11 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
         known = knowledge.relation(definition.name) if definition.name else None
         if known is None:
             continue
+        lines.extend(
+            f"column_not_null({definition.id}, {_text(column.name)})."
+            for column in known.columns
+            if not column.nullable
+        )
         for unique_set in known.unique_sets:
             key = names.new(naming.KEY, "_".join(unique_set.columns))
             lines.append(f"unique_set({key}, {definition.id}).")
@@ -50,6 +55,8 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
 def _expression_facts(expression: ir.Expression) -> list[str]:
     if isinstance(expression, ir.ColumnReference):
         return [f"expression_column({expression.id}, {expression.instance_id}, {_text(expression.column)})."]
+    if isinstance(expression, ir.Constant):
+        return [f"expression_constant({expression.id})."]
     return [f"expression_opaque({expression.id})."]
 
 

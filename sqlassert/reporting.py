@@ -25,7 +25,9 @@ from sqlassert.provenance import Origin, OriginRegistry
 
 _PROVED = "proved"
 _PROOF_KEY = "proof_key"
+_PROVED_BY_CANDIDATE_KEY = "proved_by_candidate_key"
 _UNIQUE_SET_MEMBER = "unique_set_member"
+_ASSERTION_MISSING_MEMBER = "assertion_missing_member"
 
 
 class Outcome(Enum):
@@ -41,6 +43,8 @@ class AssertionReport:
     outcome: Outcome
     origin: Origin
     proving_unique_set: tuple[str, ...] = ()
+    is_candidate_key: bool = False
+    missing_columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,9 @@ class Reporter:
         self._origins = origins
         self._proved: frozenset[str] = frozenset()
         self._proof_keys: dict[str, tuple[str, ...]] = {}
+        self._candidate_key_proofs: frozenset[str] = frozenset()
         self._unique_sets: dict[str, tuple[str, ...]] = {}
+        self._missing_members: dict[str, dict[str, frozenset[str]]] = {}
         self.stable_model_count = 0
 
     def on_model(self, model: clingo.Model) -> None:
@@ -76,7 +82,9 @@ class Reporter:
 
         self._proved = _proved(model)
         self._proof_keys = _proof_keys(model)
+        self._candidate_key_proofs = _candidate_key_proofs(model)
         self._unique_sets = _unique_sets(model)
+        self._missing_members = _missing_members(model)
 
     def report(
         self,
@@ -102,7 +110,21 @@ class Reporter:
             outcome=Outcome.PROVED if proved else Outcome.UNKNOWN,
             origin=self._origins.resolve(assertion.origin_id),
             proving_unique_set=self._unique_sets.get(keys[0], ()) if proved and keys else (),
+            is_candidate_key=proved and assertion.id in self._candidate_key_proofs,
+            missing_columns=() if proved else self._missing_columns_for(assertion.id),
         )
+
+    def _missing_columns_for(self, assertion_id: str) -> tuple[str, ...]:
+        """The closest Unique Set(s)' missing columns, in their declared order."""
+        per_key = self._missing_members.get(assertion_id, {})
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for key in sorted(per_key):
+            for column in self._unique_sets.get(key, ()):
+                if column in per_key[key] and column not in seen:
+                    seen.add(column)
+                    ordered.append(column)
+        return tuple(ordered)
 
 
 def _proved(model: clingo.Model) -> frozenset[str]:
@@ -124,6 +146,15 @@ def _proof_keys(model: clingo.Model) -> dict[str, tuple[str, ...]]:
     return {assertion: tuple(sorted(found)) for assertion, found in keys.items()}
 
 
+def _candidate_key_proofs(model: clingo.Model) -> frozenset[str]:
+    """Every assertion proved by a Unique Set that is also a Candidate Key."""
+    return frozenset(
+        str(symbol.arguments[0])
+        for symbol in model.symbols(atoms=True)
+        if symbol.name == _PROVED_BY_CANDIDATE_KEY and len(symbol.arguments) == 1
+    )
+
+
 def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:
     """The columns of every Unique Set, in declared order, read from the model."""
     members: dict[str, list[tuple[int, str]]] = {}
@@ -132,3 +163,13 @@ def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:
             key, position, column = symbol.arguments
             members.setdefault(str(key), []).append((position.number, column.string))
     return {key: tuple(column for _, column in sorted(found)) for key, found in members.items()}
+
+
+def _missing_members(model: clingo.Model) -> dict[str, dict[str, frozenset[str]]]:
+    """Best-effort UNKNOWN evidence: per assertion, per closest Unique Set, its missing columns."""
+    members: dict[str, dict[str, set[str]]] = {}
+    for symbol in model.symbols(atoms=True):
+        if symbol.name == _ASSERTION_MISSING_MEMBER and len(symbol.arguments) == 3:
+            assertion, key, column = (str(symbol.arguments[0]), str(symbol.arguments[1]), symbol.arguments[2].string)
+            members.setdefault(assertion, {}).setdefault(key, set()).add(column)
+    return {assertion: {key: frozenset(columns) for key, columns in found.items()} for assertion, found in members.items()}
