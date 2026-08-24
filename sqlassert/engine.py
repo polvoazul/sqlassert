@@ -1,19 +1,23 @@
 """Run the property engine.
 
 Clingo derives properties and their supporting evidence from ground facts and
-nothing else: parsing, name binding, and provenance stay outside the solver. A
-valid analysis has exactly one stable model; more than one is an engine-policy
+nothing else: parsing, name resolution, and provenance stay outside the solver.
+A valid analysis has exactly one stable model; more than one is an engine-policy
 failure rather than a result.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib import resources
 from typing import Protocol
 
 import clingo
 
-from sqlassert.facts import GroundFacts
+from sqlassert import ir
+from sqlassert.facts import ground_facts
+from sqlassert.knowledge import Knowledge
+from sqlassert.naming import NameGiver
 
 _PROGRAM = "base"
 _MODELS_TO_DETECT_NONDETERMINISM = 2
@@ -29,17 +33,31 @@ class ModelConsumer(Protocol):
     def on_model(self, model: clingo.Model) -> None: ...
 
 
-def run(facts: GroundFacts, consumer: ModelConsumer) -> None:
-    control = clingo.Control()
-    control.configuration.solve.models = str(_MODELS_TO_DETECT_NONDETERMINISM)
-    control.add(_PROGRAM, [], f"{rules()}\n{facts.text}\n")
-    control.ground([(_PROGRAM, [])])
-    control.solve(on_model=consumer.on_model)
+@dataclass
+class Engine:
+    """Grounds one program and solves it, reporting through its consumer.
 
-    if consumer.stable_model_count != 1:
-        raise EnginePolicyError(
-            f"analysis requires exactly one stable model, the rule program produced {consumer.stable_model_count}"
-        )
+    The consumer is bound at construction because it accumulates the results of
+    this one solve, so an instance analyses exactly one program.
+    """
+
+    consumer: ModelConsumer
+    names: NameGiver
+
+    def run(self, program: ir.Program, knowledge: Knowledge) -> None:
+        facts = ground_facts(program, knowledge, self.names)
+
+        control = clingo.Control()
+        control.configuration.solve.models = str(_MODELS_TO_DETECT_NONDETERMINISM)
+        control.add(_PROGRAM, [], f"{rules()}\n{facts}\n")
+        control.ground([(_PROGRAM, [])])
+        control.solve(on_model=self.consumer.on_model)
+
+        if self.consumer.stable_model_count != 1:
+            raise EnginePolicyError(
+                "analysis requires exactly one stable model, the rule program produced "
+                f"{self.consumer.stable_model_count}"
+            )
 
 
 def rules() -> str:

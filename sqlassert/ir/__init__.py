@@ -1,9 +1,8 @@
-"""Bound relational intermediate representation."""
+"""Relational intermediate representation."""
 
-from sqlassert.ir.model import BoundProgram, ColumnReference, Equality, Expression, INNER, Join, OpaqueExpression, OpaqueRelation, Plan, RelationDefinition, RelationInstance, Scan, UniqueJoinAssertion, instances, joins
+from sqlassert.ir.model import ColumnReference, Equality, Expression, INNER, Join, OpaqueExpression, OpaqueRelation, Plan, Program, RelationDefinition, RelationInstance, Scan, UniqueJoinAssertion, instances, joins
 
 __all__ = [
-    "BoundProgram",
     "ColumnReference",
     "Equality",
     "Expression",
@@ -12,6 +11,7 @@ __all__ = [
     "OpaqueExpression",
     "OpaqueRelation",
     "Plan",
+    "Program",
     "RelationDefinition",
     "RelationInstance",
     "Scan",

@@ -1,4 +1,4 @@
-"""The bound relational IR: the integration boundary between SQL analysis and
+"""The relational IR: the integration boundary between SQL analysis and
 property reasoning.
 
 Every node is an immutable Python value carrying an origin identifier. No
@@ -112,7 +112,7 @@ class UniqueJoinAssertion:
 
 
 @dataclass(frozen=True)
-class BoundProgram:
+class Program:
     definitions: tuple[RelationDefinition, ...] = ()
     root: Plan | None = None
     assertions: tuple[UniqueJoinAssertion, ...] = field(default=())

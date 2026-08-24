@@ -12,7 +12,7 @@
 % warning.
 #defined relation/1.
 #defined unique_set/2.
-#defined unique_set_member/2.
+#defined unique_set_member/3.
 #defined instance_of/2.
 #defined join_kind/2.
 #defined join_left_instance/2.
@@ -52,7 +52,7 @@ uncovered_member(J, K) :-
     join_right_instance(J, I),
     instance_of(I, R),
     unique_set(K, R),
-    unique_set_member(K, C),
+    unique_set_member(K, _, C),
     not covers(J, I, C).
 
 covered_unique_set(J, K) :- right_unique_set(J, K), not uncovered_member(J, K).

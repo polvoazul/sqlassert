@@ -3,7 +3,7 @@ Select, with Unique Join Assertion markers preserved.
 
 Markers are rewritten so that SQLGlot attaches them to the Join node they mark,
 carrying their source line with them. SQLGlot objects stop at this boundary;
-only the binder reads them.
+only the IR parser reads them.
 """
 
 from __future__ import annotations
@@ -31,7 +31,17 @@ class ParsedProgram:
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
-def parse_program(sql: str, dialect: str) -> ParsedProgram:
+@dataclass(frozen=True)
+class SqlParser:
+    """Parses SQL text of one dialect into a SQL Program."""
+
+    dialect: str
+
+    def parse(self, sql: str) -> ParsedProgram:
+        return _parse_program(sql, self.dialect)
+
+
+def _parse_program(sql: str, dialect: str) -> ParsedProgram:
     marked, reported = _attach_markers(sql, dialect)
     reported = list(reported)
 

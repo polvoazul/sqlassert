@@ -2,8 +2,8 @@
 
 A name carries a readable kind prefix and a sanitized hint so that facts stay
 inspectable, followed by a deterministic incremental suffix that establishes
-identity. The hint is diagnostic only; two elements with the same hint still get
-distinct names.
+identity. The hint is for readability only; two elements with the same hint still
+get distinct names.
 """
 
 from __future__ import annotations
@@ -25,8 +25,12 @@ _UNSAFE = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass
-class ConstantNames:
-    """Deterministic name generator, one per analysis."""
+class NameGiver:
+    """Deterministic name generator, one per analysis.
+
+    Uniqueness comes from the shared counter, so an analysis must use a single
+    instance across every stage that names constants.
+    """
 
     _next_id: int = 0
 
