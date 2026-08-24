@@ -70,6 +70,23 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     class _Tokenizer(parent.Tokenizer):  # type: ignore[name-defined]
         KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}
 
+    # This hooks SQLGlot's private API: `Tokenizer.KEYWORDS`, `_parse_join`,
+    # `_match`, `_prev`, `_curr`. It is the best seam available — SQLGlot exposes
+    # no public way to extend a grammar — and it is deliberately preferred to the
+    # alternatives we tried: rewriting the SQL before parsing, and matching
+    # markers to joins ourselves by source offset. Both of those put the
+    # correctness of the marker-to-join mapping in our own code, where SQLGlot's
+    # comment placement varies with aliasing, whitespace, and the preceding
+    # predicate. Here the grammar decides, so it cannot drift out of step.
+    #
+    # The coupling breaks in two ways, and only one of them is safe by itself.
+    # If `_parse_join` is renamed or changes arity, this override stops running,
+    # the marker token is left with no rule to consume it, and parsing fails —
+    # loudly, and with nothing proved. But if `KEYWORDS` stops applying, the
+    # marker stays an ordinary comment and simply vanishes, which would leave a
+    # program reporting as proved. `_unresolved_markers` exists for that case;
+    # do not remove it, and do not add a fallback that carries on without the
+    # hook.
     class _Parser(parent.Parser):  # type: ignore[name-defined]
         def _parse_join(self, *args, **kwargs):
             if not self._match(SqlassertToken.SQLASSERT_UNIQUE):
@@ -150,6 +167,10 @@ class SqlParser:
                     )
                 )
 
+        # A marker only becomes an assertion if the dialect recognised it, so
+        # reconcile what the source contains against what parsing produced.
+        diagnostics.extend(_unresolved_markers(sql, statements))
+
         if len(selects) > 1:
             diagnostics.append(
                 Diagnostic(
@@ -207,6 +228,38 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
         )
         for match in _MARKER_SHAPED.finditer(sql)
         if match.group(0).upper() not in MARKERS
+    ]
+
+
+def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diagnostic]:
+    """Recognized markers that did not become assertions.
+
+    Every marker in the source should have reached a join or raised
+    `UnattachedMarker`. If one merely disappeared, the dialect stopped
+    recognising it — and the alternative to reporting that is a program whose
+    assertions were never checked reporting as proved.
+    """
+    written = [
+        match for match in _MARKER_SHAPED.finditer(sql) if match.group(0).upper() in MARKERS
+    ]
+    resolved = sum(
+        1
+        for statement in statements
+        for join in statement.find_all(exp.Join)
+        if assertion_line(join) is not None
+    )
+    if len(written) <= resolved:
+        return []
+
+    first = written[resolved]
+    line = _line_of(sql, first.start())
+    return [
+        Diagnostic(
+            diag.UNRECOGNIZED_MARKER,
+            f"the marker on line {line} was not recognized: "
+            f"{resolved} of {len(written)} markers became assertions",
+            Origin(SQL, first.group(0), line),
+        )
     ]
 
 

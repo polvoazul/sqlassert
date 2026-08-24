@@ -4,7 +4,13 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.tokens import TokenType
 
-from sqlassert.sql_parse import ParsedProgram, SqlParser, SqlassertToken, sqlassert_dialect
+from sqlassert.sql_parse import (
+    ParsedProgram,
+    SqlParser,
+    SqlassertToken,
+    _unresolved_markers,
+    sqlassert_dialect,
+)
 
 
 def test_parsed_program_coercion():
@@ -92,3 +98,29 @@ def test_parsing_registers_no_dialect_beyond_the_one_it_needs():
     parser.parse("SELEC * FROM")  # the failure path re-tokenizes
 
     assert set(Dialect.classes) - before <= {"sqlassertduckdb"}
+
+
+def test_a_marker_the_dialect_did_not_recognize_is_reported():
+    """The safety net for the SQLGlot coupling in `sqlassert_dialect`.
+
+    Parsing with the plain base dialect is what the world looks like if that
+    coupling breaks at the tokenizer: the marker stays an ordinary comment and
+    quietly becomes nothing. Reached directly because the public seam cannot
+    produce it without breaking SQLGlot — and without this guard the program
+    would report as proved.
+    """
+    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**UNIQUE**/ JOIN u ON s.id = u.id"
+    unrecognized = [statement for statement in sqlglot.parse(sql, read="duckdb") if statement]
+
+    diagnostics = _unresolved_markers(sql, unrecognized)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ["unrecognized-marker"]
+    assert diagnostics[0].origin.line == 2
+
+
+def test_recognized_markers_leave_the_reconciliation_quiet():
+    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**UNIQUE**/ JOIN u ON s.id = u.id"
+    parser = SqlParser("duckdb")
+    statements = [statement for statement in sqlglot.parse(sql, read=parser.dialect_class) if statement]
+
+    assert _unresolved_markers(sql, statements) == []
