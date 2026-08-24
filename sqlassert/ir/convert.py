@@ -9,7 +9,9 @@ may reference one declared later.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from typing import Iterator
 
 from sqlglot import exp
 
@@ -37,6 +39,42 @@ class IrConversionResult:
 
 
 @dataclass
+class CteScope:
+    """The CTE names visible while lowering one query.
+
+    A CTE name must never resolve to a declared relation of the same name,
+    whether or not its own body is one this slice can lower -- so `declare`
+    always shadows the name, and only separately remembers a lowerable body.
+    `resolving` guards a body that (directly or through another CTE) refers
+    back to itself: valid only under `RECURSIVE`, which this slice does not
+    model, so a self-reference must stop the recursion rather than loop.
+    """
+
+    _shadowed: set[str] = field(default_factory=set)
+    _bodies: dict[str, exp.Select] = field(default_factory=dict)
+    _resolving: set[str] = field(default_factory=set)
+
+    def declare(self, name: str, body: exp.Expression) -> None:
+        self._shadowed.add(name)
+        if isinstance(body, exp.Select):
+            self._bodies[name] = body
+
+    def shadows(self, name: str) -> bool:
+        return name in self._shadowed
+
+    def body(self, name: str) -> exp.Select | None:
+        return None if name in self._resolving else self._bodies.get(name)
+
+    @contextmanager
+    def resolving(self, name: str) -> Iterator[None]:
+        self._resolving.add(name)
+        try:
+            yield
+        finally:
+            self._resolving.discard(name)
+
+
+@dataclass
 class IrParser:
     """Lowers one parsed SQL Program to the IR.
 
@@ -51,7 +89,7 @@ class IrParser:
     _definitions: dict[str, ir.RelationDefinition] = field(default_factory=dict)
     _anonymous: list[ir.RelationDefinition] = field(default_factory=list)
     _declared: list[RelationKnowledge] = field(default_factory=list)
-    _local_names: set[str] = field(default_factory=set)
+    _ctes: CteScope = field(default_factory=CteScope)
     _assertions: list[ir.UniqueJoinAssertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
 
@@ -180,13 +218,15 @@ class IrParser:
     # Definition pass ----------------------------------------------------------
 
     def _lower_query(self, select: exp.Query) -> ir.Plan | None:
-        # CTEs become relational subplans in a later slice. Until then they are
-        # local names that must never resolve to a declared relation of the
-        # same name, or they would borrow its Unique Sets.
+        # A CTE name must never resolve to a declared relation of the same
+        # name, or it would borrow that relation's Unique Sets. Its body
+        # lowers on first reference, through the same recursive path a FROM
+        # subquery uses -- see `_lower_cte_reference`.
         if not select: return None
         with_clause = _arg(select, "with")
         if with_clause is not None:
-            self._local_names |= {cte.alias.lower() for cte in with_clause.expressions}
+            for cte in with_clause.expressions:
+                self._ctes.declare(cte.alias.lower(), cte.this)
 
         source = _from_source(select)
         if source is None:
@@ -198,19 +238,43 @@ class IrParser:
         return plan
 
     def _lower_source(self, source: exp.Expression) -> ir.Plan:
+        """Every unsupported or exhausted attempt below falls through to the
+        same OpaqueRelation, so callers never see a bare `None`."""
         origin_id = self._origin_id(source)
+        nested = self._lower_nested_source(source, origin_id)
+        return nested if nested is not None else self._opaque_relation(source, origin_id)
 
-        if isinstance(source, exp.Table) and _qualified_name(source).lower() not in self._local_names:
-            return self._scan(source, origin_id)
-        if isinstance(source, exp.Subquery):
-            derived = self._lower_derived_table(source, origin_id)
-            if derived is not None:
-                return derived
-        return self._opaque_relation(source, origin_id)
+    def _lower_nested_source(self, source: exp.Expression, origin_id: str) -> ir.Plan | None:
+        if isinstance(source, exp.Table):
+            name = _qualified_name(source).lower()
+            if not self._ctes.shadows(name):
+                return self._scan(source, origin_id)
+            return self._lower_cte_reference(source, name, origin_id)
+        if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select):
+            alias = source.alias_or_name
+            if alias:
+                return self._lower_nested_select(source.this, alias, origin_id)
+        return None
 
-    def _scan(self, table: exp.Table, origin_id: str, alias_override: str | None = None) -> ir.Scan:
+    def _lower_cte_reference(self, table: exp.Table, name: str, origin_id: str) -> ir.Plan | None:
+        """One reference to a CTE, lowered fresh from its body.
+
+        Each reference re-lowers the body independently rather than sharing a
+        Plan object, so two references to the same CTE never share identity
+        any more than two aliases of a table do (`_scan` does the same for
+        physical tables).
+        """
+        body = self._ctes.body(name)
+        if body is None:
+            return None
+
+        alias = table.alias or table.name
+        with self._ctes.resolving(name):
+            return self._lower_nested_select(body, alias, origin_id)
+
+    def _scan(self, table: exp.Table, origin_id: str) -> ir.Scan:
         definition = self._register_definition(_qualified_name(table), self.origins.resolve(origin_id))
-        alias = alias_override if alias_override is not None else (table.alias or None)
+        alias = table.alias or None
         instance = ir.RelationInstance(
             id=self.names.new(naming.INSTANCE, alias or table.name),
             definition_id=definition.id,
@@ -219,36 +283,38 @@ class IrParser:
         )
         return ir.Scan(self.names.new(naming.PLAN, f"scan {table.name}"), instance)
 
-    def _lower_derived_table(self, subquery: exp.Subquery, origin_id: str) -> ir.Plan | None:
-        """A FROM subquery of the narrow shape this slice models: one bare
-        table, an optional WHERE, and a plain column list or `*`.
+    def _lower_nested_select(self, select: exp.Select, alias: str, origin_id: str) -> ir.Plan | None:
+        """A CTE or FROM-subquery body of the narrow shape this slice models:
+        one FROM source, an optional WHERE, and a plain column list or `*`.
 
-        Anything else -- a join, GROUP BY, DISTINCT, QUALIFY, or a nested WITH
-        inside the subquery, or a missing outer alias -- returns None so the
-        caller falls back to an OpaqueRelation, exactly like every other
-        unsupported construct in this module.
+        The FROM source lowers through `_lower_source`, so a bare table,
+        another CTE, or a nested FROM subquery all resolve recursively the
+        same way they would at the top level -- this is how a CTE built from
+        another CTE, or one wrapping a FROM subquery, keeps working several
+        layers deep.
+
+        Anything else -- a JOIN, GROUP BY, DISTINCT, QUALIFY, or a nested WITH
+        inside this body -- returns None so the caller falls back to an
+        OpaqueRelation, exactly like every other unsupported construct in
+        this module. In particular, a JOIN inside a CTE or FROM-subquery body
+        stays unsupported: its own asserted joins, if any, are reported by
+        `_report_unanalyzed` rather than silently dropped.
         """
-        alias = subquery.alias_or_name
-        inner = subquery.this
-        if not alias or not isinstance(inner, exp.Select):
-            return None
-        if any(inner.args.get(key) for key in ("with", "joins", "group", "distinct", "qualify")):
+        if any(select.args.get(key) for key in ("with", "joins", "group", "distinct", "qualify")):
             return None
 
-        table = _from_source(inner)
-        if not isinstance(table, exp.Table) or _qualified_name(table).lower() in self._local_names:
+        source = _from_source(select)
+        if source is None:
             return None
 
-        items = inner.expressions
+        inner_plan = self._lower_source(source)
+
+        items = select.expressions
         star_only = len(items) == 1 and isinstance(items[0], exp.Star)
-        has_where = inner.args.get("where") is not None
-        table_origin_id = self._origin_id(table)
+        has_where = select.args.get("where") is not None
 
-        if star_only and not has_where:
-            return self._scan(table, table_origin_id, alias_override=alias)
-
-        plan: ir.Plan = self._scan(table, table_origin_id)
-        if has_where:
+        plan = inner_plan
+        if has_where or star_only:
             plan = self._filter(plan, alias if star_only else None, origin_id)
         if not star_only:
             plan = self._project(plan, items, alias, origin_id)
