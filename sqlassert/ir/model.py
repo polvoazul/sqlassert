@@ -24,6 +24,19 @@ class ColumnReference:
 
 
 @dataclass(frozen=True)
+class Constant:
+    """A literal value in an equality.
+
+    Its value is not represented: a constant determines the column it is
+    equated to regardless of what the value is, so the property engine never
+    needs to know it.
+    """
+
+    id: str
+    origin_id: str
+
+
+@dataclass(frozen=True)
 class OpaqueExpression:
     """An expression whose semantics conversion did not model.
 
@@ -35,7 +48,7 @@ class OpaqueExpression:
     origin_id: str
 
 
-Expression = ColumnReference | OpaqueExpression
+Expression = ColumnReference | Constant | OpaqueExpression
 
 
 @dataclass(frozen=True)

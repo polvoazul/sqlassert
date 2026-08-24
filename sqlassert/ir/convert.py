@@ -130,16 +130,35 @@ class IrParser:
     def _table_knowledge(self, name: str, statement: exp.Create) -> RelationKnowledge:
         columns: list[ColumnKnowledge] = []
         unique_sets: list[UniqueSetKnowledge] = []
+        non_null: set[str] = set()
 
         for definition in statement.this.find_all(exp.ColumnDef):
             kinds = [type(constraint.args.get("kind")) for constraint in definition.constraints]
             primary_key = exp.PrimaryKeyColumnConstraint in kinds
             unique = exp.UniqueColumnConstraint in kinds
-            nullable = not (primary_key or exp.NotNullColumnConstraint in kinds)
+            not_null = primary_key or exp.NotNullColumnConstraint in kinds
+            if not_null:
+                non_null.add(definition.name.lower())
 
-            columns.append(ColumnKnowledge(definition.name, nullable))
+            columns.append(ColumnKnowledge(definition.name, nullable=not not_null))
             if primary_key or unique:
                 unique_sets.append(UniqueSetKnowledge((definition.name,)))
+
+        # A table-level PRIMARY KEY or UNIQUE constraint declares a composite
+        # Unique Set; a PRIMARY KEY additionally makes every member non-null.
+        for constraint in statement.this.expressions:
+            table_level_columns = _table_level_unique_columns(constraint)
+            if table_level_columns is None:
+                continue
+            unique_sets.append(UniqueSetKnowledge(table_level_columns))
+            if isinstance(constraint, exp.PrimaryKey):
+                non_null.update(column.lower() for column in table_level_columns)
+
+        if non_null:
+            columns = [
+                replace(column, nullable=False) if column.name.lower() in non_null else column
+                for column in columns
+            ]
 
         return RelationKnowledge(
             name=name,
@@ -225,14 +244,13 @@ class IrParser:
     def _lower_join(self, left: ir.Plan, join: exp.Join) -> ir.Join:
         origin_id = self._origin_id(join, assertion_line(join))
         right = self._lower_source(join.this)
-        scope = ir.instances(left) + ir.instances(right)
 
         lowered = ir.Join(
             id=self.names.new(naming.JOIN, _join_hint(join)),
             kind=_join_kind(join),
             left=left,
             right=right,
-            equalities=self._lower_predicate(join.args.get("on"), scope),
+            equalities=self._lower_join_predicate(join, left, right),
             origin_id=origin_id,
         )
 
@@ -246,13 +264,35 @@ class IrParser:
             )
         return lowered
 
+    def _lower_join_predicate(self, join: exp.Join, left: ir.Plan, right: ir.Plan) -> tuple[ir.Equality, ...]:
+        using = join.args.get("using")
+        if using:
+            return tuple(self._lower_using_equality(identifier, left, right) for identifier in using)
+        scope = ir.instances(left) + ir.instances(right)
+        return self._lower_predicate(join.args.get("on"), scope)
+
+    def _lower_using_equality(self, identifier: exp.Identifier, left: ir.Plan, right: ir.Plan) -> ir.Equality:
+        """`USING (col)` means `left.col = right.col`.
+
+        Each side resolves only within its own plan's instances: an
+        unqualified column resolves when its side has exactly one instance,
+        and stays opaque otherwise. Nothing here needs a matching relation's
+        actual columns, so USING is sound even with no catalog knowledge.
+        """
+        name = identifier.name
+        return ir.Equality(
+            id=self.names.new(naming.EXPRESSION, "equality"),
+            left=self._lower_expression(exp.column(name), ir.instances(left)),
+            right=self._lower_expression(exp.column(name), ir.instances(right)),
+            origin_id=self._origin_id(identifier),
+        )
+
     def _lower_predicate(
         self,
         predicate: exp.Expression | None,
         scope: tuple[ir.RelationInstance, ...],
     ) -> tuple[ir.Equality, ...]:
         if predicate is None:
-            # USING and predicate-free joins are handled by a later slice.
             return ()
 
         conjuncts = list(predicate.flatten()) if isinstance(predicate, exp.And) else [predicate]
@@ -279,6 +319,9 @@ class IrParser:
                     column=expression.name,
                     origin_id=origin_id,
                 )
+
+        if isinstance(expression, exp.Literal):
+            return ir.Constant(id=self.names.new(naming.EXPRESSION, "const"), origin_id=origin_id)
 
         return ir.OpaqueExpression(
             id=self.names.new(naming.EXPRESSION, "opaque"),
@@ -324,6 +367,19 @@ def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
         for join in statement.find_all(exp.Join)
         if assertion_line(join) is not None
     ]
+
+
+def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] | None:
+    """Column names of a table-level `PRIMARY KEY` or `UNIQUE` constraint.
+
+    `None` if `constraint` is not one of these; inline column constraints are
+    handled separately, from each `ColumnDef`.
+    """
+    if isinstance(constraint, exp.PrimaryKey):
+        return tuple(identifier.name for identifier in constraint.expressions)
+    if isinstance(constraint, exp.UniqueColumnConstraint) and isinstance(constraint.this, exp.Schema):
+        return tuple(identifier.name for identifier in constraint.this.expressions)
+    return None
 
 
 def _created_table(statement: exp.Create) -> exp.Table | None:
