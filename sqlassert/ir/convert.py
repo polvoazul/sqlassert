@@ -9,7 +9,7 @@ may reference one declared later.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sqlglot import exp
 
@@ -23,13 +23,17 @@ from sqlassert.provenance import SQL, Origin, OriginRegistry
 
 
 @dataclass(frozen=True)
-class Conversion:
+class IrConversionResult:
     """What one conversion produced: the IR, the Knowledge it declared, and
     everything about the program it could not model."""
 
     program: ir.Program
     knowledge: Knowledge
     diagnostics: tuple[Diagnostic, ...] = ()
+
+    def merged_with(self, knowledge: Knowledge | None) -> "IrConversionResult":
+        """The same conversion, with caller-supplied Knowledge folded in."""
+        return replace(self, knowledge=self.knowledge.merge(knowledge))
 
 
 @dataclass
@@ -51,16 +55,16 @@ class IrParser:
     _assertions: list[ir.UniqueJoinAssertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
 
-    def parse(self, ast: ParsedProgram) -> Conversion:
+    def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
-            self._declare(statement)
+            self._declare(statement) # first pass
 
-        root = self._lower_query(ast.root_select) if ast.root_select is not None else None
+        root = self._lower_query(ast.root_select)
         self._report_unanalyzed(ast)
 
         definitions = tuple(self._definitions.values()) + tuple(self._anonymous)
         program = ir.Program(definitions, root, tuple(self._assertions))
-        return Conversion(program, Knowledge(tuple(self._declared)), tuple(self._diagnostics))
+        return IrConversionResult(program, Knowledge(tuple(self._declared)), tuple(self._diagnostics))
 
     def _report_unanalyzed(self, ast: ParsedProgram) -> None:
         """Report every asserted join this slice never reached.
@@ -146,6 +150,7 @@ class IrParser:
         # CTEs become relational subplans in a later slice. Until then they are
         # local names that must never resolve to a declared relation of the
         # same name, or they would borrow its Unique Sets.
+        if not select: return None
         with_clause = _arg(select, "with")
         if with_clause is not None:
             self._local_names |= {cte.alias.lower() for cte in with_clause.expressions}

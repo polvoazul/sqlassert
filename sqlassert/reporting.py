@@ -1,8 +1,13 @@
 """Consume the live Clingo model and retain only a durable Report.
 
-The Reporter is created for one analysis and its bound `on_model` is handed to
-the solver, so it may use Clingo's native `contains` and symbol APIs while the
-model is alive. It never stores the model itself, and it never prints.
+`on_model` runs while the model is alive, so it may use Clingo's native symbol
+APIs — but it keeps only plain values, never the model. Assembling the Report
+happens afterwards, which is why nothing about the assertions is needed until
+then. The Reporter never prints.
+
+Being the one thing that sees every model, the Reporter is also what enforces
+the one-model policy: `on_model` refuses a second call, and `report` refuses to
+assemble without a first.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ import clingo
 
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
+from sqlassert.engine import EnginePolicyError
 from sqlassert.provenance import Origin, OriginRegistry
 
 _PROVED = "proved"
@@ -52,43 +58,60 @@ class Report:
 
 
 class Reporter:
-    def __init__(self, assertions: Sequence[ir.UniqueJoinAssertion], origins: OriginRegistry) -> None:
-        self._assertions = tuple(assertions)
+    """Evidence harvested from one solve, and the Report assembled from it."""
+
+    def __init__(self, origins: OriginRegistry) -> None:
         self._origins = origins
-        self._reports: tuple[AssertionReport, ...] = ()
+        self._proved: frozenset[str] = frozenset()
+        self._proof_keys: dict[str, tuple[str, ...]] = {}
+        self._unique_sets: dict[str, tuple[str, ...]] = {}
         self.stable_model_count = 0
 
     def on_model(self, model: clingo.Model) -> None:
-        self.stable_model_count += 1
-        if self.stable_model_count > 1:
-            # A second model is an engine-policy failure; the engine raises.
-            return
+        if self.stable_model_count:
+            raise EnginePolicyError(
+                "analysis requires exactly one stable model, the rule program produced more"
+            )
+        self.stable_model_count = 1
 
-        proof_keys = _proof_keys(model)
-        unique_sets = _unique_sets(model)
-        self._reports = tuple(
-            self._assertion_report(assertion, model, proof_keys, unique_sets)
-            for assertion in self._assertions
+        self._proved = _proved(model)
+        self._proof_keys = _proof_keys(model)
+        self._unique_sets = _unique_sets(model)
+
+    def report(
+        self,
+        assertions: Sequence[ir.UniqueJoinAssertion],
+        diagnostics: Sequence[Diagnostic] = (),
+    ) -> Report:
+        if not self.stable_model_count:
+            raise EnginePolicyError(
+                "analysis requires exactly one stable model, the rule program produced none"
+            )
+
+        return Report(
+            tuple(self._assertion_report(assertion) for assertion in assertions),
+            tuple(diagnostics),
+            self.stable_model_count,
         )
 
-    def report(self, diagnostics: Sequence[Diagnostic] = ()) -> Report:
-        return Report(self._reports, tuple(diagnostics), self.stable_model_count)
-
-    def _assertion_report(
-        self,
-        assertion: ir.UniqueJoinAssertion,
-        model: clingo.Model,
-        proof_keys: dict[str, tuple[str, ...]],
-        unique_sets: dict[str, tuple[str, ...]],
-    ) -> AssertionReport:
-        proved = model.contains(clingo.Function(_PROVED, [clingo.Function(assertion.id)]))
-        keys = proof_keys.get(assertion.id, ())
+    def _assertion_report(self, assertion: ir.UniqueJoinAssertion) -> AssertionReport:
+        proved = assertion.id in self._proved
+        keys = self._proof_keys.get(assertion.id, ())
         return AssertionReport(
             assertion_id=assertion.id,
             outcome=Outcome.PROVED if proved else Outcome.UNKNOWN,
             origin=self._origins.resolve(assertion.origin_id),
-            proving_unique_set=unique_sets.get(keys[0], ()) if proved and keys else (),
+            proving_unique_set=self._unique_sets.get(keys[0], ()) if proved and keys else (),
         )
+
+
+def _proved(model: clingo.Model) -> frozenset[str]:
+    """Every assertion the engine proved."""
+    return frozenset(
+        str(symbol.arguments[0])
+        for symbol in model.symbols(atoms=True)
+        if symbol.name == _PROVED and len(symbol.arguments) == 1
+    )
 
 
 def _proof_keys(model: clingo.Model) -> dict[str, tuple[str, ...]]:
