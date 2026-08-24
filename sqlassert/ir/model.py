@@ -148,7 +148,50 @@ class Project:
     origin_id: str
 
 
-Plan = Scan | OpaqueRelation | Join | Filter | Project
+@dataclass(frozen=True)
+class GroupingKey:
+    """One `GROUP BY` expression, named by the output column an outer query
+    sees it as -- the only thing a Unique Set built from it needs, since a
+    later join can only ever refer to a Grouping Key by that output name.
+
+    Only a Grouping Key contributes to the Unique Set an Aggregate earns: an
+    Aggregate Expression such as a sum or count is deliberately not
+    represented here, so it can never be mistaken for one.
+    """
+
+    name: str
+
+
+@dataclass(frozen=True)
+class Aggregate:
+    """An ordinary `GROUP BY`: unique by its complete set of Grouping Keys,
+    regardless of what its input relation's own Unique Sets were.
+
+    Owns a fresh, anonymous Relation Definition for the same reason Project
+    does: grouping changes what a Unique Set means.
+    """
+
+    id: str
+    input: "Plan"
+    instance: RelationInstance
+    grouping_keys: tuple[GroupingKey, ...]
+    origin_id: str
+
+
+@dataclass(frozen=True)
+class Distinct:
+    """`SELECT DISTINCT`: unique by its complete set of output expressions,
+    regardless of what its input relation's own Unique Sets were.
+    """
+
+    id: str
+    input: "Plan"
+    instance: RelationInstance
+    outputs: tuple[ProjectedColumn, ...]
+    origin_id: str
+
+
+Plan = Scan | OpaqueRelation | Join | Filter | Project | Aggregate | Distinct
 
 
 @dataclass(frozen=True)
@@ -167,23 +210,26 @@ class Program:
     assertions: tuple[UniqueJoinAssertion, ...] = field(default=())
 
 
+_DERIVED_TABLE = (Scan, OpaqueRelation, Filter, Project, Aggregate, Distinct)
+
+
 def instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
     """Every Relation Instance immediately visible from a plan, in source order.
 
-    Filter and Project are leaves here, like Scan and OpaqueRelation: a
-    derived table exposes only its own outer instance, keeping whatever it
-    wraps out of the enclosing query's column scope.
+    Filter, Project, Aggregate, and Distinct are leaves here, like Scan and
+    OpaqueRelation: a derived table exposes only its own outer instance,
+    keeping whatever it wraps out of the enclosing query's column scope.
     """
     if plan is None:
         return ()
-    if isinstance(plan, (Scan, OpaqueRelation, Filter, Project)):
+    if isinstance(plan, _DERIVED_TABLE):
         return (plan.instance,)
     return instances(plan.left) + instances(plan.right)
 
 
 def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
-    """Every Relation Instance anywhere in a plan, including inside Filter and
-    Project, whose own inputs are otherwise invisible to `instances`.
+    """Every Relation Instance anywhere in a plan, including inside a derived
+    table, whose own input is otherwise invisible to `instances`.
 
     Used only for fact generation: every instance needs its `instance_of`
     fact, even one that no outer scope can resolve a column against.
@@ -192,7 +238,7 @@ def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
         return ()
     if isinstance(plan, (Scan, OpaqueRelation)):
         return (plan.instance,)
-    if isinstance(plan, (Filter, Project)):
+    if isinstance(plan, (Filter, Project, Aggregate, Distinct)):
         return (plan.instance,) + all_instances(plan.input)
     return all_instances(plan.left) + all_instances(plan.right)
 
@@ -200,20 +246,38 @@ def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
 def joins(plan: Plan | None) -> tuple[Join, ...]:
     """Every Join reachable from a plan.
 
-    Filter and Project are leaves: this ticket's derived tables never wrap a
+    Every derived table is a leaf: this slice's derived tables never wrap a
     Join, so nothing here needs to look inside `.input`.
     """
-    if plan is None or isinstance(plan, (Scan, OpaqueRelation, Filter, Project)):
+    if plan is None or isinstance(plan, _DERIVED_TABLE):
         return ()
     return joins(plan.left) + joins(plan.right) + (plan,)
 
 
-def projects(plan: Plan | None) -> tuple[Project, ...]:
-    """Every Project reachable from a plan, including inside Filter/Project chains."""
+def _collect(plan: Plan | None, node_type: type) -> tuple:
+    """Every `node_type` node reachable from a plan, including inside chains
+    of other derived tables -- one Aggregate nested inside a Distinct inside
+    a Filter is still found, and vice versa.
+
+    Shared by `projects`, `aggregates`, and `distincts`, which otherwise
+    differ only in which single Plan subtype they collect.
+    """
     if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
         return ()
-    if isinstance(plan, Filter):
-        return projects(plan.input)
-    if isinstance(plan, Project):
-        return projects(plan.input) + (plan,)
-    return projects(plan.left) + projects(plan.right)
+    if isinstance(plan, node_type):
+        return _collect(plan.input, node_type) + (plan,)
+    if isinstance(plan, (Filter, Project, Aggregate, Distinct)):
+        return _collect(plan.input, node_type)
+    return _collect(plan.left, node_type) + _collect(plan.right, node_type)
+
+
+def projects(plan: Plan | None) -> tuple[Project, ...]:
+    return _collect(plan, Project)
+
+
+def aggregates(plan: Plan | None) -> tuple[Aggregate, ...]:
+    return _collect(plan, Aggregate)
+
+
+def distincts(plan: Plan | None) -> tuple[Distinct, ...]:
+    return _collect(plan, Distinct)

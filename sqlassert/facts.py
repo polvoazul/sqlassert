@@ -26,14 +26,7 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
             if not column.nullable
         )
         for unique_set in known.unique_sets:
-            key = names.new(naming.KEY, "_".join(unique_set.columns))
-            lines.append(f"unique_set({key}, {definition.id}).")
-            # Members carry their position so evidence read back from the model
-            # keeps the order the Unique Set was declared in.
-            lines.extend(
-                f"unique_set_member({key}, {position}, {_text(column)})."
-                for position, column in enumerate(unique_set.columns)
-            )
+            lines.extend(_unique_set_facts(names, definition.id, unique_set.columns))
 
     for instance in ir.all_instances(program.root):
         lines.append(f"instance_of({instance.id}, {instance.definition_id}).")
@@ -47,6 +40,18 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
                 f"project_output({project.instance.definition_id}, {_text(output.name)}, {output.expression.id})."
             )
 
+    # An Aggregate or Distinct earns its own Unique Set directly from its
+    # Grouping Keys or output columns -- unlike Project, it needs no
+    # propagation rule, since grouping or distinctness alone establishes it
+    # regardless of the input relation's own Unique Sets.
+    for aggregate in ir.aggregates(program.root):
+        columns = tuple(key.name for key in aggregate.grouping_keys)
+        lines.extend(_unique_set_facts(names, aggregate.instance.definition_id, columns))
+
+    for distinct in ir.distincts(program.root):
+        columns = tuple(output.name for output in distinct.outputs)
+        lines.extend(_unique_set_facts(names, distinct.instance.definition_id, columns))
+
     for join in ir.joins(program.root):
         lines.append(f"join_kind({join.id}, {join.kind}).")
         lines.extend(f"join_left_instance({join.id}, {instance.id})." for instance in ir.instances(join.left))
@@ -59,6 +64,15 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
     lines.extend(f"assertion({assertion.id}, {assertion.join_id})." for assertion in program.assertions)
 
     return "\n".join(lines)
+
+
+def _unique_set_facts(names: NameGiver, definition_id: str, columns: tuple[str, ...]) -> list[str]:
+    key = names.new(naming.KEY, "_".join(columns))
+    # Members carry their position so evidence read back from the model keeps
+    # the order the Unique Set's columns were declared in.
+    return [f"unique_set({key}, {definition_id})."] + [
+        f"unique_set_member({key}, {position}, {_text(column)})." for position, column in enumerate(columns)
+    ]
 
 
 def _expression_facts(expression: ir.Expression) -> list[str]:
