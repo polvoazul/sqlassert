@@ -202,17 +202,90 @@ class IrParser:
 
         if isinstance(source, exp.Table) and _qualified_name(source).lower() not in self._local_names:
             return self._scan(source, origin_id)
+        if isinstance(source, exp.Subquery):
+            derived = self._lower_derived_table(source, origin_id)
+            if derived is not None:
+                return derived
         return self._opaque_relation(source, origin_id)
 
-    def _scan(self, table: exp.Table, origin_id: str) -> ir.Scan:
+    def _scan(self, table: exp.Table, origin_id: str, alias_override: str | None = None) -> ir.Scan:
         definition = self._register_definition(_qualified_name(table), self.origins.resolve(origin_id))
+        alias = alias_override if alias_override is not None else (table.alias or None)
         instance = ir.RelationInstance(
-            id=self.names.new(naming.INSTANCE, table.alias or table.name),
+            id=self.names.new(naming.INSTANCE, alias or table.name),
             definition_id=definition.id,
-            alias=table.alias or None,
+            alias=alias,
             origin_id=origin_id,
         )
         return ir.Scan(self.names.new(naming.PLAN, f"scan {table.name}"), instance)
+
+    def _lower_derived_table(self, subquery: exp.Subquery, origin_id: str) -> ir.Plan | None:
+        """A FROM subquery of the narrow shape this slice models: one bare
+        table, an optional WHERE, and a plain column list or `*`.
+
+        Anything else -- a join, GROUP BY, DISTINCT, QUALIFY, or a nested WITH
+        inside the subquery, or a missing outer alias -- returns None so the
+        caller falls back to an OpaqueRelation, exactly like every other
+        unsupported construct in this module.
+        """
+        alias = subquery.alias_or_name
+        inner = subquery.this
+        if not alias or not isinstance(inner, exp.Select):
+            return None
+        if any(inner.args.get(key) for key in ("with", "joins", "group", "distinct", "qualify")):
+            return None
+
+        table = _from_source(inner)
+        if not isinstance(table, exp.Table) or _qualified_name(table).lower() in self._local_names:
+            return None
+
+        items = inner.expressions
+        star_only = len(items) == 1 and isinstance(items[0], exp.Star)
+        has_where = inner.args.get("where") is not None
+        table_origin_id = self._origin_id(table)
+
+        if star_only and not has_where:
+            return self._scan(table, table_origin_id, alias_override=alias)
+
+        plan: ir.Plan = self._scan(table, table_origin_id)
+        if has_where:
+            plan = self._filter(plan, alias if star_only else None, origin_id)
+        if not star_only:
+            plan = self._project(plan, items, alias, origin_id)
+        return plan
+
+    def _filter(self, input_plan: ir.Plan, alias: str | None, origin_id: str) -> ir.Filter:
+        (input_instance,) = ir.instances(input_plan)
+        instance = ir.RelationInstance(
+            id=self.names.new(naming.INSTANCE, alias or "filter"),
+            definition_id=input_instance.definition_id,
+            alias=alias,
+            origin_id=origin_id,
+        )
+        return ir.Filter(self.names.new(naming.PLAN, "filter"), input_plan, instance, origin_id)
+
+    def _project(self, input_plan: ir.Plan, items: list[exp.Expression], alias: str, origin_id: str) -> ir.Project:
+        scope = ir.instances(input_plan)
+        definition = ir.RelationDefinition(
+            id=self.names.new(naming.RELATION, alias),
+            name="",
+            origin_id=origin_id,
+        )
+        self._anonymous.append(definition)
+        instance = ir.RelationInstance(
+            id=self.names.new(naming.INSTANCE, alias),
+            definition_id=definition.id,
+            alias=alias,
+            origin_id=origin_id,
+        )
+        outputs = tuple(
+            ir.ProjectedColumn(
+                name=item.alias_or_name,
+                expression=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, scope),
+            )
+            for item in items
+        )
+        return ir.Project(self.names.new(naming.PLAN, "project"), input_plan, instance, outputs, origin_id)
 
     def _opaque_relation(self, source: exp.Expression, origin_id: str) -> ir.OpaqueRelation:
         """A subplan this slice does not model: a CTE, a FROM subquery, a set operation.

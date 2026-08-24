@@ -112,7 +112,43 @@ class Join:
     origin_id: str = ""
 
 
-Plan = Scan | OpaqueRelation | Join
+@dataclass(frozen=True)
+class Filter:
+    """Restricts its input's rows without renaming or dropping any column.
+
+    Its own Relation Instance shares the input's `definition_id`: a filter
+    can only remove rows, so every Unique Set the input relation already has
+    still holds, and no new Relation Definition is needed to say so.
+    """
+
+    id: str
+    input: "Plan"
+    instance: RelationInstance
+    origin_id: str
+
+
+@dataclass(frozen=True)
+class ProjectedColumn:
+    name: str
+    expression: Expression
+
+
+@dataclass(frozen=True)
+class Project:
+    """Renames, drops, or computes columns of its input.
+
+    Unlike Filter, this can change what a Unique Set means, so it owns a
+    fresh, anonymous Relation Definition rather than reusing the input's.
+    """
+
+    id: str
+    input: "Plan"
+    instance: RelationInstance
+    outputs: tuple[ProjectedColumn, ...]
+    origin_id: str
+
+
+Plan = Scan | OpaqueRelation | Join | Filter | Project
 
 
 @dataclass(frozen=True)
@@ -132,15 +168,52 @@ class Program:
 
 
 def instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
-    """Every Relation Instance reachable from a plan, in source order."""
+    """Every Relation Instance immediately visible from a plan, in source order.
+
+    Filter and Project are leaves here, like Scan and OpaqueRelation: a
+    derived table exposes only its own outer instance, keeping whatever it
+    wraps out of the enclosing query's column scope.
+    """
     if plan is None:
         return ()
-    if isinstance(plan, (Scan, OpaqueRelation)):
+    if isinstance(plan, (Scan, OpaqueRelation, Filter, Project)):
         return (plan.instance,)
     return instances(plan.left) + instances(plan.right)
 
 
+def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
+    """Every Relation Instance anywhere in a plan, including inside Filter and
+    Project, whose own inputs are otherwise invisible to `instances`.
+
+    Used only for fact generation: every instance needs its `instance_of`
+    fact, even one that no outer scope can resolve a column against.
+    """
+    if plan is None:
+        return ()
+    if isinstance(plan, (Scan, OpaqueRelation)):
+        return (plan.instance,)
+    if isinstance(plan, (Filter, Project)):
+        return (plan.instance,) + all_instances(plan.input)
+    return all_instances(plan.left) + all_instances(plan.right)
+
+
 def joins(plan: Plan | None) -> tuple[Join, ...]:
-    if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
+    """Every Join reachable from a plan.
+
+    Filter and Project are leaves: this ticket's derived tables never wrap a
+    Join, so nothing here needs to look inside `.input`.
+    """
+    if plan is None or isinstance(plan, (Scan, OpaqueRelation, Filter, Project)):
         return ()
     return joins(plan.left) + joins(plan.right) + (plan,)
+
+
+def projects(plan: Plan | None) -> tuple[Project, ...]:
+    """Every Project reachable from a plan, including inside Filter/Project chains."""
+    if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
+        return ()
+    if isinstance(plan, Filter):
+        return projects(plan.input)
+    if isinstance(plan, Project):
+        return projects(plan.input) + (plan,)
+    return projects(plan.left) + projects(plan.right)

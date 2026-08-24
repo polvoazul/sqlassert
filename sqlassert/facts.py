@@ -35,8 +35,17 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
                 for position, column in enumerate(unique_set.columns)
             )
 
-    for instance in ir.instances(program.root):
+    for instance in ir.all_instances(program.root):
         lines.append(f"instance_of({instance.id}, {instance.definition_id}).")
+
+    for project in ir.projects(program.root):
+        (input_instance,) = ir.instances(project.input)
+        lines.append(f"project_input({project.instance.definition_id}, {input_instance.id}).")
+        for output in project.outputs:
+            lines.extend(_expression_facts(output.expression))
+            lines.append(
+                f"project_output({project.instance.definition_id}, {_text(output.name)}, {output.expression.id})."
+            )
 
     for join in ir.joins(program.root):
         lines.append(f"join_kind({join.id}, {join.kind}).")
