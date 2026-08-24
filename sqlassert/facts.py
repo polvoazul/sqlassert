@@ -1,4 +1,4 @@
-"""Turn the bound IR and Knowledge into ground ASP facts.
+"""Turn the IR and Knowledge into ground ASP facts.
 
 This module is where the two separately represented inputs — query structure and
 what is known about relations — finally meet. It states facts only; every
@@ -7,23 +7,13 @@ inference lives in the rule files.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-
 from sqlassert import ir, naming
 from sqlassert.knowledge import Knowledge
-from sqlassert.naming import ConstantNames
+from sqlassert.naming import NameGiver
 
 
-@dataclass(frozen=True)
-class GroundFacts:
-    text: str
-    key_columns: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-
-
-def ground_facts(program: ir.BoundProgram, knowledge: Knowledge, names: ConstantNames) -> GroundFacts:
+def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) -> str:
     lines: list[str] = []
-    key_columns: dict[str, tuple[str, ...]] = {}
 
     for definition in program.definitions:
         lines.append(f"relation({definition.id}).")
@@ -32,9 +22,13 @@ def ground_facts(program: ir.BoundProgram, knowledge: Knowledge, names: Constant
             continue
         for unique_set in known.unique_sets:
             key = names.new(naming.KEY, "_".join(unique_set.columns))
-            key_columns[key] = unique_set.columns
             lines.append(f"unique_set({key}, {definition.id}).")
-            lines.extend(f"unique_set_member({key}, {_text(column)})." for column in unique_set.columns)
+            # Members carry their position so evidence read back from the model
+            # keeps the order the Unique Set was declared in.
+            lines.extend(
+                f"unique_set_member({key}, {position}, {_text(column)})."
+                for position, column in enumerate(unique_set.columns)
+            )
 
     for instance in ir.instances(program.root):
         lines.append(f"instance_of({instance.id}, {instance.definition_id}).")
@@ -50,7 +44,7 @@ def ground_facts(program: ir.BoundProgram, knowledge: Knowledge, names: Constant
 
     lines.extend(f"assertion({assertion.id}, {assertion.join_id})." for assertion in program.assertions)
 
-    return GroundFacts("\n".join(lines), key_columns)
+    return "\n".join(lines)
 
 
 def _expression_facts(expression: ir.Expression) -> list[str]:

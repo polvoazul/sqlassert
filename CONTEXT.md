@@ -28,8 +28,12 @@ _Avoid_: Invalid, false
 Evidence establishing that an assertion is false, rather than merely lacking a proof.
 _Avoid_: Unknown, validation failure
 
+**Diagnostic**:
+An explicit report that part of a SQL program could not be analyzed, such as an unsupported statement, a duplicate declaration, or an assertion the analysis never reached. A diagnostic describes a limit of the analysis rather than a property of the query, and is never a Disproof.
+_Avoid_: Error, warning, validation failure, unknown
+
 **Grouping Key**:
-A bound scalar expression whose value identifies a group produced by aggregation. The complete set of grouping keys uniquely identifies rows produced by an ordinary aggregation.
+A scalar expression whose value identifies a group produced by aggregation. The complete set of grouping keys uniquely identifies rows produced by an ordinary aggregation.
 _Avoid_: Aggregate predicate
 
 **Aggregate Expression**:

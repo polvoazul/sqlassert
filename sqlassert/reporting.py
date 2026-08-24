@@ -7,7 +7,7 @@ model is alive. It never stores the model itself, and it never prints.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -19,6 +19,7 @@ from sqlassert.provenance import Origin, OriginRegistry
 
 _PROVED = "proved"
 _PROOF_KEY = "proof_key"
+_UNIQUE_SET_MEMBER = "unique_set_member"
 
 
 class Outcome(Enum):
@@ -51,15 +52,9 @@ class Report:
 
 
 class Reporter:
-    def __init__(
-        self,
-        assertions: Sequence[ir.UniqueJoinAssertion],
-        origins: OriginRegistry,
-        key_columns: Mapping[str, tuple[str, ...]],
-    ) -> None:
+    def __init__(self, assertions: Sequence[ir.UniqueJoinAssertion], origins: OriginRegistry) -> None:
         self._assertions = tuple(assertions)
         self._origins = origins
-        self._key_columns = key_columns
         self._reports: tuple[AssertionReport, ...] = ()
         self.stable_model_count = 0
 
@@ -70,8 +65,10 @@ class Reporter:
             return
 
         proof_keys = _proof_keys(model)
+        unique_sets = _unique_sets(model)
         self._reports = tuple(
-            self._assertion_report(assertion, model, proof_keys) for assertion in self._assertions
+            self._assertion_report(assertion, model, proof_keys, unique_sets)
+            for assertion in self._assertions
         )
 
     def report(self, diagnostics: Sequence[Diagnostic] = ()) -> Report:
@@ -81,7 +78,8 @@ class Reporter:
         self,
         assertion: ir.UniqueJoinAssertion,
         model: clingo.Model,
-        proof_keys: Mapping[str, tuple[str, ...]],
+        proof_keys: dict[str, tuple[str, ...]],
+        unique_sets: dict[str, tuple[str, ...]],
     ) -> AssertionReport:
         proved = model.contains(clingo.Function(_PROVED, [clingo.Function(assertion.id)]))
         keys = proof_keys.get(assertion.id, ())
@@ -89,7 +87,7 @@ class Reporter:
             assertion_id=assertion.id,
             outcome=Outcome.PROVED if proved else Outcome.UNKNOWN,
             origin=self._origins.resolve(assertion.origin_id),
-            proving_unique_set=self._key_columns.get(keys[0], ()) if proved and keys else (),
+            proving_unique_set=unique_sets.get(keys[0], ()) if proved and keys else (),
         )
 
 
@@ -101,3 +99,13 @@ def _proof_keys(model: clingo.Model) -> dict[str, tuple[str, ...]]:
             assertion, key = (str(argument) for argument in symbol.arguments)
             keys.setdefault(assertion, []).append(key)
     return {assertion: tuple(sorted(found)) for assertion, found in keys.items()}
+
+
+def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:
+    """The columns of every Unique Set, in declared order, read from the model."""
+    members: dict[str, list[tuple[int, str]]] = {}
+    for symbol in model.symbols(atoms=True):
+        if symbol.name == _UNIQUE_SET_MEMBER and len(symbol.arguments) == 3:
+            key, position, column = symbol.arguments
+            members.setdefault(str(key), []).append((position.number, column.string))
+    return {key: tuple(column for _, column in sorted(found)) for key, found in members.items()}

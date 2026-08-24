@@ -15,7 +15,7 @@ import pytest
 PACKAGE = Path(__file__).parents[1] / "sqlassert"
 
 FORBIDDEN_IMPORTS = {
-    # The bound IR and its inputs are plain immutable values.
+    # The IR and its inputs are plain immutable values.
     "ir/model.py": ("sqlglot", "clingo"),
     "knowledge.py": ("sqlglot", "clingo"),
     "provenance.py": ("sqlglot", "clingo"),

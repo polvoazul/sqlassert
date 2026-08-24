@@ -1,4 +1,4 @@
-"""Convert a parsed SQL Program into the bound relational IR and the Knowledge
+"""Convert a parsed SQL Program into the relational IR and the Knowledge
 its Create Statements declare.
 
 This is the only module that reads SQLGlot nodes and writes IR values, so it is
@@ -17,27 +17,33 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir, naming
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.knowledge import ColumnKnowledge, Knowledge, RelationKnowledge, UniqueSetKnowledge
-from sqlassert.naming import ConstantNames
+from sqlassert.naming import NameGiver
 from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin
 from sqlassert.provenance import SQL, Origin, OriginRegistry
 
 
 @dataclass(frozen=True)
-class BoundAnalysis:
-    program: ir.BoundProgram
+class Conversion:
+    """What one conversion produced: the IR, the Knowledge it declared, and
+    everything about the program it could not model."""
+
+    program: ir.Program
     knowledge: Knowledge
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
-def bind(parsed: ParsedProgram, names: ConstantNames, origins: OriginRegistry, dialect: str) -> BoundAnalysis:
-    return _Binder(names, origins, dialect).bind(parsed)
-
-
 @dataclass
-class _Binder:
-    names: ConstantNames
-    origins: OriginRegistry
+class IrParser:
+    """Lowers one parsed SQL Program to the IR.
+
+    It creates the NameGiver and OriginRegistry the analysis runs on, and later
+    stages take them from here. It accumulates the declarations, instances, and
+    assertions of one program, so an instance analyses exactly one program.
+    """
+
     dialect: str
+    names: NameGiver = field(default_factory=NameGiver)
+    origins: OriginRegistry = field(default_factory=OriginRegistry)
     _definitions: dict[str, ir.RelationDefinition] = field(default_factory=dict)
     _anonymous: list[ir.RelationDefinition] = field(default_factory=list)
     _declared: list[RelationKnowledge] = field(default_factory=list)
@@ -45,18 +51,18 @@ class _Binder:
     _assertions: list[ir.UniqueJoinAssertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
 
-    def bind(self, parsed: ParsedProgram) -> BoundAnalysis:
-        for statement in parsed.create_statements:
+    def parse(self, ast: ParsedProgram) -> Conversion:
+        for statement in ast.create_statements:
             self._declare(statement)
 
-        root = self._lower_query(parsed.root_select) if parsed.root_select is not None else None
-        self._report_unanalyzed(parsed)
+        root = self._lower_query(ast.root_select) if ast.root_select is not None else None
+        self._report_unanalyzed(ast)
 
         definitions = tuple(self._definitions.values()) + tuple(self._anonymous)
-        program = ir.BoundProgram(definitions, root, tuple(self._assertions))
-        return BoundAnalysis(program, Knowledge(tuple(self._declared)), tuple(self._diagnostics))
+        program = ir.Program(definitions, root, tuple(self._assertions))
+        return Conversion(program, Knowledge(tuple(self._declared)), tuple(self._diagnostics))
 
-    def _report_unanalyzed(self, parsed: ParsedProgram) -> None:
+    def _report_unanalyzed(self, ast: ParsedProgram) -> None:
         """Report every asserted join this slice never reached.
 
         An assertion the engine silently ignored would read as a proof, so an
@@ -65,7 +71,7 @@ class _Binder:
         """
         analyzed = {self.origins.resolve(assertion.origin_id).line for assertion in self._assertions}
 
-        for join in _asserted_joins(parsed):
+        for join in _asserted_joins(ast):
             line = assertion_line(join)
             if line in analyzed:
                 continue
@@ -202,7 +208,7 @@ class _Binder:
         right = self._lower_source(join.this)
         scope = ir.instances(left) + ir.instances(right)
 
-        bound = ir.Join(
+        lowered = ir.Join(
             id=self.names.new(naming.JOIN, _join_hint(join)),
             kind=_join_kind(join),
             left=left,
@@ -215,11 +221,11 @@ class _Binder:
             self._assertions.append(
                 ir.UniqueJoinAssertion(
                     id=self.names.new(naming.ASSERTION, _join_hint(join)),
-                    join_id=bound.id,
+                    join_id=lowered.id,
                     origin_id=self.origins.register(join_origin(join, self.dialect)),
                 )
             )
-        return bound
+        return lowered
 
     def _lower_predicate(
         self,
@@ -290,8 +296,8 @@ class _Binder:
         return self.origins.register(Origin(SQL, node.sql(dialect=self.dialect), line))
 
 
-def _asserted_joins(parsed: ParsedProgram) -> list[exp.Join]:
-    statements = (*parsed.create_statements, parsed.root_select)
+def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
+    statements = (*ast.create_statements, ast.root_select)
     return [
         join
         for statement in statements

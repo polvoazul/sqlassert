@@ -1,20 +1,17 @@
 """The public analysis seam.
 
-`analyze` composes the whole pipeline — parse, bind, ground, solve, report — and
-returns a durable Report without printing. It is the only behavioural seam the
-tests use, so parser, IR, facts, and rules can all change beneath it.
+`analyze` composes the whole pipeline — parse, convert, ground, solve, report —
+and returns a durable Report without printing. It is the only behavioural seam
+the tests use, so parser, IR, facts, and rules can all change beneath it.
 """
 
 from __future__ import annotations
 
-from sqlassert import engine
-from sqlassert.facts import ground_facts
-from sqlassert.ir.convert import bind
+from sqlassert.engine import Engine
+from sqlassert.ir.convert import IrParser
 from sqlassert.knowledge import Knowledge
-from sqlassert.naming import ConstantNames
-from sqlassert.sql_parse import parse_program
-from sqlassert.provenance import OriginRegistry
 from sqlassert.reporting import Report, Reporter
+from sqlassert.sql_parse import SqlParser
 
 DEFAULT_DIALECT = "duckdb"
 
@@ -25,13 +22,14 @@ def analyze(sql: str, *, knowledge: Knowledge | None = None, dialect: str = DEFA
     `knowledge` supplies facts about relations the program does not declare;
     omitting it behaves as empty Knowledge.
     """
-    names = ConstantNames()
-    origins = OriginRegistry()
+    sql_parser = SqlParser(dialect)
+    ir_parser = IrParser(dialect)
 
-    parsed = parse_program(sql, dialect)
-    bound = bind(parsed, names, origins, dialect)
-    facts = ground_facts(bound.program, bound.knowledge.merge(knowledge), names)
+    ast = sql_parser.parse(sql)
+    ir = ir_parser.parse(ast)
 
-    reporter = Reporter(bound.program.assertions, origins, facts.key_columns)
-    engine.run(facts, reporter)
-    return reporter.report(parsed.diagnostics + bound.diagnostics)
+    reporter = Reporter(ir.program.assertions, ir_parser.origins)
+    engine = Engine(reporter, ir_parser.names)
+
+    engine.run(ir.program, ir.knowledge.merge(knowledge))
+    return reporter.report(ast.diagnostics + ir.diagnostics)

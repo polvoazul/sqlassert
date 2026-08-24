@@ -1,9 +1,9 @@
 from sqlassert import naming
-from sqlassert.naming import ConstantNames
+from sqlassert.naming import NameGiver
 
 
 def test_generated_identifiers_use_short_prefixes_and_one_shared_sequence():
-    names = ConstantNames()
+    names = NameGiver()
 
     assert names.new(naming.RELATION, "users") == "rel_users_1"
     assert names.new(naming.INSTANCE, "customer") == "rel_customer_2"
