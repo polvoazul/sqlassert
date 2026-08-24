@@ -12,6 +12,11 @@
 % Deterministic and stratified by policy: facts and normal derivation only, one
 % level of default negation over facts already derived from base facts alone.
 % See docs/clingo-rule-policy.md.
+%
+% Variable naming used in this file: D = a Project's own Relation Definition
+% id, I = Relation Instance id, R = Relation Definition id, C = an input-side
+% column name, Out = the corresponding output column name, E = expression id,
+% K = a source Unique Set key, PK = the Unique Set key propagation derives.
 
 #defined project_input/2.
 #defined project_output/3.
