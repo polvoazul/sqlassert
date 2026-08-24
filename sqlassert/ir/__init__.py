@@ -1,11 +1,14 @@
 """Relational intermediate representation."""
 
 from sqlassert.ir.model import (
+    Aggregate,
     ColumnReference,
     Constant,
+    Distinct,
     Equality,
     Expression,
     Filter,
+    GroupingKey,
     INNER,
     Join,
     OpaqueExpression,
@@ -18,18 +21,23 @@ from sqlassert.ir.model import (
     RelationInstance,
     Scan,
     UniqueJoinAssertion,
+    aggregates,
     all_instances,
+    distincts,
     instances,
     joins,
     projects,
 )
 
 __all__ = [
+    "Aggregate",
     "ColumnReference",
     "Constant",
+    "Distinct",
     "Equality",
     "Expression",
     "Filter",
+    "GroupingKey",
     "INNER",
     "Join",
     "OpaqueExpression",
@@ -42,7 +50,9 @@ __all__ = [
     "RelationInstance",
     "Scan",
     "UniqueJoinAssertion",
+    "aggregates",
     "all_instances",
+    "distincts",
     "instances",
     "joins",
     "projects",

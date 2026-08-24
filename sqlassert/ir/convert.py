@@ -387,14 +387,19 @@ class IrParser:
         another CTE, or one wrapping a FROM subquery, keeps working several
         layers deep.
 
-        Anything else -- a JOIN, GROUP BY, DISTINCT, QUALIFY, or a nested WITH
-        inside this body -- returns None so the caller falls back to an
-        OpaqueRelation, exactly like every other unsupported construct in
-        this module. In particular, a JOIN inside a CTE or FROM-subquery body
-        stays unsupported: its own asserted joins, if any, are reported by
-        `_report_unanalyzed` rather than silently dropped.
+        Anything else -- a JOIN, QUALIFY, or a nested WITH inside this body --
+        returns None so the caller falls back to an OpaqueRelation, exactly
+        like every other unsupported construct in this module. In particular,
+        a JOIN inside a CTE or FROM-subquery body stays unsupported: its own
+        asserted joins, if any, are reported by `_report_unanalyzed` rather
+        than silently dropped.
+
+        A GROUP BY or DISTINCT body is delegated to `_lower_aggregate` or
+        `_lower_distinct` instead of the plain Filter/Project path below,
+        since either earns its own Unique Set from grouping or distinctness
+        rather than propagating one from its input.
         """
-        if any(select.args.get(key) for key in ("with", "joins", "group", "distinct", "qualify")):
+        if any(select.args.get(key) for key in ("with", "joins", "qualify")):
             return None
 
         source = _from_source(select)
@@ -402,6 +407,12 @@ class IrParser:
             return None
 
         inner_plan = self._lower_source(source)
+
+        group = select.args.get("group")
+        if group is not None:
+            return self._lower_aggregate(inner_plan, select, group, alias, origin_id)
+        if select.args.get("distinct") is not None:
+            return self._lower_distinct(inner_plan, select, alias, origin_id)
 
         items = select.expressions
         star_only = len(items) == 1 and isinstance(items[0], exp.Star)
@@ -413,6 +424,64 @@ class IrParser:
         if not star_only:
             plan = self._project(plan, items, alias, origin_id)
         return plan
+
+    def _lower_aggregate(
+        self, input_plan: ir.Plan, select: exp.Select, group: exp.Group, alias: str, origin_id: str
+    ) -> ir.Plan | None:
+        """An ordinary `GROUP BY`: unique by its complete set of Grouping Keys.
+
+        Each Grouping Key must appear, unrenamed-computation, among the
+        selected outputs -- otherwise there is no output column an outer
+        query could join against to exercise it, so the whole aggregate is
+        left unsupported rather than earning a Unique Set no join could ever
+        fully cover. GROUPING SETS, ROLLUP, CUBE, and HAVING are unsupported
+        for the same conservative reason: each changes which rows come out in
+        ways this slice does not model.
+        """
+        if select.args.get("having") is not None:
+            return None
+        if any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
+            return None
+
+        if select.args.get("where") is not None:
+            input_plan = self._filter(input_plan, None, origin_id)
+
+        grouping_keys: list[ir.GroupingKey] = []
+        for group_expr in group.expressions:
+            output = _matching_output(group_expr, select.expressions)
+            if output is None:
+                return None
+            grouping_keys.append(ir.GroupingKey(output.alias_or_name))
+
+        instance = self._anonymous_instance(alias, origin_id)
+        return ir.Aggregate(self.names.new(naming.PLAN, "aggregate"), input_plan, instance, tuple(grouping_keys), origin_id)
+
+    def _lower_distinct(
+        self, input_plan: ir.Plan, select: exp.Select, alias: str, origin_id: str
+    ) -> ir.Plan | None:
+        """`SELECT DISTINCT`: unique by its complete set of output expressions.
+
+        `DISTINCT ON` and `SELECT DISTINCT *` are unsupported: the former
+        keeps only one row per its own key rather than the whole output, and
+        the latter has no concrete output list this slice can name a Unique
+        Set's members from.
+        """
+        if select.args.get("distinct").args.get("on") is not None:
+            return None
+        if select.args.get("having") is not None:
+            return None
+
+        items = select.expressions
+        if len(items) == 1 and isinstance(items[0], exp.Star):
+            return None
+
+        if select.args.get("where") is not None:
+            input_plan = self._filter(input_plan, None, origin_id)
+
+        scope = ir.instances(input_plan)
+        instance = self._anonymous_instance(alias, origin_id)
+        outputs = self._projected_columns(items, scope)
+        return ir.Distinct(self.names.new(naming.PLAN, "distinct"), input_plan, instance, outputs, origin_id)
 
     def _filter(self, input_plan: ir.Plan, alias: str | None, origin_id: str) -> ir.Filter:
         (input_instance,) = ir.instances(input_plan)
@@ -426,26 +495,39 @@ class IrParser:
 
     def _project(self, input_plan: ir.Plan, items: list[exp.Expression], alias: str, origin_id: str) -> ir.Project:
         scope = ir.instances(input_plan)
+        instance = self._anonymous_instance(alias, origin_id)
+        outputs = self._projected_columns(items, scope)
+        return ir.Project(self.names.new(naming.PLAN, "project"), input_plan, instance, outputs, origin_id)
+
+    def _anonymous_instance(self, alias: str, origin_id: str) -> ir.RelationInstance:
+        """A fresh Relation Instance backed by a nameless Relation Definition,
+        for a derived table -- Project, Aggregate, or Distinct -- that changes
+        what a Unique Set means and so cannot reuse its input's identity the
+        way Filter does.
+        """
         definition = ir.RelationDefinition(
             id=self.names.new(naming.RELATION, alias),
             name="",
             origin_id=origin_id,
         )
         self._anonymous.append(definition)
-        instance = ir.RelationInstance(
+        return ir.RelationInstance(
             id=self.names.new(naming.INSTANCE, alias),
             definition_id=definition.id,
             alias=alias,
             origin_id=origin_id,
         )
-        outputs = tuple(
+
+    def _projected_columns(
+        self, items: list[exp.Expression], scope: tuple[ir.RelationInstance, ...]
+    ) -> tuple[ir.ProjectedColumn, ...]:
+        return tuple(
             ir.ProjectedColumn(
                 name=item.alias_or_name,
                 expression=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, scope),
             )
             for item in items
         )
-        return ir.Project(self.names.new(naming.PLAN, "project"), input_plan, instance, outputs, origin_id)
 
     def _opaque_relation(self, source: exp.Expression, origin_id: str) -> ir.OpaqueRelation:
         """A subplan this slice does not model: a CTE, a FROM subquery, a set operation.
@@ -635,6 +717,19 @@ def _arg(node: exp.Expression, name: str) -> exp.Expression | None:
 def _from_source(select: exp.Query) -> exp.Expression | None:
     source = _arg(select, "from")
     return source.this if isinstance(source, exp.From) else None
+
+
+def _matching_output(group_expr: exp.Expression, items: list[exp.Expression]) -> exp.Expression | None:
+    """The selected output item computing `group_expr` unrenamed, if any.
+
+    A Grouping Key with no matching output has no column an outer query could
+    join against, so this signals the caller to leave the aggregate
+    unsupported instead.
+    """
+    return next(
+        (item for item in items if (item.this if isinstance(item, exp.Alias) else item) == group_expr),
+        None,
+    )
 
 
 def _join_kind(join: exp.Join) -> str:
