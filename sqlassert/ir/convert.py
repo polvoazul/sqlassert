@@ -75,6 +75,40 @@ class CteScope:
 
 
 @dataclass
+class ViewScope:
+    """The Create View bodies declared anywhere in the program.
+
+    Unlike a CTE, a view is visible to every scope regardless of declaration
+    order, so bodies are recorded once during the declaration pass rather than
+    per-query. `resolving` marks a view as on the current lowering path: a
+    reference encountered while its own body is still being lowered is a
+    cycle, not a valid forward reference, and must be reported rather than
+    recursed into.
+    """
+
+    _bodies: dict[str, exp.Select] = field(default_factory=dict)
+    _resolving: set[str] = field(default_factory=set)
+
+    def declare(self, name: str, body: exp.Expression) -> None:
+        if isinstance(body, exp.Select):
+            self._bodies[name] = body
+
+    def body(self, name: str) -> exp.Select | None:
+        return self._bodies.get(name)
+
+    def is_resolving(self, name: str) -> bool:
+        return name in self._resolving
+
+    @contextmanager
+    def resolving(self, name: str) -> Iterator[None]:
+        self._resolving.add(name)
+        try:
+            yield
+        finally:
+            self._resolving.discard(name)
+
+
+@dataclass
 class IrParser:
     """Lowers one parsed SQL Program to the IR.
 
@@ -90,6 +124,7 @@ class IrParser:
     _anonymous: list[ir.RelationDefinition] = field(default_factory=list)
     _declared: list[RelationKnowledge] = field(default_factory=list)
     _ctes: CteScope = field(default_factory=CteScope)
+    _views: ViewScope = field(default_factory=ViewScope)
     _assertions: list[ir.UniqueJoinAssertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
 
@@ -138,6 +173,7 @@ class IrParser:
 
         self._register_definition(name, origin)
         self._register_table_knowledge(name, statement)
+        self._register_view_body(name, statement)
 
     def _extract_table_name(self, statement: exp.Create) -> str | None:
         table = _created_table(statement)
@@ -164,6 +200,13 @@ class IrParser:
         # UNKNOWN rather than being approximated.
         if (statement.kind or "").upper() == "TABLE":
             self._declared.append(self._table_knowledge(name, statement))
+
+    def _register_view_body(self, name: str, statement: exp.Create) -> None:
+        if (statement.kind or "").upper() != "VIEW":
+            return
+        body = statement.args.get("expression")
+        if body is not None:
+            self._views.declare(name.lower(), body)
 
     def _table_knowledge(self, name: str, statement: exp.Create) -> RelationKnowledge:
         columns: list[ColumnKnowledge] = []
@@ -247,14 +290,65 @@ class IrParser:
     def _lower_nested_source(self, source: exp.Expression, origin_id: str) -> ir.Plan | None:
         if isinstance(source, exp.Table):
             name = _qualified_name(source).lower()
-            if not self._ctes.shadows(name):
-                return self._scan(source, origin_id)
-            return self._lower_cte_reference(source, name, origin_id)
+            if self._ctes.shadows(name):
+                return self._lower_cte_reference(source, name, origin_id)
+            return self._lower_table_reference(source, name, origin_id)
         if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select):
             alias = source.alias_or_name
             if alias:
                 return self._lower_nested_select(source.this, alias, origin_id)
         return None
+
+    def _lower_table_reference(self, table: exp.Table, name: str, origin_id: str) -> ir.Plan:
+        """A bare table, or one reference to a Create View, lowered fresh.
+
+        A view's body lowers through the same recursive path a CTE or FROM
+        subquery uses, so a view over a table, another view, or a nested
+        subquery all resolve the same way regardless of how deep the nesting
+        goes -- and each reference re-lowers the body independently, so two
+        uses of the same view get separate Relation Instances exactly like two
+        aliases of a table (`_scan` does the same). A name with no known view
+        body -- because it is a plain table, or its body could not be
+        recorded -- falls back to a Scan, as does a body this slice cannot
+        lower (a JOIN, GROUP BY, DISTINCT, or QUALIFY inside it) and a
+        reference caught mid-cycle: in every case the relation still exists,
+        it just has no Knowledge to prove a join from.
+        """
+        body = self._views.body(name)
+        if body is None:
+            return self._scan(table, origin_id)
+
+        if self._views.is_resolving(name):
+            self._report_cycle(table, name)
+            return self._scan(table, origin_id)
+
+        alias = table.alias or table.name
+        with self._views.resolving(name):
+            plan = self._lower_nested_select(body, alias, origin_id)
+
+        if plan is None:
+            return self._scan(table, origin_id)
+        return self._rebind_definition(plan, self._definitions[name].id)
+
+    def _report_cycle(self, table: exp.Table, name: str) -> None:
+        self._diagnostics.append(
+            Diagnostic(
+                diag.RECURSIVE_VIEW_DEFINITION,
+                f"view {name} is defined recursively, which is not supported",
+                Origin(SQL, table.sql(dialect=self.dialect)),
+            )
+        )
+
+    def _rebind_definition(self, plan: ir.Plan, definition_id: str) -> ir.Plan:
+        """The same Plan, with its outer Relation Instance's identity bound to
+        `definition_id` instead of the anonymous one `_filter`/`_project` gave it.
+
+        A view's own Relation Definition is registered up front, in the
+        declaration pass, so an expansion of its body should carry that real
+        identity rather than an anonymous placeholder -- the same distinction
+        `_scan` preserves for a plain table.
+        """
+        return replace(plan, instance=replace(plan.instance, definition_id=definition_id))
 
     def _lower_cte_reference(self, table: exp.Table, name: str, origin_id: str) -> ir.Plan | None:
         """One reference to a CTE, lowered fresh from its body.

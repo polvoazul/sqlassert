@@ -12,6 +12,7 @@ from sqlassert.provenance import Origin
 
 DUPLICATE_DECLARATION = "duplicate-declaration"
 MULTIPLE_ROOT_SELECTS = "multiple-root-selects"
+RECURSIVE_VIEW_DEFINITION = "recursive-view-definition"
 SQL_PARSE_FAILED = "sql-parse-failed"
 UNANALYZED_ASSERTION = "unanalyzed-assertion"
 UNATTACHED_MARKER = "unattached-marker"
