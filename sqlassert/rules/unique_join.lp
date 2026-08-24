@@ -14,6 +14,11 @@
 %
 % Deterministic and stratified by policy: facts, normal derivation, stratified
 % default negation, and deterministic aggregates. See docs/clingo-rule-policy.md.
+%
+% Variable naming used in this file: J = join id, K = Unique Set key,
+% I = Relation Instance id, R = Relation Definition id, C = column name,
+% E = expression id, A = assertion id, N/M = counts. Side/Other/Kind spell
+% themselves out because there's no established one-letter form for them.
 
 % The fact interface the property engine grounds against. Declared so that a
 % program legitimately lacking any of these facts is not an undefined-atom
