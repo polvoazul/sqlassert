@@ -13,7 +13,7 @@ assemble without a first.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 import clingo
@@ -26,6 +26,7 @@ from sqlassert.provenance import Origin, OriginRegistry
 _PROVED = "proved"
 _PROOF_KEY = "proof_key"
 _PROVED_BY_CANDIDATE_KEY = "proved_by_candidate_key"
+_UNIQUE_SET = "unique_set"
 _UNIQUE_SET_MEMBER = "unique_set_member"
 _ASSERTION_MISSING_MEMBER = "assertion_missing_member"
 
@@ -48,9 +49,36 @@ class AssertionReport:
 
 
 @dataclass(frozen=True)
+class RelationFacts:
+    """What was proved about every named relation -- a table or a view -- in
+    one analysis, queryable by name.
+
+    An unnamed relation (a CTE, a derived subquery, an Aggregate or Distinct
+    result) has no caller-visible name to ask about and is never included:
+    ask about the assertion it feeds into instead.
+
+    Holds only Unique Sets for now; further properties join it as typed
+    methods, the same way, rather than as a generic ask-anything query.
+    """
+
+    _unique_sets: dict[str, tuple[tuple[str, ...], ...]] = field(default_factory=dict)
+
+    def unique_sets(self, relation: str) -> tuple[tuple[str, ...], ...]:
+        """Every Unique Set proved for `relation`, each as its ordered columns."""
+        return self._unique_sets.get(relation.lower(), ())
+
+    def is_unique(self, relation: str, columns: Sequence[str]) -> bool:
+        """Whether `columns` is guaranteed unique on `relation`: some proved
+        Unique Set's members are all among `columns`."""
+        candidate = {column.lower() for column in columns}
+        return any(set(unique_set) <= candidate for unique_set in self.unique_sets(relation))
+
+
+@dataclass(frozen=True)
 class Report:
     assertions: tuple[AssertionReport, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
+    facts: RelationFacts = field(default_factory=RelationFacts)
     stable_model_count: int = 0
 
     @property
@@ -70,6 +98,7 @@ class Reporter:
         self._proof_keys: dict[str, tuple[str, ...]] = {}
         self._candidate_key_proofs: frozenset[str] = frozenset()
         self._unique_sets: dict[str, tuple[str, ...]] = {}
+        self._unique_set_relations: dict[str, str] = {}
         self._missing_members: dict[str, dict[str, frozenset[str]]] = {}
         self.stable_model_count = 0
 
@@ -84,12 +113,14 @@ class Reporter:
         self._proof_keys = _proof_keys(model)
         self._candidate_key_proofs = _candidate_key_proofs(model)
         self._unique_sets = _unique_sets(model)
+        self._unique_set_relations = _unique_set_relations(model)
         self._missing_members = _missing_members(model)
 
     def report(
         self,
         assertions: Sequence[ir.UniqueJoinAssertion],
         diagnostics: Sequence[Diagnostic] = (),
+        definitions: Sequence[ir.RelationDefinition] = (),
     ) -> Report:
         if not self.stable_model_count:
             raise EnginePolicyError(
@@ -99,8 +130,31 @@ class Reporter:
         return Report(
             tuple(self._assertion_report(assertion) for assertion in assertions),
             tuple(diagnostics),
+            self._relation_facts(definitions),
             self.stable_model_count,
         )
+
+    def _relation_facts(self, definitions: Sequence[ir.RelationDefinition]) -> RelationFacts:
+        """Every proved Unique Set, grouped by the name of the Relation
+        Definition it belongs to -- a table or view's own `name`, or a CTE's
+        `report_name` -- skipping the truly anonymous ones (a bare Project,
+        Aggregate, or Distinct with no declared name of its own to group
+        under)."""
+        names_by_id = {
+            definition.id: definition.name or definition.report_name
+            for definition in definitions
+            if definition.name or definition.report_name
+        }
+
+        by_relation: dict[str, list[tuple[str, ...]]] = {}
+        for key, relation_id in self._unique_set_relations.items():
+            name = names_by_id.get(relation_id)
+            columns = self._unique_sets.get(key)
+            if name is None or columns is None:
+                continue
+            by_relation.setdefault(name.lower(), []).append(columns)
+
+        return RelationFacts({name: tuple(unique_sets) for name, unique_sets in by_relation.items()})
 
     def _assertion_report(self, assertion: ir.UniqueJoinAssertion) -> AssertionReport:
         proved = assertion.id in self._proved
@@ -153,6 +207,15 @@ def _candidate_key_proofs(model: clingo.Model) -> frozenset[str]:
         for symbol in model.symbols(atoms=True)
         if symbol.name == _PROVED_BY_CANDIDATE_KEY and len(symbol.arguments) == 1
     )
+
+
+def _unique_set_relations(model: clingo.Model) -> dict[str, str]:
+    """Which Relation Definition each Unique Set belongs to, read from the model."""
+    return {
+        str(symbol.arguments[0]): str(symbol.arguments[1])
+        for symbol in model.symbols(atoms=True)
+        if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 2
+    }
 
 
 def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:
