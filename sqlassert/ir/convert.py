@@ -402,13 +402,9 @@ class IrParser:
         rather than propagating one from its input.
 
         `report_name` (set only by `_lower_cte_reference`) labels the body's
-        own Relation Definition for `report.facts`, when it earns a fresh one
-        -- Project, Aggregate, and Distinct always do. A star-only or
-        passthrough body ends in a Filter instead, which deliberately shares
-        its *input's* Relation Definition rather than owning one (see
-        `_filter`); relabelling a shared definition could misname whatever
-        real table or view it belongs to, so `report_name` is silently
-        dropped in that case rather than applied.
+        own Relation Definition for `report.facts`. Whichever shape this body
+        takes -- Filter, Project, Aggregate, or Distinct -- it always earns a
+        fresh Relation Definition of its own, so it is always safe to apply.
         """
         if any(select.args.get(key) for key in ("with", "joins", "qualify")):
             return None
@@ -431,7 +427,9 @@ class IrParser:
 
         plan = inner_plan
         if has_where or star_only:
-            plan = self._filter(plan, alias if star_only else None, origin_id)
+            # Only a star-only body ends here: give it `report_name`, since
+            # `_project` below is the final node -- and gets it instead -- otherwise.
+            plan = self._filter(plan, alias if star_only else None, origin_id, report_name if star_only else None)
         if not star_only:
             plan = self._project(plan, items, alias, origin_id, report_name)
         return plan
@@ -505,14 +503,10 @@ class IrParser:
         outputs = self._projected_columns(items, scope)
         return ir.Distinct(self.names.new(naming.PLAN, "distinct"), input_plan, instance, outputs, origin_id)
 
-    def _filter(self, input_plan: ir.Plan, alias: str | None, origin_id: str) -> ir.Filter:
-        (input_instance,) = ir.instances(input_plan)
-        instance = ir.RelationInstance(
-            id=self.names.new(naming.INSTANCE, alias or "filter"),
-            definition_id=input_instance.definition_id,
-            alias=alias,
-            origin_id=origin_id,
-        )
+    def _filter(
+        self, input_plan: ir.Plan, alias: str | None, origin_id: str, report_name: str | None = None
+    ) -> ir.Filter:
+        instance = self._anonymous_instance(alias, origin_id, report_name)
         return ir.Filter(self.names.new(naming.PLAN, "filter"), input_plan, instance, origin_id)
 
     def _project(
@@ -528,11 +522,11 @@ class IrParser:
         outputs = self._projected_columns(items, scope)
         return ir.Project(self.names.new(naming.PLAN, "project"), input_plan, instance, outputs, origin_id)
 
-    def _anonymous_instance(self, alias: str, origin_id: str, report_name: str | None = None) -> ir.RelationInstance:
+    def _anonymous_instance(
+        self, alias: str | None, origin_id: str, report_name: str | None = None
+    ) -> ir.RelationInstance:
         """A fresh Relation Instance backed by a nameless Relation Definition,
-        for a derived table -- Project, Aggregate, or Distinct -- that changes
-        what a Unique Set means and so cannot reuse its input's identity the
-        way Filter does.
+        for any derived table -- Filter, Project, Aggregate, or Distinct.
 
         `report_name` labels that Definition for `report.facts` -- a CTE's
         own declared name, say -- without touching `name`, which stays empty
@@ -540,15 +534,16 @@ class IrParser:
         Safe here specifically because this Definition is minted fresh on
         every call and never shared with anything else.
         """
+        hint = alias or "relation"
         definition = ir.RelationDefinition(
-            id=self.names.new(naming.RELATION, alias),
+            id=self.names.new(naming.RELATION, hint),
             name="",
             origin_id=origin_id,
             report_name=report_name,
         )
         self._anonymous.append(definition)
         return ir.RelationInstance(
-            id=self.names.new(naming.INSTANCE, alias),
+            id=self.names.new(naming.INSTANCE, hint),
             definition_id=definition.id,
             alias=alias,
             origin_id=origin_id,

@@ -98,7 +98,7 @@ class Reporter:
         self._proof_keys: dict[str, tuple[str, ...]] = {}
         self._candidate_key_proofs: frozenset[str] = frozenset()
         self._unique_sets: dict[str, tuple[str, ...]] = {}
-        self._unique_set_relations: dict[str, str] = {}
+        self._unique_set_relations: dict[str, tuple[str, ...]] = {}
         self._missing_members: dict[str, dict[str, frozenset[str]]] = {}
         self.stable_model_count = 0
 
@@ -147,12 +147,15 @@ class Reporter:
         }
 
         by_relation: dict[str, list[tuple[str, ...]]] = {}
-        for key, relation_id in self._unique_set_relations.items():
-            name = names_by_id.get(relation_id)
+        for key, relation_ids in self._unique_set_relations.items():
             columns = self._unique_sets.get(key)
-            if name is None or columns is None:
+            if columns is None:
                 continue
-            by_relation.setdefault(name.lower(), []).append(columns)
+            for relation_id in relation_ids:
+                name = names_by_id.get(relation_id)
+                if name is None:
+                    continue
+                by_relation.setdefault(name.lower(), []).append(columns)
 
         return RelationFacts({name: tuple(unique_sets) for name, unique_sets in by_relation.items()})
 
@@ -209,13 +212,20 @@ def _candidate_key_proofs(model: clingo.Model) -> frozenset[str]:
     )
 
 
-def _unique_set_relations(model: clingo.Model) -> dict[str, str]:
-    """Which Relation Definition each Unique Set belongs to, read from the model."""
-    return {
-        str(symbol.arguments[0]): str(symbol.arguments[1])
-        for symbol in model.symbols(atoms=True)
-        if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 2
-    }
+def _unique_set_relations(model: clingo.Model) -> dict[str, tuple[str, ...]]:
+    """Every Relation Definition each Unique Set belongs to, read from the model.
+
+    A key can belong to more than one relation: Filter's propagation
+    (`rules/propagation.lp`) reuses its input's own Unique Set key rather
+    than minting a new one, so the same key legitimately describes both a
+    Filter and whatever it filters.
+    """
+    relations: dict[str, list[str]] = {}
+    for symbol in model.symbols(atoms=True):
+        if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 2:
+            key, relation = (str(argument) for argument in symbol.arguments)
+            relations.setdefault(key, []).append(relation)
+    return {key: tuple(found) for key, found in relations.items()}
 
 
 def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:

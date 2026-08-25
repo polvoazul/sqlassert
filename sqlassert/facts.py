@@ -31,6 +31,10 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
     for instance in ir.all_instances(program.root):
         lines.append(f"instance_of({instance.id}, {instance.definition_id}).")
 
+    for filtered in ir.filters(program.root):
+        (input_instance,) = ir.instances(filtered.input)
+        lines.append(f"filter_input({filtered.instance.definition_id}, {input_instance.id}).")
+
     for project in ir.projects(program.root):
         (input_instance,) = ir.instances(project.input)
         lines.append(f"project_input({project.instance.definition_id}, {input_instance.id}).")
