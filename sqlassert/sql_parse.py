@@ -67,8 +67,12 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     """
     parent = type(Dialect.get_or_raise(base))
 
-    class _Tokenizer(parent.Tokenizer):  # type: ignore[name-defined]
-        KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}
+    # `Dialect` does not declare `Tokenizer`/`Parser` as class attributes --
+    # every concrete dialect sets its own, so the base class's static type
+    # cannot know they exist. This is exactly the private-API coupling
+    # documented below, not a type worth narrowing further.
+    class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
+        KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
 
     # This hooks SQLGlot's private API: `Tokenizer.KEYWORDS`, `_parse_join`,
     # `_match`, `_prev`, `_curr`. It is the best seam available — SQLGlot exposes
@@ -87,7 +91,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # program reporting as proved. `_unresolved_markers` exists for that case;
     # do not remove it, and do not add a fallback that carries on without the
     # hook.
-    class _Parser(parent.Parser):  # type: ignore[name-defined]
+    class _Parser(parent.Parser):  # ty: ignore[unresolved-attribute]
         def _parse_join(self, *args, **kwargs):
             if not self._match(SqlassertToken.SQLASSERT_UNIQUE):
                 return super()._parse_join(*args, **kwargs)
@@ -147,9 +151,9 @@ class SqlParser:
         try:
             statements = [ statement for statement in sqlglot.parse(sql, read=self.dialect_class) if statement ]
         except UnattachedMarker as error:
-            return ParsedProgram(diagnostics=[*diagnostics, self._unattached(error)])
+            return ParsedProgram(diagnostics=(*diagnostics, self._unattached(error)))
         except SqlglotError as error:
-            return ParsedProgram(diagnostics=[*diagnostics, self._unparseable(sql, error)])
+            return ParsedProgram(diagnostics=(*diagnostics, self._unparseable(sql, error)))
 
         creates: list[exp.Expression] = []
         selects: list[exp.Query] = []
@@ -178,9 +182,9 @@ class SqlParser:
                     f"a SQL program allows at most one root select, found {len(selects)}",
                 )
             )
-            return ParsedProgram(creates, None, diagnostics)
+            return ParsedProgram(tuple(creates), None, tuple(diagnostics))
 
-        return ParsedProgram(creates, selects[0] if selects else None, diagnostics)
+        return ParsedProgram(tuple(creates), selects[0] if selects else None, tuple(diagnostics))
 
     def _unattached(self, error: UnattachedMarker) -> Diagnostic:
         return Diagnostic(diag.UNATTACHED_MARKER, str(error), Origin(SQL, error.text, error.line))
@@ -202,7 +206,7 @@ class SqlParser:
 
     def _marker_token(self, sql: str) -> Token | None:
         try:
-            tokens = self.dialect_class.Tokenizer().tokenize(sql)
+            tokens = self.dialect_class.Tokenizer().tokenize(sql)  # ty: ignore[unresolved-attribute]
         except SqlglotError:
             return None
         return next(

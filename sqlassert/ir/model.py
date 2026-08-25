@@ -313,10 +313,9 @@ def _collect(plan: Plan | None, node_type: type) -> tuple:
     """
     if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
         return ()
-    if isinstance(plan, node_type):
-        return _collect(plan.input, node_type) + (plan,)
     if isinstance(plan, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
-        return _collect(plan.input, node_type)
+        found = _collect(plan.input, node_type)
+        return (*found, plan) if isinstance(plan, node_type) else found
     return _collect(plan.left, node_type) + _collect(plan.right, node_type)
 
 

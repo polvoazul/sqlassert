@@ -18,9 +18,15 @@ test = [
   "duckdb",
   "pytest",
 ]
+dev = [
+  "ty",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ty.src]
+exclude = ["build", "dist"]
 
 [tool.setuptools_scm]
 
