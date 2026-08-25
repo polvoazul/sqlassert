@@ -13,10 +13,12 @@ from sqlassert.ir.model import (
     Join,
     OpaqueExpression,
     OpaqueRelation,
+    PartitionKey,
     Plan,
     Program,
     Project,
     ProjectedColumn,
+    QualifyByPartition,
     RelationDefinition,
     RelationInstance,
     Scan,
@@ -28,6 +30,7 @@ from sqlassert.ir.model import (
     instances,
     joins,
     projects,
+    qualify_by_partitions,
 )
 
 __all__ = [
@@ -43,10 +46,12 @@ __all__ = [
     "Join",
     "OpaqueExpression",
     "OpaqueRelation",
+    "PartitionKey",
     "Plan",
     "Program",
     "Project",
     "ProjectedColumn",
+    "QualifyByPartition",
     "RelationDefinition",
     "RelationInstance",
     "Scan",
@@ -58,4 +63,5 @@ __all__ = [
     "instances",
     "joins",
     "projects",
+    "qualify_by_partitions",
 ]

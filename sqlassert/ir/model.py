@@ -203,7 +203,44 @@ class Distinct:
     origin_id: str
 
 
-Plan = Scan | OpaqueRelation | Join | Filter | Project | Aggregate | Distinct
+@dataclass(frozen=True)
+class PartitionKey:
+    """One `PARTITION BY` expression of a QualifyByPartition, named by the
+    output column an outer query sees it as -- the only thing a Unique Set
+    built from it needs, since a later join can only ever refer to a
+    Partition Key by that output name. Keeps its own lowered expression, the
+    same way ProjectedColumn does, so its provenance survives for future
+    best-effort reporting even though the MVP does not yet render it.
+    """
+
+    name: str
+    expression: Expression
+
+
+@dataclass(frozen=True)
+class QualifyByPartition:
+    """A recognized `ROW_NUMBER() OVER (PARTITION BY ...) = 1` qualification:
+    unique by its complete Partition Key, because that predicate retains
+    exactly one row per partition regardless of how ORDER BY orders rows
+    within it.
+
+    Only this narrow shape earns a Unique Set. `ordering` keeps the ORDER BY
+    expressions' own provenance for future best-effort reporting -- it never
+    determines uniqueness, since ORDER BY decides which row survives, not how
+    many do. Any other rank function, retention predicate, or general window
+    semantics is left as an OpaqueRelation instead, exactly as an unsupported
+    Aggregate is.
+    """
+
+    id: str
+    input: "Plan"
+    instance: RelationInstance
+    partition_keys: tuple[PartitionKey, ...]
+    ordering: tuple[Expression, ...]
+    origin_id: str
+
+
+Plan = Scan | OpaqueRelation | Join | Filter | Project | Aggregate | Distinct | QualifyByPartition
 
 
 @dataclass(frozen=True)
@@ -222,7 +259,7 @@ class Program:
     assertions: tuple[UniqueJoinAssertion, ...] = field(default=())
 
 
-_DERIVED_TABLE = (Scan, OpaqueRelation, Filter, Project, Aggregate, Distinct)
+_DERIVED_TABLE = (Scan, OpaqueRelation, Filter, Project, Aggregate, Distinct, QualifyByPartition)
 
 
 def instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
@@ -250,7 +287,7 @@ def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
         return ()
     if isinstance(plan, (Scan, OpaqueRelation)):
         return (plan.instance,)
-    if isinstance(plan, (Filter, Project, Aggregate, Distinct)):
+    if isinstance(plan, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
         return (plan.instance,) + all_instances(plan.input)
     return all_instances(plan.left) + all_instances(plan.right)
 
@@ -278,7 +315,7 @@ def _collect(plan: Plan | None, node_type: type) -> tuple:
         return ()
     if isinstance(plan, node_type):
         return _collect(plan.input, node_type) + (plan,)
-    if isinstance(plan, (Filter, Project, Aggregate, Distinct)):
+    if isinstance(plan, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
         return _collect(plan.input, node_type)
     return _collect(plan.left, node_type) + _collect(plan.right, node_type)
 
@@ -297,3 +334,7 @@ def aggregates(plan: Plan | None) -> tuple[Aggregate, ...]:
 
 def distincts(plan: Plan | None) -> tuple[Distinct, ...]:
     return _collect(plan, Distinct)
+
+
+def qualify_by_partitions(plan: Plan | None) -> tuple[QualifyByPartition, ...]:
+    return _collect(plan, QualifyByPartition)

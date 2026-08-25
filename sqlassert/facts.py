@@ -56,6 +56,13 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
         columns = tuple(output.name for output in distinct.outputs)
         lines.extend(_unique_set_facts(names, distinct.instance.definition_id, columns))
 
+    # A recognized QualifyByPartition earns its Unique Set the same direct
+    # way: its complete Partition Key alone establishes it, regardless of the
+    # input relation's own Unique Sets.
+    for qualify in ir.qualify_by_partitions(program.root):
+        columns = tuple(key.name for key in qualify.partition_keys)
+        lines.extend(_unique_set_facts(names, qualify.instance.definition_id, columns))
+
     for join in ir.joins(program.root):
         lines.append(f"join_kind({join.id}, {join.kind}).")
         lines.extend(f"join_left_instance({join.id}, {instance.id})." for instance in ir.instances(join.left))
