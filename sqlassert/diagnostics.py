@@ -17,6 +17,7 @@ SQL_PARSE_FAILED = "sql-parse-failed"
 UNANALYZED_ASSERTION = "unanalyzed-assertion"
 UNATTACHED_MARKER = "unattached-marker"
 UNRECOGNIZED_MARKER = "unrecognized-marker"
+UNSUPPORTED_CREATE_STATEMENT = "unsupported-create-statement"
 UNSUPPORTED_STATEMENT = "unsupported-statement"
 
 

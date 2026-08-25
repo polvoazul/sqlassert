@@ -122,6 +122,37 @@ class Join:
 
 
 @dataclass(frozen=True)
+class SetOperation:
+    """UNION, INTERSECT, or EXCEPT: each side is lowered independently, the
+    same way the two sides of a Join are, so a marked join in either arm is
+    reachable for analysis.
+
+    `operator` is carried for provenance only. All three share one DISTINCT
+    vs. ALL toggle (`UNION`/`INTERSECT`/`EXCEPT` dedup their combined output;
+    the `ALL` form of each keeps duplicates instead), and the operation's own
+    row-set semantics -- that the non-ALL form's combined output is unique
+    over every output column, the same way a bare `SELECT DISTINCT` earns a
+    Unique Set over its output columns -- is deliberately not modeled here:
+    that is a proof in its own right, not a precondition for reaching the
+    joins nested in either arm.
+
+    TODO: earning that Unique Set needs three things together, none done yet:
+    this node its own `RelationInstance`/`RelationDefinition` and an output
+    column list (as `Distinct` has); the Unique Set derived from the leftmost
+    arm's output names when `distinct` is set; and `CteScope`/
+    `_lower_nested_source` taught to lower a `SetOperation` body instead of
+    only a plain `exp.Select`, since otherwise nothing could reference the
+    result to ever observe the proof.
+    """
+
+    id: str
+    operator: str
+    left: "Plan"
+    right: "Plan"
+    origin_id: str
+
+
+@dataclass(frozen=True)
 class Filter:
     """Restricts its input's rows without renaming or dropping any column.
 
@@ -240,7 +271,7 @@ class QualifyByPartition:
     origin_id: str
 
 
-Plan = Scan | OpaqueRelation | Join | Filter | Project | Aggregate | Distinct | QualifyByPartition
+Plan = Scan | OpaqueRelation | Join | SetOperation | Filter | Project | Aggregate | Distinct | QualifyByPartition
 
 
 @dataclass(frozen=True)
@@ -296,11 +327,14 @@ def joins(plan: Plan | None) -> tuple[Join, ...]:
     """Every Join reachable from a plan.
 
     Every derived table is a leaf: this slice's derived tables never wrap a
-    Join, so nothing here needs to look inside `.input`.
+    Join, so nothing here needs to look inside `.input`. A SetOperation is not
+    itself a Join -- it shares the two-children shape only so both of its arms
+    are walked the same way a Join's sides are.
     """
     if plan is None or isinstance(plan, _DERIVED_TABLE):
         return ()
-    return joins(plan.left) + joins(plan.right) + (plan,)
+    found = joins(plan.left) + joins(plan.right)
+    return (*found, plan) if isinstance(plan, Join) else found
 
 
 def _collect(plan: Plan | None, node_type: type) -> tuple:

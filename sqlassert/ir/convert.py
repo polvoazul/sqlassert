@@ -163,6 +163,17 @@ class IrParser:
     # Declaration pass ---------------------------------------------------------
 
     def _declare(self, statement: exp.Create) -> None:
+        kind = (statement.kind or "").upper()
+        if kind not in _SUPPORTED_CREATE_KINDS:
+            self._diagnostics.append(
+                Diagnostic(
+                    diag.UNSUPPORTED_CREATE_STATEMENT,
+                    f"create statement kind {kind or '<unknown>'} is not supported; "
+                    f"only TABLE and VIEW are analyzed: {statement.sql(dialect=self.dialect)}",
+                )
+            )
+            return
+
         name = self._extract_table_name(statement)
         if name is None:
             return
@@ -271,6 +282,9 @@ class IrParser:
             for cte in with_clause.expressions:
                 self._ctes.declare(cte.alias.lower(), cte.this)
 
+        if isinstance(select, exp.SetOperation):
+            return self._lower_set_operation(select)
+
         source = _from_source(select)
         if source is None:
             return None
@@ -279,6 +293,33 @@ class IrParser:
         for join in select.args.get("joins") or []:
             plan = self._lower_join(plan, join)
         return plan
+
+    def _lower_set_operation(self, operation: exp.SetOperation) -> ir.SetOperation:
+        """UNION, INTERSECT, or EXCEPT: each arm is lowered through this same
+        method, exactly as if it were its own top-level query, so a marked
+        join inside either one is reachable rather than merely reported as
+        unanalyzed. Chained operations (`a UNION b UNION c`) are nested
+        `exp.SetOperation` arms and so recurse the same way.
+
+        Only the root query reaches here: a set operation nested inside a
+        CTE, view, or FROM-subquery body is still not lowered by those
+        slices (`CteScope.declare` and `_lower_nested_select` both require a
+        plain `exp.Select`), and stays conservative.
+        """
+        return ir.SetOperation(
+            id=self.names.new(naming.PLAN, operation.key),
+            operator=operation.key,
+            left=self._lower_set_operation_arm(operation.this),
+            right=self._lower_set_operation_arm(operation.expression),
+            origin_id=self._origin_id(operation),
+        )
+
+    def _lower_set_operation_arm(self, arm: exp.Query) -> ir.Plan:
+        """One side of a set operation, falling back to an OpaqueRelation --
+        never `None` -- like every other unsupported construct, so the other
+        arm's joins stay reachable even when this one is not modeled."""
+        lowered = self._lower_query(arm)
+        return lowered if lowered is not None else self._opaque_relation(arm, self._origin_id(arm))
 
     def _lower_source(self, source: exp.Expression) -> ir.Plan:
         """Every unsupported or exhausted attempt below falls through to the
@@ -796,6 +837,11 @@ def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] |
     return None
 
 
+# Create Statements of any other kind (INDEX, SCHEMA, SEQUENCE, FUNCTION, ...)
+# declare nothing this analysis models, so they are reported and dropped.
+_SUPPORTED_CREATE_KINDS = {"TABLE", "VIEW"}
+
+
 def _created_table(statement: exp.Create) -> exp.Table | None:
     target = statement.this
     if isinstance(target, exp.Schema):
@@ -852,9 +898,19 @@ def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
     return window
 
 
+#  SQLGlot puts SEMI/ANTI/CROSS in `kind` and a same-time LEFT/RIGHT direction
+# modifier in `side` (e.g. `LEFT SEMI JOIN` is side=left, kind=semi) -- that
+# side is not the plain-join side it is for `LEFT JOIN`, so a semi/anti/cross
+# kind must win over side or `LEFT SEMI JOIN` would be read as an ordinary
+# LEFT JOIN and could earn a proof its actual semantics do not support.
+_JOIN_KINDS_OVERRIDING_SIDE = {"semi", "anti", "cross"}
+
+
 def _join_kind(join: exp.Join) -> str:
-    side = (join.args.get("side") or "").lower()
     kind = (join.args.get("kind") or "").lower()
+    if kind in _JOIN_KINDS_OVERRIDING_SIDE:
+        return kind
+    side = (join.args.get("side") or "").lower()
     return side or kind or ir.INNER
 
 
