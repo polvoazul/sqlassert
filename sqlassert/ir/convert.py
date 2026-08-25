@@ -389,24 +389,26 @@ class IrParser:
         another CTE, or one wrapping a FROM subquery, keeps working several
         layers deep.
 
-        Anything else -- a JOIN, QUALIFY, or a nested WITH inside this body --
-        returns None so the caller falls back to an OpaqueRelation, exactly
-        like every other unsupported construct in this module. In particular,
-        a JOIN inside a CTE or FROM-subquery body stays unsupported: its own
+        Anything else -- a JOIN or a nested WITH inside this body -- returns
+        None so the caller falls back to an OpaqueRelation, exactly like
+        every other unsupported construct in this module. In particular, a
+        JOIN inside a CTE or FROM-subquery body stays unsupported: its own
         asserted joins, if any, are reported by `_report_unanalyzed` rather
         than silently dropped.
 
-        A GROUP BY or DISTINCT body is delegated to `_lower_aggregate` or
-        `_lower_distinct` instead of the plain Filter/Project path below,
-        since either earns its own Unique Set from grouping or distinctness
-        rather than propagating one from its input.
+        A GROUP BY, DISTINCT, or QUALIFY body is delegated to
+        `_lower_aggregate`, `_lower_distinct`, or `_lower_qualify` instead of
+        the plain Filter/Project path below, since each earns its own Unique
+        Set from grouping, distinctness, or recognized partition
+        qualification rather than propagating one from its input.
 
         `report_name` (set only by `_lower_cte_reference`) labels the body's
         own Relation Definition for `report.facts`. Whichever shape this body
-        takes -- Filter, Project, Aggregate, or Distinct -- it always earns a
-        fresh Relation Definition of its own, so it is always safe to apply.
+        takes -- Filter, Project, Aggregate, Distinct, or QualifyByPartition --
+        it always earns a fresh Relation Definition of its own, so it is
+        always safe to apply.
         """
-        if any(select.args.get(key) for key in ("with", "joins", "qualify")):
+        if any(select.args.get(key) for key in ("with", "joins")):
             return None
 
         source = _from_source(select)
@@ -420,6 +422,9 @@ class IrParser:
             return self._lower_aggregate(inner_plan, select, group, alias, origin_id, report_name)
         if select.args.get("distinct") is not None:
             return self._lower_distinct(inner_plan, select, alias, origin_id, report_name)
+        qualify = select.args.get("qualify")
+        if qualify is not None:
+            return self._lower_qualify(inner_plan, select, qualify, alias, origin_id, report_name)
 
         items = select.expressions
         star_only = len(items) == 1 and isinstance(items[0], exp.Star)
@@ -502,6 +507,66 @@ class IrParser:
         instance = self._anonymous_instance(alias, origin_id, report_name)
         outputs = self._projected_columns(items, scope)
         return ir.Distinct(self.names.new(naming.PLAN, "distinct"), input_plan, instance, outputs, origin_id)
+
+    def _lower_qualify(
+        self,
+        input_plan: ir.Plan,
+        select: exp.Select,
+        qualify: exp.Qualify,
+        alias: str,
+        origin_id: str,
+        report_name: str | None = None,
+    ) -> ir.Plan | None:
+        """A recognized `ROW_NUMBER() OVER (PARTITION BY ...) = 1` QUALIFY:
+        unique by its complete Partition Key, since that predicate keeps
+        exactly one row per partition.
+
+        Any other rank function, any predicate other than `= 1`, and a window
+        with no `PARTITION BY` are all left unsupported for the same
+        conservative reason Aggregate's unsupported shapes are: none of them
+        is a case this slice's semantics actually cover. Each Partition Key
+        must appear, unrenamed-computation, among the selected outputs --
+        otherwise there is no output column an outer query could join against
+        to exercise it -- exactly like an Aggregate's Grouping Keys.
+        """
+        if select.args.get("having") is not None:
+            return None
+
+        window = _row_number_equals_one(qualify.this)
+        if window is None:
+            return None
+
+        partition_by = window.args.get("partition_by") or []
+        if not partition_by:
+            return None
+
+        if select.args.get("where") is not None:
+            input_plan = self._filter(input_plan, None, origin_id)
+
+        scope = ir.instances(input_plan)
+        partition_keys: list[ir.PartitionKey] = []
+        for partition_expr in partition_by:
+            output = _matching_output(partition_expr, select.expressions)
+            if output is None:
+                return None
+            partition_keys.append(
+                ir.PartitionKey(output.alias_or_name, self._lower_expression(partition_expr, scope))
+            )
+
+        order = window.args.get("order")
+        ordering = tuple(
+            self._lower_expression(ordered.this, scope) for ordered in (order.expressions if order else [])
+        )
+
+        instance = self._anonymous_instance(alias, origin_id, report_name)
+        return ir.QualifyByPartition(
+            self.names.new(naming.PLAN, "qualify"),
+            input_plan,
+            instance,
+            tuple(partition_keys),
+            ordering,
+            origin_id,
+        )
 
     def _filter(
         self, input_plan: ir.Plan, alias: str | None, origin_id: str, report_name: str | None = None
@@ -761,6 +826,27 @@ def _matching_output(group_expr: exp.Expression, items: list[exp.Expression]) ->
         (item for item in items if (item.this if isinstance(item, exp.Alias) else item) == group_expr),
         None,
     )
+
+
+def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
+    """The `ROW_NUMBER() OVER (...)` window this QUALIFY predicate retains
+    exactly one row per partition from, if it is recognized.
+
+    Only `<window> = 1` is recognized: any other predicate shape, or a window
+    function other than `ROW_NUMBER`, could retain more than one row per
+    partition and must never be mistaken for uniqueness.
+    """
+    if not isinstance(predicate, exp.EQ):
+        return None
+
+    left, right = predicate.this, predicate.expression
+    window = left if isinstance(left, exp.Window) else right if isinstance(right, exp.Window) else None
+    literal = right if window is left else left
+    if window is None or not isinstance(window.this, exp.RowNumber):
+        return None
+    if not isinstance(literal, exp.Literal) or literal.is_string or literal.this != "1":
+        return None
+    return window
 
 
 def _join_kind(join: exp.Join) -> str:
