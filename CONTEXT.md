@@ -12,6 +12,10 @@ _Avoid_: Check, annotation
 An assertion that a join cannot increase the number of rows contributed by its left-hand input.
 _Avoid_: Unique join marker, duplicate check
 
+**Unique Set Assertion**:
+An assertion that a named set of a Select Expression's output columns forms a Unique Set, or, when declared as a key, a Candidate Key.
+_Avoid_: Unique constraint, primary key marker, uniqueness check
+
 **Marker**:
 The comment syntax an author writes to state an assertion, such as `/**UNIQUE**/`. The marker is the syntax; the assertion is the property it states. A comment shaped like a marker but not recognized as one is reported rather than ignored, because a marker its author believed in is worse than no marker at all.
 _Avoid_: Assertion, annotation, hint
@@ -75,6 +79,10 @@ _Avoid_: Candidate key
 **Candidate Key**:
 A unique set whose columns are all non-null, so every row has a distinct, complete value combination.
 _Avoid_: Nullable unique set
+
+**Select Expression**:
+The `SELECT` query body common to a Root Select, a view or CTE definition, and a subquery, independent of how it is introduced into the program.
+_Avoid_: Select-like expression, query, statement
 
 **Create Statement**:
 A top-level SQL declaration that introduces a named relation definition or related schema knowledge into the analyzed program.
