@@ -347,8 +347,11 @@ class IrParser:
         declaration pass, so an expansion of its body should carry that real
         identity rather than an anonymous placeholder -- the same distinction
         `_scan` preserves for a plain table.
+
+        Only called with `_lower_nested_select`'s result, which is never a bare
+        Join -- but the `Plan` union it returns doesn't say so statically.
         """
-        return replace(plan, instance=replace(plan.instance, definition_id=definition_id))
+        return replace(plan, instance=replace(plan.instance, definition_id=definition_id))  # ty: ignore[unresolved-attribute]
 
     def _lower_cte_reference(self, table: exp.Table, name: str, origin_id: str) -> ir.Plan | None:
         """One reference to a CTE, lowered fresh from its body.

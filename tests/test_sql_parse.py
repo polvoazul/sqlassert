@@ -17,11 +17,13 @@ def test_parsed_program_coercion():
     stmt = sqlglot.parse_one("CREATE TABLE t (id INT)")
     query = sqlglot.parse_one("SELECT * FROM t")
 
-    # Pass lists (enumerables) instead of tuples
+    # Pass lists (enumerables) instead of tuples: ParsedProgram's own
+    # constructor accepts any iterable even though its fields are typed as
+    # tuples, since that's what every field actually stores.
     program = ParsedProgram(
-        create_statements=[stmt],
+        create_statements=[stmt],  # ty: ignore[invalid-argument-type]
         root_select=query,
-        diagnostics=[],
+        diagnostics=[],  # ty: ignore[invalid-argument-type]
     )
 
     assert isinstance(program.create_statements, tuple)
@@ -48,10 +50,11 @@ ORDINARY_SQL = [
 
 @pytest.mark.parametrize("sql", ORDINARY_SQL)
 def test_the_marker_dialect_parses_ordinary_sql_exactly_as_its_base_does(sql: str):
-    base = [statement.sql(dialect="duckdb") for statement in sqlglot.parse(sql, read="duckdb")]
+    base = [statement.sql(dialect="duckdb") for statement in sqlglot.parse(sql, read="duckdb") if statement]
     ours = [
         statement.sql(dialect="duckdb")
         for statement in sqlglot.parse(sql, read=sqlassert_dialect("duckdb"))
+        if statement
     ]
 
     assert ours == base
@@ -115,7 +118,9 @@ def test_a_marker_the_dialect_did_not_recognize_is_reported():
     diagnostics = _unresolved_markers(sql, unrecognized)
 
     assert [diagnostic.code for diagnostic in diagnostics] == ["unrecognized-marker"]
-    assert diagnostics[0].origin.line == 2
+    origin = diagnostics[0].origin
+    assert origin is not None
+    assert origin.line == 2
 
 
 def test_recognized_markers_leave_the_reconciliation_quiet():

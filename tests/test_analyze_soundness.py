@@ -109,7 +109,11 @@ def test_a_marker_that_does_not_mark_a_join_is_reported(label: str, sql: str, co
     assert report.assertions == (), label
     assert not report.proved, label
     assert [diagnostic.code for diagnostic in report.diagnostics] == [code], label
-    assert [diagnostic.origin.line for diagnostic in report.diagnostics] == [1], label
+    lines = []
+    for diagnostic in report.diagnostics:
+        assert diagnostic.origin is not None, label
+        lines.append(diagnostic.origin.line)
+    assert lines == [1], label
     assert "marker" in report.diagnostics[0].message, label
 
 

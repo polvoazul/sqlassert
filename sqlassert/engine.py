@@ -37,7 +37,9 @@ class Engine:
         facts = ground_facts(ir.program, ir.knowledge, self.names)
 
         control = clingo.Control()
-        control.configuration.solve.models = str(_MODELS_TO_DETECT_NONDETERMINISM)
+        # clingo's Configuration is a dynamic C-extension proxy typed only as
+        # `None | str | Configuration`; there is no narrower stub to satisfy.
+        control.configuration.solve.models = str(_MODELS_TO_DETECT_NONDETERMINISM)  # ty: ignore[invalid-assignment]
         control.add(_PROGRAM, [], f"{rules()}\n{facts}\n")
         control.ground([(_PROGRAM, [])])
         control.solve(on_model=on_solution_callback)

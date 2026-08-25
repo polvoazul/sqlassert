@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import duckdb
 import pytest
 
@@ -7,7 +9,7 @@ from sqlassert import unique_assertions, validate_unique_joins
 
 
 @pytest.fixture
-def con() -> duckdb.DuckDBPyConnection:
+def con() -> Iterator[duckdb.DuckDBPyConnection]:
     connection = duckdb.connect(":memory:")
     connection.execute("""
         PRAGMA enable_verification;
