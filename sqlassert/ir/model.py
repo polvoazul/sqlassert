@@ -65,11 +65,20 @@ class RelationDefinition:
 
     Column and uniqueness facts live in Knowledge, not here, so that query
     structure and what is known about relations stay separately represented.
+
+    `name` and `report_name` serve two different, deliberately separate
+    purposes. `name` is what Knowledge is looked up by: it is empty for
+    every derived relation (a Project, Aggregate, Distinct, or an anonymous
+    subquery), because a derived relation's own properties must never be
+    confused with a declared relation's that happens to share its name.
+    `report_name` is purely a caller-facing label for `report.facts` -- a
+    CTE's own declared name, say -- and is never consulted for Knowledge.
     """
 
     id: str
     name: str
     origin_id: str
+    report_name: str | None = None
 
 
 @dataclass(frozen=True)

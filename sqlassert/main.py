@@ -32,4 +32,4 @@ def analyze(sql: str, *, knowledge: Knowledge | None = None, dialect: str = DEFA
     engine = Engine(ir_parser.names)
 
     engine.run(ir, on_solution_callback=reporter.on_model)
-    return reporter.report(ir.program.assertions, ast.diagnostics + ir.diagnostics)
+    return reporter.report(ir.program.assertions, ast.diagnostics + ir.diagnostics, ir.program.definitions)

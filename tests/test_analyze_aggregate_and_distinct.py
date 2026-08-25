@@ -330,3 +330,29 @@ def test_distinct_on_is_unsupported_and_unknown(orders_and_customers):
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+# Nesting ----------------------------------------------------------------
+
+
+def test_an_aggregate_nested_inside_a_distinct_still_earns_its_own_unique_set():
+    """Regression test for a traversal bug the code review for #7 caught:
+    `ir.aggregates`/`ir.distincts` originally stopped at a plan of the
+    *other* kind instead of recursing into its `.input`, so an Aggregate
+    reachable only through a wrapping Distinct silently lost its own Unique
+    Set fact. Naming both layers as views (rather than CTEs) makes the inner
+    one directly inspectable through `report.facts`, independent of whatever
+    the outer Distinct's own Unique Set happens to require.
+    """
+    report = analyze(
+        """
+        CREATE TABLE orders (customer_id INTEGER, amount INTEGER);
+        CREATE VIEW per_customer AS SELECT customer_id, COUNT(*) AS n FROM orders GROUP BY customer_id;
+        CREATE VIEW distinct_wrap AS SELECT DISTINCT customer_id, n FROM per_customer;
+
+        SELECT * FROM distinct_wrap
+        """
+    )
+
+    assert report.facts.unique_sets("per_customer") == (("customer_id",),)
+    assert report.facts.unique_sets("distinct_wrap") == (("customer_id", "n"),)
