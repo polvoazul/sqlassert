@@ -93,6 +93,30 @@ def test_a_projection_alias_inside_a_view_maps_the_unique_set_to_the_outer_colum
     assert report.assertions[0].proving_unique_set == ("uid",)
 
 
+def test_a_parenthesized_view_body_preserves_its_unique_set(users_and_sessions):
+    """Regression test: SQLGlot parses a parenthesized view body
+    (`AS (SELECT ...)`) as `exp.Subquery` rather than a bare `exp.Select`, so
+    `ViewScope.declare`'s `isinstance(body, exp.Select)` guard silently
+    dropped it -- the view then fell back to a knowledge-less Scan and no
+    join through it could ever prove, even though the identical
+    un-parenthesized body proves fine.
+    """
+    report = analyze(
+        users_and_sessions
+        + """
+        CREATE VIEW active_users AS (SELECT id FROM users WHERE id > 0);
+
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN active_users
+            ON sessions.user_id = active_users.id
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].proving_unique_set == ("id",)
+
+
 def test_reusing_the_same_view_twice_gives_each_occurrence_its_own_identity(users_and_sessions):
     """Two references to one view must behave like two aliases of a table: each
     gets its own Relation Instance, so a self-join through the view proves
