@@ -125,9 +125,12 @@ class Join:
 class Filter:
     """Restricts its input's rows without renaming or dropping any column.
 
-    Its own Relation Instance shares the input's `definition_id`: a filter
-    can only remove rows, so every Unique Set the input relation already has
-    still holds, and no new Relation Definition is needed to say so.
+    Owns a fresh Relation Definition like every other derived table, so it
+    can carry its own name for `report.facts` (a CTE's, for instance) --
+    unlike Project, its Unique Sets are never conditional on which columns
+    survived, since a Filter can only remove rows: every Unique Set of its
+    input relation propagates to it whole and unchanged (see
+    `rules/propagation.lp`).
     """
 
     id: str
@@ -278,6 +281,10 @@ def _collect(plan: Plan | None, node_type: type) -> tuple:
     if isinstance(plan, (Filter, Project, Aggregate, Distinct)):
         return _collect(plan.input, node_type)
     return _collect(plan.left, node_type) + _collect(plan.right, node_type)
+
+
+def filters(plan: Plan | None) -> tuple[Filter, ...]:
+    return _collect(plan, Filter)
 
 
 def projects(plan: Plan | None) -> tuple[Project, ...]:

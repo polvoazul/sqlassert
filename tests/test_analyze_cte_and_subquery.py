@@ -44,6 +44,27 @@ def test_a_cte_preserving_a_unique_set_proves_a_join_in_the_root_select(users_an
     assert report.assertions[0].proving_unique_set == ("id",)
 
 
+def test_a_candidate_key_survives_a_where_filter_inside_a_cte(users_and_sessions):
+    """Filter earns its own Relation Definition and inherits Unique Sets
+    through `propagation.lp` rather than by sharing identity with its input
+    -- `column_not_null` must propagate right alongside `unique_set`, or a
+    Candidate Key proved through a filtered CTE would wrongly read as merely
+    nullable."""
+    report = analyze(
+        users_and_sessions
+        + """
+        WITH active_users AS (SELECT * FROM users WHERE id > 0)
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN active_users
+            ON sessions.user_id = active_users.id
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].is_candidate_key
+
+
 def test_a_from_subquery_over_a_cte_preserves_its_unique_set(users_and_sessions):
     report = analyze(
         users_and_sessions

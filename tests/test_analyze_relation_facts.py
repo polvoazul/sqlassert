@@ -96,11 +96,12 @@ def test_a_cte_that_earns_its_own_relation_definition_is_queryable_by_a_prefixed
     assert report.facts.unique_sets("active_users") == ()
 
 
-def test_a_bare_passthrough_cte_shares_its_inputs_definition_and_has_no_name_of_its_own():
-    """`SELECT * FROM users` ends in a Filter, which deliberately reuses its
-    *input's* Relation Definition rather than earning its own -- relabelling
-    a shared definition could misname whatever real relation it belongs to,
-    so this CTE is left unnamed rather than mislabeled."""
+def test_a_bare_passthrough_cte_still_earns_its_own_name():
+    """`SELECT * FROM users` ends in a Filter -- Filter owns a fresh Relation
+    Definition just like Project, Aggregate, and Distinct do, and inherits
+    its input's Unique Sets through `propagation.lp` rather than by sharing
+    identity with it, so it is nameable exactly like any other CTE shape.
+    The real `users` table's own facts stay reported separately."""
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -110,7 +111,7 @@ def test_a_bare_passthrough_cte_shares_its_inputs_definition_and_has_no_name_of_
         """
     )
 
-    assert report.facts.unique_sets("CTE_active_users") == ()
+    assert report.facts.unique_sets("CTE_active_users") == (("id",),)
     assert report.facts.unique_sets("users") == (("id",),)
 
 
