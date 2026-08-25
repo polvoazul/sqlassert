@@ -129,3 +129,28 @@ def test_a_self_join_stays_unknown_independently_of_a_valid_join_elsewhere():
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED, Outcome.UNKNOWN]
+    assert report.proved is False
+
+
+def test_multiple_supported_assertions_all_proved_report_overall_success():
+    """Every assertion is reported and the overall result succeeds only when
+    all of them do -- UNKNOWN, not just Disproof, must fail it (see the mixed
+    case above), and PROVED across the board must not be short-circuited by
+    checking only the first."""
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (id INTEGER PRIMARY KEY, user_id INTEGER);
+        CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER);
+
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN users
+            ON sessions.user_id = users.id
+        /**UNIQUE**/ JOIN orders
+            ON sessions.id = orders.id
+        """
+    )
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED, Outcome.PROVED]
+    assert report.proved is True

@@ -30,45 +30,62 @@ The marker is just a SQL comment. Your SQL remains valid SQL and can still run n
 
 ## Usage
 
-Run validation offline, before your application or analytics job executes the query:
+Run validation offline, before your application or analytics job executes the query. `analyze` takes a whole SQL Program -- the `CREATE TABLE`/`CREATE VIEW` statements a query depends on, plus the query itself -- and proves each `/**UNIQUE**/` assertion from that declared schema. It never connects to a database.
 
 ```python
-import duckdb
-from sqlassert import validate_unique_joins
+from sqlassert import analyze
 
-con = duckdb.connect("warehouse.duckdb")
+program = """
+create table users (id integer primary key, name varchar);
+create table sessions (user_id integer);
 
-query = """
 select *
 from sessions
 /**UNIQUE**/ join users
   on sessions.user_id = users.id
 """
 
-result = validate_unique_joins(con, query)
+report = analyze(program)
 
-assert result.valid, result.reason
+assert report.proved, report.diagnostics
 ```
 
-For a test suite, keep your model/query SQL as strings or load them from files, then validate them against a db connection that has the relevant schema:
+For a test suite, keep your model/query SQL as strings or load them from files, and include (or generate) the `CREATE` statements for whatever schema the query assumes:
 
 ```python
-def test_query_join_contract(con):
-    query = load_query("models/session_enrichment.sql")
-    result = validate_unique_joins(con, query)
+def test_query_join_contract():
+    program = schema_ddl() + load_query("models/session_enrichment.sql")
+    report = analyze(program)
 
-    assert result.valid, result.reason
+    assert report.proved, report.diagnostics
 ```
 
-`result.checks` contains one check per marker:
+`report.assertions` contains one result per marker, and `report.diagnostics` explains anything the program did that this analysis could not model:
 
 ```python
-for check in result.checks:
-    print(check.valid)
-    print(check.reason)
-    print(check.inferred_key_columns)
-    print(check.constrained_key_columns)
+for assertion in report.assertions:
+    print(assertion.outcome)          # Outcome.PROVED or Outcome.UNKNOWN
+    print(assertion.proving_unique_set)
+    print(assertion.is_candidate_key)
+    print(assertion.missing_columns)  # best-effort, when UNKNOWN
+
+for diagnostic in report.diagnostics:
+    print(diagnostic.code, diagnostic.message)
 ```
+
+If some relations aren't declared in the SQL Program itself -- for example, you'd rather introspect a live connection than duplicate its DDL -- pass their properties in as `Knowledge`:
+
+```python
+from sqlassert import Knowledge, RelationKnowledge, UniqueSetKnowledge
+
+knowledge = Knowledge((
+    RelationKnowledge("users", unique_sets=(UniqueSetKnowledge(("id",)),)),
+))
+
+report = analyze(query_only_sql, knowledge=knowledge)
+```
+
+> **Migrating from `validate_unique_joins`?** That DuckDB-connection-based checker has been superseded by `analyze` above -- same idea, proved from declared schema instead of a live connection, with broader join/predicate coverage and conservative diagnostics instead of a boolean `valid`/`reason`. It is no longer part of the public API; see [`deprecated/unique.py`](deprecated/unique.py) if you still need it.
 
 ## Details
 
@@ -165,3 +182,4 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 
 - Exhaustive case statements that match all items of an enum / union data type.
 - Document that a Select should have a specific unique col combo
+- A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Needs three things together: give `ir.SetOperation` its own `RelationInstance`/`RelationDefinition` and output column list (as `ir.Distinct` has), derive the Unique Set from the leftmost arm's output names when `distinct` is set, and teach `CteScope`/`_lower_nested_source` to lower a `SetOperation` body instead of only a plain `exp.Select` -- otherwise nothing could ever reference the result to observe the proof. See `sqlassert/ir/model.py`'s `SetOperation` docstring.
