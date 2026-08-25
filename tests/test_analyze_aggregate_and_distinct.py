@@ -236,6 +236,26 @@ def test_having_is_unsupported_and_unknown(orders_and_customers):
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
+def test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_proved():
+    """Regression test for the same parenthesized-body bug `test_analyze_views.py`
+    covers, exercised through the exact shape that surfaced it: a `GROUP BY`
+    aggregate view, self-joined through `USING`.
+    """
+    report = analyze(
+        """
+        CREATE TABLE orders (user_id INTEGER, amount INTEGER);
+        CREATE VIEW per_user AS (
+            SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY user_id
+        );
+
+        SELECT * FROM per_user /**UNIQUE**/ JOIN per_user USING (user_id)
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].proving_unique_set == ("user_id",)
+
+
 # Distinct ---------------------------------------------------------------
 
 

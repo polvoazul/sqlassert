@@ -36,6 +36,16 @@ projected_column(D, C, Out) :-
     project_input(D, I),
     expression_column(E, I, C).
 
+% An output column computed unrenamed from one non-null input column is
+% itself non-null, the same way Filter's `column_not_null` above carries its
+% input's whole unchanged -- otherwise a Candidate Key proved through a
+% renaming or reordering Project would wrongly read as merely nullable.
+column_not_null(D, Out) :-
+    projected_column(D, C, Out),
+    project_input(D, I),
+    instance_of(I, R),
+    column_not_null(R, C).
+
 % A Unique Set of the relation a Project draws from -- a candidate for
 % propagation, pending a check that every member survived the projection.
 candidate_unique_set(K, D) :- project_input(D, I), instance_of(I, R), unique_set(K, R).

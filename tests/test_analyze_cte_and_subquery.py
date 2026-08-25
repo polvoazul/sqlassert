@@ -65,6 +65,25 @@ def test_a_candidate_key_survives_a_where_filter_inside_a_cte(users_and_sessions
     assert report.assertions[0].is_candidate_key
 
 
+def test_a_candidate_key_survives_a_projection_inside_a_cte(users_and_sessions):
+    """`column_not_null` must propagate through Project's unrenamed-computation
+    output columns exactly as `unique_set` already does, or a Candidate Key
+    proved through a renaming CTE would wrongly read as merely nullable."""
+    report = analyze(
+        users_and_sessions
+        + """
+        WITH renamed AS (SELECT id AS uid FROM users)
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN renamed
+            ON sessions.user_id = renamed.uid
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].is_candidate_key
+
+
 def test_a_from_subquery_over_a_cte_preserves_its_unique_set(users_and_sessions):
     report = analyze(
         users_and_sessions
@@ -128,6 +147,47 @@ def test_a_projection_alias_inside_a_cte_maps_the_unique_set_to_the_outer_column
 
     assert report.proved
     assert report.assertions[0].proving_unique_set == ("uid",)
+
+
+def test_a_parenthesized_cte_body_preserves_its_unique_set(users_and_sessions):
+    """Regression test: SQLGlot parses a parenthesized CTE body
+    (`AS (SELECT ...)`) as `exp.Subquery` rather than a bare `exp.Select`, so
+    `CteScope.declare`'s `isinstance(body, exp.Select)` guard silently
+    dropped it. A doubly-parenthesized body exercises the same unwrap fully.
+    """
+    report = analyze(
+        users_and_sessions
+        + """
+        WITH active_users AS ((SELECT id FROM users WHERE id > 0))
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN active_users
+            ON sessions.user_id = active_users.id
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].proving_unique_set == ("id",)
+
+
+def test_a_doubly_parenthesized_from_subquery_preserves_its_unique_set(users_and_sessions):
+    """A plain FROM subquery is already one `exp.Subquery` layer that
+    `_lower_nested_source` unwraps; an extra pair of parens adds a second
+    layer, regression-testing that the unwrap in `_unwrap_select` is a loop
+    rather than a single `.this` step.
+    """
+    report = analyze(
+        users_and_sessions
+        + """
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN ((SELECT id FROM users WHERE id > 0)) AS active_users
+            ON sessions.user_id = active_users.id
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_cte_dropping_a_required_composite_key_member_is_unknown():

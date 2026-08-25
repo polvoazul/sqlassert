@@ -56,8 +56,9 @@ class CteScope:
 
     def declare(self, name: str, body: exp.Expression) -> None:
         self._shadowed.add(name)
-        if isinstance(body, exp.Select):
-            self._bodies[name] = body
+        unwrapped = _unwrap_select(body)
+        if unwrapped is not None:
+            self._bodies[name] = unwrapped
 
     def shadows(self, name: str) -> bool:
         return name in self._shadowed
@@ -90,8 +91,9 @@ class ViewScope:
     _resolving: set[str] = field(default_factory=set)
 
     def declare(self, name: str, body: exp.Expression) -> None:
-        if isinstance(body, exp.Select):
-            self._bodies[name] = body
+        unwrapped = _unwrap_select(body)
+        if unwrapped is not None:
+            self._bodies[name] = unwrapped
 
     def body(self, name: str) -> exp.Select | None:
         return self._bodies.get(name)
@@ -334,10 +336,11 @@ class IrParser:
             if self._ctes.shadows(name):
                 return self._lower_cte_reference(source, name, origin_id)
             return self._lower_table_reference(source, name, origin_id)
-        if isinstance(source, exp.Subquery) and isinstance(source.this, exp.Select):
+        if isinstance(source, exp.Subquery):
+            body = _unwrap_select(source)
             alias = source.alias_or_name
-            if alias:
-                return self._lower_nested_select(source.this, alias, origin_id)
+            if body is not None and alias:
+                return self._lower_nested_select(body, alias, origin_id)
         return None
 
     def _lower_table_reference(self, table: exp.Table, name: str, origin_id: str) -> ir.Plan:
@@ -852,6 +855,21 @@ def _created_table(statement: exp.Create) -> exp.Table | None:
 def _qualified_name(table: exp.Table) -> str:
     """The whole name of a relation: `users` and `b.users` are different relations."""
     return ".".join(part for part in (table.catalog, table.db, table.name) if part)
+
+
+def _unwrap_select(body: exp.Expression | None) -> exp.Select | None:
+    """`body` with any wrapping parentheses stripped, if it is (or wraps) a
+    plain `SELECT`.
+
+    SQLGlot parses a parenthesized derived-table body -- `AS (SELECT ...)`, or
+    even doubly-parenthesized `AS ((SELECT ...))` -- as `exp.Subquery` rather
+    than the bare `exp.Select` a CTE, view, or FROM-subquery body would
+    otherwise be. Without unwrapping, every caller's `isinstance(_, exp.Select)`
+    check fails silently and the body is treated as unlowerable.
+    """
+    while isinstance(body, exp.Subquery):
+        body = body.this
+    return body if isinstance(body, exp.Select) else None
 
 
 def _arg(node: exp.Expression, name: str) -> exp.Expression | None:
