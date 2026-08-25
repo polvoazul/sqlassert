@@ -22,6 +22,9 @@ dev = [
   "ty",
 ]
 
+[tool.setuptools.packages.find]
+include = ["sqlassert*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

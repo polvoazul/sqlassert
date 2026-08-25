@@ -1,3 +1,12 @@
+"""Deprecated: the original DuckDB-connection-based Unique Join checker.
+
+Superseded by `sqlassert.analyze`, which proves the same property statically
+from a Create Statement's declared schema instead of a live `duckdb`
+connection, covers more join and predicate shapes, and returns conservative
+diagnostics rather than a boolean `valid`/`reason` pair. No longer exported
+from `sqlassert`; kept here for reference only.
+"""
+
 from __future__ import annotations
 
 import re

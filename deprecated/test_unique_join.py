@@ -5,7 +5,7 @@ from collections.abc import Iterator
 import duckdb
 import pytest
 
-from sqlassert import unique_assertions, validate_unique_joins
+from deprecated.unique import unique_assertions, validate_unique_joins
 
 
 @pytest.fixture

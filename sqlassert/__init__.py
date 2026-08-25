@@ -8,12 +8,6 @@ from sqlassert.knowledge import (
 )
 from sqlassert.provenance import Origin
 from sqlassert.reporting import AssertionReport, Outcome, RelationFacts, Report
-from sqlassert.unique import (
-    UniqueJoinCheckResult,
-    UniqueJoinValidationResult,
-    unique_assertions,
-    validate_unique_joins,
-)
 
 __all__ = [
     "AssertionReport",
@@ -25,10 +19,6 @@ __all__ = [
     "RelationFacts",
     "RelationKnowledge",
     "Report",
-    "UniqueJoinCheckResult",
-    "UniqueJoinValidationResult",
     "UniqueSetKnowledge",
     "analyze",
-    "unique_assertions",
-    "validate_unique_joins",
 ]
