@@ -44,6 +44,7 @@ class AssertionReport:
     assertion_id: str
     outcome: Outcome
     origin: Origin
+    explanation: str = ""
     proving_unique_set: tuple[str, ...] = ()
     is_candidate_key: bool = False
     missing_columns: tuple[str, ...] = ()
@@ -160,14 +161,45 @@ class Reporter:
         assertion_id = self._encoding.node_to_symbol[assertion]
         proved = assertion_id in self._proved
         keys = self._proof_keys.get(assertion_id, ())
+        proving_unique_set = self._column_names(self._unique_sets.get(keys[0], ())) if proved and keys else ()
+        missing_columns = () if proved else self._missing_columns_for(assertion_id)
         return AssertionReport(
             assertion_id=assertion_id,
             outcome=Outcome.PROVED if proved else Outcome.UNKNOWN,
             origin=assertion.origin,
-            proving_unique_set=self._column_names(self._unique_sets.get(keys[0], ())) if proved and keys else (),
+            explanation=self._explanation(assertion, proved, proving_unique_set, missing_columns),
+            proving_unique_set=proving_unique_set,
             is_candidate_key=proved and assertion_id in self._candidate_key_proofs,
-            missing_columns=() if proved else self._missing_columns_for(assertion_id),
+            missing_columns=missing_columns,
         )
+
+    def _explanation(self, assertion: ir.Assertion, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
+        if isinstance(assertion, ir.UniqueJoinAssertion):
+            return self._unique_join_explanation(assertion, proved, proving_unique_set, missing_columns)
+        if isinstance(assertion, ir.UniqueSetAssertion):
+            return self._unique_set_explanation(proved, proving_unique_set, missing_columns)
+        return "Unknown: this assertion type has no explanation."
+
+    def _unique_join_explanation(self, assertion: ir.UniqueJoinAssertion, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
+        if proved:
+            return f"Proved: the join covers the right side's unique set {_format_columns(proving_unique_set)}."
+        if assertion.subject.kind not in {ir.INNER, "left"}:
+            return f"Unknown: {assertion.subject.kind.upper()} joins are not supported for uniqueness proofs."
+        right_symbol = self._encoding.node_to_symbol[assertion.subject.right]
+        right_keys = [key for key, relations in self._unique_set_relations.items() if right_symbol in relations]
+        if not right_keys:
+            return "Unknown: no unique set is known for the right side of this join."
+        if missing_columns:
+            closest = self._closest_key_columns(self._encoding.node_to_symbol[assertion])
+            return f"Unknown: the join does not cover the closest known unique set {_format_columns(closest)}; missing {', '.join(missing_columns)}."
+        return "Unknown: the join predicate does not establish coverage of a known unique set."
+
+    def _unique_set_explanation(self, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
+        if proved:
+            return f"Proved: the relation has the unique set {_format_columns(proving_unique_set)}."
+        if missing_columns:
+            return f"Unknown: the closest known unique set requires {', '.join(missing_columns)}."
+        return "Unknown: no known unique set covers the asserted columns."
 
     def _column_names(self, symbols: Sequence[str]) -> tuple[str, ...]:
         return tuple(
@@ -189,6 +221,14 @@ class Reporter:
                     if isinstance(node, ir.OutputColumn):
                         ordered.append(node.name)
         return tuple(ordered)
+
+    def _closest_key_columns(self, assertion_id: str) -> tuple[str, ...]:
+        keys = self._missing_members.get(assertion_id, {})
+        return self._column_names(self._unique_sets.get(sorted(keys)[0], ())) if keys else ()
+
+
+def _format_columns(columns: tuple[str, ...]) -> str:
+    return f"({', '.join(columns)})"
 
 
 def _proved(model: clingo.Model) -> frozenset[str]:

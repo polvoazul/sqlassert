@@ -37,6 +37,7 @@ def test_declared_unique_set_covered_by_the_join_predicate_is_proved():
     assert report.proved
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
     assert report.assertions[0].proving_unique_set == ("id",)
+    assert report.assertions[0].explanation == "Proved: the join covers the right side's unique set (id)."
 
 
 def test_join_without_a_matching_unique_set_is_unknown_rather_than_disproved():
@@ -45,6 +46,7 @@ def test_join_without_a_matching_unique_set_is_unknown_rather_than_disproved():
     assert not report.proved
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
     assert report.assertions[0].proving_unique_set == ()
+    assert report.assertions[0].explanation == "Unknown: no unique set is known for the right side of this join."
     assert not report.diagnostics
 
 

@@ -10,6 +10,7 @@
 #defined join_equality/3.
 #defined column_expression/2.
 #defined expression_column/2.
+#defined expression_any_aggregate/2.
 #defined expression_constant/1.
 #defined expression_opaque/1.
 #defined assertion/2.

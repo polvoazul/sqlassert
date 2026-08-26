@@ -110,3 +110,15 @@ def test_encoding_states_aggregate_structure_without_precomputing_its_unique_set
 
     assert "aggregate_grouping_output(" in facts
     assert "unique_set(" not in facts
+
+
+def test_grouped_bare_columns_are_encoded_as_any_aggregates():
+    conversion = _convert("SELECT derf, user_id, SUM(amount) AS spent FROM orders GROUP BY 1")
+    aggregate = conversion.program.root
+
+    assert isinstance(aggregate, ir.Aggregate)
+    assert isinstance(aggregate.outputs[0].expression, ir.ColumnRef)
+    assert isinstance(aggregate.outputs[1].expression, ir.AnyAggregate)
+    assert isinstance(aggregate.outputs[1].expression.input, ir.ColumnRef)
+    assert isinstance(aggregate.outputs[2].expression, ir.OpaqueExpression)
+    assert "expression_any_aggregate(" in encode(conversion.program, conversion.knowledge).facts
