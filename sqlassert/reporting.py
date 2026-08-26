@@ -51,12 +51,11 @@ class AssertionReport:
 
 @dataclass(frozen=True)
 class RelationFacts:
-    """What was proved about every named relation -- a table or a view -- in
-    one analysis, queryable by name.
+    """What was proved about every Named Relation in one analysis.
 
-    An unnamed relation (a CTE, a derived subquery, an Aggregate or Distinct
-    result) has no caller-visible name to ask about and is never included:
-    ask about the assertion it feeds into instead.
+    Tables and views use their declared name; CTEs use a ``CTE_``-prefixed
+    report label. Anonymous Relation Expressions are omitted: ask about the
+    assertion they feed into instead.
 
     Holds only Unique Sets for now; further properties join it as typed
     methods, the same way, rather than as a generic ask-anything query.

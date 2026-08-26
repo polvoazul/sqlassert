@@ -7,6 +7,7 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Set
 from dataclasses import dataclass, field, replace
 
 from sqlglot import exp
@@ -330,7 +331,9 @@ class IrParser:
         complete = known is not None and {column.lower() for column in symbol.required_columns} <= seen
         return self._opaque_outputs(names, symbol.origin), complete
 
-    def _opaque_outputs(self, names, origin: Origin) -> tuple[ir.OutputColumn, ...]:
+    def _opaque_outputs(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
+        if isinstance(names, Set):
+            names = sorted(names, key=lambda name: (name.lower(), name))
         return tuple(
             ir.OutputColumn(
                 origin=origin,
@@ -453,7 +456,7 @@ class IrParser:
         outputs = self._selected_outputs(select.expressions, lowered.bindings)
         grouping_outputs: list[ir.OutputColumn] = []
         for group_expression in group.expressions:
-            item = _matching_output(group_expression, select.expressions)
+            item = _matching_grouping_output(group_expression, select.expressions)
             if item is None:
                 return None
             grouping_outputs.append(outputs[select.expressions.index(item)])
@@ -710,6 +713,13 @@ def _matching_output(group_expression: exp.Expression, items: list[exp.Expressio
         (item for item in items if (item.this if isinstance(item, exp.Alias) else item) == group_expression),
         None,
     )
+
+
+def _matching_grouping_output(group_expression: exp.Expression, items: list[exp.Expression]) -> exp.Expression | None:
+    if isinstance(group_expression, exp.Literal) and group_expression.is_int:
+        position = int(group_expression.this)
+        return items[position - 1] if 1 <= position <= len(items) else None
+    return _matching_output(group_expression, items)
 
 
 def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
