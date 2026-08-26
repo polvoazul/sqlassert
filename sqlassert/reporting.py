@@ -118,7 +118,7 @@ class Reporter:
 
     def report(
         self,
-        assertions: Sequence[ir.UniqueJoinAssertion],
+        assertions: Sequence[ir.UniqueJoinAssertion | ir.UniqueSetAssertion],
         diagnostics: Sequence[Diagnostic] = (),
         definitions: Sequence[ir.RelationDefinition] = (),
     ) -> Report:
@@ -159,7 +159,7 @@ class Reporter:
 
         return RelationFacts({name: tuple(unique_sets) for name, unique_sets in by_relation.items()})
 
-    def _assertion_report(self, assertion: ir.UniqueJoinAssertion) -> AssertionReport:
+    def _assertion_report(self, assertion: ir.UniqueJoinAssertion | ir.UniqueSetAssertion) -> AssertionReport:
         proved = assertion.id in self._proved
         keys = self._proof_keys.get(assertion.id, ())
         return AssertionReport(

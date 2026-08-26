@@ -113,10 +113,23 @@ class OpaqueRelation:
 
 @dataclass(frozen=True)
 class Join:
+    """Combines a left and right Plan.
+
+    Owns a fresh Relation Instance for its own output, like every other
+    derived table -- but unlike them, it never appears in what `instances`
+    returns: a query above the join must still resolve `left.col`/`right.col`
+    against the join's own children, not a synthetic instance of the join
+    itself. This instance exists only so a proven-unique join can earn its
+    own Unique Set (see `rules/unique_join.lp`) and so a Filter or Project can
+    sit directly on top of a join exactly as it would on top of any other
+    single relation (`ir.output_instance`).
+    """
+
     id: str
     kind: str
     left: "Plan"
     right: "Plan"
+    instance: RelationInstance
     equalities: tuple[Equality, ...] = ()
     origin_id: str = ""
 
@@ -284,13 +297,36 @@ class UniqueJoinAssertion:
 
 
 @dataclass(frozen=True)
+class UniqueSetAssertion:
+    """A requirement that a named set of a Select Expression's own output
+    columns forms a Unique Set, or, when `candidate_key` is set, the stricter,
+    non-null Candidate Key.
+
+    Defined purely in terms of a Relation Definition and its columns: nothing
+    here says whether that definition came from a Root Select, a view, a CTE,
+    or a subquery -- proving it is exactly the same regardless.
+    """
+
+    id: str
+    definition_id: str
+    columns: tuple[str, ...]
+    candidate_key: bool
+    origin_id: str
+
+
+@dataclass(frozen=True)
 class Program:
     definitions: tuple[RelationDefinition, ...] = ()
     root: Plan | None = None
     assertions: tuple[UniqueJoinAssertion, ...] = field(default=())
+    unique_set_assertions: tuple[UniqueSetAssertion, ...] = field(default=())
 
 
 _DERIVED_TABLE = (Scan, OpaqueRelation, Filter, Project, Aggregate, Distinct, QualifyByPartition)
+
+# The derived tables that wrap a single `.input` -- everything in
+# `_DERIVED_TABLE` except Scan and OpaqueRelation, which have none.
+_DERIVED_TABLE_WITH_INPUT = (Filter, Project, Aggregate, Distinct, QualifyByPartition)
 
 
 def instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
@@ -312,7 +348,9 @@ def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
     table, whose own input is otherwise invisible to `instances`.
 
     Used only for fact generation: every instance needs its `instance_of`
-    fact, even one that no outer scope can resolve a column against.
+    fact, even one that no outer scope can resolve a column against. A Join's
+    own instance is included alongside its children's -- unlike `instances`,
+    this does not need to keep it out of any column-resolution scope.
     """
     if plan is None:
         return ()
@@ -320,21 +358,46 @@ def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
         return (plan.instance,)
     if isinstance(plan, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
         return (plan.instance,) + all_instances(plan.input)
+    if isinstance(plan, Join):
+        return (plan.instance,) + all_instances(plan.left) + all_instances(plan.right)
     return all_instances(plan.left) + all_instances(plan.right)
 
 
 def joins(plan: Plan | None) -> tuple[Join, ...]:
-    """Every Join reachable from a plan.
+    """Every Join reachable from a plan, including one nested inside a Filter,
+    Project, Aggregate, Distinct, or QualifyByPartition's input -- the Root
+    Select's own tail can wrap FROM/JOIN in the same derived-table nodes a CTE
+    or view body already gets, so a marked join must stay reachable through
+    them exactly like `all_instances` above already looks through them.
 
-    Every derived table is a leaf: this slice's derived tables never wrap a
-    Join, so nothing here needs to look inside `.input`. A SetOperation is not
-    itself a Join -- it shares the two-children shape only so both of its arms
-    are walked the same way a Join's sides are.
+    Scan and OpaqueRelation are the true leaves here: neither has an `.input`
+    to recurse into. A SetOperation is not itself a Join -- it shares the
+    two-children shape only so both of its arms are walked the same way a
+    Join's sides are.
     """
-    if plan is None or isinstance(plan, _DERIVED_TABLE):
+    if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
         return ()
+    if isinstance(plan, _DERIVED_TABLE_WITH_INPUT):
+        return joins(plan.input)
     found = joins(plan.left) + joins(plan.right)
     return (*found, plan) if isinstance(plan, Join) else found
+
+
+def output_instance(plan: Plan) -> RelationInstance:
+    """The single Relation Instance standing for `plan`'s own output.
+
+    Every Plan variant except SetOperation owns exactly one: Scan and every
+    derived table always have, and a Join owns one too (see `Join`), so a
+    Filter or Project can sit directly on top of a Join exactly as it would on
+    top of any other single relation -- this is how the Root Select's own
+    FROM/JOIN plan is wrapped by the same WHERE/GROUP BY/DISTINCT/QUALIFY/
+    projection tail a CTE or view body already gets.
+
+    SetOperation has no output instance of its own yet (see its own
+    docstring's TODO) and is never actually passed here: nothing in this
+    module wraps one directly.
+    """
+    return plan.instance  # ty: ignore[unresolved-attribute]
 
 
 def _collect(plan: Plan | None, node_type: type) -> tuple:

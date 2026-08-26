@@ -10,6 +10,7 @@ from sqlassert.sql_parse import (
     SqlassertToken,
     _unresolved_markers,
     sqlassert_dialect,
+    unique_set_assertions,
 )
 
 
@@ -45,6 +46,10 @@ ORDINARY_SQL = [
     "SELECT * FROM a JOIN b ON a.x = b.x",
     "SELECT * FROM a LEFT JOIN b ON a.x = b.x",
     "WITH c AS (SELECT 1 AS id) SELECT * FROM c",
+    "SELECT 2 ** 3 FROM t",
+    "SELECT 2 ** 3 / 1 FROM t",
+    "SELECT POWER(x, 2) FROM t",
+    "SELECT * FROM t WHERE (a + b) / 2 > 1",
 ]
 
 
@@ -129,3 +134,78 @@ def test_recognized_markers_leave_the_reconciliation_quiet():
     statements = [statement for statement in sqlglot.parse(sql, read=parser.dialect_class) if statement]
 
     assert _unresolved_markers(sql, statements) == []
+
+
+# Unique Set Assertion markers -- `/**UNIQUE(...)**/` and
+# `/**PRIMARY KEY(...)**/` -- attach at the one production shared by a Root
+# Select, a CTE, a view body, and a subquery, trailing right before whatever
+# closes that Select Expression.
+
+UNIQUE_SET_ATTACHMENT_SITES = [
+    ("root select", "SELECT id FROM t /**UNIQUE(id)**/", 1),
+    ("view body", "CREATE VIEW v AS SELECT id FROM t /**UNIQUE(id)**/", 1),
+    ("cte body", "WITH c AS (SELECT id FROM t /**UNIQUE(id)**/) SELECT * FROM c", 1),
+    ("subquery body", "SELECT * FROM (SELECT id FROM t /**UNIQUE(id)**/) AS s", 1),
+]
+
+
+@pytest.mark.parametrize(("label", "sql", "expected_count"), UNIQUE_SET_ATTACHMENT_SITES)
+def test_a_unique_set_assertion_marker_attaches_at_every_select_expression_site(
+    label: str, sql: str, expected_count: int
+):
+    parser = SqlParser("duckdb")
+    program = parser.parse(sql)
+
+    assert program.diagnostics == (), label
+    statements = (*program.create_statements, program.root_select)
+    found = [
+        markers
+        for statement in statements
+        if statement is not None
+        for select in statement.find_all(exp.Select)
+        for markers in [unique_set_assertions(select)]
+        if markers
+    ]
+    assert len(found) == expected_count, label
+    assert found[0] == (("unique", ("id",), 1),), label
+
+
+def test_a_primary_key_flavored_marker_is_recognized():
+    parser = SqlParser("duckdb")
+    program = parser.parse("SELECT id FROM t /**PRIMARY KEY(id)**/")
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    markers = unique_set_assertions(program.root_select)  # ty: ignore[invalid-argument-type]
+    assert markers == (("key", ("id",), 1),)
+
+
+def test_stacked_unique_set_assertion_markers_are_all_recognized():
+    parser = SqlParser("duckdb")
+    program = parser.parse("SELECT a, b FROM t /**UNIQUE(a)**/ /**PRIMARY KEY(a, b)**/")
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    markers = unique_set_assertions(program.root_select)  # ty: ignore[invalid-argument-type]
+    assert markers == (("unique", ("a",), 1), ("key", ("a", "b"), 1))
+
+
+UNIQUE_SET_MARKER_SHAPES = [
+    "/**UNIQUE(id)**/",
+    "/**UNIQUE(id, name)**/",
+    "/**PRIMARY KEY(id)**/",
+    "/**PRIMARY KEY(id, name)**/",
+]
+
+
+@pytest.mark.parametrize("marker", UNIQUE_SET_MARKER_SHAPES)
+def test_a_unique_set_assertion_marker_does_not_disturb_ordinary_sql_around_it(marker: str):
+    sql = f"SELECT id, name FROM t {marker}"
+    base = sqlglot.parse_one("SELECT id, name FROM t", read="duckdb").sql(dialect="duckdb")
+
+    parser = SqlParser("duckdb")
+    program = parser.parse(sql)
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    assert program.root_select.sql(dialect="duckdb") == base

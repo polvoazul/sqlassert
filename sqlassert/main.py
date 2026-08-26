@@ -17,7 +17,7 @@ DEFAULT_DIALECT = "duckdb"
 
 
 def analyze(sql: str, *, knowledge: Knowledge | None = None, dialect: str = DEFAULT_DIALECT) -> Report:
-    """Prove the Unique Join Assertions in one SQL Program.
+    """Prove the Unique Join Assertions and Unique Set Assertions in one SQL Program.
 
     `knowledge` supplies facts about relations the program does not declare. 
     It usually comes from querying the database.
@@ -32,4 +32,5 @@ def analyze(sql: str, *, knowledge: Knowledge | None = None, dialect: str = DEFA
     engine = Engine(ir_parser.names)
 
     engine.run(ir, on_solution_callback=reporter.on_model)
-    return reporter.report(ir.program.assertions, ast.diagnostics + ir.diagnostics, ir.program.definitions)
+    assertions = ir.program.assertions + ir.program.unique_set_assertions
+    return reporter.report(assertions, ast.diagnostics + ir.diagnostics, ir.program.definitions)

@@ -1,6 +1,6 @@
 # Clingo Engine MVP Scope
 
-The MVP proves Unique Join Assertions from a SQL Program and optional external Knowledge. Unsupported semantics produce `UNKNOWN` or an explicit unsupported-program diagnostic; they are never silently approximated.
+The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Program and optional external Knowledge. Unsupported semantics produce `UNKNOWN` or an explicit unsupported-program diagnostic; they are never silently approximated.
 
 ## Included
 
@@ -12,7 +12,9 @@ The MVP proves Unique Join Assertions from a SQL Program and optional external K
 - `INNER` and `LEFT` Unique Join Assertions.
 - `ON` predicates composed from simple equalities joined by `AND`, plus `USING`.
 - Candidate Keys and nullable Unique Sets supplied by DDL or explicit Knowledge.
-- Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, and recognized `row_number() = 1` partition qualification.
+- Unique Set Assertions (`/**UNIQUE(...)**/` and `/**PRIMARY KEY(...)**/`) written on any Select Expression -- a Root Select, a view, a CTE, or a subquery -- proved against Unique Sets already derivable for the same Relation Definition, and fed forward as Knowledge-equivalent facts for later statements.
+- A proven-unique join's own output earns every Unique Set of its left-hand input, so uniqueness composes through a join exactly as it does through Filter and Project.
+- Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, joining, and recognized `row_number() = 1` partition qualification.
 - `PROVED` and `UNKNOWN` outcomes.
 - One deterministic Clingo stable model and callback-based reporting.
 
