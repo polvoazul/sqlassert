@@ -100,3 +100,23 @@ def test_a_union_arm_with_its_own_where_still_proves_its_join():
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED, Outcome.PROVED]
+
+
+def test_a_union_arm_s_own_group_by_output_can_be_asserted():
+    """Before this, a `UNION` arm's own GROUP BY was invisible to the IR --
+    ignored, not merely unsupported -- so there was nothing to observe. A
+    Unique Set Assertion on each arm's own grouped output makes the new
+    modeling directly observable, independent of any join."""
+    report = analyze(
+        """
+        CREATE TABLE sessions (user_id INTEGER);
+        CREATE TABLE orders (user_id INTEGER);
+
+        SELECT user_id, count(*) FROM sessions GROUP BY user_id /**UNIQUE(user_id)**/
+        UNION ALL
+        SELECT user_id, count(*) FROM orders GROUP BY user_id /**UNIQUE(user_id)**/
+        """
+    )
+
+    assert report.proved
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED, Outcome.PROVED]

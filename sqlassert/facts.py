@@ -32,11 +32,11 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
         lines.append(f"instance_of({instance.id}, {instance.definition_id}).")
 
     for filtered in ir.filters(program.root):
-        (input_instance,) = ir.instances(filtered.input)
+        input_instance = ir.output_instance(filtered.input)
         lines.append(f"filter_input({filtered.instance.definition_id}, {input_instance.id}).")
 
     for project in ir.projects(program.root):
-        (input_instance,) = ir.instances(project.input)
+        input_instance = ir.output_instance(project.input)
         lines.append(f"project_input({project.instance.definition_id}, {input_instance.id}).")
         for output in project.outputs:
             lines.extend(_expression_facts(output.expression))
@@ -65,6 +65,7 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
 
     for join in ir.joins(program.root):
         lines.append(f"join_kind({join.id}, {join.kind}).")
+        lines.append(f"join_output_definition({join.id}, {join.instance.definition_id}).")
         lines.extend(f"join_left_instance({join.id}, {instance.id})." for instance in ir.instances(join.left))
         lines.extend(f"join_right_instance({join.id}, {instance.id})." for instance in ir.instances(join.right))
         for equality in join.equalities:
@@ -73,6 +74,15 @@ def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) ->
             lines.append(f"join_equality({join.id}, {equality.left.id}, {equality.right.id}).")
 
     lines.extend(f"assertion({assertion.id}, {assertion.join_id})." for assertion in program.assertions)
+
+    for unique_set_assertion in program.unique_set_assertions:
+        lines.append(f"unique_set_assertion({unique_set_assertion.id}, {unique_set_assertion.definition_id}).")
+        if unique_set_assertion.candidate_key:
+            lines.append(f"unique_set_assertion_key({unique_set_assertion.id}).")
+        lines.extend(
+            f"unique_set_assertion_member({unique_set_assertion.id}, {position}, {_text(column)})."
+            for position, column in enumerate(unique_set_assertion.columns)
+        )
 
     return "\n".join(lines)
 

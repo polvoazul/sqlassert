@@ -22,6 +22,22 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   syntax, so a near miss is likelier a typo than a note, and a typo that was
   silently dropped would read to its author as a proof.
 
+  A Unique Set Assertion marker (`/**UNIQUE(col, ...)**/`,
+  `/**PRIMARY KEY(col, ...)**/`) carries a variable column list, so it cannot
+  be one fixed `KEYWORDS` literal the way the bare join marker is. `MARKERS`
+  instead holds that marker's fixed open literal (`"/**UNIQUE("`,
+  `"/**PRIMARY KEY("`) and one shared close literal (`"**/"`); the column list
+  between them is ordinary SQL, parsed with the parser's own identifier-list
+  machinery once the open token is matched. `_is_recognized_marker` is what
+  reconciles a whole `/**...*/`-shaped span of source text against this split
+  representation -- a marker is recognized when it is either an exact bare
+  literal or starts with one of the parameterized opens and ends with the
+  close -- and `_unrecognized_markers`'s user-facing list of recognized
+  markers is built from whole shapes, not `MARKERS`'s own fragment keys.
+  Consumed at the one grammar production common to a Root Select, a CTE
+  definition, a view body, and a subquery (`_parse_select_query`), so a
+  marker means the same thing regardless of which of these it sits on.
+
   The added token is a member of sqlassert's own plain `Enum`, never of
   SQLGlot's `TokenType`. `TokenType` is an `IntEnum`, so a member sharing an
   integer value would compare equal to a real token type and be swallowed by

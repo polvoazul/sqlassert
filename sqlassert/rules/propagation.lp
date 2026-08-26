@@ -16,53 +16,89 @@
 % level of default negation over facts already derived from base facts alone.
 % See docs/clingo-rule-policy.md.
 %
-% Variable naming used in this file: D = a Filter or Project's own Relation
-% Definition id, I = Relation Instance id, R = Relation Definition id, C = an
-% input-side column name, Out = the corresponding output column name,
-% E = expression id, K = a source Unique Set key, PK = the Unique Set key
-% Project's propagation derives.
+% Variable naming used in this file: OwnDefinitionId = a Filter or Project's
+% own Relation Definition id, InstanceId = Relation Instance id, DefinitionId
+% = Relation Definition id, ColumnName = an input-side column name,
+% OutputColumn = the corresponding output column name, ExpressionId =
+% expression id, SourceSetKey = a source Unique Set key, PropagatedSetKey =
+% the Unique Set key Project's propagation derives.
 
 #defined filter_input/2.
 #defined project_input/2.
 #defined project_output/3.
+#defined join_left_instance/2.
+#defined join_output_definition/2.
 
-unique_set(K, D) :- filter_input(D, I), instance_of(I, R), unique_set(K, R).
-column_not_null(D, C) :- filter_input(D, I), instance_of(I, R), column_not_null(R, C).
+% A Project's `project_input` names the single instance it reads from -- the
+% Join's own output instance, when its input is a Join, so that Join's
+% uniqueness-propagation stays gated by `unique_join/2` (see
+% `rules/unique_join.lp`) rather than trusting either side's raw Knowledge
+% directly. But a projected column's own expression still names whichever
+% *true* child instance it was resolved against during lowering (`sessions`
+% or `users`, never the Join's own synthetic one) -- column naming is settled
+% once, before any fact is generated. This bridges the two: a column drawn
+% from a Join's left instance is also recognised as belonging to the Join's
+% own output instance, so `projected_column` below can match it. Never
+% bridged from the right: the right side's own columns are not what a
+% unique_join proof is about (see `rules/unique_join.lp`'s own comment).
+resolves_via_join_output(TrueInstanceId, OutputInstanceId) :-
+    join_left_instance(JoinId, TrueInstanceId),
+    join_output_definition(JoinId, OutputDefinitionId),
+    instance_of(OutputInstanceId, OutputDefinitionId).
+
+unique_set(SourceSetKey, OwnDefinitionId) :-
+    filter_input(OwnDefinitionId, InstanceId),
+    instance_of(InstanceId, DefinitionId),
+    unique_set(SourceSetKey, DefinitionId).
+column_not_null(OwnDefinitionId, ColumnName) :-
+    filter_input(OwnDefinitionId, InstanceId),
+    instance_of(InstanceId, DefinitionId),
+    column_not_null(DefinitionId, ColumnName).
 
 % An output column whose source expression is exactly one member column of the
 % Project's input relation, unrenamed-computation.
-projected_column(D, C, Out) :-
-    project_output(D, Out, E),
-    project_input(D, I),
-    expression_column(E, I, C).
+projected_column(OwnDefinitionId, ColumnName, OutputColumn) :-
+    project_output(OwnDefinitionId, OutputColumn, ExpressionId),
+    project_input(OwnDefinitionId, InstanceId),
+    expression_column(ExpressionId, InstanceId, ColumnName).
+projected_column(OwnDefinitionId, ColumnName, OutputColumn) :-
+    project_output(OwnDefinitionId, OutputColumn, ExpressionId),
+    project_input(OwnDefinitionId, InstanceId),
+    resolves_via_join_output(TrueInstanceId, InstanceId),
+    expression_column(ExpressionId, TrueInstanceId, ColumnName).
 
 % An output column computed unrenamed from one non-null input column is
 % itself non-null, the same way Filter's `column_not_null` above carries its
 % input's whole unchanged -- otherwise a Candidate Key proved through a
 % renaming or reordering Project would wrongly read as merely nullable.
-column_not_null(D, Out) :-
-    projected_column(D, C, Out),
-    project_input(D, I),
-    instance_of(I, R),
-    column_not_null(R, C).
+column_not_null(OwnDefinitionId, OutputColumn) :-
+    projected_column(OwnDefinitionId, ColumnName, OutputColumn),
+    project_input(OwnDefinitionId, InstanceId),
+    instance_of(InstanceId, DefinitionId),
+    column_not_null(DefinitionId, ColumnName).
 
 % A Unique Set of the relation a Project draws from -- a candidate for
 % propagation, pending a check that every member survived the projection.
-candidate_unique_set(K, D) :- project_input(D, I), instance_of(I, R), unique_set(K, R).
+candidate_unique_set(SourceSetKey, OwnDefinitionId) :-
+    project_input(OwnDefinitionId, InstanceId),
+    instance_of(InstanceId, DefinitionId),
+    unique_set(SourceSetKey, DefinitionId).
 
-uncovered_projected_member(K, D, C) :-
-    candidate_unique_set(K, D),
-    unique_set_member(K, _, C),
-    not projected_column(D, C, _).
+uncovered_projected_member(SourceSetKey, OwnDefinitionId, ColumnName) :-
+    candidate_unique_set(SourceSetKey, OwnDefinitionId),
+    unique_set_member(SourceSetKey, _, ColumnName),
+    not projected_column(OwnDefinitionId, ColumnName, _).
 
-% `pk(K, D)` is a fresh compound identifier for the Unique Set Project D earns
-% from source Unique Set K -- safe to invent since K and D are already ground.
-propagated_key(pk(K, D), K, D) :-
-    candidate_unique_set(K, D),
-    not uncovered_projected_member(K, D, _).
+% `pk(SourceSetKey, OwnDefinitionId)` is a fresh compound identifier for the
+% Unique Set Project OwnDefinitionId earns from source Unique Set
+% SourceSetKey -- safe to invent since both are already ground.
+propagated_key(pk(SourceSetKey, OwnDefinitionId), SourceSetKey, OwnDefinitionId) :-
+    candidate_unique_set(SourceSetKey, OwnDefinitionId),
+    not uncovered_projected_member(SourceSetKey, OwnDefinitionId, _).
 
-unique_set(PK, D) :- propagated_key(PK, K, D).
-unique_set_member(PK, Pos, Out) :-
-    propagated_key(PK, K, D),
-    unique_set_member(K, Pos, C),
-    projected_column(D, C, Out).
+unique_set(PropagatedSetKey, OwnDefinitionId) :-
+    propagated_key(PropagatedSetKey, SourceSetKey, OwnDefinitionId).
+unique_set_member(PropagatedSetKey, Position, OutputColumn) :-
+    propagated_key(PropagatedSetKey, SourceSetKey, OwnDefinitionId),
+    unique_set_member(SourceSetKey, Position, ColumnName),
+    projected_column(OwnDefinitionId, ColumnName, OutputColumn).

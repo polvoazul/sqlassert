@@ -20,7 +20,7 @@ from sqlassert import ir, naming
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.knowledge import ColumnKnowledge, Knowledge, RelationKnowledge, UniqueSetKnowledge
 from sqlassert.naming import NameGiver
-from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin
+from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, unique_set_assertions
 from sqlassert.provenance import SQL, Origin, OriginRegistry
 
 
@@ -128,7 +128,13 @@ class IrParser:
     _ctes: CteScope = field(default_factory=CteScope)
     _views: ViewScope = field(default_factory=ViewScope)
     _assertions: list[ir.UniqueJoinAssertion] = field(default_factory=list)
+    _unique_set_assertions: list[ir.UniqueSetAssertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
+    # Lines this slice actually reached a Unique Set Assertion marker on --
+    # whether it became a real assertion or was rejected with its own
+    # diagnostic (an unknown column, say) -- so `_report_unanalyzed` does not
+    # ALSO report a rejected marker as merely unreached.
+    _handled_unique_set_lines: set[int] = field(default_factory=set)
 
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
@@ -138,15 +144,17 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         definitions = tuple(self._definitions.values()) + tuple(self._anonymous)
-        program = ir.Program(definitions, root, tuple(self._assertions))
+        program = ir.Program(definitions, root, tuple(self._assertions), tuple(self._unique_set_assertions))
         return IrConversionResult(program, Knowledge(tuple(self._declared)), tuple(self._diagnostics))
 
     def _report_unanalyzed(self, ast: ParsedProgram) -> None:
-        """Report every asserted join this slice never reached.
+        """Report every asserted join or Unique Set Assertion this slice never
+        reached.
 
         An assertion the engine silently ignored would read as a proof, so an
-        asserted join in a part of the program that is not yet lowered — a CTE
-        body, a subquery, a view definition — is reported instead of dropped.
+        asserted join or Select Expression in a part of the program that is
+        not yet lowered — a CTE body, a subquery, a view definition — is
+        reported instead of dropped.
         """
         analyzed = {self.origins.resolve(assertion.origin_id).line for assertion in self._assertions}
 
@@ -161,6 +169,18 @@ class IrParser:
                     join_origin(join, self.dialect),
                 )
             )
+
+        for select in _asserted_selects(ast):
+            for _, _, line in unique_set_assertions(select):
+                if line in self._handled_unique_set_lines:
+                    continue
+                self._diagnostics.append(
+                    Diagnostic(
+                        diag.UNANALYZED_ASSERTION,
+                        f"the unique set assertion on line {line} is in a part of the program this analysis does not model",
+                        Origin(SQL, select.sql(dialect=self.dialect), line),
+                    )
+                )
 
     # Declaration pass ---------------------------------------------------------
 
@@ -294,6 +314,13 @@ class IrParser:
         plan = self._lower_source(source)
         for join in select.args.get("joins") or []:
             plan = self._lower_join(plan, join)
+
+        # The Root Select has no alias or declared name of its own to label a
+        # derived Relation Definition with -- nothing else in the program can
+        # reference it by name, so `report_name` is moot the same way it is
+        # for every other unnamed derived table.
+        plan = self._lower_select_body(plan, select, None, self._origin_id(select), None)  # ty: ignore[invalid-argument-type]
+        self._register_unique_set_assertions(plan, select)  # ty: ignore[invalid-argument-type]
         return plan
 
     def _lower_set_operation(self, operation: exp.SetOperation) -> ir.SetOperation:
@@ -340,7 +367,9 @@ class IrParser:
             body = _unwrap_select(source)
             alias = source.alias_or_name
             if body is not None and alias:
-                return self._lower_nested_select(body, alias, origin_id)
+                plan = self._lower_nested_select(body, alias, origin_id)
+                self._register_unique_set_assertions(plan, body)
+                return plan
         return None
 
     def _lower_table_reference(self, table: exp.Table, name: str, origin_id: str) -> ir.Plan:
@@ -372,7 +401,9 @@ class IrParser:
 
         if plan is None:
             return self._scan(table, origin_id)
-        return self._rebind_definition(plan, self._definitions[name].id)
+        rebound = self._rebind_definition(plan, self._definitions[name].id)
+        self._register_unique_set_assertions(rebound, body)
+        return rebound
 
     def _report_cycle(self, table: exp.Table, name: str) -> None:
         self._diagnostics.append(
@@ -411,7 +442,9 @@ class IrParser:
 
         alias = table.alias or table.name
         with self._ctes.resolving(name):
-            return self._lower_nested_select(body, alias, origin_id, report_name=f"CTE_{name}")
+            plan = self._lower_nested_select(body, alias, origin_id, report_name=f"CTE_{name}")
+        self._register_unique_set_assertions(plan, body)
+        return plan
 
     def _scan(self, table: exp.Table, origin_id: str) -> ir.Scan:
         definition = self._register_definition(_qualified_name(table), self.origins.resolve(origin_id))
@@ -436,24 +469,17 @@ class IrParser:
         another CTE, or one wrapping a FROM subquery, keeps working several
         layers deep.
 
-        Anything else -- a JOIN or a nested WITH inside this body -- returns
-        None so the caller falls back to an OpaqueRelation, exactly like
-        every other unsupported construct in this module. In particular, a
-        JOIN inside a CTE or FROM-subquery body stays unsupported: its own
+        A JOIN or a nested WITH inside this body returns None so the caller
+        falls back to an OpaqueRelation, exactly like every other unsupported
+        construct in this module: unlike the Root Select, a CTE, view, or
+        FROM-subquery body still does not model its own joins. Its own
         asserted joins, if any, are reported by `_report_unanalyzed` rather
         than silently dropped.
 
-        A GROUP BY, DISTINCT, or QUALIFY body is delegated to
-        `_lower_aggregate`, `_lower_distinct`, or `_lower_qualify` instead of
-        the plain Filter/Project path below, since each earns its own Unique
-        Set from grouping, distinctness, or recognized partition
-        qualification rather than propagating one from its input.
-
-        `report_name` (set only by `_lower_cte_reference`) labels the body's
-        own Relation Definition for `report.facts`. Whichever shape this body
-        takes -- Filter, Project, Aggregate, Distinct, or QualifyByPartition --
-        it always earns a fresh Relation Definition of its own, so it is
-        always safe to apply.
+        Everything past the FROM source -- WHERE, GROUP BY, DISTINCT,
+        QUALIFY, and the projected column list -- is `_lower_select_body`,
+        shared with the Root Select so a Select Expression means the same
+        thing regardless of where in the program it sits.
         """
         if any(select.args.get(key) for key in ("with", "joins")):
             return None
@@ -463,35 +489,107 @@ class IrParser:
             return None
 
         inner_plan = self._lower_source(source)
+        return self._lower_select_body(inner_plan, select, alias, origin_id, report_name)
 
+    def _lower_select_body(
+        self,
+        input_plan: ir.Plan,
+        select: exp.Select,
+        alias: str | None,
+        origin_id: str,
+        report_name: str | None = None,
+    ) -> ir.Plan | None:
+        """WHERE, GROUP BY, DISTINCT, QUALIFY, and projection applied on top of
+        an already-lowered FROM (plus, for the Root Select only, its JOINs) --
+        the part of a Select Expression common to a Root Select, a CTE, a
+        view, and a FROM subquery alike, so none of them is special-cased
+        relative to the others.
+
+        A GROUP BY, DISTINCT, or QUALIFY body is delegated to
+        `_lower_aggregate`, `_lower_distinct`, or `_lower_qualify` instead of
+        the plain Filter/Project path below, since each earns its own Unique
+        Set from grouping, distinctness, or recognized partition
+        qualification rather than propagating one from its input.
+
+        `report_name` labels the body's own Relation Definition for
+        `report.facts` -- a CTE's own declared name, say; the Root Select
+        passes `None`, since it has no declared name of its own. Whichever
+        shape this body takes -- Filter, Project, Aggregate, Distinct, or
+        QualifyByPartition -- it always earns a fresh Relation Definition of
+        its own, so it is always safe to apply, even directly on top of a
+        Join: a Join owns an output instance of its own too (`ir.Join`), so
+        `ir.output_instance` gives Filter/Project something to attach to
+        exactly as it would for any other single relation.
+        """
         group = select.args.get("group")
         if group is not None:
-            return self._lower_aggregate(inner_plan, select, group, alias, origin_id, report_name)
-        if select.args.get("distinct") is not None:
-            return self._lower_distinct(inner_plan, select, alias, origin_id, report_name)
-        qualify = select.args.get("qualify")
-        if qualify is not None:
-            return self._lower_qualify(inner_plan, select, qualify, alias, origin_id, report_name)
+            plan = self._lower_aggregate(input_plan, select, group, alias, origin_id, report_name)
+        elif select.args.get("distinct") is not None:
+            plan = self._lower_distinct(input_plan, select, alias, origin_id, report_name)
+        elif select.args.get("qualify") is not None:
+            plan = self._lower_qualify(input_plan, select, select.args["qualify"], alias, origin_id, report_name)
+        else:
+            items = select.expressions
+            star_only = len(items) == 1 and isinstance(items[0], exp.Star)
+            has_where = select.args.get("where") is not None
 
-        items = select.expressions
-        star_only = len(items) == 1 and isinstance(items[0], exp.Star)
-        has_where = select.args.get("where") is not None
+            plan = input_plan
+            if has_where or star_only:
+                # Only a star-only body ends here: give it `report_name`, since
+                # `_project` below is the final node -- and gets it instead -- otherwise.
+                plan = self._filter(
+                    plan, alias if star_only else None, origin_id, report_name if star_only else None
+                )
+            if not star_only:
+                plan = self._project(plan, items, alias, origin_id, report_name)
 
-        plan = inner_plan
-        if has_where or star_only:
-            # Only a star-only body ends here: give it `report_name`, since
-            # `_project` below is the final node -- and gets it instead -- otherwise.
-            plan = self._filter(plan, alias if star_only else None, origin_id, report_name if star_only else None)
-        if not star_only:
-            plan = self._project(plan, items, alias, origin_id, report_name)
         return plan
+
+    def _register_unique_set_assertions(self, plan: ir.Plan | None, select: exp.Select) -> None:
+        """Record `select`'s own Unique Set Assertion markers against `plan`'s
+        Relation Definition.
+
+        Callers must pass the *final* plan for this Select Expression --
+        after `_rebind_definition`, for a view -- since a marker attached
+        before rebinding would point at the anonymous definition
+        `_lower_nested_select` mints internally, not the view's own real one.
+        """
+        if plan is None:
+            return
+        known_outputs = _known_output_columns(plan)
+        for kind, columns, line in unique_set_assertions(select):
+            self._handled_unique_set_lines.add(line)
+            origin = Origin(SQL, select.sql(dialect=self.dialect), line)
+            if known_outputs is not None:
+                unknown = [column for column in columns if column.lower() not in known_outputs]
+                if unknown:
+                    self._diagnostics.append(
+                        Diagnostic(
+                            diag.UNKNOWN_ASSERTED_COLUMN,
+                            f"the unique set assertion on line {line} names "
+                            f"{', '.join(unknown)}, which is not among this Select Expression's own output columns",
+                            origin,
+                        )
+                    )
+                    continue
+
+            instance = ir.output_instance(plan)
+            self._unique_set_assertions.append(
+                ir.UniqueSetAssertion(
+                    id=self.names.new(naming.ASSERTION, "_".join(columns)),
+                    definition_id=instance.definition_id,
+                    columns=columns,
+                    candidate_key=kind == "key",
+                    origin_id=self.origins.register(origin),
+                )
+            )
 
     def _lower_aggregate(
         self,
         input_plan: ir.Plan,
         select: exp.Select,
         group: exp.Group,
-        alias: str,
+        alias: str | None,
         origin_id: str,
         report_name: str | None = None,
     ) -> ir.Plan | None:
@@ -527,7 +625,7 @@ class IrParser:
         self,
         input_plan: ir.Plan,
         select: exp.Select,
-        alias: str,
+        alias: str | None,
         origin_id: str,
         report_name: str | None = None,
     ) -> ir.Plan | None:
@@ -560,7 +658,7 @@ class IrParser:
         input_plan: ir.Plan,
         select: exp.Select,
         qualify: exp.Qualify,
-        alias: str,
+        alias: str | None,
         origin_id: str,
         report_name: str | None = None,
     ) -> ir.Plan | None:
@@ -625,7 +723,7 @@ class IrParser:
         self,
         input_plan: ir.Plan,
         items: list[exp.Expression],
-        alias: str,
+        alias: str | None,
         origin_id: str,
         report_name: str | None = None,
     ) -> ir.Project:
@@ -703,11 +801,19 @@ class IrParser:
         origin_id = self._origin_id(join, assertion_line(join))
         right = self._lower_source(join.this)
 
+        # A fresh, anonymous instance for the join's own output -- never
+        # itself part of any column-resolution scope (`ir.instances` stays
+        # transparent through a Join), but what lets a proven-unique join
+        # earn its own Unique Set and what a Filter or Project sitting
+        # directly on top of the join attaches to (`ir.output_instance`).
+        instance = self._anonymous_instance(None, origin_id)
+
         lowered = ir.Join(
             id=self.names.new(naming.JOIN, _join_hint(join)),
             kind=_join_kind(join),
             left=left,
             right=right,
+            instance=instance,
             equalities=self._lower_join_predicate(join, left, right),
             origin_id=origin_id,
         )
@@ -825,6 +931,36 @@ def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
         for join in statement.find_all(exp.Join)
         if assertion_line(join) is not None
     ]
+
+
+def _asserted_selects(ast: ParsedProgram) -> list[exp.Select]:
+    statements = (*ast.create_statements, ast.root_select)
+    return [
+        select
+        for statement in statements
+        if statement is not None
+        for select in statement.find_all(exp.Select)
+        if unique_set_assertions(select)
+    ]
+
+
+def _known_output_columns(plan: ir.Plan) -> frozenset[str] | None:
+    """The complete, lower-cased set of `plan`'s own output column names, if
+    it has one to check an assertion's columns against.
+
+    Only `Project` and `Distinct` enumerate their full output list in the IR.
+    An Aggregate's `grouping_keys` is deliberately a *subset* of its real
+    output (an Aggregate Expression such as `count(*)` is not represented at
+    all -- see `ir/model.py`), so treating it as the complete output would
+    wrongly flag a real column as unknown; a star-only Filter has no output
+    list in the IR at all. Both stay unchecked (`None`) rather than risk a
+    false positive.
+    """
+    if isinstance(plan, ir.Project):
+        return frozenset(output.name.lower() for output in plan.outputs)
+    if isinstance(plan, ir.Distinct):
+        return frozenset(output.name.lower() for output in plan.outputs)
+    return None
 
 
 def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] | None:
