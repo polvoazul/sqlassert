@@ -1,4 +1,4 @@
-"""Knowledge: typed semantic facts about relation definitions and columns.
+"""Knowledge: typed semantic facts about Named Relations and columns.
 
 Knowledge is independent of the analyzed query. It holds no SQL text, no
 SQLGlot AST, and no database connection, so it can be supplied by a caller or
@@ -27,7 +27,7 @@ class UniqueSetKnowledge:
 
 @dataclass(frozen=True)
 class RelationKnowledge:
-    """Facts about one Relation Definition, named as it is declared.
+    """Facts about one Named Relation, named as it is declared.
 
     The name is a whole qualified name: `users` and `b.users` are different
     relations, and neither inherits the other's Unique Sets.

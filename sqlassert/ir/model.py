@@ -1,436 +1,189 @@
-"""The relational IR: the integration boundary between SQL analysis and
-property reasoning.
+"""Framework-independent relational intermediate representation.
 
-Every node is an immutable Python value carrying an origin identifier. No
-SQLGlot node, database connection, or Clingo symbol may appear here, and the
-property engine is the only consumer that turns these values into facts.
+The IR is an immutable semantic object graph. Nodes refer directly to other
+nodes; identifiers are assigned only when the graph is encoded for Clingo.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from enum import Enum
+from typing import dataclass_transform
+
+from sqlassert.provenance import Origin
 
 INNER = "inner"
 
 
-@dataclass(frozen=True)
-class ColumnReference:
-    """A reference to one column of one Relation Instance."""
+@dataclass_transform(eq_default=False, frozen_default=True, kw_only_default=True)
+class NodeMeta(type):
+    """Turn every Node subclass into the same kind of semantic value."""
 
-    id: str
-    instance_id: str
-    column: str
-    origin_id: str
-
-
-@dataclass(frozen=True)
-class Constant:
-    """A literal value in an equality.
-
-    Its value is not represented: a constant determines the column it is
-    equated to regardless of what the value is, so the property engine never
-    needs to know it.
-    """
-
-    id: str
-    origin_id: str
+    def __new__(metaclass, name, bases, namespace):
+        node_type = super().__new__(metaclass, name, bases, namespace)
+        return dataclass(frozen=True, eq=False, kw_only=True)(node_type)
 
 
-@dataclass(frozen=True)
-class OpaqueExpression:
-    """An expression whose semantics conversion did not model.
+class Node(metaclass=NodeMeta):
+    """An immutable semantic node with object-identity equality."""
 
-    Represented explicitly so that conversion never silently discards meaning.
-    """
+    origin: Origin
 
-    id: str
+
+class ScalarExpr(Node):
+    """A scalar expression produced or consumed by a relational operation."""
+
+
+class OpaqueExpression(ScalarExpr):
     description: str
-    origin_id: str
 
 
-Expression = ColumnReference | Constant | OpaqueExpression
+class Constant(ScalarExpr):
+    """A literal whose concrete value is irrelevant to current proofs."""
 
 
-@dataclass(frozen=True)
-class Equality:
-    id: str
-    left: Expression
-    right: Expression
-    origin_id: str
+class ColumnRef(ScalarExpr):
+    """A direct reference to an upstream relation expression's output."""
+
+    column: OutputColumn
 
 
-@dataclass(frozen=True)
-class RelationDefinition:
-    """The reusable meaning of a table, view, CTE, or subquery.
+class Equality(ScalarExpr):
+    left: ScalarExpr
+    right: ScalarExpr
 
-    Column and uniqueness facts live in Knowledge, not here, so that query
-    structure and what is known about relations stay separately represented.
 
-    `name` and `report_name` serve two different, deliberately separate
-    purposes. `name` is what Knowledge is looked up by: it is empty for
-    every derived relation (a Project, Aggregate, Distinct, or an anonymous
-    subquery), because a derived relation's own properties must never be
-    confused with a declared relation's that happens to share its name.
-    `report_name` is purely a caller-facing label for `report.facts` -- a
-    CTE's own declared name, say -- and is never consulted for Knowledge.
-    """
+class OutputColumn(Node):
+    """One named output of one relational stage and the expression producing it."""
 
-    id: str
     name: str
-    origin_id: str
-    report_name: str | None = None
+    expression: ScalarExpr
 
 
-@dataclass(frozen=True)
-class RelationInstance:
-    """One occurrence of a Relation Definition within a query."""
+class RelationExpr(Node):
+    """A relation-producing expression with an explicit output schema."""
 
-    id: str
-    definition_id: str
-    alias: str | None
-    origin_id: str
+    outputs: tuple[OutputColumn, ...]
+    schema_complete: bool = False
 
 
-@dataclass(frozen=True)
-class Scan:
-    id: str
-    instance: RelationInstance
+class RelationRole(Enum):
+    TABLE = "table"
+    VIEW = "view"
+    CTE = "cte"
 
 
-@dataclass(frozen=True)
-class OpaqueRelation:
-    """A relational subplan whose semantics conversion did not model.
+class NamedRelation(RelationExpr):
+    """A table, view, or CTE declaration shared by every reference to it."""
 
-    It still owns a Relation Instance, so nothing about the query is discarded:
-    the instance simply has no properties to reason from.
-    """
+    name: str
+    role: RelationRole
+    body: RelationExpr | None = None
 
-    id: str
-    description: str
-    instance: RelationInstance
-    origin_id: str
+    @property
+    def report_name(self) -> str:
+        return f"CTE_{self.name}" if self.role is RelationRole.CTE else self.name
 
 
-@dataclass(frozen=True)
-class Join:
-    """Combines a left and right Plan.
+class Alias(RelationExpr):
+    """One occurrence of a relation expression in a query scope."""
 
-    Owns a fresh Relation Instance for its own output, like every other
-    derived table -- but unlike them, it never appears in what `instances`
-    returns: a query above the join must still resolve `left.col`/`right.col`
-    against the join's own children, not a synthetic instance of the join
-    itself. This instance exists only so a proven-unique join can earn its
-    own Unique Set (see `rules/unique_join.lp`) and so a Filter or Project can
-    sit directly on top of a join exactly as it would on top of any other
-    single relation (`ir.output_instance`).
-    """
+    source: RelationExpr
+    name: str
 
-    id: str
+
+class Join(RelationExpr):
     kind: str
-    left: "Plan"
-    right: "Plan"
-    instance: RelationInstance
+    left: RelationExpr
+    right: RelationExpr
     equalities: tuple[Equality, ...] = ()
-    origin_id: str = ""
 
 
-@dataclass(frozen=True)
-class SetOperation:
-    """UNION, INTERSECT, or EXCEPT: each side is lowered independently, the
-    same way the two sides of a Join are, so a marked join in either arm is
-    reachable for analysis.
+class Filter(RelationExpr):
+    input: RelationExpr
 
-    `operator` is carried for provenance only. All three share one DISTINCT
-    vs. ALL toggle (`UNION`/`INTERSECT`/`EXCEPT` dedup their combined output;
-    the `ALL` form of each keeps duplicates instead), and the operation's own
-    row-set semantics -- that the non-ALL form's combined output is unique
-    over every output column, the same way a bare `SELECT DISTINCT` earns a
-    Unique Set over its output columns -- is deliberately not modeled here:
-    that is a proof in its own right, not a precondition for reaching the
-    joins nested in either arm.
 
-    TODO: earning that Unique Set needs three things together, none done yet:
-    this node its own `RelationInstance`/`RelationDefinition` and an output
-    column list (as `Distinct` has); the Unique Set derived from the leftmost
-    arm's output names when `distinct` is set; and `CteScope`/
-    `_lower_nested_source` taught to lower a `SetOperation` body instead of
-    only a plain `exp.Select`, since otherwise nothing could reference the
-    result to ever observe the proof.
-    """
+class Project(RelationExpr):
+    input: RelationExpr
 
-    id: str
+
+class Aggregate(RelationExpr):
+    input: RelationExpr
+    grouping_outputs: tuple[OutputColumn, ...]
+
+
+class Distinct(RelationExpr):
+    input: RelationExpr
+
+
+class SetOperation(RelationExpr):
     operator: str
-    left: "Plan"
-    right: "Plan"
-    origin_id: str
+    left: RelationExpr
+    right: RelationExpr
 
 
-@dataclass(frozen=True)
-class Filter:
-    """Restricts its input's rows without renaming or dropping any column.
+class QualifyByPartition(RelationExpr):
+    """The supported ``row_number() = 1`` qualification special case."""
 
-    Owns a fresh Relation Definition like every other derived table, so it
-    can carry its own name for `report.facts` (a CTE's, for instance) --
-    unlike Project, its Unique Sets are never conditional on which columns
-    survived, since a Filter can only remove rows: every Unique Set of its
-    input relation propagates to it whole and unchanged (see
-    `rules/propagation.lp`).
-    """
-
-    id: str
-    input: "Plan"
-    instance: RelationInstance
-    origin_id: str
+    input: RelationExpr
+    partition_outputs: tuple[OutputColumn, ...]
+    ordering: tuple[ScalarExpr, ...] = ()
 
 
-@dataclass(frozen=True)
-class ProjectedColumn:
-    name: str
-    expression: Expression
+class OpaqueRelation(RelationExpr):
+    description: str
 
 
-@dataclass(frozen=True)
-class Project:
-    """Renames, drops, or computes columns of its input.
+class RecursiveRelation(OpaqueRelation):
+    """An explicit unsupported recursive reference, represented without a cycle."""
 
-    Unlike Filter, this can change what a Unique Set means, so it owns a
-    fresh, anonymous Relation Definition rather than reusing the input's.
-    """
-
-    id: str
-    input: "Plan"
-    instance: RelationInstance
-    outputs: tuple[ProjectedColumn, ...]
-    origin_id: str
+    relation_name: str
 
 
-@dataclass(frozen=True)
-class GroupingKey:
-    """One `GROUP BY` expression, named by the output column an outer query
-    sees it as -- the only thing a Unique Set built from it needs, since a
-    later join can only ever refer to a Grouping Key by that output name.
-
-    Only a Grouping Key contributes to the Unique Set an Aggregate earns: an
-    Aggregate Expression such as a sum or count is deliberately not
-    represented here, so it can never be mistaken for one.
-    """
-
-    name: str
+class Assertion(Node):
+    """A requirement over a node in the relation graph."""
 
 
-@dataclass(frozen=True)
-class Aggregate:
-    """An ordinary `GROUP BY`: unique by its complete set of Grouping Keys,
-    regardless of what its input relation's own Unique Sets were.
-
-    Owns a fresh, anonymous Relation Definition for the same reason Project
-    does: grouping changes what a Unique Set means.
-    """
-
-    id: str
-    input: "Plan"
-    instance: RelationInstance
-    grouping_keys: tuple[GroupingKey, ...]
-    origin_id: str
+class UniqueJoinAssertion(Assertion):
+    subject: Join
 
 
-@dataclass(frozen=True)
-class Distinct:
-    """`SELECT DISTINCT`: unique by its complete set of output expressions,
-    regardless of what its input relation's own Unique Sets were.
-    """
-
-    id: str
-    input: "Plan"
-    instance: RelationInstance
-    outputs: tuple[ProjectedColumn, ...]
-    origin_id: str
-
-
-@dataclass(frozen=True)
-class PartitionKey:
-    """One `PARTITION BY` expression of a QualifyByPartition, named by the
-    output column an outer query sees it as -- the only thing a Unique Set
-    built from it needs, since a later join can only ever refer to a
-    Partition Key by that output name. Keeps its own lowered expression, the
-    same way ProjectedColumn does, so its provenance survives for future
-    best-effort reporting even though the MVP does not yet render it.
-    """
-
-    name: str
-    expression: Expression
-
-
-@dataclass(frozen=True)
-class QualifyByPartition:
-    """A recognized `ROW_NUMBER() OVER (PARTITION BY ...) = 1` qualification:
-    unique by its complete Partition Key, because that predicate retains
-    exactly one row per partition regardless of how ORDER BY orders rows
-    within it.
-
-    Only this narrow shape earns a Unique Set. `ordering` keeps the ORDER BY
-    expressions' own provenance for future best-effort reporting -- it never
-    determines uniqueness, since ORDER BY decides which row survives, not how
-    many do. Any other rank function, retention predicate, or general window
-    semantics is left as an OpaqueRelation instead, exactly as an unsupported
-    Aggregate is.
-    """
-
-    id: str
-    input: "Plan"
-    instance: RelationInstance
-    partition_keys: tuple[PartitionKey, ...]
-    ordering: tuple[Expression, ...]
-    origin_id: str
-
-
-Plan = Scan | OpaqueRelation | Join | SetOperation | Filter | Project | Aggregate | Distinct | QualifyByPartition
-
-
-@dataclass(frozen=True)
-class UniqueJoinAssertion:
-    """A requirement that a join cannot multiply its left-hand input's rows."""
-
-    id: str
-    join_id: str
-    origin_id: str
-
-
-@dataclass(frozen=True)
-class UniqueSetAssertion:
-    """A requirement that a named set of a Select Expression's own output
-    columns forms a Unique Set, or, when `candidate_key` is set, the stricter,
-    non-null Candidate Key.
-
-    Defined purely in terms of a Relation Definition and its columns: nothing
-    here says whether that definition came from a Root Select, a view, a CTE,
-    or a subquery -- proving it is exactly the same regardless.
-    """
-
-    id: str
-    definition_id: str
-    columns: tuple[str, ...]
+class UniqueSetAssertion(Assertion):
+    subject: RelationExpr
+    columns: tuple[OutputColumn, ...]
     candidate_key: bool
-    origin_id: str
 
 
 @dataclass(frozen=True)
 class Program:
-    definitions: tuple[RelationDefinition, ...] = ()
-    root: Plan | None = None
-    assertions: tuple[UniqueJoinAssertion, ...] = field(default=())
-    unique_set_assertions: tuple[UniqueSetAssertion, ...] = field(default=())
+    declarations: tuple[NamedRelation, ...] = ()
+    root: RelationExpr | None = None
+    assertions: tuple[Assertion, ...] = ()
 
 
-_DERIVED_TABLE = (Scan, OpaqueRelation, Filter, Project, Aggregate, Distinct, QualifyByPartition)
-
-# The derived tables that wrap a single `.input` -- everything in
-# `_DERIVED_TABLE` except Scan and OpaqueRelation, which have none.
-_DERIVED_TABLE_WITH_INPUT = (Filter, Project, Aggregate, Distinct, QualifyByPartition)
+def joins(relation: RelationExpr | None) -> tuple[Join, ...]:
+    return tuple(node for node in relation_nodes(relation) if isinstance(node, Join))
 
 
-def instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
-    """Every Relation Instance immediately visible from a plan, in source order.
+def relation_nodes(relation: RelationExpr | None) -> tuple[RelationExpr, ...]:
+    """Relation expressions reachable from ``relation``, once each by identity."""
+    found: list[RelationExpr] = []
+    seen: set[int] = set()
 
-    Filter, Project, Aggregate, and Distinct are leaves here, like Scan and
-    OpaqueRelation: a derived table exposes only its own outer instance,
-    keeping whatever it wraps out of the enclosing query's column scope.
-    """
-    if plan is None:
-        return ()
-    if isinstance(plan, _DERIVED_TABLE):
-        return (plan.instance,)
-    return instances(plan.left) + instances(plan.right)
+    def visit(node: RelationExpr | None) -> None:
+        if node is None or id(node) in seen:
+            return
+        seen.add(id(node))
+        found.append(node)
+        if isinstance(node, NamedRelation):
+            visit(node.body)
+        elif isinstance(node, Alias):
+            visit(node.source)
+        elif isinstance(node, (Join, SetOperation)):
+            visit(node.left)
+            visit(node.right)
+        elif isinstance(node, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
+            visit(node.input)
 
-
-def all_instances(plan: Plan | None) -> tuple[RelationInstance, ...]:
-    """Every Relation Instance anywhere in a plan, including inside a derived
-    table, whose own input is otherwise invisible to `instances`.
-
-    Used only for fact generation: every instance needs its `instance_of`
-    fact, even one that no outer scope can resolve a column against. A Join's
-    own instance is included alongside its children's -- unlike `instances`,
-    this does not need to keep it out of any column-resolution scope.
-    """
-    if plan is None:
-        return ()
-    if isinstance(plan, (Scan, OpaqueRelation)):
-        return (plan.instance,)
-    if isinstance(plan, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
-        return (plan.instance,) + all_instances(plan.input)
-    if isinstance(plan, Join):
-        return (plan.instance,) + all_instances(plan.left) + all_instances(plan.right)
-    return all_instances(plan.left) + all_instances(plan.right)
-
-
-def joins(plan: Plan | None) -> tuple[Join, ...]:
-    """Every Join reachable from a plan, including one nested inside a Filter,
-    Project, Aggregate, Distinct, or QualifyByPartition's input -- the Root
-    Select's own tail can wrap FROM/JOIN in the same derived-table nodes a CTE
-    or view body already gets, so a marked join must stay reachable through
-    them exactly like `all_instances` above already looks through them.
-
-    Scan and OpaqueRelation are the true leaves here: neither has an `.input`
-    to recurse into. A SetOperation is not itself a Join -- it shares the
-    two-children shape only so both of its arms are walked the same way a
-    Join's sides are.
-    """
-    if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
-        return ()
-    if isinstance(plan, _DERIVED_TABLE_WITH_INPUT):
-        return joins(plan.input)
-    found = joins(plan.left) + joins(plan.right)
-    return (*found, plan) if isinstance(plan, Join) else found
-
-
-def output_instance(plan: Plan) -> RelationInstance:
-    """The single Relation Instance standing for `plan`'s own output.
-
-    Every Plan variant except SetOperation owns exactly one: Scan and every
-    derived table always have, and a Join owns one too (see `Join`), so a
-    Filter or Project can sit directly on top of a Join exactly as it would on
-    top of any other single relation -- this is how the Root Select's own
-    FROM/JOIN plan is wrapped by the same WHERE/GROUP BY/DISTINCT/QUALIFY/
-    projection tail a CTE or view body already gets.
-
-    SetOperation has no output instance of its own yet (see its own
-    docstring's TODO) and is never actually passed here: nothing in this
-    module wraps one directly.
-    """
-    return plan.instance  # ty: ignore[unresolved-attribute]
-
-
-def _collect(plan: Plan | None, node_type: type) -> tuple:
-    """Every `node_type` node reachable from a plan, including inside chains
-    of other derived tables -- one Aggregate nested inside a Distinct inside
-    a Filter is still found, and vice versa.
-
-    Shared by `projects`, `aggregates`, and `distincts`, which otherwise
-    differ only in which single Plan subtype they collect.
-    """
-    if plan is None or isinstance(plan, (Scan, OpaqueRelation)):
-        return ()
-    if isinstance(plan, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
-        found = _collect(plan.input, node_type)
-        return (*found, plan) if isinstance(plan, node_type) else found
-    return _collect(plan.left, node_type) + _collect(plan.right, node_type)
-
-
-def filters(plan: Plan | None) -> tuple[Filter, ...]:
-    return _collect(plan, Filter)
-
-
-def projects(plan: Plan | None) -> tuple[Project, ...]:
-    return _collect(plan, Project)
-
-
-def aggregates(plan: Plan | None) -> tuple[Aggregate, ...]:
-    return _collect(plan, Aggregate)
-
-
-def distincts(plan: Plan | None) -> tuple[Distinct, ...]:
-    return _collect(plan, Distinct)
-
-
-def qualify_by_partitions(plan: Plan | None) -> tuple[QualifyByPartition, ...]:
-    return _collect(plan, QualifyByPartition)
+    visit(relation)
+    return tuple(found)

@@ -1,5 +1,5 @@
-"""Uniqueness propagated through Filter and Project, and Relation Instance
-identity for aliases and self-joins.
+"""Uniqueness propagated through Filter and Project, with Alias identity for
+aliases and self-joins.
 
 Every case here joins against a derived table (`(SELECT ...) AS alias`) or a
 second occurrence of an already-declared table, rather than a bare table, so
@@ -94,7 +94,7 @@ def test_replacing_a_key_member_with_a_computed_expression_is_unknown():
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_two_aliases_of_the_same_relation_are_separate_instances():
+def test_two_aliases_of_the_same_relation_are_separate_occurrences():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, manager_id INTEGER);

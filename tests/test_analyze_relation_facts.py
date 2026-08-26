@@ -77,11 +77,10 @@ def test_an_unknown_relation_reports_no_facts():
     assert not report.facts.is_unique("nonexistent", ["id"])
 
 
-def test_a_cte_that_earns_its_own_relation_definition_is_queryable_by_a_prefixed_name():
-    """A CTE ending in a Project, Aggregate, or Distinct always earns a fresh,
-    exclusively-owned Relation Definition -- safe to label with the CTE's own
-    declared name, under a `CTE_` prefix so it can never collide with a real
-    table or view Knowledge is looked up by."""
+def test_a_cte_with_proved_output_properties_is_queryable_by_a_prefixed_name():
+    """A CTE is a distinct Named Relation, safe to label with its declared
+    name under a `CTE_` prefix so it cannot collide with table or view
+    Knowledge."""
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -133,8 +132,8 @@ def test_a_from_subquery_has_no_name_to_ask_about():
 def test_a_cte_shadowing_a_real_table_name_never_borrows_its_knowledge():
     """A CTE shadows a same-named table for name *resolution* (the query
     reads from `other`, not the real `active_users`), but the CTE's own
-    Relation Definition must never borrow the real table's declared Knowledge
-    just because `report_name` happens to echo its name: `other.x` has no
+    Named Relation must never borrow the real table's declared Knowledge just
+    because its report label echoes the name: `other.x` has no
     Unique Set, so the CTE must report none, regardless of what the real,
     unrelated `active_users` table declares."""
     report = analyze(

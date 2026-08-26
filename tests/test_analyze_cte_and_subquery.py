@@ -45,8 +45,8 @@ def test_a_cte_preserving_a_unique_set_proves_a_join_in_the_root_select(users_an
 
 
 def test_a_candidate_key_survives_a_where_filter_inside_a_cte(users_and_sessions):
-    """Filter earns its own Relation Definition and inherits Unique Sets
-    through `propagation.lp` rather than by sharing identity with its input
+    """Filter earns fresh Output Columns and inherits Unique Sets through
+    `propagation.lp` rather than sharing output identity with its input
     -- `column_not_null` must propagate right alongside `unique_set`, or a
     Candidate Key proved through a filtered CTE would wrongly read as merely
     nullable."""
@@ -151,9 +151,8 @@ def test_a_projection_alias_inside_a_cte_maps_the_unique_set_to_the_outer_column
 
 def test_a_parenthesized_cte_body_preserves_its_unique_set(users_and_sessions):
     """Regression test: SQLGlot parses a parenthesized CTE body
-    (`AS (SELECT ...)`) as `exp.Subquery` rather than a bare `exp.Select`, so
-    `CteScope.declare`'s `isinstance(body, exp.Select)` guard silently
-    dropped it. A doubly-parenthesized body exercises the same unwrap fully.
+    (`AS (SELECT ...)`) as `exp.Subquery` rather than a bare `exp.Select`.
+    A doubly-parenthesized body exercises the linker boundary's full unwrap.
     """
     report = analyze(
         users_and_sessions
@@ -171,9 +170,8 @@ def test_a_parenthesized_cte_body_preserves_its_unique_set(users_and_sessions):
 
 
 def test_a_doubly_parenthesized_from_subquery_preserves_its_unique_set(users_and_sessions):
-    """A plain FROM subquery is already one `exp.Subquery` layer that
-    `_lower_nested_source` unwraps; an extra pair of parens adds a second
-    layer, regression-testing that the unwrap in `_unwrap_select` is a loop
+    """A plain FROM subquery is already one `exp.Subquery` layer; an extra pair
+    of parens adds a second layer, regression-testing that query unwrapping is a loop
     rather than a single `.this` step.
     """
     report = analyze(

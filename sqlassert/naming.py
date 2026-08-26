@@ -13,8 +13,6 @@ from dataclasses import dataclass
 
 
 RELATION = "rel"
-PLAN = "plan"
-INSTANCE = "rel"
 COLUMN = "col"
 KEY = "key"
 JOIN = "join"
