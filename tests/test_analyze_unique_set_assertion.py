@@ -3,7 +3,7 @@ written on a Select Expression -- a Root Select, a view, a CTE, or a
 subquery -- asserting that the named output columns form a Unique Set or,
 for the `PRIMARY KEY` spelling, the stricter non-null Candidate Key.
 
-Proof is defined purely in terms of a Relation Definition and its columns:
+Proof is defined purely in terms of a Relation Expression and its Output Columns:
 nothing here should behave differently depending on whether the Select
 Expression is a Root Select, a view, or a CTE (see
 `test_the_same_assertion_proves_identically_regardless_of_attachment_site`).
@@ -199,7 +199,7 @@ def test_a_from_subquery_can_carry_a_unique_set_assertion():
 
 def test_the_same_assertion_proves_identically_regardless_of_attachment_site():
     """The assertion's IR and engine representation is defined purely in
-    terms of a Relation Definition and its columns -- a view-attached,
+    terms of a Relation Expression and its Output Columns -- a view-attached,
     CTE-attached, and Root-Select-attached assertion over the same underlying
     structure must be indistinguishable to the engine."""
 

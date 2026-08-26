@@ -12,7 +12,7 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - `INNER` and `LEFT` Unique Join Assertions.
 - `ON` predicates composed from simple equalities joined by `AND`, plus `USING`.
 - Candidate Keys and nullable Unique Sets supplied by DDL or explicit Knowledge.
-- Unique Set Assertions (`/**UNIQUE(...)**/` and `/**PRIMARY KEY(...)**/`) written on any Select Expression -- a Root Select, a view, a CTE, or a subquery -- proved against Unique Sets already derivable for the same Relation Definition, and fed forward as Knowledge-equivalent facts for later statements.
+- Unique Set Assertions (`/**UNIQUE(...)**/` and `/**PRIMARY KEY(...)**/`) written on any Select Expression -- a Root Select, a view, a CTE, or a subquery -- proved against Unique Sets already derivable for that Relation Expression's output columns, and fed forward as Knowledge-equivalent facts for later statements.
 - A proven-unique join's own output earns every Unique Set of its left-hand input, so uniqueness composes through a join exactly as it does through Filter and Project.
 - Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, joining, and recognized `row_number() = 1` partition qualification.
 - `PROVED` and `UNKNOWN` outcomes.

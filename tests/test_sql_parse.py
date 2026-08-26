@@ -23,7 +23,7 @@ def test_parsed_program_coercion():
     # tuples, since that's what every field actually stores.
     program = ParsedProgram(
         create_statements=[stmt],  # ty: ignore[invalid-argument-type]
-        root_select=query,
+        root_select=query,  # ty: ignore[invalid-argument-type]
         diagnostics=[],  # ty: ignore[invalid-argument-type]
     )
 

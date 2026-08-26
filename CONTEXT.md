@@ -52,24 +52,32 @@ _Avoid_: Aggregate predicate, grouping key
 A relational operation that retains rows according to a window-derived position within each partition. It establishes uniqueness only when its condition guarantees at most one retained row per partition.
 _Avoid_: Deduplicate
 
-**Relation Definition**:
-The reusable meaning of a table, view, CTE, or subquery, independent of any particular use within a query.
-_Avoid_: Relation instance, alias
+**Relation Expression**:
+A semantic operation that produces a relation with its own output columns.
+_Avoid_: Relation definition, relation instance, plan
 
-**Relation Instance**:
-One occurrence of a relation definition within a query, with its own identity and optional alias.
-_Avoid_: Relation definition
+**Named Relation**:
+The reusable meaning declared by a table, view, or CTE, shared by every reference to that declaration.
+_Avoid_: Relation definition, alias
+
+**Alias**:
+One occurrence of a relation expression in a query scope, including an occurrence whose name is implicit.
+_Avoid_: Relation instance, named relation
+
+**Output Column**:
+One named value produced by one relation expression. A pass-through operation produces a fresh Output Column referring to the upstream one.
+_Avoid_: Column instance
+
+**Column Reference**:
+A scalar expression that reads an upstream Output Column.
+_Avoid_: Input column, column identifier
 
 **Origin**:
 The SQL location or catalog object from which a semantic element or piece of knowledge arose.
 _Avoid_: SQLGlot node
 
-**Expansion Context**:
-The per-instance chain of relation references traversed while expanding a view or other known relation definition.
-_Avoid_: Global expansion stack
-
 **Knowledge**:
-Typed semantic facts known about relation definitions and their columns independently of the analyzed query, such as uniqueness, nullability, and column membership. Knowledge contains no SQL definitions or parser structures.
+Typed semantic facts known about Named Relations and their columns independently of the analyzed query, such as uniqueness, nullability, and column membership. Knowledge contains no SQL definitions or parser structures.
 _Avoid_: View SQL, database connection, SQLGlot AST
 
 **Unique Set**:
@@ -85,7 +93,7 @@ The `SELECT` query body common to a Root Select, a view or CTE definition, and a
 _Avoid_: Select-like expression, query, statement
 
 **Create Statement**:
-A top-level SQL declaration that introduces a named relation definition or related schema knowledge into the analyzed program.
+A top-level SQL declaration that introduces a Named Relation or related schema Knowledge into the analyzed program.
 _Avoid_: Root select
 
 **Root Select**:

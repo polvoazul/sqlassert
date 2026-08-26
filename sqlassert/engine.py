@@ -6,7 +6,6 @@ The engine asks for enough models to expose nondeterminism; whoever consumes
 them enforces the one-model policy, because only the consumer can tell how many
 it was handed.
 """
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -15,9 +14,7 @@ from importlib import resources
 
 import clingo
 
-from sqlassert.facts import ground_facts
-from sqlassert.ir.convert import IrConversionResult
-from sqlassert.naming import NameGiver
+from sqlassert.facts import ClingoEncoding
 
 _PROGRAM = "base"
 _MODELS_TO_DETECT_NONDETERMINISM = 2
@@ -29,18 +26,14 @@ class EnginePolicyError(RuntimeError):
 
 @dataclass
 class Engine:
-    """Grounds one conversion and solves it, handing each model to a callback."""
+    """Grounds one encoding and solves it, handing each model to a callback."""
 
-    names: NameGiver
-
-    def run(self, ir: IrConversionResult, on_solution_callback: Callable[[clingo.Model], None]) -> None:
-        facts = ground_facts(ir.program, ir.knowledge, self.names)
-
+    def run(self, encoding: ClingoEncoding, on_solution_callback: Callable[[clingo.Model], None]) -> None:
         control = clingo.Control()
         # clingo's Configuration is a dynamic C-extension proxy typed only as
         # `None | str | Configuration`; there is no narrower stub to satisfy.
         control.configuration.solve.models = str(_MODELS_TO_DETECT_NONDETERMINISM)  # ty: ignore[invalid-assignment]
-        control.add(_PROGRAM, [], f"{rules()}\n{facts}\n")
+        control.add(_PROGRAM, [], f"{rules()}\n{encoding.facts}\n")
         control.ground([(_PROGRAM, [])])
         control.solve(on_model=on_solution_callback)
 

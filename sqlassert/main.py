@@ -8,6 +8,7 @@ the tests use, so parser, IR, facts, and rules can all change beneath it.
 from __future__ import annotations
 
 from sqlassert.engine import Engine
+from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
 from sqlassert.knowledge import Knowledge
 from sqlassert.reporting import Report, Reporter
@@ -26,11 +27,15 @@ def analyze(sql: str, *, knowledge: Knowledge | None = None, dialect: str = DEFA
     ir_parser = IrParser(dialect)
 
     ast = sql_parser.parse(sql)
-    ir = ir_parser.parse(ast).merged_with(knowledge)
+    conversion = ir_parser.parse(ast, knowledge)
+    encoding = encode(conversion.program, conversion.knowledge)
 
-    reporter = Reporter(ir_parser.origins)
-    engine = Engine(ir_parser.names)
+    reporter = Reporter(encoding)
+    engine = Engine()
 
-    engine.run(ir, on_solution_callback=reporter.on_model)
-    assertions = ir.program.assertions + ir.program.unique_set_assertions
-    return reporter.report(assertions, ast.diagnostics + ir.diagnostics, ir.program.definitions)
+    engine.run(encoding, on_solution_callback=reporter.on_model)
+    return reporter.report(
+        conversion.program.assertions,
+        ast.diagnostics + conversion.diagnostics,
+        conversion.program.declarations,
+    )

@@ -47,10 +47,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `ir/model.py` contains the immutable semantic model.
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
   into that model.
-- `facts.py` states the IR and Knowledge as ground ASP facts. It states facts
-  only; every inference lives in `rules/`.
-- `engine.py` drives fact generation, adds facts and rules to Clingo, grounds
-  them, and solves, handing each model to a callback.
+- `facts.py` assigns deterministic encoding symbols at the Clingo boundary and
+  states the IR and Knowledge as ground ASP facts. It states facts only; every
+  inference lives in `rules/`.
+- `engine.py` adds encoded facts and rules to Clingo, grounds them, and solves,
+  handing each model to a callback.
 - `reporting.py` consumes the live model, enforces the one-model policy, and
   returns durable reporting values.
 - `rules/` contains the Clingo logic-program resources.
@@ -60,15 +61,15 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 ## Stage Objects
 
 Each pipeline stage is an object holding only the services it needs:
-`SqlParser(dialect)`, `IrParser(dialect)`, and `Engine(names)`. The program
-being analysed travels through the call instead — `parse(sql)`, `parse(ast)`,
-`run(ir, on_solution_callback)`. `main.py` constructs them per call.
+`SqlParser(dialect)`, `IrParser(dialect)`, `Engine()`, and
+`Reporter(encoding)`. The program being analysed travels through the call
+instead — `parse(sql)`, `parse(ast, knowledge)`, `encode(program, knowledge)`,
+and `run(encoding, on_solution_callback)`. `main.py` constructs them per call.
 
-`IrParser` creates the analysis-wide `NameGiver` and `OriginRegistry`, and the
-stages downstream take them from it: `Engine(ir_parser.names)` names Unique
-Sets, and `Reporter(ir_parser.origins)` resolves origins. Constant identity
-comes from the NameGiver's single counter, not from the kind prefix, so a stage
-that started its own could hand out a name already taken.
+`IrParser` links syntax into direct semantic references and stores Origins on
+the nodes themselves. `facts.encode` performs one deterministic identity walk,
+assigns every reachable node a Clingo symbol, and returns both directions of
+the mapping. No generated identifier exists in the IR.
 
 `IrParser` accumulates the declarations and assertions of one program, and a
 `Reporter` accumulates the results of one solve, so neither survives a second
@@ -93,16 +94,15 @@ Knowledge. Analysis returns data and never prints.
 
 Every generated ASP identifier has a short kind prefix, a sanitized readable
 hint when one exists, and one deterministic incrementing suffix shared by the
-entire analysis. The suffix establishes identity; the hint is for readability only.
+encoding walk. The suffix establishes identity; the hint is for readability only.
 
-- Relation Definitions and Relation Instances use `rel`, for example
-  `rel_users_1` and `rel_customer_2`.
-- Column references use `col`, for example `col_id_3`.
+- Relation Expressions use `rel`, for example `rel_users_1` and
+  `rel_customer_2`.
+- Output Columns use `col`, for example `col_id_3`.
 - Unique Sets use `key`, for example `key_users_pk_4`.
 - Joins use `join`; an identifier with no natural hint omits the hint segment,
   for example `join_5`.
-- Expressions, assertions, and internal plan identities use `expr`, `assert`,
-  and `plan` respectively, following the same rule.
+- Expressions and assertions use `expr` and `assert`, following the same rule.
 
 Hints are lower-cased and sanitized. Different source names may sanitize to the
 same hint; the shared suffix still makes their identities distinct. Raw quoted

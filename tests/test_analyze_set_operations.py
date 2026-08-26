@@ -107,8 +107,7 @@ def test_a_chained_three_way_union_lowers_every_arm(users_and_two_sources):
 
 def test_a_cte_whose_body_is_a_union_stays_unanalyzed(users_and_two_sources):
     """A set operation is only lowered as the program's own root query. A CTE
-    body that is a set operation is a different slice (`CteScope.declare`
-    only stores a plain `exp.Select`), and stays conservative: `combined`
+    body that is a set operation is a different slice, and stays conservative: `combined`
     lowers to an OpaqueRelation with no Unique Set, so the join against it is
     UNKNOWN -- not, as it would be for a plain unsupported CTE reference,
     unanalyzed, since the marker itself is at the root query's join, which
@@ -130,9 +129,8 @@ def test_a_cte_whose_body_is_a_union_stays_unanalyzed(users_and_two_sources):
 
 
 def test_a_join_inside_a_from_subquery_wrapping_a_union_is_still_unanalyzed(users_and_two_sources):
-    """A set operation used as a FROM subquery is a third slice again
-    (`_lower_nested_source` only recurses into a `Subquery` wrapping a plain
-    `exp.Select`): the marked join lives inside a part of the program this
+    """A set operation used as a FROM subquery is a third slice again: the
+    marked join lives inside a part of the program this
     analysis does not reach at all, so it is reported rather than silently
     dropped, the same as a join inside a CTE body."""
     report = analyze(

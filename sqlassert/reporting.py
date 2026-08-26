@@ -21,7 +21,8 @@ import clingo
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.engine import EnginePolicyError
-from sqlassert.provenance import Origin, OriginRegistry
+from sqlassert.facts import ClingoEncoding
+from sqlassert.provenance import Origin
 
 _PROVED = "proved"
 _PROOF_KEY = "proof_key"
@@ -92,8 +93,8 @@ class Report:
 class Reporter:
     """Evidence harvested from one solve, and the Report assembled from it."""
 
-    def __init__(self, origins: OriginRegistry) -> None:
-        self._origins = origins
+    def __init__(self, encoding: ClingoEncoding) -> None:
+        self._encoding = encoding
         self._proved: frozenset[str] = frozenset()
         self._proof_keys: dict[str, tuple[str, ...]] = {}
         self._candidate_key_proofs: frozenset[str] = frozenset()
@@ -118,9 +119,9 @@ class Reporter:
 
     def report(
         self,
-        assertions: Sequence[ir.UniqueJoinAssertion | ir.UniqueSetAssertion],
+        assertions: Sequence[ir.Assertion],
         diagnostics: Sequence[Diagnostic] = (),
-        definitions: Sequence[ir.RelationDefinition] = (),
+        declarations: Sequence[ir.NamedRelation] = (),
     ) -> Report:
         if not self.stable_model_count:
             raise EnginePolicyError(
@@ -130,27 +131,24 @@ class Reporter:
         return Report(
             tuple(self._assertion_report(assertion) for assertion in assertions),
             tuple(diagnostics),
-            self._relation_facts(definitions),
+            self._relation_facts(declarations),
             self.stable_model_count,
         )
 
-    def _relation_facts(self, definitions: Sequence[ir.RelationDefinition]) -> RelationFacts:
-        """Every proved Unique Set, grouped by the name of the Relation
-        Definition it belongs to -- a table or view's own `name`, or a CTE's
-        `report_name` -- skipping the truly anonymous ones (a bare Project,
-        Aggregate, or Distinct with no declared name of its own to group
-        under)."""
+    def _relation_facts(self, declarations: Sequence[ir.NamedRelation]) -> RelationFacts:
+        """Every proved Unique Set grouped by its named relation."""
         names_by_id = {
-            definition.id: definition.name or definition.report_name
-            for definition in definitions
-            if definition.name or definition.report_name
+            self._encoding.node_to_symbol[declaration]: declaration.report_name
+            for declaration in declarations
+            if declaration in self._encoding.node_to_symbol
         }
 
         by_relation: dict[str, list[tuple[str, ...]]] = {}
         for key, relation_ids in self._unique_set_relations.items():
-            columns = self._unique_sets.get(key)
-            if columns is None:
+            members = self._unique_sets.get(key)
+            if members is None:
                 continue
+            columns = self._column_names(members)
             for relation_id in relation_ids:
                 name = names_by_id.get(relation_id)
                 if name is None:
@@ -159,16 +157,24 @@ class Reporter:
 
         return RelationFacts({name: tuple(unique_sets) for name, unique_sets in by_relation.items()})
 
-    def _assertion_report(self, assertion: ir.UniqueJoinAssertion | ir.UniqueSetAssertion) -> AssertionReport:
-        proved = assertion.id in self._proved
-        keys = self._proof_keys.get(assertion.id, ())
+    def _assertion_report(self, assertion: ir.Assertion) -> AssertionReport:
+        assertion_id = self._encoding.node_to_symbol[assertion]
+        proved = assertion_id in self._proved
+        keys = self._proof_keys.get(assertion_id, ())
         return AssertionReport(
-            assertion_id=assertion.id,
+            assertion_id=assertion_id,
             outcome=Outcome.PROVED if proved else Outcome.UNKNOWN,
-            origin=self._origins.resolve(assertion.origin_id),
-            proving_unique_set=self._unique_sets.get(keys[0], ()) if proved and keys else (),
-            is_candidate_key=proved and assertion.id in self._candidate_key_proofs,
-            missing_columns=() if proved else self._missing_columns_for(assertion.id),
+            origin=assertion.origin,
+            proving_unique_set=self._column_names(self._unique_sets.get(keys[0], ())) if proved and keys else (),
+            is_candidate_key=proved and assertion_id in self._candidate_key_proofs,
+            missing_columns=() if proved else self._missing_columns_for(assertion_id),
+        )
+
+    def _column_names(self, symbols: Sequence[str]) -> tuple[str, ...]:
+        return tuple(
+            node.name
+            for symbol in symbols
+            if isinstance((node := self._encoding.symbol_to_node.get(symbol)), ir.OutputColumn)
         )
 
     def _missing_columns_for(self, assertion_id: str) -> tuple[str, ...]:
@@ -177,10 +183,12 @@ class Reporter:
         seen: set[str] = set()
         ordered: list[str] = []
         for key in sorted(per_key):
-            for column in self._unique_sets.get(key, ()):
-                if column in per_key[key] and column not in seen:
-                    seen.add(column)
-                    ordered.append(column)
+            for symbol in self._unique_sets.get(key, ()):
+                if symbol in per_key[key] and symbol not in seen:
+                    seen.add(symbol)
+                    node = self._encoding.symbol_to_node.get(symbol)
+                    if isinstance(node, ir.OutputColumn):
+                        ordered.append(node.name)
         return tuple(ordered)
 
 
@@ -213,13 +221,7 @@ def _candidate_key_proofs(model: clingo.Model) -> frozenset[str]:
 
 
 def _unique_set_relations(model: clingo.Model) -> dict[str, tuple[str, ...]]:
-    """Every Relation Definition each Unique Set belongs to, read from the model.
-
-    A key can belong to more than one relation: Filter's propagation
-    (`rules/propagation.lp`) reuses its input's own Unique Set key rather
-    than minting a new one, so the same key legitimately describes both a
-    Filter and whatever it filters.
-    """
+    """Every encoded Relation Expression each Unique Set belongs to."""
     relations: dict[str, list[str]] = {}
     for symbol in model.symbols(atoms=True):
         if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 2:
@@ -229,12 +231,12 @@ def _unique_set_relations(model: clingo.Model) -> dict[str, tuple[str, ...]]:
 
 
 def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:
-    """The columns of every Unique Set, in declared order, read from the model."""
+    """The encoded output-column symbols of every Unique Set, in order."""
     members: dict[str, list[tuple[int, str]]] = {}
     for symbol in model.symbols(atoms=True):
         if symbol.name == _UNIQUE_SET_MEMBER and len(symbol.arguments) == 3:
             key, position, column = symbol.arguments
-            members.setdefault(str(key), []).append((position.number, column.string))
+            members.setdefault(str(key), []).append((position.number, str(column)))
     return {key: tuple(column for _, column in sorted(found)) for key, found in members.items()}
 
 
@@ -243,6 +245,6 @@ def _missing_members(model: clingo.Model) -> dict[str, dict[str, frozenset[str]]
     members: dict[str, dict[str, set[str]]] = {}
     for symbol in model.symbols(atoms=True):
         if symbol.name == _ASSERTION_MISSING_MEMBER and len(symbol.arguments) == 3:
-            assertion, key, column = (str(symbol.arguments[0]), str(symbol.arguments[1]), symbol.arguments[2].string)
+            assertion, key, column = (str(argument) for argument in symbol.arguments)
             members.setdefault(assertion, {}).setdefault(key, set()).add(column)
     return {assertion: {key: frozenset(columns) for key, columns in found.items()} for assertion, found in members.items()}

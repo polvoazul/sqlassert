@@ -182,4 +182,7 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 
 - Exhaustive case statements that match all items of an enum / union data type.
 - Document that a Select should have a specific unique col combo
-- A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Needs three things together: give `ir.SetOperation` its own `RelationInstance`/`RelationDefinition` and output column list (as `ir.Distinct` has), derive the Unique Set from the leftmost arm's output names when `distinct` is set, and teach `CteScope`/`_lower_nested_source` to lower a `SetOperation` body instead of only a plain `exp.Select` -- otherwise nothing could ever reference the result to observe the proof. See `sqlassert/ir/model.py`'s `SetOperation` docstring.
+- A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Derive that property from the leftmost arm's output columns and lower set-operation bodies when they appear inside a view, CTE, or subquery.
+- Column lineage, column unique status, column nullable status
+- Functional-dependency reasoning (`X → Y`): represent and derive when equal values of one column set guarantee equal values of another, including dependencies created by keys, deterministic expressions, and aggregation.
+- General window modeling: eventually represent window expressions and their filtering as separate `Window` and `Filter` operations, with the proof engine deriving uniqueness from recognized shapes. Until then, keep `QUALIFY row_number() over (partition by ...) = 1` as the explicit supported special case.

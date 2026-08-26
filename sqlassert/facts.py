@@ -1,109 +1,160 @@
-"""Turn the IR and Knowledge into ground ASP facts.
-
-This module is where the two separately represented inputs — query structure and
-what is known about relations — finally meet. It states facts only; every
-inference lives in the rule files.
-"""
+"""Encode the semantic IR and Knowledge as deterministic ground ASP facts."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from sqlassert import ir, naming
 from sqlassert.knowledge import Knowledge
 from sqlassert.naming import NameGiver
 
 
-def ground_facts(program: ir.Program, knowledge: Knowledge, names: NameGiver) -> str:
+@dataclass(frozen=True)
+class ClingoEncoding:
+    facts: str
+    node_to_symbol: dict[ir.Node, str]
+    symbol_to_node: dict[str, ir.Node]
+
+
+def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
+    nodes = _walk(program)
+    names = NameGiver()
+    node_to_symbol = {node: names.new(*_symbol_hint(node)) for node in nodes}
+    symbol_to_node = {symbol: node for node, symbol in node_to_symbol.items()}
     lines: list[str] = []
 
-    for definition in program.definitions:
-        lines.append(f"relation({definition.id}).")
-        known = knowledge.relation(definition.name) if definition.name else None
-        if known is None:
-            continue
-        lines.extend(
-            f"column_not_null({definition.id}, {_text(column.name)})."
-            for column in known.columns
-            if not column.nullable
-        )
-        for unique_set in known.unique_sets:
-            lines.extend(_unique_set_facts(names, definition.id, unique_set.columns))
+    relations = [node for node in nodes if isinstance(node, ir.RelationExpr)]
+    for relation in relations:
+        relation_symbol = node_to_symbol[relation]
+        lines.append(f"relation({relation_symbol}).")
+        for column in relation.outputs:
+            lines.append(f"relation_output({relation_symbol}, {node_to_symbol[column]}).")
 
-    for instance in ir.all_instances(program.root):
-        lines.append(f"instance_of({instance.id}, {instance.definition_id}).")
+        if isinstance(relation, ir.NamedRelation):
+            if relation.body is not None:
+                lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.body]}).")
+            known = knowledge.relation(relation.name) if relation.role is not ir.RelationRole.CTE else None
+            if known is not None:
+                by_name = {column.name.lower(): column for column in relation.outputs}
+                lines.extend(
+                    f"column_not_null({relation_symbol}, {node_to_symbol[by_name[column.name.lower()]]})."
+                    for column in known.columns
+                    if not column.nullable and column.name.lower() in by_name
+                )
+                for unique_set in known.unique_sets:
+                    members = tuple(by_name[column.lower()] for column in unique_set.columns if column.lower() in by_name)
+                    if len(members) == len(unique_set.columns):
+                        lines.extend(_unique_set_facts(names, node_to_symbol, relation, members))
+        elif isinstance(relation, ir.Alias):
+            lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.source]}).")
+        elif isinstance(relation, (ir.Filter, ir.Project)):
+            lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.input]}).")
+        elif isinstance(relation, ir.Aggregate):
+            lines.extend(_unique_set_facts(names, node_to_symbol, relation, relation.grouping_outputs))
+        elif isinstance(relation, ir.Distinct):
+            lines.extend(_unique_set_facts(names, node_to_symbol, relation, relation.outputs))
+        elif isinstance(relation, ir.QualifyByPartition):
+            lines.extend(_unique_set_facts(names, node_to_symbol, relation, relation.partition_outputs))
+        elif isinstance(relation, ir.Join):
+            lines.append(f"join_kind({relation_symbol}, {relation.kind}).")
+            lines.append(f"join_left({relation_symbol}, {node_to_symbol[relation.left]}).")
+            lines.append(f"join_right({relation_symbol}, {node_to_symbol[relation.right]}).")
+            for equality in relation.equalities:
+                lines.append(
+                    f"join_equality({relation_symbol}, {node_to_symbol[equality.left]}, {node_to_symbol[equality.right]})."
+                )
 
-    for filtered in ir.filters(program.root):
-        input_instance = ir.output_instance(filtered.input)
-        lines.append(f"filter_input({filtered.instance.definition_id}, {input_instance.id}).")
-
-    for project in ir.projects(program.root):
-        input_instance = ir.output_instance(project.input)
-        lines.append(f"project_input({project.instance.definition_id}, {input_instance.id}).")
-        for output in project.outputs:
-            lines.extend(_expression_facts(output.expression))
-            lines.append(
-                f"project_output({project.instance.definition_id}, {_text(output.name)}, {output.expression.id})."
+    for node in nodes:
+        symbol = node_to_symbol[node]
+        if isinstance(node, ir.OutputColumn):
+            lines.append(f"column_expression({symbol}, {node_to_symbol[node.expression]}).")
+        elif isinstance(node, ir.ColumnRef):
+            lines.append(f"expression_column({symbol}, {node_to_symbol[node.column]}).")
+        elif isinstance(node, ir.Constant):
+            lines.append(f"expression_constant({symbol}).")
+        elif isinstance(node, ir.OpaqueExpression):
+            lines.append(f"expression_opaque({symbol}).")
+        elif isinstance(node, ir.UniqueJoinAssertion):
+            lines.append(f"assertion({symbol}, {node_to_symbol[node.subject]}).")
+        elif isinstance(node, ir.UniqueSetAssertion):
+            lines.append(f"unique_set_assertion({symbol}, {node_to_symbol[node.subject]}).")
+            if node.candidate_key:
+                lines.append(f"unique_set_assertion_key({symbol}).")
+            lines.extend(
+                f"unique_set_assertion_member({symbol}, {position}, {node_to_symbol[column]})."
+                for position, column in enumerate(node.columns)
             )
 
-    # An Aggregate or Distinct earns its own Unique Set directly from its
-    # Grouping Keys or output columns -- unlike Project, it needs no
-    # propagation rule, since grouping or distinctness alone establishes it
-    # regardless of the input relation's own Unique Sets.
-    for aggregate in ir.aggregates(program.root):
-        columns = tuple(key.name for key in aggregate.grouping_keys)
-        lines.extend(_unique_set_facts(names, aggregate.instance.definition_id, columns))
-
-    for distinct in ir.distincts(program.root):
-        columns = tuple(output.name for output in distinct.outputs)
-        lines.extend(_unique_set_facts(names, distinct.instance.definition_id, columns))
-
-    # A recognized QualifyByPartition earns its Unique Set the same direct
-    # way: its complete Partition Key alone establishes it, regardless of the
-    # input relation's own Unique Sets.
-    for qualify in ir.qualify_by_partitions(program.root):
-        columns = tuple(key.name for key in qualify.partition_keys)
-        lines.extend(_unique_set_facts(names, qualify.instance.definition_id, columns))
-
-    for join in ir.joins(program.root):
-        lines.append(f"join_kind({join.id}, {join.kind}).")
-        lines.append(f"join_output_definition({join.id}, {join.instance.definition_id}).")
-        lines.extend(f"join_left_instance({join.id}, {instance.id})." for instance in ir.instances(join.left))
-        lines.extend(f"join_right_instance({join.id}, {instance.id})." for instance in ir.instances(join.right))
-        for equality in join.equalities:
-            lines.extend(_expression_facts(equality.left))
-            lines.extend(_expression_facts(equality.right))
-            lines.append(f"join_equality({join.id}, {equality.left.id}, {equality.right.id}).")
-
-    lines.extend(f"assertion({assertion.id}, {assertion.join_id})." for assertion in program.assertions)
-
-    for unique_set_assertion in program.unique_set_assertions:
-        lines.append(f"unique_set_assertion({unique_set_assertion.id}, {unique_set_assertion.definition_id}).")
-        if unique_set_assertion.candidate_key:
-            lines.append(f"unique_set_assertion_key({unique_set_assertion.id}).")
-        lines.extend(
-            f"unique_set_assertion_member({unique_set_assertion.id}, {position}, {_text(column)})."
-            for position, column in enumerate(unique_set_assertion.columns)
-        )
-
-    return "\n".join(lines)
+    return ClingoEncoding("\n".join(lines), node_to_symbol, symbol_to_node)
 
 
-def _unique_set_facts(names: NameGiver, definition_id: str, columns: tuple[str, ...]) -> list[str]:
-    key = names.new(naming.KEY, "_".join(columns))
-    # Members carry their position so evidence read back from the model keeps
-    # the order the Unique Set's columns were declared in.
-    return [f"unique_set({key}, {definition_id})."] + [
-        f"unique_set_member({key}, {position}, {_text(column)})." for position, column in enumerate(columns)
+def _unique_set_facts(names: NameGiver, symbols: dict[ir.Node, str], relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]) -> list[str]:
+    key = names.new(naming.KEY, "_".join(column.name for column in columns))
+    return [f"unique_set({key}, {symbols[relation]})."] + [
+        f"unique_set_member({key}, {position}, {symbols[column]})." for position, column in enumerate(columns)
     ]
 
 
-def _expression_facts(expression: ir.Expression) -> list[str]:
-    if isinstance(expression, ir.ColumnReference):
-        return [f"expression_column({expression.id}, {expression.instance_id}, {_text(expression.column)})."]
-    if isinstance(expression, ir.Constant):
-        return [f"expression_constant({expression.id})."]
-    return [f"expression_opaque({expression.id})."]
+def _walk(program: ir.Program) -> tuple[ir.Node, ...]:
+    found: list[ir.Node] = []
+    seen: set[int] = set()
+
+    def visit(node: ir.Node | None) -> None:
+        if node is None or id(node) in seen:
+            return
+        seen.add(id(node))
+        found.append(node)
+        if isinstance(node, ir.RelationExpr):
+            for output in node.outputs:
+                visit(output)
+            if isinstance(node, ir.NamedRelation):
+                visit(node.body)
+            elif isinstance(node, ir.Alias):
+                visit(node.source)
+            elif isinstance(node, (ir.Join, ir.SetOperation)):
+                visit(node.left)
+                visit(node.right)
+                if isinstance(node, ir.Join):
+                    for equality in node.equalities:
+                        visit(equality)
+            elif isinstance(node, (ir.Filter, ir.Project, ir.Aggregate, ir.Distinct, ir.QualifyByPartition)):
+                visit(node.input)
+                if isinstance(node, ir.QualifyByPartition):
+                    for expression in node.ordering:
+                        visit(expression)
+        elif isinstance(node, ir.OutputColumn):
+            visit(node.expression)
+        elif isinstance(node, ir.ColumnRef):
+            visit(node.column)
+        elif isinstance(node, ir.Equality):
+            visit(node.left)
+            visit(node.right)
+        elif isinstance(node, ir.UniqueJoinAssertion):
+            visit(node.subject)
+        elif isinstance(node, ir.UniqueSetAssertion):
+            visit(node.subject)
+            for column in node.columns:
+                visit(column)
+
+    for declaration in program.declarations:
+        visit(declaration)
+    visit(program.root)
+    for assertion in program.assertions:
+        visit(assertion)
+    return tuple(found)
 
 
-def _text(value: str) -> str:
-    escaped = value.lower().replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+def _symbol_hint(node: ir.Node) -> tuple[str, str]:
+    if isinstance(node, ir.OutputColumn):
+        return naming.COLUMN, node.name
+    if isinstance(node, ir.NamedRelation):
+        return naming.RELATION, node.name
+    if isinstance(node, ir.Alias):
+        return naming.RELATION, node.name
+    if isinstance(node, ir.Join):
+        return naming.JOIN, node.kind
+    if isinstance(node, ir.RelationExpr):
+        return naming.RELATION, type(node).__name__
+    if isinstance(node, ir.Assertion):
+        return naming.ASSERTION, type(node).__name__
+    return naming.EXPRESSION, type(node).__name__

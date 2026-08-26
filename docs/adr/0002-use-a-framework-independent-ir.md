@@ -1,3 +1,3 @@
-# Use a framework-independent IR
+# Use a framework-independent semantic object graph
 
-Make the intermediate representation the integration boundary between SQL analysis and property reasoning. It consists of immutable Python values with stable source-provenance identifiers and contains no SQLGlot nodes, database connections, or Clingo symbols. Query structure and externally supplied knowledge are represented separately, and only the property engine converts them into Clingo facts, allowing parsing, discovery, reasoning, and reporting to evolve independently.
+Make the intermediate representation the integration boundary between SQL analysis and property reasoning. It is an immutable Python object graph with direct semantic references and direct Origins; shared Named Relations make it a DAG, while fresh Aliases and Output Columns preserve occurrence identity. The IR contains no SQLGlot nodes, database connections, generated identifiers, or Clingo symbols. Deterministic identifiers and their reverse mapping exist only in the Clingo encoding, so solver transport concerns cannot distort the semantic model.

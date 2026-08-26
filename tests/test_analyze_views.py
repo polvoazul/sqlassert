@@ -1,9 +1,8 @@
-"""Create View declarations lowered as named Relation Definitions.
+"""Create View declarations lowered as shared Named Relations.
 
-A view's body lowers through the same recursive path a CTE or FROM subquery
-uses (`IrParser._lower_table_reference`, built on #5's `_lower_nested_select`),
+A view's body lowers through the same linker path as a CTE or FROM subquery,
 but unlike a CTE it is declared up front and visible from anywhere in the
-program -- so it supports forward references, nesting, reuse, duplicate
+program, so it supports forward references, nesting, reuse, duplicate
 detection, and cycle detection that a CTE's local WITH scope does not need.
 """
 
@@ -119,7 +118,7 @@ def test_a_parenthesized_view_body_preserves_its_unique_set(users_and_sessions):
 
 def test_reusing_the_same_view_twice_gives_each_occurrence_its_own_identity(users_and_sessions):
     """Two references to one view must behave like two aliases of a table: each
-    gets its own Relation Instance, so a self-join through the view proves
+    gets its own Alias and Output Columns, so a self-join through the view proves
     correctly instead of the two occurrences being confused for one another."""
     report = analyze(
         """
