@@ -50,11 +50,23 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
         elif isinstance(relation, (ir.Filter, ir.Project)):
             lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.input]}).")
         elif isinstance(relation, ir.Aggregate):
-            lines.extend(_unique_set_facts(names, node_to_symbol, relation, relation.grouping_outputs))
+            lines.append(f"aggregate_relation({relation_symbol}).")
+            lines.extend(
+                f"aggregate_grouping_output({relation_symbol}, {position}, {node_to_symbol[column]})."
+                for position, column in enumerate(relation.grouping_outputs)
+            )
         elif isinstance(relation, ir.Distinct):
-            lines.extend(_unique_set_facts(names, node_to_symbol, relation, relation.outputs))
+            lines.append(f"distinct_relation({relation_symbol}).")
+            lines.extend(
+                f"distinct_output({relation_symbol}, {position}, {node_to_symbol[column]})."
+                for position, column in enumerate(relation.outputs)
+            )
         elif isinstance(relation, ir.QualifyByPartition):
-            lines.extend(_unique_set_facts(names, node_to_symbol, relation, relation.partition_outputs))
+            lines.append(f"qualify_by_partition({relation_symbol}).")
+            lines.extend(
+                f"qualify_partition_output({relation_symbol}, {position}, {node_to_symbol[column]})."
+                for position, column in enumerate(relation.partition_outputs)
+            )
         elif isinstance(relation, ir.Join):
             lines.append(f"join_kind({relation_symbol}, {relation.kind}).")
             lines.append(f"join_left({relation_symbol}, {node_to_symbol[relation.left]}).")
@@ -104,37 +116,8 @@ def _walk(program: ir.Program) -> tuple[ir.Node, ...]:
             return
         seen.add(id(node))
         found.append(node)
-        if isinstance(node, ir.RelationExpr):
-            for output in node.outputs:
-                visit(output)
-            if isinstance(node, ir.NamedRelation):
-                visit(node.body)
-            elif isinstance(node, ir.Alias):
-                visit(node.source)
-            elif isinstance(node, (ir.Join, ir.SetOperation)):
-                visit(node.left)
-                visit(node.right)
-                if isinstance(node, ir.Join):
-                    for equality in node.equalities:
-                        visit(equality)
-            elif isinstance(node, (ir.Filter, ir.Project, ir.Aggregate, ir.Distinct, ir.QualifyByPartition)):
-                visit(node.input)
-                if isinstance(node, ir.QualifyByPartition):
-                    for expression in node.ordering:
-                        visit(expression)
-        elif isinstance(node, ir.OutputColumn):
-            visit(node.expression)
-        elif isinstance(node, ir.ColumnRef):
-            visit(node.column)
-        elif isinstance(node, ir.Equality):
-            visit(node.left)
-            visit(node.right)
-        elif isinstance(node, ir.UniqueJoinAssertion):
-            visit(node.subject)
-        elif isinstance(node, ir.UniqueSetAssertion):
-            visit(node.subject)
-            for column in node.columns:
-                visit(column)
+        for child in ir.children(node):
+            visit(child)
 
     for declaration in program.declarations:
         visit(declaration)

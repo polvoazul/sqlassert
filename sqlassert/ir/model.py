@@ -6,7 +6,7 @@ nodes; identifiers are assigned only when the graph is encoded for Clingo.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum
 from typing import dataclass_transform
 
@@ -161,29 +161,13 @@ class Program:
     assertions: tuple[Assertion, ...] = ()
 
 
-def joins(relation: RelationExpr | None) -> tuple[Join, ...]:
-    return tuple(node for node in relation_nodes(relation) if isinstance(node, Join))
-
-
-def relation_nodes(relation: RelationExpr | None) -> tuple[RelationExpr, ...]:
-    """Relation expressions reachable from ``relation``, once each by identity."""
-    found: list[RelationExpr] = []
-    seen: set[int] = set()
-
-    def visit(node: RelationExpr | None) -> None:
-        if node is None or id(node) in seen:
-            return
-        seen.add(id(node))
-        found.append(node)
-        if isinstance(node, NamedRelation):
-            visit(node.body)
-        elif isinstance(node, Alias):
-            visit(node.source)
-        elif isinstance(node, (Join, SetOperation)):
-            visit(node.left)
-            visit(node.right)
-        elif isinstance(node, (Filter, Project, Aggregate, Distinct, QualifyByPartition)):
-            visit(node.input)
-
-    visit(relation)
+def children(node: Node) -> tuple[Node, ...]:
+    """Direct semantic references held by ``node``, in dataclass field order."""
+    found: list[Node] = []
+    for node_field in fields(node):
+        value = getattr(node, node_field.name)
+        if isinstance(value, Node):
+            found.append(value)
+        elif isinstance(value, tuple):
+            found.extend(item for item in value if isinstance(item, Node))
     return tuple(found)

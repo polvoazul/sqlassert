@@ -94,11 +94,9 @@ def test_a_projection_alias_inside_a_view_maps_the_unique_set_to_the_outer_colum
 
 def test_a_parenthesized_view_body_preserves_its_unique_set(users_and_sessions):
     """Regression test: SQLGlot parses a parenthesized view body
-    (`AS (SELECT ...)`) as `exp.Subquery` rather than a bare `exp.Select`, so
-    `ViewScope.declare`'s `isinstance(body, exp.Select)` guard silently
-    dropped it -- the view then fell back to a knowledge-less Scan and no
-    join through it could ever prove, even though the identical
-    un-parenthesized body proves fine.
+    (`AS (SELECT ...)`) as `exp.Subquery` rather than a bare `exp.Select`.
+    The linker must unwrap it before resolving the view body, or the view is
+    opaque and the otherwise identical join cannot prove.
     """
     report = analyze(
         users_and_sessions

@@ -5,9 +5,9 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 ## Included
 
 - `CREATE TABLE` and `CREATE VIEW` statements followed by at most one Root Select.
-- Two-pass declaration and definition conversion, including forward references and cycle detection.
+- Declaration collection followed by linker-style resolution, including forward references and cycle detection.
 - CTEs, FROM subqueries, and recursively expanded view definitions.
-- `Scan`, `Project`, `Filter`, `Join`, `Aggregate`, `Distinct`, `Window`, and `QualifyByPartition` relational operations.
+- `NamedRelation`, `Alias`, `Project`, `Filter`, `Join`, `Aggregate`, `Distinct`, `SetOperation`, `QualifyByPartition`, and opaque/recursive relational operations.
 - Grouping keys and aggregate expressions.
 - `INNER` and `LEFT` Unique Join Assertions.
 - `ON` predicates composed from simple equalities joined by `AND`, plus `USING`.
@@ -25,7 +25,7 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - `RIGHT`, `FULL`, `SEMI`, `ANTI`, and `CROSS` join analysis.
 - Non-equality, null-safe, and `OR` join predicates.
 - Scalar and correlated subqueries.
-- Set operations such as `UNION`, `INTERSECT`, and `EXCEPT`.
+- Unique Set inference for `UNION`, `INTERSECT`, and `EXCEPT`, and set-operation bodies inside views, CTEs, or subqueries.
 - Grouping sets, `ROLLUP`, and `CUBE`.
 - General window-function property reasoning beyond recognized partition qualification.
 - A `DISPROVED` outcome backed by genuine refutation evidence.

@@ -1,3 +1,8 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 from sqlassert import ir
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
@@ -9,6 +14,18 @@ CREATE TABLE users(id INTEGER PRIMARY KEY);
 SELECT *
 FROM users AS buyer
 JOIN users AS seller ON buyer.id = seller.id
+"""
+
+PROJECT = Path(__file__).parents[1]
+
+RECURSIVE_ENCODING = """
+from sqlassert.facts import encode
+from sqlassert.ir.convert import IrParser
+from sqlassert.sql_parse import SqlParser
+
+sql = "CREATE VIEW loop AS SELECT * FROM loop; SELECT a, b, c FROM loop"
+conversion = IrParser("duckdb").parse(SqlParser("duckdb").parse(sql))
+print(encode(conversion.program, conversion.knowledge).facts)
 """
 
 
@@ -61,11 +78,35 @@ def test_recursive_definitions_encode_without_a_python_cycle():
     conversion = _convert("CREATE VIEW loop AS SELECT id FROM loop; SELECT * FROM loop")
     recursive = [
         node
-        for declaration in conversion.program.declarations
-        for node in ir.relation_nodes(declaration)
+        for node in encode(conversion.program, conversion.knowledge).symbol_to_node.values()
         if isinstance(node, ir.RecursiveRelation)
     ]
 
     assert len(recursive) == 1
     encoding = encode(conversion.program, conversion.knowledge)
     assert recursive[0] in encoding.node_to_symbol
+
+
+def test_recursive_encoding_is_stable_across_python_hash_seeds():
+    encodings = {
+        subprocess.run(
+            [sys.executable, "-c", RECURSIVE_ENCODING],
+            cwd=PROJECT,
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout
+        for seed in (1, 2, 4)
+    }
+
+    assert len(encodings) == 1
+
+
+def test_encoding_states_aggregate_structure_without_precomputing_its_unique_set():
+    conversion = _convert("SELECT customer_id FROM orders GROUP BY customer_id")
+
+    facts = encode(conversion.program, conversion.knowledge).facts
+
+    assert "aggregate_grouping_output(" in facts
+    assert "unique_set(" not in facts

@@ -256,6 +256,22 @@ def test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_prove
     assert report.assertions[0].proving_unique_set == ("user_id",)
 
 
+def test_a_positional_grouping_key_maps_to_its_selected_output():
+    report = analyze(
+        """
+        CREATE TABLE orders (user_id INTEGER, amount INTEGER);
+        CREATE VIEW per_user AS (
+            SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY 1
+        );
+
+        SELECT * FROM per_user /**UNIQUE**/ JOIN per_user USING (user_id)
+        """
+    )
+
+    assert report.proved
+    assert report.assertions[0].proving_unique_set == ("user_id",)
+
+
 # Distinct ---------------------------------------------------------------
 
 

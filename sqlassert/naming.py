@@ -24,10 +24,10 @@ _UNSAFE = re.compile(r"[^a-z0-9]+")
 
 @dataclass
 class NameGiver:
-    """Deterministic name generator, one per analysis.
+    """Deterministic name generator, one per Clingo encoding.
 
-    Uniqueness comes from the shared counter, so an analysis must use a single
-    instance across every stage that names constants.
+    Uniqueness comes from the shared counter used for encoded nodes and Unique
+    Sets together.
     """
 
     _next_id: int = 0
