@@ -205,7 +205,16 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
 
             if found:
                 result.meta[_UNIQUE_SET_ASSERTED_AT] = found
-            return result
+
+            # `super()._parse_select_query` already tried, and gave up, on
+            # attaching a following UNION/INTERSECT/EXCEPT to this same
+            # Select before returning -- its own last step runs before a
+            # trailing marker exists to get in the way, so the marker token
+            # sitting where it looked for a set-operation keyword reads as
+            # "no set operation here". Now that the marker is consumed, retry:
+            # a no-op if nothing follows, since `_parse_set_operations` only
+            # advances the cursor on an actual match.
+            return self._parse_set_operations(result) or result
 
     return type(
         f"SqlAssert{parent.__name__}",
