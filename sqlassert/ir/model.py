@@ -42,6 +42,12 @@ class Constant(ScalarExpr):
     """A literal whose concrete value is irrelevant to current proofs."""
 
 
+class AnyAggregate(ScalarExpr):
+    """An arbitrary value selected from the input rows of an aggregate group."""
+
+    input: ScalarExpr
+
+
 class ColumnRef(ScalarExpr):
     """A direct reference to an upstream relation expression's output."""
 

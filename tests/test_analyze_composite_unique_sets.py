@@ -53,6 +53,7 @@ def test_covering_only_part_of_a_composite_unique_set_is_unknown_with_the_missin
     assert assertion.outcome is Outcome.UNKNOWN
     assert assertion.proving_unique_set == ()
     assert assertion.missing_columns == ("region",)
+    assert assertion.explanation == "Unknown: the join does not cover the closest known unique set (id, region); missing region."
 
 
 def test_a_right_side_key_member_equated_to_a_constant_completes_a_composite_unique_set():

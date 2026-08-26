@@ -453,12 +453,17 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
 
-        outputs = self._selected_outputs(select.expressions, lowered.bindings)
-        grouping_outputs: list[ir.OutputColumn] = []
+        grouped_items: set[int] = set()
         for group_expression in group.expressions:
             item = _matching_grouping_output(group_expression, select.expressions)
             if item is None:
                 return None
+            grouped_items.add(id(item))
+
+        outputs = self._aggregate_outputs(select.expressions, lowered.bindings, grouped_items)
+        grouping_outputs: list[ir.OutputColumn] = []
+        for group_expression in group.expressions:
+            item = _matching_grouping_output(group_expression, select.expressions)
             grouping_outputs.append(outputs[select.expressions.index(item)])
         return ir.Aggregate(
             origin=self._origin(select), outputs=outputs, schema_complete=True, input=lowered.relation,
@@ -513,6 +518,16 @@ class IrParser:
             )
             for item in items
         )
+
+    def _aggregate_outputs(self, items: list[exp.Expression], bindings: tuple[_Binding, ...], grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
+        outputs: list[ir.OutputColumn] = []
+        for item in items:
+            expression = item.this if isinstance(item, exp.Alias) else item
+            lowered = self._lower_expression(expression, bindings)
+            if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
+                lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered)
+            outputs.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, expression=lowered))
+        return tuple(outputs)
 
     def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...]) -> ir.ScalarExpr:
         origin = self._origin(expression)
@@ -720,6 +735,12 @@ def _matching_grouping_output(group_expression: exp.Expression, items: list[exp.
         position = int(group_expression.this)
         return items[position - 1] if 1 <= position <= len(items) else None
     return _matching_output(group_expression, items)
+
+
+def _is_bare_aggregate_expression(expression: exp.Expression) -> bool:
+    return any(isinstance(node, exp.Column) for node in expression.walk()) and not any(
+        isinstance(node, exp.AggFunc) for node in expression.walk()
+    )
 
 
 def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:

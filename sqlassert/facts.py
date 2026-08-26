@@ -84,6 +84,8 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
             lines.append(f"expression_column({symbol}, {node_to_symbol[node.column]}).")
         elif isinstance(node, ir.Constant):
             lines.append(f"expression_constant({symbol}).")
+        elif isinstance(node, ir.AnyAggregate):
+            lines.append(f"expression_any_aggregate({symbol}, {node_to_symbol[node.input]}).")
         elif isinstance(node, ir.OpaqueExpression):
             lines.append(f"expression_opaque({symbol}).")
         elif isinstance(node, ir.UniqueJoinAssertion):

@@ -65,6 +65,7 @@ def test_query_join_contract():
 ```python
 for assertion in report.assertions:
     print(assertion.outcome)          # Outcome.PROVED or Outcome.UNKNOWN
+    print(assertion.explanation)      # why the engine reached that result
     print(assertion.proving_unique_set)
     print(assertion.is_candidate_key)
     print(assertion.missing_columns)  # best-effort, when UNKNOWN

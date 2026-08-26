@@ -5,6 +5,7 @@
 #defined property_input/2.
 #defined column_expression/2.
 #defined expression_column/2.
+#defined expression_any_aggregate/2.
 #defined unique_set/2.
 #defined unique_set_member/3.
 #defined column_not_null/2.
