@@ -9,7 +9,7 @@ asserted_member(Assertion, Column) :- unique_set_assertion_member(Assertion, _, 
 uncovered_assertion_member(Assertion, UniqueSet, Column) :-
     unique_set_assertion(Assertion, Relation),
     unique_set(UniqueSet, Relation),
-    unique_set_member(UniqueSet, _, Column),
+    unique_set_column(UniqueSet, _, Column),
     not asserted_member(Assertion, Column).
 
 has_uncovered_assertion_member(Assertion, UniqueSet) :-
@@ -23,7 +23,7 @@ covering_unique_set(Assertion, UniqueSet) :-
 lacks_independent_non_null(Assertion) :-
     unique_set_assertion(Assertion, Relation),
     unique_set_assertion_member(Assertion, _, Column),
-    not column_not_null(Relation, Column).
+    not non_null_column(Relation, Column).
 
 key_requirement_met(Assertion) :-
     unique_set_assertion(Assertion, _),
@@ -38,7 +38,7 @@ proof_key(Assertion, UniqueSet) :- covering_unique_set(Assertion, UniqueSet), ke
 unique_set(uset(Assertion), Relation) :-
     unique_set_assertion(Assertion, Relation),
     proved(Assertion).
-unique_set_member(uset(Assertion), Position, Column) :-
+unique_set_column(uset(Assertion), Position, Column) :-
     unique_set_assertion_member(Assertion, Position, Column),
     unique_set_assertion(Assertion, Relation),
     proved(Assertion).

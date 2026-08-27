@@ -1,20 +1,20 @@
 % Unique Join Assertions over relation expressions and output columns.
 
-#defined relation/1.
-#defined relation_output/2.
+#defined relation_expression/1.
+#defined relation_output_column/2.
 #defined unique_set/2.
-#defined unique_set_member/3.
+#defined unique_set_column/3.
 #defined join_kind/2.
 #defined join_left/2.
 #defined join_right/2.
 #defined join_equality/3.
-#defined column_expression/2.
-#defined expression_column/2.
-#defined expression_any_aggregate/2.
+#defined output_column_expression/2.
+#defined direct_column_reference/2.
+#defined arbitrary_group_value/2.
 #defined expression_constant/1.
 #defined expression_opaque/1.
 #defined assertion/2.
-#defined column_not_null/2.
+#defined non_null_column/2.
 
 supported_join_kind(inner).
 supported_join_kind(left).
@@ -22,13 +22,13 @@ supported_join_kind(left).
 equality_side(Join, Side, Other) :- join_equality(Join, Side, Other).
 equality_side(Join, Other, Side) :- join_equality(Join, Side, Other).
 
-understood(Expression) :- expression_column(Expression, _).
+understood(Expression) :- direct_column_reference(Expression, _).
 understood(Expression) :- expression_constant(Expression).
 
 depends_on_right(Join, Expression) :-
-    expression_column(Expression, Column),
+    direct_column_reference(Expression, Column),
     join_right(Join, Right),
-    relation_output(Right, Column).
+    relation_output_column(Right, Column).
 independent(Join, Expression) :-
     equality_side(Join, Expression, _),
     understood(Expression),
@@ -36,9 +36,9 @@ independent(Join, Expression) :-
 
 covers(Join, Column) :-
     join_right(Join, Right),
-    relation_output(Right, Column),
+    relation_output_column(Right, Column),
     equality_side(Join, Side, Other),
-    expression_column(Side, Column),
+    direct_column_reference(Side, Column),
     independent(Join, Other).
 
 right_unique_set(Join, UniqueSet) :-
@@ -47,7 +47,7 @@ right_unique_set(Join, UniqueSet) :-
 
 uncovered_member(Join, UniqueSet, Column) :-
     right_unique_set(Join, UniqueSet),
-    unique_set_member(UniqueSet, _, Column),
+    unique_set_column(UniqueSet, _, Column),
     not covers(Join, Column).
 
 has_uncovered_member(Join, UniqueSet) :- uncovered_member(Join, UniqueSet, _).
@@ -65,8 +65,8 @@ proof_key(Assertion, UniqueSet) :- assertion(Assertion, Join), unique_join(Join,
 
 not_candidate_key(UniqueSet) :-
     unique_set(UniqueSet, Relation),
-    unique_set_member(UniqueSet, _, Column),
-    not column_not_null(Relation, Column).
+    unique_set_column(UniqueSet, _, Column),
+    not non_null_column(Relation, Column).
 candidate_key(UniqueSet) :- unique_set(UniqueSet, _), not not_candidate_key(UniqueSet).
 proved_by_candidate_key(Assertion) :- proof_key(Assertion, UniqueSet), candidate_key(UniqueSet).
 
@@ -89,10 +89,10 @@ assertion_missing_member(Assertion, UniqueSet, Column) :-
 % output columns. Output columns already carry the direct structural mapping.
 join_left_column(Join, InputColumn, OutputColumn) :-
     join_left(Join, Left),
-    relation_output(Left, InputColumn),
-    relation_output(Join, OutputColumn),
-    column_expression(OutputColumn, Expression),
-    expression_column(Expression, InputColumn).
+    relation_output_column(Left, InputColumn),
+    relation_output_column(Join, OutputColumn),
+    output_column_expression(OutputColumn, Expression),
+    direct_column_reference(Expression, InputColumn).
 
 join_propagated_key(jk(SourceSet, Join), SourceSet, Join) :-
     join_left(Join, Left),
@@ -100,13 +100,13 @@ join_propagated_key(jk(SourceSet, Join), SourceSet, Join) :-
     unique_set(SourceSet, Left).
 
 unique_set(JoinSet, Join) :- join_propagated_key(JoinSet, SourceSet, Join).
-unique_set_member(JoinSet, Position, OutputColumn) :-
+unique_set_column(JoinSet, Position, OutputColumn) :-
     join_propagated_key(JoinSet, SourceSet, Join),
-    unique_set_member(SourceSet, Position, InputColumn),
+    unique_set_column(SourceSet, Position, InputColumn),
     join_left_column(Join, InputColumn, OutputColumn).
 
-column_not_null(Join, OutputColumn) :-
+non_null_column(Join, OutputColumn) :-
     join_left(Join, Left),
     unique_join(Join, _),
-    column_not_null(Left, InputColumn),
+    non_null_column(Left, InputColumn),
     join_left_column(Join, InputColumn, OutputColumn).
