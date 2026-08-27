@@ -2,14 +2,14 @@
 
 `sqlassert` is a Python library for adding safety checks to SQL before you run it.
 
-The goal is to catch common query mistakes at test time or build time, using fast static and metadata-backed proofs instead of scanning production data. You can add `sqlassert` to your test suite and validate important queries offline, making them more resilient independent of the current contents of your database.
+The goal is to catch common query mistakes at test time or build time, using fast static and schema-backed proofs instead of scanning production data. You can add `sqlassert` to your test suite and validate important queries offline, making them more resilient independent of the current contents of your database.
 
 
 ```bash
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports only one check: `/**UNIQUE**/` joins. It is also only tested on duckdb._
+_Alpha warning: Today `sqlassert` supports Unique Join Assertions and Unique Set Assertions, including non-null Candidate Keys. It is only tested with the DuckDB SQL dialect._
 
 ## Features
 
@@ -28,9 +28,32 @@ from sessions
 
 The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `sqlassert` reads the query separately and validates that the RHS is provably unique for the join keys.
 
+### Unique Set and Candidate Key
+
+A Select Expression can assert that specific output columns form a Unique Set. Use `UNIQUE` when the columns may be null, or `PRIMARY KEY` when every column must also be non-null:
+
+```sql
+create table users (
+  id integer primary key,
+  email varchar unique
+);
+
+create view active_users as
+select id, email
+from users
+where id > 0
+/**PRIMARY KEY(id)**/;
+
+select * from active_users;
+```
+
+The trailing marker applies to the relation produced by that Select Expression. `/**PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program or explicit `Knowledge`, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
+
+Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subquery. A proved assertion on a named relation is also available to later statements in the same SQL Program.
+
 ## Usage
 
-Run validation offline, before your application or analytics job executes the query. `analyze` takes a whole SQL Program -- the `CREATE TABLE`/`CREATE VIEW` statements a query depends on, plus the query itself -- and proves each `/**UNIQUE**/` assertion from that declared schema. It never connects to a database.
+Run validation offline, before your application or analytics job executes the query. `analyze` takes a whole SQL Program -- the `CREATE TABLE`/`CREATE VIEW` statements a query depends on, plus the query itself -- and proves its Unique Join and Unique Set Assertions from that declared schema. It never connects to a database.
 
 ```python
 from sqlassert import analyze
@@ -116,7 +139,7 @@ The marker applies to the next join after the comment.
 
 `sqlassert` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
 
-Instead, it proves uniqueness using fast information available from the SQL and database metadata. If uniqueness cannot be proven, validation fails with a reason that names the join and RHS column:
+Instead, it proves uniqueness using fast information available from the SQL Program and explicit `Knowledge`. If uniqueness cannot be proven, validation fails with an explanation:
 
 ```text
 in join "INNER JOIN events ON sessions.event_id = events.id", we can't prove that RHS column id is unique
@@ -124,7 +147,7 @@ in join "INNER JOIN events ON sessions.event_id = events.id", we can't prove tha
 
 Supported uniqueness proofs today:
 
-- RHS `PRIMARY KEY` and `UNIQUE` constraints from db metadata.
+- `PRIMARY KEY` and `UNIQUE` constraints from `CREATE TABLE` declarations or explicit `Knowledge`.
 - RHS `GROUP BY` subqueries, when the join covers the grouping keys.
 - RHS `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
 - RHS `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
@@ -182,7 +205,6 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 ## Ideas / Todo
 
 - Exhaustive case statements that match all items of an enum / union data type.
-- Document that a Select should have a specific unique col combo
 - A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Derive that property from the leftmost arm's output columns and lower set-operation bodies when they appear inside a view, CTE, or subquery.
 - Column lineage, column unique status, column nullable status
 - Functional-dependency reasoning (`X → Y`): represent and derive when equal values of one column set guarantee equal values of another, including dependencies created by keys, deterministic expressions, and aggregation.
