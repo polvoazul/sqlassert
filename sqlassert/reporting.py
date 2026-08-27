@@ -28,7 +28,7 @@ _PROVED = "proved"
 _PROOF_KEY = "proof_key"
 _PROVED_BY_CANDIDATE_KEY = "proved_by_candidate_key"
 _UNIQUE_SET = "unique_set"
-_UNIQUE_SET_MEMBER = "unique_set_member"
+_UNIQUE_SET_MEMBER = "unique_set_column"
 _ASSERTION_MISSING_MEMBER = "assertion_missing_member"
 
 

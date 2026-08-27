@@ -72,6 +72,14 @@ _Avoid_: Column instance
 A scalar expression that reads an upstream Output Column.
 _Avoid_: Input column, column identifier
 
+**Pass-Through Column**:
+A fresh Output Column that directly references one upstream Output Column through a property-preserving operation.
+_Avoid_: Mapped column, semantic column mapping
+
+**Property-Preserving Input**:
+The upstream Relation Expression whose established properties are preserved by a pass-through operation.
+_Avoid_: Property input, source relation
+
 **Origin**:
 The SQL location or catalog object from which a semantic element or piece of knowledge arose.
 _Avoid_: SQLGlot node
@@ -84,9 +92,13 @@ _Avoid_: View SQL, database connection, SQLGlot AST
 A set of relation columns whose fully non-null value combinations cannot repeat. Rows containing null in the set are not guaranteed to be distinct from one another.
 _Avoid_: Candidate key
 
-**Candidate Key**:
-A unique set whose columns are all non-null, so every row has a distinct, complete value combination.
-_Avoid_: Nullable unique set
+**Derived Unique Set**:
+A Unique Set established for one Relation Expression from a Unique Set of an upstream Relation Expression.
+_Avoid_: Propagated key
+
+**Non-Null Unique Set**:
+A Unique Set whose columns are all non-null, so every row has a distinct, complete value combination.
+_Avoid_: Candidate key, nullable unique set
 
 **Select Expression**:
 The `SELECT` query body common to a Root Select, a view or CTE definition, and a subquery, independent of how it is introduced into the program.

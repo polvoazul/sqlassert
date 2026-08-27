@@ -8,13 +8,13 @@
 #defined qualify_partition_output/3.
 
 unique_set(aggregate_key(Relation), Relation) :- aggregate_relation(Relation).
-unique_set_member(aggregate_key(Relation), Position, Column) :-
+unique_set_column(aggregate_key(Relation), Position, Column) :-
     aggregate_grouping_output(Relation, Position, Column).
 
 unique_set(distinct_key(Relation), Relation) :- distinct_relation(Relation).
-unique_set_member(distinct_key(Relation), Position, Column) :-
+unique_set_column(distinct_key(Relation), Position, Column) :-
     distinct_output(Relation, Position, Column).
 
 unique_set(qualify_key(Relation), Relation) :- qualify_by_partition(Relation).
-unique_set_member(qualify_key(Relation), Position, Column) :-
+unique_set_column(qualify_key(Relation), Position, Column) :-
     qualify_partition_output(Relation, Position, Column).

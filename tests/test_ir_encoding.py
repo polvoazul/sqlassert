@@ -121,4 +121,4 @@ def test_grouped_bare_columns_are_encoded_as_any_aggregates():
     assert isinstance(aggregate.outputs[1].expression, ir.AnyAggregate)
     assert isinstance(aggregate.outputs[1].expression.input, ir.ColumnRef)
     assert isinstance(aggregate.outputs[2].expression, ir.OpaqueExpression)
-    assert "expression_any_aggregate(" in encode(conversion.program, conversion.knowledge).facts
+    assert "arbitrary_group_value(" in encode(conversion.program, conversion.knowledge).facts

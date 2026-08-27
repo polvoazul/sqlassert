@@ -3,7 +3,7 @@
 Unlike `report.assertions`, which only covers `/**UNIQUE**/`-marked joins,
 `report.facts` answers "is this column set unique on this relation" for any
 named relation -- a table or a view -- that the analysis actually reasoned
-about. It is read from the same `unique_set`/`unique_set_member` atoms the
+about. It is read from the same `unique_set`/`unique_set_column` atoms the
 Reporter already captures for assertion evidence; nothing new is derived.
 """
 

@@ -47,7 +47,7 @@ def test_a_cte_preserving_a_unique_set_proves_a_join_in_the_root_select(users_an
 def test_a_candidate_key_survives_a_where_filter_inside_a_cte(users_and_sessions):
     """Filter earns fresh Output Columns and inherits Unique Sets through
     `propagation.lp` rather than sharing output identity with its input
-    -- `column_not_null` must propagate right alongside `unique_set`, or a
+    -- `non_null_column` must propagate right alongside `unique_set`, or a
     Candidate Key proved through a filtered CTE would wrongly read as merely
     nullable."""
     report = analyze(
@@ -66,7 +66,7 @@ def test_a_candidate_key_survives_a_where_filter_inside_a_cte(users_and_sessions
 
 
 def test_a_candidate_key_survives_a_projection_inside_a_cte(users_and_sessions):
-    """`column_not_null` must propagate through Project's unrenamed-computation
+    """`non_null_column` must propagate through Project's unrenamed-computation
     output columns exactly as `unique_set` already does, or a Candidate Key
     proved through a renaming CTE would wrongly read as merely nullable."""
     report = analyze(

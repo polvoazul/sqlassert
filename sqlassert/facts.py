@@ -26,18 +26,18 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
     relations = [node for node in nodes if isinstance(node, ir.RelationExpr)]
     for relation in relations:
         relation_symbol = node_to_symbol[relation]
-        lines.append(f"relation({relation_symbol}).")
+        lines.append(f"relation_expression({relation_symbol}).")
         for column in relation.outputs:
-            lines.append(f"relation_output({relation_symbol}, {node_to_symbol[column]}).")
+            lines.append(f"relation_output_column({relation_symbol}, {node_to_symbol[column]}).")
 
         if isinstance(relation, ir.NamedRelation):
             if relation.body is not None:
-                lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.body]}).")
+                lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.body]}).")
             known = knowledge.relation(relation.name) if relation.role is not ir.RelationRole.CTE else None
             if known is not None:
                 by_name = {column.name.lower(): column for column in relation.outputs}
                 lines.extend(
-                    f"column_not_null({relation_symbol}, {node_to_symbol[by_name[column.name.lower()]]})."
+                    f"non_null_column({relation_symbol}, {node_to_symbol[by_name[column.name.lower()]]})."
                     for column in known.columns
                     if not column.nullable and column.name.lower() in by_name
                 )
@@ -46,9 +46,9 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
                     if len(members) == len(unique_set.columns):
                         lines.extend(_unique_set_facts(names, node_to_symbol, relation, members))
         elif isinstance(relation, ir.Alias):
-            lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.source]}).")
+            lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.source]}).")
         elif isinstance(relation, (ir.Filter, ir.Project)):
-            lines.append(f"property_input({relation_symbol}, {node_to_symbol[relation.input]}).")
+            lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.input]}).")
         elif isinstance(relation, ir.Aggregate):
             lines.append(f"aggregate_relation({relation_symbol}).")
             lines.extend(
@@ -79,13 +79,13 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
     for node in nodes:
         symbol = node_to_symbol[node]
         if isinstance(node, ir.OutputColumn):
-            lines.append(f"column_expression({symbol}, {node_to_symbol[node.expression]}).")
+            lines.append(f"output_column_expression({symbol}, {node_to_symbol[node.expression]}).")
         elif isinstance(node, ir.ColumnRef):
-            lines.append(f"expression_column({symbol}, {node_to_symbol[node.column]}).")
+            lines.append(f"direct_column_reference({symbol}, {node_to_symbol[node.column]}).")
         elif isinstance(node, ir.Constant):
             lines.append(f"expression_constant({symbol}).")
         elif isinstance(node, ir.AnyAggregate):
-            lines.append(f"expression_any_aggregate({symbol}, {node_to_symbol[node.input]}).")
+            lines.append(f"arbitrary_group_value({symbol}, {node_to_symbol[node.input]}).")
         elif isinstance(node, ir.OpaqueExpression):
             lines.append(f"expression_opaque({symbol}).")
         elif isinstance(node, ir.UniqueJoinAssertion):
@@ -105,7 +105,7 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
 def _unique_set_facts(names: NameGiver, symbols: dict[ir.Node, str], relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]) -> list[str]:
     key = names.new(naming.KEY, "_".join(column.name for column in columns))
     return [f"unique_set({key}, {symbols[relation]})."] + [
-        f"unique_set_member({key}, {position}, {symbols[column]})." for position, column in enumerate(columns)
+        f"unique_set_column({key}, {position}, {symbols[column]})." for position, column in enumerate(columns)
     ]
 
 

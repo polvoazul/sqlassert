@@ -1,43 +1,43 @@
-% Uniqueness propagated through semantic column mappings.
+% Unique Sets inherited through pass-through columns.
 
-#defined relation/1.
-#defined relation_output/2.
-#defined property_input/2.
-#defined column_expression/2.
-#defined expression_column/2.
-#defined expression_any_aggregate/2.
+#defined relation_expression/1.
+#defined relation_output_column/2.
+#defined property_preserving_input/2.
+#defined output_column_expression/2.
+#defined direct_column_reference/2.
+#defined arbitrary_group_value/2.
 #defined unique_set/2.
-#defined unique_set_member/3.
-#defined column_not_null/2.
+#defined unique_set_column/3.
+#defined non_null_column/2.
 
-mapped_column(OwnRelation, InputColumn, OutputColumn) :-
-    property_input(OwnRelation, InputRelation),
-    relation_output(InputRelation, InputColumn),
-    relation_output(OwnRelation, OutputColumn),
-    column_expression(OutputColumn, Expression),
-    expression_column(Expression, InputColumn).
+passthrough_column(TargetRelation, SourceColumn, TargetColumn) :-
+    property_preserving_input(TargetRelation, SourceRelation),
+    relation_output_column(SourceRelation, SourceColumn),
+    relation_output_column(TargetRelation, TargetColumn),
+    output_column_expression(TargetColumn, OutputExpression),
+    direct_column_reference(OutputExpression, SourceColumn).
 
-column_not_null(OwnRelation, OutputColumn) :-
-    property_input(OwnRelation, InputRelation),
-    column_not_null(InputRelation, InputColumn),
-    mapped_column(OwnRelation, InputColumn, OutputColumn).
+non_null_column(TargetRelation, TargetColumn) :-
+    property_preserving_input(TargetRelation, SourceRelation),
+    non_null_column(SourceRelation, SourceColumn),
+    passthrough_column(TargetRelation, SourceColumn, TargetColumn).
 
-candidate_unique_set(SourceSet, OwnRelation) :-
-    property_input(OwnRelation, InputRelation),
-    unique_set(SourceSet, InputRelation).
+inherited_unique_set_candidate(SourceUniqueSet, TargetRelation) :-
+    property_preserving_input(TargetRelation, SourceRelation),
+    unique_set(SourceUniqueSet, SourceRelation).
 
-uncovered_mapped_member(SourceSet, OwnRelation, InputColumn) :-
-    candidate_unique_set(SourceSet, OwnRelation),
-    unique_set_member(SourceSet, _, InputColumn),
-    not mapped_column(OwnRelation, InputColumn, _).
+unmapped_unique_set_column(SourceUniqueSet, TargetRelation, SourceColumn) :-
+    inherited_unique_set_candidate(SourceUniqueSet, TargetRelation),
+    unique_set_column(SourceUniqueSet, _, SourceColumn),
+    not passthrough_column(TargetRelation, SourceColumn, _).
 
-propagated_key(pk(SourceSet, OwnRelation), SourceSet, OwnRelation) :-
-    candidate_unique_set(SourceSet, OwnRelation),
-    not uncovered_mapped_member(SourceSet, OwnRelation, _).
+derived_unique_set(inherited_set(SourceUniqueSet, TargetRelation), SourceUniqueSet, TargetRelation) :-
+    inherited_unique_set_candidate(SourceUniqueSet, TargetRelation),
+    not unmapped_unique_set_column(SourceUniqueSet, TargetRelation, _).
 
-unique_set(PropagatedSet, OwnRelation) :-
-    propagated_key(PropagatedSet, SourceSet, OwnRelation).
-unique_set_member(PropagatedSet, Position, OutputColumn) :-
-    propagated_key(PropagatedSet, SourceSet, OwnRelation),
-    unique_set_member(SourceSet, Position, InputColumn),
-    mapped_column(OwnRelation, InputColumn, OutputColumn).
+unique_set(DerivedUniqueSet, TargetRelation) :-
+    derived_unique_set(DerivedUniqueSet, SourceUniqueSet, TargetRelation).
+unique_set_column(DerivedUniqueSet, ColumnPosition, TargetColumn) :-
+    derived_unique_set(DerivedUniqueSet, SourceUniqueSet, TargetRelation),
+    unique_set_column(SourceUniqueSet, ColumnPosition, SourceColumn),
+    passthrough_column(TargetRelation, SourceColumn, TargetColumn).
