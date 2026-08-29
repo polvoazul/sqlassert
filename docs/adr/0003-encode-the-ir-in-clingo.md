@@ -1,8 +1,8 @@
-# Mirror the IR in Clingo
+# Encode the IR in Clingo
 
 ## IR to logic encoding
 
-The `ir__` namespace mirrors the semantic IR inside the logic engine. The `pub__` namespace is the public logic API: producers assert it directly, rules use and produce it directly, and consumers read it directly. Unprefixed predicates are internal logical bridges.
+The `ir__` namespace encodes the semantic IR inside the logic engine. The `pub__` namespace is the public logic API: producers assert it directly, rules use and produce it directly, and consumers read it directly. Unprefixed predicates are internal logical bridges.
 
 In Clingo, `ir__filter(f1)` is an atom, `ir__filter(f1).` is a ground fact, and `ir__filter/1` is the predicate signature.
 
@@ -71,7 +71,7 @@ ir__relation_expr__output_columns(r1, 0, c1).  % RelationExpr.output_columns[0]
 ir__relation_expr__output_columns(r1, 1, c2).  % RelationExpr.output_columns[1]
 ```
 
-Every field of every reachable `Node` is reflected by default. Optional fields produce no fact for `None`; enums become lowercase atoms such as `view` and `inner`; user-provided text becomes a string. `Node.origin` is explicitly excluded because provenance remains outside Clingo. Unsupported values fail encoding.
+Every field of every reachable `Node` is encoded by default. Optional fields produce no fact for `None`; enums become lowercase atoms such as `view` and `inner`; user-provided text becomes a string. `Node.origin` is explicitly excluded because provenance remains outside Clingo. Unsupported values fail encoding.
 
 ### Boolean fields
 
@@ -85,7 +85,7 @@ class UniqueSetAssertion(Assertion):
     is_candidate_key: bool
 ```
 
-Reflection preserves those names. True produces a unary fact; false produces no fact:
+Encoding preserves those names. True produces a unary fact; false produces no fact:
 
 ```prolog
 ir__relation_expr__is_schema_complete(r1).
@@ -110,7 +110,7 @@ pub__proved(Assertion).
 pub__proof_key(Assertion, Key).
 ```
 
-Public predicates need no export wrappers. Internal predicates connect the IR mirror to reasoning:
+Public predicates need no export wrappers. Internal predicates connect the IR encoding to reasoning:
 
 ```prolog
 relation_input(Filter, Input) :-
@@ -126,7 +126,7 @@ direct_column_reference(Expression, Column) :-
 
 ### Generation
 
-Generate mirror facts and inheritance rules at runtime from Python reflection:
+Generate IR facts and inheritance rules at runtime from Python introspection:
 
 ```text
 Filter object               -> ir__filter/1 fact
@@ -137,7 +137,7 @@ Filter extends RelationExpr -> ir__relation_expr/1 inheritance rule
 
 `ClingoEncoding` keeps generated `inheritance_rules` separate from ground `facts`; `Engine` concatenates both with the semantic rule files before grounding.
 
-The reflection module owns one deliberately small escape hatch:
+The encoding module owns one deliberately small escape hatch:
 
 ```python
 EXCEPTIONS = {
@@ -145,4 +145,4 @@ EXCEPTIONS = {
 }
 ```
 
-An exception replaces reflection for that class. Do not build a general customization framework until another concrete exception requires it.
+An exception replaces the default encoding for that class. Do not build a general customization framework until another concrete exception requires it.
