@@ -16,15 +16,15 @@ ir_<class>__<field>
 Node types are unary predicates:
 
 ```prolog
-ir_filter(f1).         % Filter
-ir_column_ref(e1).     % ColumnRef
-ir_output_column(c1).  % OutputColumn
+ir_filter(f1).         % f1 is a Filter
+ir_column_ref(e1).     % e1 is a ColumnRef
+ir_output_column(c1).  % c1 is an OutputColumn
 ```
 
 The encoder states the concrete node type. Inheritance is part of the IR mirror but is encoded as logic rules instead of repeated ground facts:
 
 ```prolog
-ir_relation_expr(Node) :- ir_filter(Node).
+ir_relation_expr(Node) :- ir_filter(Node).  % Every Filter is also a RelationExpr (Filter is a subclass)
 ir_relation_expr(Node) :- ir_project(Node).
 ir_relation_expr(Node) :- ir_join(Node).
 
@@ -96,3 +96,16 @@ direct_column_reference(Expression, Column) :-
 This boundary keeps `facts.py` mechanical: it assigns solver identities and states IR structure. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in the logic rules, where the specific property is explicit and independently derivable.
 
 The coupling between the IR and its `ir_` vocabulary is intentional. Changing an IR class, field, or inheritance relationship requires changing its mirror encoding, while changes to semantic reasoning should normally affect only unprefixed logic predicates.
+
+### Generation
+
+Generate the mirror from Python reflection by default:
+
+```text
+Filter object              -> ir_filter/1 fact
+Filter.input               -> ir_filter__input/2 fact
+RelationExpr.outputs       -> ir_relation_expr__outputs/3 facts
+Filter extends RelationExpr -> ir_relation_expr/1 inheritance rule
+```
+
+Allow per-class overrides to rename, omit, or custom-encode structures that do not fit the default mapping.
