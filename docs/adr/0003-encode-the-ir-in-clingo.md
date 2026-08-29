@@ -142,7 +142,7 @@ class UniqueSetColumn(Knowledge):
     column: OutputColumn
 ```
 
-The public encoder writes `pub__<knowledge class>` from those fields. SQL lowering constructs linked Knowledge directly. A database gatherer resolves qualified names before constructing the same objects; the engine never resolves relation or column names.
+The public encoder writes `pub__<knowledge class>` from those fields. SQL lowering constructs linked Knowledge directly. A database gatherer resolves qualified names before constructing the same objects; the engine never resolves relation or column names. Database hydration is tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
 `facts.py` assigns solver identities and states IR structure and public Knowledge. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in logic rules.
 

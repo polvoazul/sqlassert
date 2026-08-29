@@ -56,7 +56,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   returns durable reporting values.
 - `rules/` contains the Clingo logic-program resources.
 - `discovery/duckdb` is a future adapter that binds database metadata to IR
-  nodes and produces `Knowledge`; it is not part of the MVP engine.
+  nodes and produces `Knowledge`; it is not part of the MVP engine. See
+  [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
 ## Stage Objects
 
