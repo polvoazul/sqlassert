@@ -6,6 +6,7 @@ nodes; identifiers are assigned only when the graph is encoded for Clingo.
 
 from __future__ import annotations
 
+from abc import ABC, ABCMeta
 from dataclasses import dataclass, fields
 from enum import Enum
 from typing import dataclass_transform
@@ -16,21 +17,28 @@ INNER = "inner"
 
 
 @dataclass_transform(eq_default=False, frozen_default=True, kw_only_default=True)
-class NodeMeta(type):
+class NodeMeta(ABCMeta):
     """Turn every Node subclass into the same kind of semantic value."""
 
-    def __new__(metaclass, name, bases, namespace):
+    def __new__(metaclass, name, bases, namespace, *, abstract: bool = False):
         node_type = super().__new__(metaclass, name, bases, namespace)
-        return dataclass(frozen=True, eq=False, kw_only=True)(node_type)
+        node_type = dataclass(frozen=True, eq=False, kw_only=True)(node_type)
+        node_type.__ir_abstract__ = abstract
+        return node_type
+
+    def __call__(cls, *args, **kwargs):
+        if getattr(cls, "__ir_abstract__", False):
+            raise TypeError(f"cannot construct abstract IR node {cls.__name__}")
+        return super().__call__(*args, **kwargs)
 
 
-class Node(metaclass=NodeMeta):
+class Node(ABC, metaclass=NodeMeta, abstract=True):
     """An immutable semantic node with object-identity equality."""
 
     origin: Origin
 
 
-class ScalarExpr(Node):
+class ScalarExpr(Node, abstract=True):
     """A scalar expression produced or consumed by a relational operation."""
 
 
@@ -66,11 +74,11 @@ class OutputColumn(Node):
     expression: ScalarExpr
 
 
-class RelationExpr(Node):
+class RelationExpr(Node, abstract=True):
     """A relation-producing expression with an explicit output schema."""
 
     output_columns: tuple[OutputColumn, ...]
-    schema_complete: bool = False
+    is_schema_complete: bool = False
 
 
 class RelationRole(Enum):
@@ -146,7 +154,7 @@ class RecursiveRelation(OpaqueRelation):
     relation_name: str
 
 
-class Assertion(Node):
+class Assertion(Node, abstract=True):
     """A requirement over a node in the relation graph."""
 
 
@@ -157,7 +165,7 @@ class UniqueJoinAssertion(Assertion):
 class UniqueSetAssertion(Assertion):
     subject: RelationExpr
     columns: tuple[OutputColumn, ...]
-    candidate_key: bool
+    is_candidate_key: bool
 
 
 @dataclass(frozen=True)
