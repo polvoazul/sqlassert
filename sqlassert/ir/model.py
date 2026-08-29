@@ -69,7 +69,7 @@ class OutputColumn(Node):
 class RelationExpr(Node):
     """A relation-producing expression with an explicit output schema."""
 
-    outputs: tuple[OutputColumn, ...]
+    output_columns: tuple[OutputColumn, ...]
     schema_complete: bool = False
 
 

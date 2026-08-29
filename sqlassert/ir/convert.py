@@ -203,7 +203,7 @@ class IrParser:
             self._table_symbols[id(source)].required_columns.add(column)
 
     def _propagate_required_columns(self) -> None:
-        """Push requested outputs through star-only view/CTE/subquery bodies."""
+        """Push requested output columns through star-only view/CTE/subquery bodies."""
         changed = True
         while changed:
             before = sum(len(symbol.required_columns) for symbol in self._symbols) + sum(len(columns) for columns in self._source_required.values())
@@ -238,9 +238,9 @@ class IrParser:
                 left = self._opaque_relation(query.this)
             if right is None:
                 right = self._opaque_relation(query.expression)
-            outputs = _pass_outputs(left.outputs, self._origin(query))
+            output_columns = _pass_output_columns(left.output_columns, self._origin(query))
             return ir.SetOperation(
-                origin=self._origin(query), outputs=outputs, schema_complete=left.schema_complete and right.schema_complete,
+                origin=self._origin(query), output_columns=output_columns, schema_complete=left.schema_complete and right.schema_complete,
                 operator=query.key, left=left, right=right,
             )
         if not isinstance(query, exp.Select):
@@ -289,9 +289,9 @@ class IrParser:
             return existing
 
         if symbol.role is ir.RelationRole.TABLE:
-            outputs, complete = self._table_outputs(symbol)
+            output_columns, complete = self._table_output_columns(symbol)
             named = ir.NamedRelation(
-                origin=symbol.origin, outputs=outputs, schema_complete=complete, name=symbol.name, role=symbol.role
+                origin=symbol.origin, output_columns=output_columns, schema_complete=complete, name=symbol.name, role=symbol.role
             )
             self._named_relations[symbol] = named
             return named
@@ -303,10 +303,10 @@ class IrParser:
             self._resolving.discard(symbol)
         if body is None:
             body = self._opaque_relation(symbol.body or exp.Table(this=symbol.name), symbol.required_columns)
-        outputs = _pass_outputs(body.outputs, symbol.origin)
+        output_columns = _pass_output_columns(body.output_columns, symbol.origin)
         named = ir.NamedRelation(
             origin=symbol.origin,
-            outputs=outputs,
+            output_columns=output_columns,
             schema_complete=body.schema_complete,
             name=symbol.name,
             role=symbol.role,
@@ -316,22 +316,22 @@ class IrParser:
         return named
 
     def _unresolved_named_relation(self, symbol: _Symbol) -> ir.NamedRelation:
-        outputs, complete = self._table_outputs(symbol) if symbol.role is ir.RelationRole.TABLE else (self._opaque_outputs(symbol.required_columns, symbol.origin), False)
+        output_columns, complete = self._table_output_columns(symbol) if symbol.role is ir.RelationRole.TABLE else (self._opaque_output_columns(symbol.required_columns, symbol.origin), False)
         named = ir.NamedRelation(
-            origin=symbol.origin, outputs=outputs, schema_complete=complete, name=symbol.name, role=symbol.role
+            origin=symbol.origin, output_columns=output_columns, schema_complete=complete, name=symbol.name, role=symbol.role
         )
         self._named_relations[symbol] = named
         return named
 
-    def _table_outputs(self, symbol: _Symbol) -> tuple[tuple[ir.OutputColumn, ...], bool]:
+    def _table_output_columns(self, symbol: _Symbol) -> tuple[tuple[ir.OutputColumn, ...], bool]:
         known = self._knowledge.relation(symbol.name)
         names = [column.name for column in known.columns] if known is not None else []
         seen = {name.lower() for name in names}
         names.extend(column for column in sorted(symbol.required_columns, key=str.lower) if column.lower() not in seen)
         complete = known is not None and {column.lower() for column in symbol.required_columns} <= seen
-        return self._opaque_outputs(names, symbol.origin), complete
+        return self._opaque_output_columns(names, symbol.origin), complete
 
-    def _opaque_outputs(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
+    def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
             names = sorted(names, key=lambda name: (name.lower(), name))
         return tuple(
@@ -347,27 +347,27 @@ class IrParser:
         origin = self._origin(source)
         return ir.RecursiveRelation(
             origin=origin,
-            outputs=self._opaque_outputs(symbol.required_columns, origin),
+            output_columns=self._opaque_output_columns(symbol.required_columns, origin),
             schema_complete=False,
             description=source.sql(dialect=self.dialect),
             relation_name=symbol.name,
         )
 
     def _alias(self, source: ir.RelationExpr, name: str, origin: Origin) -> _Lowered:
-        outputs = _pass_outputs(source.outputs, origin)
-        alias = ir.Alias(origin=origin, outputs=outputs, schema_complete=source.schema_complete, source=source, name=name)
-        return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output) for output in outputs))
+        output_columns = _pass_output_columns(source.output_columns, origin)
+        alias = ir.Alias(origin=origin, output_columns=output_columns, schema_complete=source.schema_complete, source=source, name=name)
+        return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output) for output in output_columns))
 
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
         equalities = self._lower_join_predicate(join, left, right)
-        input_columns = left.relation.outputs + right.relation.outputs
-        outputs = _pass_outputs(input_columns, origin)
-        remapped = {source: output for source, output in zip(input_columns, outputs)}
+        input_columns = left.relation.output_columns + right.relation.output_columns
+        output_columns = _pass_output_columns(input_columns, origin)
+        remapped = {source: output for source, output in zip(input_columns, output_columns)}
         relation = ir.Join(
             origin=origin,
-            outputs=outputs,
+            output_columns=output_columns,
             schema_complete=left.relation.schema_complete and right.relation.schema_complete,
             kind=_join_kind(join),
             left=left.relation,
@@ -426,10 +426,10 @@ class IrParser:
         return relation if relation is not None else self._opaque_relation(select, _selected_output_names(select))
 
     def _filter(self, lowered: _Lowered, origin: Origin) -> _Lowered:
-        outputs = _pass_outputs(lowered.relation.outputs, origin)
-        remapped = {source: output for source, output in zip(lowered.relation.outputs, outputs)}
+        output_columns = _pass_output_columns(lowered.relation.output_columns, origin)
+        remapped = {source: output for source, output in zip(lowered.relation.output_columns, output_columns)}
         relation = ir.Filter(
-            origin=origin, outputs=outputs, schema_complete=lowered.relation.schema_complete, input=lowered.relation
+            origin=origin, output_columns=output_columns, schema_complete=lowered.relation.schema_complete, input=lowered.relation
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
@@ -437,7 +437,7 @@ class IrParser:
         return _Lowered(relation, bindings)
 
     def _project(self, lowered: _Lowered, items: list[exp.Expression], origin: Origin) -> ir.Project:
-        outputs = tuple(
+        output_columns = tuple(
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
@@ -445,7 +445,7 @@ class IrParser:
             )
             for item in items
         )
-        return ir.Project(origin=origin, outputs=outputs, schema_complete=True, input=lowered.relation)
+        return ir.Project(origin=origin, output_columns=output_columns, schema_complete=True, input=lowered.relation)
 
     def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, group: exp.Group) -> ir.Aggregate | None:
         if select.args.get("having") is not None or any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
@@ -460,13 +460,13 @@ class IrParser:
                 return None
             grouped_items.add(id(item))
 
-        outputs = self._aggregate_outputs(select.expressions, lowered.bindings, grouped_items)
+        output_columns = self._aggregate_output_columns(select.expressions, lowered.bindings, grouped_items)
         grouping_outputs: list[ir.OutputColumn] = []
         for group_expression in group.expressions:
             item = _matching_grouping_output(group_expression, select.expressions)
-            grouping_outputs.append(outputs[select.expressions.index(item)])
+            grouping_outputs.append(output_columns[select.expressions.index(item)])
         return ir.Aggregate(
-            origin=self._origin(select), outputs=outputs, schema_complete=True, input=lowered.relation,
+            origin=self._origin(select), output_columns=output_columns, schema_complete=True, input=lowered.relation,
             grouping_outputs=tuple(grouping_outputs),
         )
 
@@ -477,7 +477,7 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
         return ir.Distinct(
-            origin=self._origin(select), outputs=self._selected_outputs(select.expressions, lowered.bindings),
+            origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered.bindings),
             schema_complete=True, input=lowered.relation,
         )
 
@@ -493,23 +493,23 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
 
-        outputs = self._selected_outputs(select.expressions, lowered.bindings)
+        output_columns = self._selected_output_columns(select.expressions, lowered.bindings)
         partition_outputs: list[ir.OutputColumn] = []
         for partition in partitions:
             item = _matching_output(partition, select.expressions)
             if item is None:
                 return None
-            partition_outputs.append(outputs[select.expressions.index(item)])
+            partition_outputs.append(output_columns[select.expressions.index(item)])
         order = window.args.get("order")
         ordering = tuple(
             self._lower_expression(ordered.this, lowered.bindings) for ordered in (order.expressions if order else ())
         )
         return ir.QualifyByPartition(
-            origin=self._origin(select), outputs=outputs, schema_complete=True, input=lowered.relation,
+            origin=self._origin(select), output_columns=output_columns, schema_complete=True, input=lowered.relation,
             partition_outputs=tuple(partition_outputs), ordering=ordering,
         )
 
-    def _selected_outputs(self, items: list[exp.Expression], bindings: tuple[_Binding, ...]) -> tuple[ir.OutputColumn, ...]:
+    def _selected_output_columns(self, items: list[exp.Expression], bindings: tuple[_Binding, ...]) -> tuple[ir.OutputColumn, ...]:
         return tuple(
             ir.OutputColumn(
                 origin=self._origin(item),
@@ -519,15 +519,15 @@ class IrParser:
             for item in items
         )
 
-    def _aggregate_outputs(self, items: list[exp.Expression], bindings: tuple[_Binding, ...], grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
-        outputs: list[ir.OutputColumn] = []
+    def _aggregate_output_columns(self, items: list[exp.Expression], bindings: tuple[_Binding, ...], grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
+        output_columns: list[ir.OutputColumn] = []
         for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
             lowered = self._lower_expression(expression, bindings)
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered)
-            outputs.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, expression=lowered))
-        return tuple(outputs)
+            output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, expression=lowered))
+        return tuple(output_columns)
 
     def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...]) -> ir.ScalarExpr:
         origin = self._origin(expression)
@@ -548,7 +548,7 @@ class IrParser:
         origin = self._origin(source)
         return ir.OpaqueRelation(
             origin=origin,
-            outputs=self._opaque_outputs(names, origin),
+            output_columns=self._opaque_output_columns(names, origin),
             schema_complete=False,
             description=source.sql(dialect=self.dialect),
         )
@@ -556,7 +556,7 @@ class IrParser:
     # Assertions and diagnostics --------------------------------------------
 
     def _register_unique_set_assertions(self, relation: ir.RelationExpr, select: exp.Select) -> None:
-        by_name = {output.name.lower(): output for output in relation.outputs}
+        by_name = {output.name.lower(): output for output in relation.output_columns}
         for kind, columns, line in unique_set_assertions(select):
             self._handled_unique_set_lines.add(line)
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
@@ -650,7 +650,7 @@ class IrParser:
         return Origin(SQL, node.sql(dialect=self.dialect), line)
 
 
-def _pass_outputs(inputs: tuple[ir.OutputColumn, ...], origin: Origin) -> tuple[ir.OutputColumn, ...]:
+def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) -> tuple[ir.OutputColumn, ...]:
     return tuple(
         ir.OutputColumn(origin=origin, name=column.name, expression=ir.ColumnRef(origin=origin, column=column))
         for column in inputs

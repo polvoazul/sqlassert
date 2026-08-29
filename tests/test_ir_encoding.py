@@ -117,8 +117,8 @@ def test_grouped_bare_columns_are_encoded_as_any_aggregates():
     aggregate = conversion.program.root
 
     assert isinstance(aggregate, ir.Aggregate)
-    assert isinstance(aggregate.outputs[0].expression, ir.ColumnRef)
-    assert isinstance(aggregate.outputs[1].expression, ir.AnyAggregate)
-    assert isinstance(aggregate.outputs[1].expression.input, ir.ColumnRef)
-    assert isinstance(aggregate.outputs[2].expression, ir.OpaqueExpression)
+    assert isinstance(aggregate.output_columns[0].expression, ir.ColumnRef)
+    assert isinstance(aggregate.output_columns[1].expression, ir.AnyAggregate)
+    assert isinstance(aggregate.output_columns[1].expression.input, ir.ColumnRef)
+    assert isinstance(aggregate.output_columns[2].expression, ir.OpaqueExpression)
     assert "arbitrary_group_value(" in encode(conversion.program, conversion.knowledge).facts
