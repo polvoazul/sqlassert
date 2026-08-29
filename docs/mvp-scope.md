@@ -20,7 +20,7 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 
 ## Limitations and Future Features
 
-- DuckDB schema and view autodiscovery.
+- DuckDB schema and view autodiscovery ([#14](https://github.com/polvoazul/sqlassert/issues/14)).
 - `CREATE INDEX` and unique-index knowledge.
 - `RIGHT`, `FULL`, `SEMI`, `ANTI`, and `CROSS` join analysis.
 - Non-equality, null-safe, and `OR` join predicates.
