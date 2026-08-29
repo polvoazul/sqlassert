@@ -9,6 +9,7 @@ description = "Generate SQL assertions from unique join markers."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+  "case-conversion>=3.0.2",
   "clingo>=5.7",
   "sqlglot>=28",
 ]
