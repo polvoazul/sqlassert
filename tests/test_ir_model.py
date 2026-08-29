@@ -18,7 +18,7 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
     )
     users = ir.NamedRelation(
         origin=_origin("CREATE TABLE users"),
-        outputs=(table_column,),
+        output_columns=(table_column,),
         name="users",
         role=ir.RelationRole.TABLE,
         schema_complete=True,
@@ -28,22 +28,22 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
         name="id",
         expression=ir.ColumnRef(origin=_origin("u.id"), column=table_column),
     )
-    first = ir.Alias(origin=_origin("users AS u"), outputs=(alias_column,), source=users, name="u")
-    second = ir.Alias(origin=_origin("users AS u"), outputs=(alias_column,), source=users, name="u")
+    first = ir.Alias(origin=_origin("users AS u"), output_columns=(alias_column,), source=users, name="u")
+    second = ir.Alias(origin=_origin("users AS u"), output_columns=(alias_column,), source=users, name="u")
 
     assert first is not second
     assert first != second
     assert first.source is second.source is users
-    assert isinstance(first.outputs[0].expression, ir.ColumnRef)
-    assert first.outputs[0].expression.column is table_column
+    assert isinstance(first.output_columns[0].expression, ir.ColumnRef)
+    assert first.output_columns[0].expression.column is table_column
     assert first.origin == _origin("users AS u")
     with pytest.raises(FrozenInstanceError):
         first.name = "changed"  # ty: ignore[invalid-assignment]
 
 
 def test_assertions_point_directly_into_the_relation_graph():
-    empty = ir.OpaqueRelation(origin=_origin("unsupported"), outputs=(), description="unsupported")
-    join = ir.Join(origin=_origin("JOIN"), outputs=(), kind=ir.INNER, left=empty, right=empty)
+    empty = ir.OpaqueRelation(origin=_origin("unsupported"), output_columns=(), description="unsupported")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=empty, right=empty)
     join_assertion = ir.UniqueJoinAssertion(origin=_origin("marker"), subject=join)
     set_assertion = ir.UniqueSetAssertion(
         origin=_origin("marker"), subject=empty, columns=(), candidate_key=False

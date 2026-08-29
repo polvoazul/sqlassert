@@ -27,7 +27,7 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
     for relation in relations:
         relation_symbol = node_to_symbol[relation]
         lines.append(f"relation_expression({relation_symbol}).")
-        for column in relation.outputs:
+        for column in relation.output_columns:
             lines.append(f"relation_output_column({relation_symbol}, {node_to_symbol[column]}).")
 
         if isinstance(relation, ir.NamedRelation):
@@ -35,7 +35,7 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
                 lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.body]}).")
             known = knowledge.relation(relation.name) if relation.role is not ir.RelationRole.CTE else None
             if known is not None:
-                by_name = {column.name.lower(): column for column in relation.outputs}
+                by_name = {column.name.lower(): column for column in relation.output_columns}
                 lines.extend(
                     f"non_null_column({relation_symbol}, {node_to_symbol[by_name[column.name.lower()]]})."
                     for column in known.columns
@@ -59,7 +59,7 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
             lines.append(f"distinct_relation({relation_symbol}).")
             lines.extend(
                 f"distinct_output({relation_symbol}, {position}, {node_to_symbol[column]})."
-                for position, column in enumerate(relation.outputs)
+                for position, column in enumerate(relation.output_columns)
             )
         elif isinstance(relation, ir.QualifyByPartition):
             lines.append(f"qualify_by_partition({relation_symbol}).")
