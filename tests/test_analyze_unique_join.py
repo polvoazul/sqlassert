@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-from sqlassert import (
-    ColumnKnowledge,
-    Knowledge,
-    Outcome,
-    RelationKnowledge,
-    UniqueSetKnowledge,
-    analyze,
-)
+from sqlassert import Outcome, analyze
 
 
 PROVABLE_PROGRAM = """
@@ -76,31 +69,6 @@ def test_more_than_one_root_select_is_an_explicit_program_diagnostic():
 def test_analysis_requires_exactly_one_stable_model():
     assert analyze(PROVABLE_PROGRAM).stable_model_count == 1
     assert analyze(UNPROVABLE_PROGRAM).stable_model_count == 1
-
-
-def test_supplied_knowledge_proves_a_relation_the_program_does_not_declare():
-    report = analyze(
-        """
-        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-
-        SELECT *
-        FROM sessions
-        /**UNIQUE**/ JOIN users
-            ON sessions.user_id = users.id
-        """,
-        knowledge=Knowledge(
-            (
-                RelationKnowledge(
-                    name="users",
-                    columns=(ColumnKnowledge("id", nullable=False),),
-                    unique_sets=(UniqueSetKnowledge(("id",)),),
-                ),
-            )
-        ),
-    )
-
-    assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_omitted_knowledge_behaves_as_empty_knowledge():

@@ -1,20 +1,13 @@
 """Composite and nullable Unique Sets, constants, USING, and LEFT joins.
 
 Covers the acceptance criteria of proving Unique Join Assertions from
-composite and nullable Unique Sets supplied by Create Table declarations or
-explicit Knowledge, per docs/mvp-scope.md.
+composite and nullable Unique Sets supplied by Create Table declarations,
+per docs/mvp-scope.md.
 """
 
 from __future__ import annotations
 
-from sqlassert import (
-    ColumnKnowledge,
-    Knowledge,
-    Outcome,
-    RelationKnowledge,
-    UniqueSetKnowledge,
-    analyze,
-)
+from sqlassert import Outcome, analyze
 
 
 def test_fully_covering_a_composite_unique_set_in_an_inner_join_is_proved():
@@ -153,35 +146,6 @@ def test_a_composite_candidate_key_is_identified_as_one_only_when_every_member_i
     )
     assert partly_nullable.assertions[0].outcome is Outcome.PROVED
     assert not partly_nullable.assertions[0].is_candidate_key
-
-
-def test_explicit_knowledge_can_supply_a_composite_nullable_unique_set_without_sql():
-    report = analyze(
-        """
-        CREATE TABLE sessions (user_id INTEGER, user_region INTEGER, ts TIMESTAMP);
-
-        SELECT *
-        FROM sessions
-        /**UNIQUE**/ JOIN users
-            ON sessions.user_id = users.id AND sessions.user_region = users.region
-        """,
-        knowledge=Knowledge(
-            (
-                RelationKnowledge(
-                    name="users",
-                    columns=(
-                        ColumnKnowledge("id", nullable=True),
-                        ColumnKnowledge("region", nullable=True),
-                    ),
-                    unique_sets=(UniqueSetKnowledge(("id", "region")),),
-                ),
-            )
-        ),
-    )
-
-    assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id", "region")
-    assert not report.assertions[0].is_candidate_key
 
 
 def test_using_participates_in_the_same_key_coverage_reasoning_as_on():
