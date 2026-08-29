@@ -7,7 +7,7 @@ from sqlassert import ir
 from sqlassert.engine import Engine
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
-from sqlassert.knowledge import NonNullColumn, UniqueSet, UniqueSetColumn
+from sqlassert.knowledge import NonNullColumn, UniqueSet
 from sqlassert.sql_parse import SqlParser
 
 
@@ -72,7 +72,6 @@ def test_encoding_reflects_boolean_fields_and_public_knowledge():
     assert "ir__relation_expr__is_schema_complete(" in facts
     assert "pub__non_null_column(" in facts
     assert "pub__unique_set(" in facts
-    assert "pub__unique_set_column(" in facts
 
 
 def test_sql_lowering_constructs_knowledge_linked_to_ir_nodes():
@@ -80,26 +79,30 @@ def test_sql_lowering_constructs_knowledge_linked_to_ir_nodes():
     users = conversion.program.declarations[0]
     id_column = users.output_columns[0]
     unique_set = next(item for item in conversion.knowledge if isinstance(item, UniqueSet))
-    members = tuple(item for item in conversion.knowledge if isinstance(item, UniqueSetColumn))
     non_null = next(item for item in conversion.knowledge if isinstance(item, NonNullColumn))
 
-    assert unique_set.relation is users
-    assert [(item.unique_set, item.position, item.column) for item in members] == [(unique_set, 0, id_column)]
-    assert (non_null.relation, non_null.column) == (users, id_column)
+    assert unique_set.columns == [id_column]
+    assert non_null.column is id_column
 
 
 def test_encoding_uses_the_linked_knowledge_types_as_public_facts():
     conversion = _convert("CREATE TABLE users(id INTEGER); SELECT id FROM users")
     users = conversion.program.declarations[0]
     id_column = users.output_columns[0]
-    unique_set = UniqueSet(relation=users)
-    knowledge = (NonNullColumn(relation=users, column=id_column), unique_set, UniqueSetColumn(unique_set=unique_set, position=0, column=id_column))
+    knowledge = (NonNullColumn(column=id_column), UniqueSet(columns=[id_column]))
 
-    facts = encode(conversion.program, knowledge).facts
+    encoding = encode(conversion.program, knowledge)
+    facts = encoding.facts
+    id_symbol = encoding.node_to_symbol[id_column]
+    unique_set_symbol = next(
+        line.removeprefix("pub__unique_set(").removesuffix(").")
+        for line in facts.splitlines()
+        if line.startswith("pub__unique_set(")
+    )
 
     assert "pub__non_null_column(" in facts
     assert "pub__unique_set(" in facts
-    assert "pub__unique_set_column(" in facts
+    assert f"pub__unique_set__columns({unique_set_symbol}, 0, {id_symbol})." in facts
 
 
 def test_engine_grounds_generated_inheritance_rules(monkeypatch):

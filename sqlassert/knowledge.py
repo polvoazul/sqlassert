@@ -10,15 +10,8 @@ class Knowledge(metaclass=NodeMeta, abstract=True):
 
 
 class NonNullColumn(Knowledge):
-    relation: RelationExpr
     column: OutputColumn
 
 
 class UniqueSet(Knowledge):
-    relation: RelationExpr
-
-
-class UniqueSetColumn(Knowledge):
-    unique_set: UniqueSet
-    position: int
-    column: OutputColumn
+    columns: list[OutputColumn]
