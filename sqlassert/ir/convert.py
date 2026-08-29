@@ -15,7 +15,7 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.knowledge import Knowledge, NonNullColumn, UniqueSet, UniqueSetColumn
+from sqlassert.knowledge import Knowledge, NonNullColumn, UniqueSet
 from sqlassert.provenance import Origin, SQL
 from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, unique_set_assertions
 
@@ -638,14 +638,12 @@ class IrParser:
             unique_sets.append(constrained)
             if isinstance(constraint, exp.PrimaryKey):
                 non_null.update(column.lower() for column in constrained)
-        facts.extend(NonNullColumn(relation=relation, column=columns[name]) for name in sorted(non_null) if name in columns)
+        facts.extend(NonNullColumn(column=columns[name]) for name in sorted(non_null) if name in columns)
         for column_names in unique_sets:
             members = tuple(columns[name.lower()] for name in column_names if name.lower() in columns)
             if len(members) != len(column_names):
                 continue
-            unique_set = UniqueSet(relation=relation)
-            facts.append(unique_set)
-            facts.extend(UniqueSetColumn(unique_set=unique_set, position=position, column=column) for position, column in enumerate(members))
+            facts.append(UniqueSet(columns=list(members)))
         return tuple(facts)
 
     def _origin(self, node: exp.Expression, line: int | None = None) -> Origin:

@@ -63,25 +63,28 @@ def _ir_facts(nodes: tuple[ir.Node, ...], symbols: Symbols) -> list[str]:
                 lines.extend(exceptional_case(node, symbol))
                 continue
             for field_name in inspect.get_annotations(owner, eval_str=False):
-                lines.extend(_field_facts(owner, field_name, symbol, getattr(node, field_name), symbols))
+                lines.extend(_field_facts("ir", owner, field_name, symbol, getattr(node, field_name), symbols))
     return lines
 
 
 def _public_facts(knowledge: tuple[Knowledge, ...], symbols: Symbols) -> list[str]:
-    return [
-        f"pub__{_class_name(type(item))}({', '.join(_term(getattr(item, field.name), symbols) for field in fields(item))})."
-        for item in knowledge
-    ]
+    lines: list[str] = []
+    for item in knowledge:
+        symbol = symbols[item]
+        lines.append(f"pub__{_class_name(type(item))}({symbol}).")
+        for field in fields(item):
+            lines.extend(_field_facts("pub", type(item), field.name, symbol, getattr(item, field.name), symbols))
+    return lines
 
 
-def _field_facts(owner: type[ir.Node], field_name: str, symbol: str, value: object, symbols: Symbols) -> list[str]:
-    predicate = f"ir__{_class_name(owner)}__{field_name}"
+def _field_facts(namespace: str, owner: type, field_name: str, symbol: str, value: object, symbols: Symbols) -> list[str]:
+    predicate = f"{namespace}__{_class_name(owner)}__{field_name}"
     match value:
         case None | False:
             return []
         case True:
             return [f"{predicate}({symbol})."]
-        case tuple() as values:
+        case tuple() | list() as values:
             return [f"{predicate}({symbol}, {position}, {_term(item, symbols)})." for position, item in enumerate(values)]
         case _:
             return [f"{predicate}({symbol}, {_term(value, symbols)})."]

@@ -1,11 +1,6 @@
 from sqlassert.main import analyze
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.knowledge import (
-    Knowledge,
-    NonNullColumn,
-    UniqueSet,
-    UniqueSetColumn,
-)
+from sqlassert.knowledge import Knowledge, NonNullColumn, UniqueSet
 from sqlassert.provenance import Origin
 from sqlassert.reporting import AssertionReport, Outcome, RelationFacts, Report
 
@@ -19,6 +14,5 @@ __all__ = [
     "RelationFacts",
     "Report",
     "UniqueSet",
-    "UniqueSetColumn",
     "analyze",
 ]
