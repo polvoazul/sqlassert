@@ -7,6 +7,7 @@ from sqlassert import ir
 from sqlassert.engine import Engine
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
+from sqlassert.knowledge import NonNullColumn, UniqueSet, UniqueSetColumn
 from sqlassert.sql_parse import SqlParser
 
 
@@ -69,6 +70,33 @@ def test_encoding_reflects_boolean_fields_and_public_knowledge():
     facts = encode(conversion.program, conversion.knowledge).facts
 
     assert "ir__relation_expr__is_schema_complete(" in facts
+    assert "pub__non_null_column(" in facts
+    assert "pub__unique_set(" in facts
+    assert "pub__unique_set_column(" in facts
+
+
+def test_sql_lowering_constructs_knowledge_linked_to_ir_nodes():
+    conversion = _convert("CREATE TABLE users(id INTEGER PRIMARY KEY); SELECT id FROM users")
+    users = conversion.program.declarations[0]
+    id_column = users.output_columns[0]
+    unique_set = next(item for item in conversion.knowledge if isinstance(item, UniqueSet))
+    members = tuple(item for item in conversion.knowledge if isinstance(item, UniqueSetColumn))
+    non_null = next(item for item in conversion.knowledge if isinstance(item, NonNullColumn))
+
+    assert unique_set.relation is users
+    assert [(item.unique_set, item.position, item.column) for item in members] == [(unique_set, 0, id_column)]
+    assert (non_null.relation, non_null.column) == (users, id_column)
+
+
+def test_encoding_uses_the_linked_knowledge_types_as_public_facts():
+    conversion = _convert("CREATE TABLE users(id INTEGER); SELECT id FROM users")
+    users = conversion.program.declarations[0]
+    id_column = users.output_columns[0]
+    unique_set = UniqueSet(relation=users)
+    knowledge = (NonNullColumn(relation=users, column=id_column), unique_set, UniqueSetColumn(unique_set=unique_set, position=0, column=id_column))
+
+    facts = encode(conversion.program, knowledge).facts
+
     assert "pub__non_null_column(" in facts
     assert "pub__unique_set(" in facts
     assert "pub__unique_set_column(" in facts

@@ -22,10 +22,10 @@ ir__column_ref(e1).     % e1 is a ColumnRef
 ir__output_column(c1).  % c1 is an OutputColumn
 ```
 
-Abstract IR classes use Python's `ABC`, an `abstract=True` class keyword handled by `NodeMeta`, and cannot be constructed:
+Abstract IR classes use an `abstract=True` class keyword handled by `NodeMeta` and cannot be constructed:
 
 ```python
-class Node(ABC, metaclass=NodeMeta, abstract=True):
+class Node(metaclass=NodeMeta, abstract=True):
     ...
 
 class ScalarExpr(Node, abstract=True):
@@ -121,6 +121,28 @@ direct_column_reference(Expression, Column) :-
     ir__column_ref(Expression),
     ir__column_ref__column(Expression, Column).
 ```
+
+### Public Knowledge
+
+Knowledge is a separate IR-linked type hierarchy. Its concrete types define the public facts the engine can receive:
+
+```python
+class Knowledge(metaclass=NodeMeta, abstract=True): ...
+
+class NonNullColumn(Knowledge):
+    relation: RelationExpr
+    column: OutputColumn
+
+class UniqueSet(Knowledge):
+    relation: RelationExpr
+
+class UniqueSetColumn(Knowledge):
+    unique_set: UniqueSet
+    position: int
+    column: OutputColumn
+```
+
+The public encoder writes `pub__<knowledge class>` from those fields. SQL lowering constructs linked Knowledge directly. A database gatherer resolves qualified names before constructing the same objects; the engine never resolves relation or column names.
 
 `facts.py` assigns solver identities and states IR structure and public Knowledge. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in logic rules.
 

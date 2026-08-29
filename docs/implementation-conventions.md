@@ -55,15 +55,15 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `reporting.py` consumes the live model, enforces the one-model policy, and
   returns durable reporting values.
 - `rules/` contains the Clingo logic-program resources.
-- `discovery/duckdb` is a future adapter that produces `Knowledge`; it is not
-  part of the MVP engine.
+- `discovery/duckdb` is a future adapter that binds database metadata to IR
+  nodes and produces `Knowledge`; it is not part of the MVP engine.
 
 ## Stage Objects
 
 Each pipeline stage is an object holding only the services it needs:
 `SqlParser(dialect)`, `IrParser(dialect)`, `Engine()`, and
 `Reporter(encoding)`. The program being analysed travels through the call
-instead — `parse(sql)`, `parse(ast, knowledge)`, `encode(program, knowledge)`,
+instead — `parse(sql)`, `parse(ast)`, `encode(program, knowledge)`,
 and `run(encoding, on_solution_callback)`. `main.py` constructs them per call.
 
 `IrParser` links syntax into direct semantic references and stores Origins on
@@ -85,10 +85,9 @@ second call, and `report` raises if it was never called at all.
 
 The public shape is:
 
-`analyze(sql, *, knowledge=None, dialect="duckdb") -> Report`
+`analyze(sql, *, dialect="duckdb") -> Report`
 
-`sql` is the complete SQL Program. Omitting `knowledge` supplies empty
-Knowledge. Analysis returns data and never prints.
+`sql` is the complete SQL Program. Analysis returns data and never prints.
 
 ## Clingo Identifiers and Fact Transport
 

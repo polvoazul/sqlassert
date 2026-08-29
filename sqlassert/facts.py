@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum
 
 import case_conversion
@@ -13,6 +13,8 @@ import case_conversion
 from sqlassert import ir, naming
 from sqlassert.knowledge import Knowledge
 from sqlassert.naming import NameGiver
+
+type Symbols = dict[ir.Node | Knowledge, str]
 
 
 @dataclass(frozen=True)
@@ -27,17 +29,20 @@ EXCEPTIONS: dict[type[ir.Node], Callable[[ir.Node, str], Iterable[str]]] = {
     ir.Node: lambda node, symbol: (),  # Node.origin remains outside Clingo.
 }
 
-def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
+
+def encode(program: ir.Program, knowledge: tuple[Knowledge, ...]) -> ClingoEncoding:
     nodes = _walk(program)
     names = NameGiver()
     node_to_symbol = {node: names.new(*_symbol_hint(node)) for node in nodes}
+    knowledge_to_symbol = {item: names.new(naming.KNOWLEDGE, _class_name(type(item))) for item in knowledge}
+    symbols = node_to_symbol | knowledge_to_symbol
     symbol_to_node = {symbol: node for node, symbol in node_to_symbol.items()}
-    lines = _ir_facts(nodes, node_to_symbol)
-    lines.extend(_knowledge_facts(knowledge, nodes, node_to_symbol, names))
+    lines = _ir_facts(nodes, symbols)
+    lines.extend(_public_facts(knowledge, symbols))
     return ClingoEncoding("\n".join(_inheritance_rules()), "\n".join(lines), node_to_symbol, symbol_to_node)
 
 
-def _ir_facts(nodes: tuple[ir.Node, ...], symbols: dict[ir.Node, str]) -> list[str]:
+def _ir_facts(nodes: tuple[ir.Node, ...], symbols: Symbols) -> list[str]:
     """Generic IR tree encoder. For each reachable node, it emits:
 
     ```scss
@@ -48,21 +53,28 @@ def _ir_facts(nodes: tuple[ir.Node, ...], symbols: dict[ir.Node, str]) -> list[s
     """
     lines: list[str] = []
     for node in nodes:
-        node_type = type(node)
         symbol = symbols[node]
-        lines.append(f"ir__{_class_name(node_type)}({symbol}).")
-        for owner in reversed(node_type.__mro__):
-            assert isinstance(owner, type) and issubclass(owner, ir.Node)
+        lines.append(f"ir__{_class_name(type(node))}({symbol}).")
+        for owner in reversed(type(node).__mro__):
+            if not issubclass(owner, ir.Node):
+                continue
             exceptional_case = EXCEPTIONS.get(owner)
-            if exceptional_case:
-                lines.extend(exception(node, symbol))
+            if exceptional_case is not None:
+                lines.extend(exceptional_case(node, symbol))
                 continue
             for field_name in inspect.get_annotations(owner, eval_str=False):
                 lines.extend(_field_facts(owner, field_name, symbol, getattr(node, field_name), symbols))
     return lines
 
 
-def _field_facts(owner: type[ir.Node], field_name: str, symbol: str, value: object, symbols: dict[ir.Node, str]) -> list[str]:
+def _public_facts(knowledge: tuple[Knowledge, ...], symbols: Symbols) -> list[str]:
+    return [
+        f"pub__{_class_name(type(item))}({', '.join(_term(getattr(item, field.name), symbols) for field in fields(item))})."
+        for item in knowledge
+    ]
+
+
+def _field_facts(owner: type[ir.Node], field_name: str, symbol: str, value: object, symbols: Symbols) -> list[str]:
     predicate = f"ir__{_class_name(owner)}__{field_name}"
     match value:
         case None | False:
@@ -75,9 +87,9 @@ def _field_facts(owner: type[ir.Node], field_name: str, symbol: str, value: obje
             return [f"{predicate}({symbol}, {_term(value, symbols)})."]
 
 
-def _term(value: object, symbols: dict[ir.Node, str]) -> str:
+def _term(value: object, symbols: Symbols) -> str:
     match value:
-        case ir.Node():
+        case ir.Node() | Knowledge():
             return symbols[value]
         case Enum() as enum:
             atom = enum.name.lower()
@@ -88,43 +100,6 @@ def _term(value: object, symbols: dict[ir.Node, str]) -> str:
         case int() as number:
             return str(number)
     raise TypeError(f"cannot encode {type(value).__name__} as a Clingo term")
-
-
-def _knowledge_facts(
-    knowledge: Knowledge, nodes: tuple[ir.Node, ...], symbols: dict[ir.Node, str], names: NameGiver
-) -> list[str]:
-    lines: list[str] = []
-    for relation in nodes:
-        match relation:
-            case ir.NamedRelation(role=ir.RelationRole.CTE):
-                continue
-            case ir.NamedRelation() as named_relation:
-                pass
-            case _:
-                continue
-        known = knowledge.relation(named_relation.name)
-        if known is None:
-            continue
-        by_name = {column.name.lower(): column for column in named_relation.output_columns}
-        lines.extend(
-            f"pub__non_null_column({symbols[named_relation]}, {symbols[by_name[column.name.lower()]]})."
-            for column in known.columns
-            if not column.nullable and column.name.lower() in by_name
-        )
-        for unique_set in known.unique_sets:
-            columns = tuple(by_name[column.lower()] for column in unique_set.columns if column.lower() in by_name)
-            if len(columns) == len(unique_set.columns):
-                lines.extend(_unique_set_facts(names, symbols, named_relation, columns))
-    return lines
-
-
-def _unique_set_facts(
-    names: NameGiver, symbols: dict[ir.Node, str], relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]
-) -> list[str]:
-    key = names.new(naming.KEY, "_".join(column.name for column in columns))
-    return [f"pub__unique_set({key}, {symbols[relation]})."] + [
-        f"pub__unique_set_column({key}, {position}, {symbols[column]})." for position, column in enumerate(columns)
-    ]
 
 
 def _inheritance_rules() -> list[str]:
@@ -182,5 +157,5 @@ def _symbol_hint(node: ir.Node) -> tuple[str, str]:
             return naming.EXPRESSION, type(node).__name__
 
 
-def _class_name(node_type: type[ir.Node]) -> str:
+def _class_name(node_type: type[object]) -> str:
     return case_conversion.snake(node_type.__name__)

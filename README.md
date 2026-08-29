@@ -47,7 +47,7 @@ where id > 0
 select * from active_users;
 ```
 
-The trailing marker applies to the relation produced by that Select Expression. `/**PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program or explicit `Knowledge`, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
+The trailing marker applies to the relation produced by that Select Expression. `/**PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
 
 Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subquery. A proved assertion on a named relation is also available to later statements in the same SQL Program.
 
@@ -97,17 +97,8 @@ for diagnostic in report.diagnostics:
     print(diagnostic.code, diagnostic.message)
 ```
 
-If some relations aren't declared in the SQL Program itself -- for example, you'd rather introspect a live connection than duplicate its DDL -- pass their properties in as `Knowledge`:
-
-```python
-from sqlassert import Knowledge, RelationKnowledge, UniqueSetKnowledge
-
-knowledge = Knowledge((
-    RelationKnowledge("users", unique_sets=(UniqueSetKnowledge(("id",)),)),
-))
-
-report = analyze(query_only_sql, knowledge=knowledge)
-```
+Database knowledge gatherers bind facts to this Program's IR nodes before it
+reaches the engine; `analyze` itself accepts one SQL Program.
 
 > **Migrating from `validate_unique_joins`?** That DuckDB-connection-based checker has been superseded by `analyze` above -- same idea, proved from declared schema instead of a live connection, with broader join/predicate coverage and conservative diagnostics instead of a boolean `valid`/`reason`. It is no longer part of the public API; see [`deprecated/unique.py`](deprecated/unique.py) if you still need it.
 
@@ -139,7 +130,7 @@ The marker applies to the next join after the comment.
 
 `sqlassert` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
 
-Instead, it proves uniqueness using fast information available from the SQL Program and explicit `Knowledge`. If uniqueness cannot be proven, validation fails with an explanation:
+Instead, it proves uniqueness using fast information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, validation fails with an explanation:
 
 ```text
 in join "INNER JOIN events ON sessions.event_id = events.id", we can't prove that RHS column id is unique
@@ -147,7 +138,7 @@ in join "INNER JOIN events ON sessions.event_id = events.id", we can't prove tha
 
 Supported uniqueness proofs today:
 
-- `PRIMARY KEY` and `UNIQUE` constraints from `CREATE TABLE` declarations or explicit `Knowledge`.
+- `PRIMARY KEY` and `UNIQUE` constraints from `CREATE TABLE` declarations or IR-linked Knowledge.
 - RHS `GROUP BY` subqueries, when the join covers the grouping keys.
 - RHS `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
 - RHS `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.

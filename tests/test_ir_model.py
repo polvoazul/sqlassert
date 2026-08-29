@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError, is_dataclass
 import pytest
 
 from sqlassert import ir
+from sqlassert.knowledge import Knowledge
 from sqlassert.provenance import Origin, SQL
 
 
@@ -59,6 +60,11 @@ def test_only_concrete_ir_nodes_can_be_constructed():
     for node_type in (ir.Node, ir.ScalarExpr, ir.RelationExpr, ir.Assertion):
         with pytest.raises(TypeError, match="abstract"):
             node_type(origin=_origin("abstract"))  # ty: ignore[missing-argument]
+
+
+def test_knowledge_is_an_abstract_ir_like_type():
+    with pytest.raises(TypeError, match="abstract"):
+        Knowledge()
 
 
 def test_every_node_subclass_is_a_dataclass_without_repeating_the_decorator():

@@ -8,14 +8,14 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 from __future__ import annotations
 
 from collections.abc import Iterable, Set
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from sqlglot import exp
 
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.knowledge import ColumnKnowledge, Knowledge, RelationKnowledge, UniqueSetKnowledge
+from sqlassert.knowledge import Knowledge, NonNullColumn, UniqueSet, UniqueSetColumn
 from sqlassert.provenance import Origin, SQL
 from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, unique_set_assertions
 
@@ -23,7 +23,7 @@ from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, uniq
 @dataclass(frozen=True)
 class IrConversionResult:
     program: ir.Program
-    knowledge: Knowledge
+    knowledge: tuple[Knowledge, ...]
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
@@ -33,6 +33,7 @@ class _Symbol:
     role: ir.RelationRole
     origin: Origin
     body: exp.Query | None = None
+    statement: exp.Create | None = None
     required_columns: set[str] = field(default_factory=set)
 
 
@@ -60,19 +61,16 @@ class IrParser:
     _source_expressions: dict[int, exp.Expression] = field(default_factory=dict)
     _named_relations: dict[_Symbol, ir.NamedRelation] = field(default_factory=dict)
     _resolving: set[_Symbol] = field(default_factory=set)
-    _declared: list[RelationKnowledge] = field(default_factory=list)
+    _knowledge: list[Knowledge] = field(default_factory=list)
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
     _handled_unique_set_lines: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
-    _knowledge: Knowledge = field(default_factory=Knowledge)
-
-    def parse(self, ast: ParsedProgram, knowledge: Knowledge | None = None) -> IrConversionResult:
+    def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
             if isinstance(statement, exp.Create):
                 self._declare(statement)
 
-        self._knowledge = Knowledge(tuple(self._declared)).merge(knowledge)
         for symbol in tuple(self._symbols):
             if symbol.role is ir.RelationRole.VIEW and symbol.body is not None:
                 self._discover_query(symbol.body, {})
@@ -84,7 +82,7 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         declarations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        return IrConversionResult(ir.Program(declarations=declarations, root=root, assertions=tuple(self._assertions)), self._knowledge, tuple(self._diagnostics))
+        return IrConversionResult(ir.Program(declarations=declarations, root=root, assertions=tuple(self._assertions)), tuple(self._knowledge), tuple(self._diagnostics))
 
     # Declaration and symbol discovery ---------------------------------------
 
@@ -106,18 +104,15 @@ class IrParser:
         key = name.lower()
         origin = Origin(SQL, statement.sql(dialect=self.dialect))
         if key in self._global_symbols:
-            self._declared = [known for known in self._declared if known.name.lower() != key]
             self._diagnostics.append(Diagnostic(diag.DUPLICATE_DECLARATION, f"relation {name} is declared more than once", origin))
             return
 
         role = ir.RelationRole.TABLE if kind == "TABLE" else ir.RelationRole.VIEW
         body = statement.args.get("expression")
         query = _unwrap_query(body)
-        symbol = _Symbol(name=name, role=role, origin=origin, body=query)
+        symbol = _Symbol(name=name, role=role, origin=origin, body=query, statement=statement)
         self._global_symbols[key] = symbol
         self._symbols.append(symbol)
-        if role is ir.RelationRole.TABLE:
-            self._declared.append(self._table_knowledge(name, statement))
 
     def _discover_query(self, query: exp.Query, inherited_scope: dict[str, _Symbol]) -> None:
         if id(query) in self._query_scopes:
@@ -294,6 +289,7 @@ class IrParser:
                 origin=symbol.origin, output_columns=output_columns, is_schema_complete=complete, name=symbol.name, role=symbol.role
             )
             self._named_relations[symbol] = named
+            self._knowledge.extend(self._table_knowledge(named, symbol.statement))
             return named
 
         self._resolving.add(symbol)
@@ -321,14 +317,15 @@ class IrParser:
             origin=symbol.origin, output_columns=output_columns, is_schema_complete=complete, name=symbol.name, role=symbol.role
         )
         self._named_relations[symbol] = named
+        if symbol.role is ir.RelationRole.TABLE:
+            self._knowledge.extend(self._table_knowledge(named, symbol.statement))
         return named
 
     def _table_output_columns(self, symbol: _Symbol) -> tuple[tuple[ir.OutputColumn, ...], bool]:
-        known = self._knowledge.relation(symbol.name)
-        names = [column.name for column in known.columns] if known is not None else []
+        names = [column.name for column in symbol.statement.this.find_all(exp.ColumnDef)] if symbol.statement is not None else []
         seen = {name.lower() for name in names}
         names.extend(column for column in sorted(symbol.required_columns, key=str.lower) if column.lower() not in seen)
-        complete = known is not None and {column.lower() for column in symbol.required_columns} <= seen
+        complete = symbol.statement is not None and {column.lower() for column in symbol.required_columns} <= seen
         return self._opaque_output_columns(names, symbol.origin), complete
 
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
@@ -618,9 +615,12 @@ class IrParser:
                     )
                 )
 
-    def _table_knowledge(self, name: str, statement: exp.Create) -> RelationKnowledge:
-        columns: list[ColumnKnowledge] = []
-        unique_sets: list[UniqueSetKnowledge] = []
+    def _table_knowledge(self, relation: ir.NamedRelation, statement: exp.Create | None) -> tuple[Knowledge, ...]:
+        if statement is None:
+            return ()
+        columns = {column.name.lower(): column for column in relation.output_columns}
+        facts: list[Knowledge] = []
+        unique_sets: list[tuple[str, ...]] = []
         non_null: set[str] = set()
         for definition in statement.this.find_all(exp.ColumnDef):
             kinds = [type(constraint.args.get("kind")) for constraint in definition.constraints]
@@ -629,22 +629,24 @@ class IrParser:
             not_null = primary_key or exp.NotNullColumnConstraint in kinds
             if not_null:
                 non_null.add(definition.name.lower())
-            columns.append(ColumnKnowledge(definition.name, nullable=not not_null))
             if primary_key or unique:
-                unique_sets.append(UniqueSetKnowledge((definition.name,)))
+                unique_sets.append((definition.name,))
         for constraint in statement.this.expressions:
             constrained = _table_level_unique_columns(constraint)
             if constrained is None:
                 continue
-            unique_sets.append(UniqueSetKnowledge(constrained))
+            unique_sets.append(constrained)
             if isinstance(constraint, exp.PrimaryKey):
                 non_null.update(column.lower() for column in constrained)
-        if non_null:
-            columns = [replace(column, nullable=False) if column.name.lower() in non_null else column for column in columns]
-        return RelationKnowledge(
-            name=name, columns=tuple(columns), unique_sets=tuple(unique_sets),
-            origin=Origin(SQL, statement.sql(dialect=self.dialect)),
-        )
+        facts.extend(NonNullColumn(relation=relation, column=columns[name]) for name in sorted(non_null) if name in columns)
+        for column_names in unique_sets:
+            members = tuple(columns[name.lower()] for name in column_names if name.lower() in columns)
+            if len(members) != len(column_names):
+                continue
+            unique_set = UniqueSet(relation=relation)
+            facts.append(unique_set)
+            facts.extend(UniqueSetColumn(unique_set=unique_set, position=position, column=column) for position, column in enumerate(members))
+        return tuple(facts)
 
     def _origin(self, node: exp.Expression, line: int | None = None) -> Origin:
         return Origin(SQL, node.sql(dialect=self.dialect), line)

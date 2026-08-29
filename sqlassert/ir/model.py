@@ -6,7 +6,6 @@ nodes; identifiers are assigned only when the graph is encoded for Clingo.
 
 from __future__ import annotations
 
-from abc import ABC, ABCMeta
 from dataclasses import dataclass, fields
 from enum import Enum
 from typing import dataclass_transform
@@ -17,7 +16,7 @@ INNER = "inner"
 
 
 @dataclass_transform(eq_default=False, frozen_default=True, kw_only_default=True)
-class NodeMeta(ABCMeta):
+class NodeMeta(type):
     """Turn every Node subclass into the same kind of semantic value."""
 
     def __new__(metaclass, name, bases, namespace, *, abstract: bool = False):
@@ -32,7 +31,7 @@ class NodeMeta(ABCMeta):
         return super().__call__(*args, **kwargs)
 
 
-class Node(ABC, metaclass=NodeMeta, abstract=True):
+class Node(metaclass=NodeMeta, abstract=True):
     """An immutable semantic node with object-identity equality."""
 
     origin: Origin
