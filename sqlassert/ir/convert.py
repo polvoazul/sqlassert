@@ -240,7 +240,7 @@ class IrParser:
                 right = self._opaque_relation(query.expression)
             output_columns = _pass_output_columns(left.output_columns, self._origin(query))
             return ir.SetOperation(
-                origin=self._origin(query), output_columns=output_columns, schema_complete=left.schema_complete and right.schema_complete,
+                origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=query.key, left=left, right=right,
             )
         if not isinstance(query, exp.Select):
@@ -291,7 +291,7 @@ class IrParser:
         if symbol.role is ir.RelationRole.TABLE:
             output_columns, complete = self._table_output_columns(symbol)
             named = ir.NamedRelation(
-                origin=symbol.origin, output_columns=output_columns, schema_complete=complete, name=symbol.name, role=symbol.role
+                origin=symbol.origin, output_columns=output_columns, is_schema_complete=complete, name=symbol.name, role=symbol.role
             )
             self._named_relations[symbol] = named
             return named
@@ -307,7 +307,7 @@ class IrParser:
         named = ir.NamedRelation(
             origin=symbol.origin,
             output_columns=output_columns,
-            schema_complete=body.schema_complete,
+            is_schema_complete=body.is_schema_complete,
             name=symbol.name,
             role=symbol.role,
             body=body,
@@ -318,7 +318,7 @@ class IrParser:
     def _unresolved_named_relation(self, symbol: _Symbol) -> ir.NamedRelation:
         output_columns, complete = self._table_output_columns(symbol) if symbol.role is ir.RelationRole.TABLE else (self._opaque_output_columns(symbol.required_columns, symbol.origin), False)
         named = ir.NamedRelation(
-            origin=symbol.origin, output_columns=output_columns, schema_complete=complete, name=symbol.name, role=symbol.role
+            origin=symbol.origin, output_columns=output_columns, is_schema_complete=complete, name=symbol.name, role=symbol.role
         )
         self._named_relations[symbol] = named
         return named
@@ -348,14 +348,14 @@ class IrParser:
         return ir.RecursiveRelation(
             origin=origin,
             output_columns=self._opaque_output_columns(symbol.required_columns, origin),
-            schema_complete=False,
+            is_schema_complete=False,
             description=source.sql(dialect=self.dialect),
             relation_name=symbol.name,
         )
 
     def _alias(self, source: ir.RelationExpr, name: str, origin: Origin) -> _Lowered:
         output_columns = _pass_output_columns(source.output_columns, origin)
-        alias = ir.Alias(origin=origin, output_columns=output_columns, schema_complete=source.schema_complete, source=source, name=name)
+        alias = ir.Alias(origin=origin, output_columns=output_columns, is_schema_complete=source.is_schema_complete, source=source, name=name)
         return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output) for output in output_columns))
 
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
@@ -368,7 +368,7 @@ class IrParser:
         relation = ir.Join(
             origin=origin,
             output_columns=output_columns,
-            schema_complete=left.relation.schema_complete and right.relation.schema_complete,
+            is_schema_complete=left.relation.is_schema_complete and right.relation.is_schema_complete,
             kind=_join_kind(join),
             left=left.relation,
             right=right.relation,
@@ -429,7 +429,7 @@ class IrParser:
         output_columns = _pass_output_columns(lowered.relation.output_columns, origin)
         remapped = {source: output for source, output in zip(lowered.relation.output_columns, output_columns)}
         relation = ir.Filter(
-            origin=origin, output_columns=output_columns, schema_complete=lowered.relation.schema_complete, input=lowered.relation
+            origin=origin, output_columns=output_columns, is_schema_complete=lowered.relation.is_schema_complete, input=lowered.relation
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
@@ -445,7 +445,7 @@ class IrParser:
             )
             for item in items
         )
-        return ir.Project(origin=origin, output_columns=output_columns, schema_complete=True, input=lowered.relation)
+        return ir.Project(origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation)
 
     def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, group: exp.Group) -> ir.Aggregate | None:
         if select.args.get("having") is not None or any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
@@ -466,7 +466,7 @@ class IrParser:
             item = _matching_grouping_output(group_expression, select.expressions)
             grouping_outputs.append(output_columns[select.expressions.index(item)])
         return ir.Aggregate(
-            origin=self._origin(select), output_columns=output_columns, schema_complete=True, input=lowered.relation,
+            origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             grouping_outputs=tuple(grouping_outputs),
         )
 
@@ -478,7 +478,7 @@ class IrParser:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
         return ir.Distinct(
             origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered.bindings),
-            schema_complete=True, input=lowered.relation,
+            is_schema_complete=True, input=lowered.relation,
         )
 
     def _lower_qualify(self, lowered: _Lowered, select: exp.Select, qualify: exp.Qualify) -> ir.QualifyByPartition | None:
@@ -505,7 +505,7 @@ class IrParser:
             self._lower_expression(ordered.this, lowered.bindings) for ordered in (order.expressions if order else ())
         )
         return ir.QualifyByPartition(
-            origin=self._origin(select), output_columns=output_columns, schema_complete=True, input=lowered.relation,
+            origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             partition_outputs=tuple(partition_outputs), ordering=ordering,
         )
 
@@ -549,7 +549,7 @@ class IrParser:
         return ir.OpaqueRelation(
             origin=origin,
             output_columns=self._opaque_output_columns(names, origin),
-            schema_complete=False,
+            is_schema_complete=False,
             description=source.sql(dialect=self.dialect),
         )
 
@@ -561,7 +561,7 @@ class IrParser:
             self._handled_unique_set_lines.add(line)
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
             unknown = [column for column in columns if column.lower() not in by_name]
-            if unknown and relation.schema_complete:
+            if unknown and relation.is_schema_complete:
                 self._diagnostics.append(
                     Diagnostic(
                         diag.UNKNOWN_ASSERTED_COLUMN,
@@ -577,7 +577,7 @@ class IrParser:
                     origin=origin,
                     subject=relation,
                     columns=tuple(by_name[column.lower()] for column in columns),
-                    candidate_key=kind == "key",
+                    is_candidate_key=kind == "key",
                 )
             )
 

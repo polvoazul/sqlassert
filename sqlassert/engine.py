@@ -33,7 +33,7 @@ class Engine:
         # clingo's Configuration is a dynamic C-extension proxy typed only as
         # `None | str | Configuration`; there is no narrower stub to satisfy.
         control.configuration.solve.models = str(_MODELS_TO_DETECT_NONDETERMINISM)  # ty: ignore[invalid-assignment]
-        control.add(_PROGRAM, [], f"{rules()}\n{encoding.facts}\n")
+        control.add(_PROGRAM, [], f"{rules()}\n{encoding.inheritance_rules}\n{encoding.facts}\n")
         control.ground([(_PROGRAM, [])])
         control.solve(on_model=on_solution_callback)
 

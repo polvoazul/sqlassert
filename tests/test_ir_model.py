@@ -21,7 +21,7 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
         output_columns=(table_column,),
         name="users",
         role=ir.RelationRole.TABLE,
-        schema_complete=True,
+        is_schema_complete=True,
     )
     alias_column = ir.OutputColumn(
         origin=_origin("users AS u"),
@@ -46,13 +46,19 @@ def test_assertions_point_directly_into_the_relation_graph():
     join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=empty, right=empty)
     join_assertion = ir.UniqueJoinAssertion(origin=_origin("marker"), subject=join)
     set_assertion = ir.UniqueSetAssertion(
-        origin=_origin("marker"), subject=empty, columns=(), candidate_key=False
+        origin=_origin("marker"), subject=empty, columns=(), is_candidate_key=False
     )
     program = ir.Program(declarations=(), root=join, assertions=(join_assertion, set_assertion))
 
     assert program.root is join
     assert join_assertion.subject is join
     assert set_assertion.subject is empty
+
+
+def test_only_concrete_ir_nodes_can_be_constructed():
+    for node_type in (ir.Node, ir.ScalarExpr, ir.RelationExpr, ir.Assertion):
+        with pytest.raises(TypeError, match="abstract"):
+            node_type(origin=_origin("abstract"))  # ty: ignore[missing-argument]
 
 
 def test_every_node_subclass_is_a_dataclass_without_repeating_the_decorator():

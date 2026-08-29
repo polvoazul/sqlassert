@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from sqlassert import ir
+from sqlassert.engine import Engine
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
 from sqlassert.sql_parse import SqlParser
@@ -43,8 +44,14 @@ def test_encoding_is_deterministic_and_preserves_graph_identity():
 
     assert first_encoding.facts == second_encoding.facts
     assert set(first_encoding.node_to_symbol.values()) == set(first_encoding.symbol_to_node)
-    assert "instance_of" not in first_encoding.facts
-    assert "join_output_definition" not in first_encoding.facts
+    assert "ir__join(" in first_encoding.facts
+    assert "ir__join__left(" in first_encoding.facts
+    assert "ir__relation_expr__output_columns(" in first_encoding.facts
+    assert "__origin(" not in first_encoding.facts
+    assert "relation_expression(" not in first_encoding.facts
+    assert "property_preserving_input(" not in first_encoding.facts
+    assert "ir__relation_expr(Node) :- ir__join(Node)." in first_encoding.inheritance_rules
+    assert "ir__node(Node) :- ir__relation_expr(Node)." in first_encoding.inheritance_rules
 
     join = first.program.root
     assert isinstance(join, ir.Join)
@@ -54,6 +61,33 @@ def test_encoding_is_deterministic_and_preserves_graph_identity():
     assert join.left.source is join.right.source is first.program.declarations[0]
     assert first_encoding.node_to_symbol[join.left] != first_encoding.node_to_symbol[join.right]
     assert first_encoding.node_to_symbol[join.left.source] == first_encoding.node_to_symbol[join.right.source]
+
+
+def test_encoding_reflects_boolean_fields_and_public_knowledge():
+    conversion = _convert("CREATE TABLE users(id INTEGER PRIMARY KEY); SELECT id FROM users")
+
+    facts = encode(conversion.program, conversion.knowledge).facts
+
+    assert "ir__relation_expr__is_schema_complete(" in facts
+    assert "pub__non_null_column(" in facts
+    assert "pub__unique_set(" in facts
+    assert "pub__unique_set_column(" in facts
+
+
+def test_engine_grounds_generated_inheritance_rules(monkeypatch):
+    conversion = _convert()
+    encoding = encode(conversion.program, conversion.knowledge)
+    models: list[set[str]] = []
+    monkeypatch.setattr("sqlassert.engine.rules", lambda: "#show relation/1. relation(Node) :- ir__relation_expr(Node).")
+
+    Engine().run(encoding, lambda model: models.append({str(symbol) for symbol in model.symbols(shown=True)}))
+
+    expected = {
+        f"relation({symbol})"
+        for node, symbol in encoding.node_to_symbol.items()
+        if isinstance(node, ir.RelationExpr)
+    }
+    assert models == [expected]
 
 
 def test_view_and_cte_occurrences_share_their_linked_named_relation():
@@ -108,8 +142,8 @@ def test_encoding_states_aggregate_structure_without_precomputing_its_unique_set
 
     facts = encode(conversion.program, conversion.knowledge).facts
 
-    assert "aggregate_grouping_output(" in facts
-    assert "unique_set(" not in facts
+    assert "ir__aggregate__grouping_outputs(" in facts
+    assert "pub__unique_set(" not in facts
 
 
 def test_grouped_bare_columns_are_encoded_as_any_aggregates():
@@ -121,4 +155,4 @@ def test_grouped_bare_columns_are_encoded_as_any_aggregates():
     assert isinstance(aggregate.output_columns[1].expression, ir.AnyAggregate)
     assert isinstance(aggregate.output_columns[1].expression.input, ir.ColumnRef)
     assert isinstance(aggregate.output_columns[2].expression, ir.OpaqueExpression)
-    assert "arbitrary_group_value(" in encode(conversion.program, conversion.knowledge).facts
+    assert "ir__any_aggregate__input(" in encode(conversion.program, conversion.knowledge).facts

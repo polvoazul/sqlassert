@@ -2,13 +2,14 @@
 
 ## IR to logic encoding
 
-The `ir_` namespace is the mirror model of the semantic IR inside the logic engine. Its vocabulary describes IR structure only; it does not state semantic conclusions that the logic engine should derive.
+The `ir__` namespace mirrors the semantic IR inside the logic engine. The `pub__` namespace is the public logic API: producers assert it directly, rules use and produce it directly, and consumers read it directly. Unprefixed predicates are internal logical bridges.
 
-In Clingo, `ir_filter(f1)` is an atom, `ir_filter(f1).` is a ground fact, and `ir_filter/1` is the predicate signature. The encoder follows two predicate-name forms:
+In Clingo, `ir__filter(f1)` is an atom, `ir__filter(f1).` is a ground fact, and `ir__filter/1` is the predicate signature.
 
 ```text
-ir_<class>
-ir_<class>__<field>
+ir__<class>
+ir__<class>__<field>
+pub__<predicate>
 ```
 
 ### Node types and inheritance
@@ -16,96 +17,132 @@ ir_<class>__<field>
 Node types are unary predicates:
 
 ```prolog
-ir_filter(f1).         % f1 is a Filter
-ir_column_ref(e1).     % e1 is a ColumnRef
-ir_output_column(c1).  % c1 is an OutputColumn
+ir__filter(f1).         % f1 is a Filter
+ir__column_ref(e1).     % e1 is a ColumnRef
+ir__output_column(c1).  % c1 is an OutputColumn
 ```
 
-The encoder states the concrete node type. Inheritance is part of the IR mirror but is encoded as logic rules instead of repeated ground facts:
+Abstract IR classes use Python's `ABC`, an `abstract=True` class keyword handled by `NodeMeta`, and cannot be constructed:
+
+```python
+class Node(ABC, metaclass=NodeMeta, abstract=True):
+    ...
+
+class ScalarExpr(Node, abstract=True):
+    ...
+
+class RelationExpr(Node, abstract=True):
+    ...
+
+class Filter(RelationExpr):
+    ...
+```
+
+Only the concrete type is emitted as a fact. Python inheritance becomes generated logic rules:
 
 ```prolog
-ir_relation_expr(Node) :- ir_filter(Node).  % Every Filter is also a RelationExpr (Filter is a subclass)
-ir_relation_expr(Node) :- ir_project(Node).
-ir_relation_expr(Node) :- ir_join(Node).
+ir__relation_expr(Node) :- ir__filter(Node).  % Filter extends RelationExpr
+ir__relation_expr(Node) :- ir__project(Node).
+ir__relation_expr(Node) :- ir__join(Node).
 
-ir_scalar_expr(Node) :- ir_column_ref(Node).
+ir__scalar_expr(Node) :- ir__column_ref(Node).
 
-ir_node(Node) :- ir_relation_expr(Node).
-ir_node(Node) :- ir_scalar_expr(Node).
-ir_node(Node) :- ir_output_column(Node).
+ir__node(Node) :- ir__relation_expr(Node).
+ir__node(Node) :- ir__scalar_expr(Node).
+ir__node(Node) :- ir__output_column(Node).
 ```
-
-These rules remain in the `ir_` namespace because they mechanically reproduce the Python type hierarchy. They do not interpret what those types mean for property reasoning.
 
 ### Fields
 
-Scalar fields and object references put the owning object first and the field value second:
+Scalar fields and object references put the object first:
 
 ```prolog
-ir_filter__input(f1, source1).                     % Filter.input
-ir_output_column__name(c1, "user_id").             % OutputColumn.name
-ir_output_column__expression(c1, e1).              % OutputColumn.expression
-ir_column_ref__column(e1, source_column1).          % ColumnRef.column
-ir_named_relation__role(r1, view).                 % NamedRelation.role
+ir__filter__input(f1, source1).                       % Filter.input
+ir__output_column__name(c1, "user_id").              % OutputColumn.name
+ir__output_column__expression(c1, e1).                % OutputColumn.expression
+ir__column_ref__column(e1, source_column1).            % ColumnRef.column
+ir__named_relation__role(r1, view).                   % NamedRelation.role
 ```
 
-Ordered collections add their zero-based position before the member:
+Ordered collections include their zero-based position:
 
 ```prolog
-ir_relation_expr__outputs(r1, 0, c1).  % RelationExpr.outputs[0]
-ir_relation_expr__outputs(r1, 1, c2).  % RelationExpr.outputs[1]
+ir__relation_expr__output_columns(r1, 0, c1).  % RelationExpr.output_columns[0]
+ir__relation_expr__output_columns(r1, 1, c2).  % RelationExpr.output_columns[1]
 ```
 
-Optional fields produce no fact when their value is `None`. Enum members are lowercase atoms such as `view` and `inner`; user-provided text is encoded as a string.
+Every field of every reachable `Node` is reflected by default. Optional fields produce no fact for `None`; enums become lowercase atoms such as `view` and `inner`; user-provided text becomes a string. `Node.origin` is explicitly excluded because provenance remains outside Clingo. Unsupported values fail encoding.
 
 ### Boolean fields
 
-Boolean fields are unary predicates whose field names begin with `is_`. Presence means true and absence means false:
+Boolean fields begin with `is_` in the Python IR:
 
-```prolog
-ir_relation_expr__is_schema_complete(r1).
-ir_unique_set_assertion__is_candidate_key(a1).
+```python
+class RelationExpr(Node, abstract=True):
+    is_schema_complete: bool = False
+
+class UniqueSetAssertion(Assertion):
+    is_candidate_key: bool
 ```
 
-Rules that interpret absence bind the node through its type before using default negation:
+Reflection preserves those names. True produces a unary fact; false produces no fact:
+
+```prolog
+ir__relation_expr__is_schema_complete(r1).
+ir__unique_set_assertion__is_candidate_key(a1).
+```
 
 ```prolog
 schema_incomplete(Relation) :-
-    ir_relation_expr(Relation),
-    not ir_relation_expr__is_schema_complete(Relation).
+    ir__relation_expr(Relation),
+    not ir__relation_expr__is_schema_complete(Relation).
 ```
 
-### Logical vocabulary
+### Public and internal logic
 
-Predicates without the `ir_` prefix express semantic concepts derived by the logic engine. They are named for their domain meaning rather than for the Python representation:
+Knowledge and solver results share the public API:
+
+```prolog
+pub__unique_set(Key, Relation).
+pub__unique_set_column(Key, Position, Column).
+pub__non_null_column(Relation, Column).
+pub__proved(Assertion).
+pub__proof_key(Assertion, Key).
+```
+
+Public predicates need no export wrappers. Internal predicates connect the IR mirror to reasoning:
 
 ```prolog
 relation_input(Filter, Input) :-
-    ir_filter(Filter),
-    ir_filter__input(Filter, Input).
-
-propagates_property(Filter, Input, unique_set) :-
-    ir_filter(Filter),
-    ir_filter__input(Filter, Input).
+    ir__filter(Filter),
+    ir__filter__input(Filter, Input).
 
 direct_column_reference(Expression, Column) :-
-    ir_column_ref(Expression),
-    ir_column_ref__column(Expression, Column).
+    ir__column_ref(Expression),
+    ir__column_ref__column(Expression, Column).
 ```
 
-This boundary keeps `facts.py` mechanical: it assigns solver identities and states IR structure. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in the logic rules, where the specific property is explicit and independently derivable.
-
-The coupling between the IR and its `ir_` vocabulary is intentional. Changing an IR class, field, or inheritance relationship requires changing its mirror encoding, while changes to semantic reasoning should normally affect only unprefixed logic predicates.
+`facts.py` assigns solver identities and states IR structure and public Knowledge. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in logic rules.
 
 ### Generation
 
-Generate the mirror from Python reflection by default:
+Generate mirror facts and inheritance rules at runtime from Python reflection:
 
 ```text
-Filter object              -> ir_filter/1 fact
-Filter.input               -> ir_filter__input/2 fact
-RelationExpr.outputs       -> ir_relation_expr__outputs/3 facts
-Filter extends RelationExpr -> ir_relation_expr/1 inheritance rule
+Filter object               -> ir__filter/1 fact
+Filter.input                -> ir__filter__input/2 fact
+RelationExpr.output_columns -> ir__relation_expr__output_columns/3 facts
+Filter extends RelationExpr -> ir__relation_expr/1 inheritance rule
 ```
 
-Allow per-class overrides to rename, omit, or custom-encode structures that do not fit the default mapping.
+`ClingoEncoding` keeps generated `inheritance_rules` separate from ground `facts`; `Engine` concatenates both with the semantic rule files before grounding.
+
+The reflection module owns one deliberately small escape hatch:
+
+```python
+EXCEPTIONS = {
+    ir.Node: lambda node, symbol: (),  # Do not reflect Node.origin
+}
+```
+
+An exception replaces reflection for that class. Do not build a general customization framework until another concrete exception requires it.

@@ -1,8 +1,12 @@
-"""Encode the semantic IR and Knowledge as deterministic ground ASP facts."""
+"""Reflect the semantic IR and public Knowledge into deterministic Clingo input."""
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 
 from sqlassert import ir, naming
 from sqlassert.knowledge import Knowledge
@@ -11,9 +15,18 @@ from sqlassert.naming import NameGiver
 
 @dataclass(frozen=True)
 class ClingoEncoding:
+    inheritance_rules: str
     facts: str
     node_to_symbol: dict[ir.Node, str]
     symbol_to_node: dict[str, ir.Node]
+
+
+EXCEPTIONS: dict[type[ir.Node], Callable[[ir.Node, str], Iterable[str]]] = {
+    ir.Node: lambda node, symbol: (),  # Node.origin remains outside Clingo.
+}
+
+_CAMEL_CASE = re.compile(r"(?<!^)(?=[A-Z])")
+_ATOM = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
@@ -21,92 +34,103 @@ def encode(program: ir.Program, knowledge: Knowledge) -> ClingoEncoding:
     names = NameGiver()
     node_to_symbol = {node: names.new(*_symbol_hint(node)) for node in nodes}
     symbol_to_node = {symbol: node for node, symbol in node_to_symbol.items()}
+    lines = _mirror_facts(nodes, node_to_symbol)
+    lines.extend(_knowledge_facts(knowledge, nodes, node_to_symbol, names))
+    return ClingoEncoding("\n".join(_inheritance_rules()), "\n".join(lines), node_to_symbol, symbol_to_node)
+
+
+def _mirror_facts(nodes: tuple[ir.Node, ...], symbols: dict[ir.Node, str]) -> list[str]:
     lines: list[str] = []
-
-    relations = [node for node in nodes if isinstance(node, ir.RelationExpr)]
-    for relation in relations:
-        relation_symbol = node_to_symbol[relation]
-        lines.append(f"relation_expression({relation_symbol}).")
-        for column in relation.output_columns:
-            lines.append(f"relation_output_column({relation_symbol}, {node_to_symbol[column]}).")
-
-        if isinstance(relation, ir.NamedRelation):
-            if relation.body is not None:
-                lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.body]}).")
-            known = knowledge.relation(relation.name) if relation.role is not ir.RelationRole.CTE else None
-            if known is not None:
-                by_name = {column.name.lower(): column for column in relation.output_columns}
-                lines.extend(
-                    f"non_null_column({relation_symbol}, {node_to_symbol[by_name[column.name.lower()]]})."
-                    for column in known.columns
-                    if not column.nullable and column.name.lower() in by_name
-                )
-                for unique_set in known.unique_sets:
-                    members = tuple(by_name[column.lower()] for column in unique_set.columns if column.lower() in by_name)
-                    if len(members) == len(unique_set.columns):
-                        lines.extend(_unique_set_facts(names, node_to_symbol, relation, members))
-        elif isinstance(relation, ir.Alias):
-            lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.source]}).")
-        elif isinstance(relation, (ir.Filter, ir.Project)):
-            lines.append(f"property_preserving_input({relation_symbol}, {node_to_symbol[relation.input]}).")
-        elif isinstance(relation, ir.Aggregate):
-            lines.append(f"aggregate_relation({relation_symbol}).")
-            lines.extend(
-                f"aggregate_grouping_output({relation_symbol}, {position}, {node_to_symbol[column]})."
-                for position, column in enumerate(relation.grouping_outputs)
-            )
-        elif isinstance(relation, ir.Distinct):
-            lines.append(f"distinct_relation({relation_symbol}).")
-            lines.extend(
-                f"distinct_output({relation_symbol}, {position}, {node_to_symbol[column]})."
-                for position, column in enumerate(relation.output_columns)
-            )
-        elif isinstance(relation, ir.QualifyByPartition):
-            lines.append(f"qualify_by_partition({relation_symbol}).")
-            lines.extend(
-                f"qualify_partition_output({relation_symbol}, {position}, {node_to_symbol[column]})."
-                for position, column in enumerate(relation.partition_outputs)
-            )
-        elif isinstance(relation, ir.Join):
-            lines.append(f"join_kind({relation_symbol}, {relation.kind}).")
-            lines.append(f"join_left({relation_symbol}, {node_to_symbol[relation.left]}).")
-            lines.append(f"join_right({relation_symbol}, {node_to_symbol[relation.right]}).")
-            for equality in relation.equalities:
-                lines.append(
-                    f"join_equality({relation_symbol}, {node_to_symbol[equality.left]}, {node_to_symbol[equality.right]})."
-                )
-
     for node in nodes:
-        symbol = node_to_symbol[node]
-        if isinstance(node, ir.OutputColumn):
-            lines.append(f"output_column_expression({symbol}, {node_to_symbol[node.expression]}).")
-        elif isinstance(node, ir.ColumnRef):
-            lines.append(f"direct_column_reference({symbol}, {node_to_symbol[node.column]}).")
-        elif isinstance(node, ir.Constant):
-            lines.append(f"expression_constant({symbol}).")
-        elif isinstance(node, ir.AnyAggregate):
-            lines.append(f"arbitrary_group_value({symbol}, {node_to_symbol[node.input]}).")
-        elif isinstance(node, ir.OpaqueExpression):
-            lines.append(f"expression_opaque({symbol}).")
-        elif isinstance(node, ir.UniqueJoinAssertion):
-            lines.append(f"assertion({symbol}, {node_to_symbol[node.subject]}).")
-        elif isinstance(node, ir.UniqueSetAssertion):
-            lines.append(f"unique_set_assertion({symbol}, {node_to_symbol[node.subject]}).")
-            if node.candidate_key:
-                lines.append(f"unique_set_assertion_key({symbol}).")
-            lines.extend(
-                f"unique_set_assertion_member({symbol}, {position}, {node_to_symbol[column]})."
-                for position, column in enumerate(node.columns)
-            )
-
-    return ClingoEncoding("\n".join(lines), node_to_symbol, symbol_to_node)
+        node_type = type(node)
+        symbol = symbols[node]
+        lines.append(f"ir__{_class_name(node_type)}({symbol}).")
+        for owner in reversed(node_type.__mro__):
+            if not isinstance(owner, type) or not issubclass(owner, ir.Node):
+                continue
+            exception = EXCEPTIONS.get(owner)
+            if exception is not None:
+                lines.extend(exception(node, symbol))
+                continue
+            for field_name in owner.__dict__.get("__annotations__", {}):
+                lines.extend(_field_facts(owner, field_name, symbol, getattr(node, field_name), symbols))
+    return lines
 
 
-def _unique_set_facts(names: NameGiver, symbols: dict[ir.Node, str], relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]) -> list[str]:
+def _field_facts(owner: type[ir.Node], field_name: str, symbol: str, value: object, symbols: dict[ir.Node, str]) -> list[str]:
+    predicate = f"ir__{_class_name(owner)}__{field_name}"
+    if value is None or value is False:
+        return []
+    if value is True:
+        return [f"{predicate}({symbol})."]
+    if isinstance(value, tuple):
+        return [f"{predicate}({symbol}, {position}, {_term(item, symbols)})." for position, item in enumerate(value)]
+    return [f"{predicate}({symbol}, {_term(value, symbols)})."]
+
+
+def _term(value: object, symbols: dict[ir.Node, str]) -> str:
+    if isinstance(value, ir.Node):
+        return symbols[value]
+    if isinstance(value, Enum):
+        atom = value.name.lower()
+        if _ATOM.fullmatch(atom):
+            return atom
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    raise TypeError(f"cannot reflect {type(value).__name__} into Clingo")
+
+
+def _knowledge_facts(
+    knowledge: Knowledge, nodes: tuple[ir.Node, ...], symbols: dict[ir.Node, str], names: NameGiver
+) -> list[str]:
+    lines: list[str] = []
+    for relation in nodes:
+        if not isinstance(relation, ir.NamedRelation) or relation.role is ir.RelationRole.CTE:
+            continue
+        known = knowledge.relation(relation.name)
+        if known is None:
+            continue
+        by_name = {column.name.lower(): column for column in relation.output_columns}
+        lines.extend(
+            f"pub__non_null_column({symbols[relation]}, {symbols[by_name[column.name.lower()]]})."
+            for column in known.columns
+            if not column.nullable and column.name.lower() in by_name
+        )
+        for unique_set in known.unique_sets:
+            columns = tuple(by_name[column.lower()] for column in unique_set.columns if column.lower() in by_name)
+            if len(columns) == len(unique_set.columns):
+                lines.extend(_unique_set_facts(names, symbols, relation, columns))
+    return lines
+
+
+def _unique_set_facts(
+    names: NameGiver, symbols: dict[ir.Node, str], relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]
+) -> list[str]:
     key = names.new(naming.KEY, "_".join(column.name for column in columns))
-    return [f"unique_set({key}, {symbols[relation]})."] + [
-        f"unique_set_column({key}, {position}, {symbols[column]})." for position, column in enumerate(columns)
+    return [f"pub__unique_set({key}, {symbols[relation]})."] + [
+        f"pub__unique_set_column({key}, {position}, {symbols[column]})." for position, column in enumerate(columns)
     ]
+
+
+def _inheritance_rules() -> list[str]:
+    rules: list[str] = []
+    for node_type in _node_types():
+        for base in node_type.__bases__:
+            if issubclass(base, ir.Node):
+                rules.append(f"ir__{_class_name(base)}(Node) :- ir__{_class_name(node_type)}(Node).")
+    return rules
+
+
+def _node_types() -> tuple[type[ir.Node], ...]:
+    found: set[type[ir.Node]] = set()
+    pending = list(ir.Node.__subclasses__())
+    while pending:
+        node_type = pending.pop()
+        found.add(node_type)
+        pending.extend(node_type.__subclasses__())
+    return tuple(sorted(found, key=_class_name))
 
 
 def _walk(program: ir.Program) -> tuple[ir.Node, ...]:
@@ -143,3 +167,7 @@ def _symbol_hint(node: ir.Node) -> tuple[str, str]:
     if isinstance(node, ir.Assertion):
         return naming.ASSERTION, type(node).__name__
     return naming.EXPRESSION, type(node).__name__
+
+
+def _class_name(node_type: type[ir.Node]) -> str:
+    return _CAMEL_CASE.sub("_", node_type.__name__).lower()
