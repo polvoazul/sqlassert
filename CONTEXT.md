@@ -54,6 +54,8 @@ _Avoid_: Deduplicate
 
 **Relation Expression**:
 A semantic operation that produces a relation with its own output columns.
+**Relation Operation** is a synonym used when focusing specifically on the
+topmost operation of the expression.
 _Avoid_: Relation definition, relation instance, plan
 
 **Named Relation**:
@@ -71,14 +73,6 @@ _Avoid_: Column instance
 **Column Reference**:
 A scalar expression that reads an upstream Output Column.
 _Avoid_: Input column, column identifier
-
-**Pass-Through Column**:
-A fresh Output Column that directly references one upstream Output Column through a property-preserving operation.
-_Avoid_: Mapped column, semantic column mapping
-
-**Property-Preserving Input**:
-The upstream Relation Expression whose established properties are preserved by a pass-through operation.
-_Avoid_: Property input, source relation
 
 **Origin**:
 The SQL location or catalog object from which a semantic element or piece of knowledge arose.

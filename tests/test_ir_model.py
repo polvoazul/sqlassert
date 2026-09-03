@@ -15,7 +15,7 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
     table_column = ir.OutputColumn(
         origin=_origin("users.id"),
         name="id",
-        expression=ir.OpaqueExpression(origin=_origin("users.id"), description="table column"),
+        scalar_expr=ir.OpaqueExpression(origin=_origin("users.id"), description="table column"),
     )
     users = ir.NamedRelation(
         origin=_origin("CREATE TABLE users"),
@@ -27,7 +27,7 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
     alias_column = ir.OutputColumn(
         origin=_origin("users AS u"),
         name="id",
-        expression=ir.ColumnRef(origin=_origin("u.id"), column=table_column),
+        scalar_expr=ir.ColumnRef(origin=_origin("u.id"), column=table_column),
     )
     first = ir.Alias(origin=_origin("users AS u"), output_columns=(alias_column,), source=users, name="u")
     second = ir.Alias(origin=_origin("users AS u"), output_columns=(alias_column,), source=users, name="u")
@@ -35,8 +35,8 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
     assert first is not second
     assert first != second
     assert first.source is second.source is users
-    assert isinstance(first.output_columns[0].expression, ir.ColumnRef)
-    assert first.output_columns[0].expression.column is table_column
+    assert isinstance(first.output_columns[0].scalar_expr, ir.ColumnRef)
+    assert first.output_columns[0].scalar_expr.column is table_column
     assert first.origin == _origin("users AS u")
     with pytest.raises(FrozenInstanceError):
         first.name = "changed"  # ty: ignore[invalid-assignment]

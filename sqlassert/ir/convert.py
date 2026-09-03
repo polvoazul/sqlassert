@@ -335,7 +335,7 @@ class IrParser:
             ir.OutputColumn(
                 origin=origin,
                 name=name,
-                expression=ir.OpaqueExpression(origin=origin, description=f"source column {name}"),
+                scalar_expr=ir.OpaqueExpression(origin=origin, description=f"source column {name}"),
             )
             for name in names
         )
@@ -438,7 +438,7 @@ class IrParser:
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
-                expression=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, lowered.bindings),
+                scalar_expr=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, lowered.bindings),
             )
             for item in items
         )
@@ -511,7 +511,7 @@ class IrParser:
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
-                expression=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, bindings),
+                scalar_expr=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, bindings),
             )
             for item in items
         )
@@ -523,7 +523,7 @@ class IrParser:
             lowered = self._lower_expression(expression, bindings)
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered)
-            output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, expression=lowered))
+            output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 
     def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...]) -> ir.ScalarExpr:
@@ -652,7 +652,7 @@ class IrParser:
 
 def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) -> tuple[ir.OutputColumn, ...]:
     return tuple(
-        ir.OutputColumn(origin=origin, name=column.name, expression=ir.ColumnRef(origin=origin, column=column))
+        ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
         for column in inputs
     )
 

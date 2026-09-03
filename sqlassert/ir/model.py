@@ -70,7 +70,7 @@ class OutputColumn(Node):
     """One named output of one relational stage and the expression producing it."""
 
     name: str
-    expression: ScalarExpr
+    scalar_expr: ScalarExpr
 
 
 class RelationExpr(Node, abstract=True):

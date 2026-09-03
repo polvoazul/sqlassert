@@ -59,7 +59,7 @@ Scalar fields and object references put the object first:
 ```prolog
 ir__filter__input(f1, source1).                       % Filter.input
 ir__output_column__name(c1, "user_id").              % OutputColumn.name
-ir__output_column__expression(c1, e1).                % OutputColumn.expression
+ir__output_column__scalar_expr(c1, e1).               % OutputColumn.scalar_expr
 ir__column_ref__column(e1, source_column1).            % ColumnRef.column
 ir__named_relation__role(r1, view).                   % NamedRelation.role
 ```
