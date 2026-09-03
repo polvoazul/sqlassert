@@ -2,65 +2,83 @@
 
 % A Unique Set is only a list of Output Columns. Relation membership is derived
 % internally when a rule needs it.
-pub__unique_set(Key) :- pub__unique_set__columns(Key, _).
+pub__unique_set(UniqueSet) :- pub__unique_set__columns(UniqueSet, _).
 
-unique_set_on_relation(Key, Relation) :-
-    pub__unique_set(Key),
-    pub__unique_set__columns(Key, Column),
+unique_set_on_relation(UniqueSet, Relation) :-
+    pub__unique_set__columns(UniqueSet, Column),
     ir__relation_expr__output_columns(Relation, _, Column).
 
 % Relational operations that establish Unique Sets directly.
-pub__unique_set__columns(aggregate_unique_set(Relation), Column) :-
+% The `established_unique_set(Relation)` is a key constructor for the Unique Set that this specific Relation Expression establishes.
+pub__unique_set__columns(established_unique_set(Relation), Column) :-
     ir__aggregate__grouping_outputs(Relation, _, Column).
 
-pub__unique_set__columns(distinct_unique_set(Relation), Column) :-
+pub__unique_set__columns(established_unique_set(Relation), Column) :-
     ir__distinct(Relation),
     ir__relation_expr__output_columns(Relation, _, Column).
 
-pub__unique_set__columns(partition_unique_set(Relation), Column) :-
+pub__unique_set__columns(established_unique_set(Relation), Column) :-
     ir__qualify_by_partition__partition_outputs(Relation, _, Column).
 
-% Property-preserving operations and their fresh Pass-Through Columns.
-property_preserving_input(Target, Source) :- ir__alias__source(Target, Source).
-property_preserving_input(Target, Source) :- ir__named_relation__body(Target, Source).
-property_preserving_input(Target, Source) :- ir__filter__input(Target, Source).
-property_preserving_input(Target, Source) :- ir__project__input(Target, Source).
-property_preserving_input(Target, Source) :- ir__qualify_by_partition__input(Target, Source).
-property_preserving_input(Join, Left) :-
+% A Target derives a Unique Set from a SourceUniqueSet when:
+% - Target is a Unique-Set-preserving relation operation over the source.
+% - SourceUniqueSet belongs to that source.
+% - No key member is missing.
+% - No key member maps ambiguously.
+pub__unique_set__columns(derived_unique_set(Target, SourceUniqueSet), TargetColumn) :-
+    complete_unique_set_pass_through(Target, SourceUniqueSet),
+    pub__unique_set__columns(SourceUniqueSet, SourceColumn),
+    ir__relation_expr__output_columns(Target, _, TargetColumn),
+    unique_pass_through_column(TargetColumn, SourceColumn).
+
+complete_unique_set_pass_through(Target, SourceUniqueSet) :-
+    unique_set_preserving_relation_operation(Target, Source),
+    unique_set_on_relation(SourceUniqueSet, Source),
+    not missing_pass_through_column(Target, SourceUniqueSet, _),
+    not ambiguous_pass_through_column(Target, SourceUniqueSet, _).
+
+unique_set_preserving_relation_operation(Target, Source) :- ir__alias__source(Target, Source).
+unique_set_preserving_relation_operation(Target, Source) :- ir__named_relation__body(Target, Source).
+unique_set_preserving_relation_operation(Target, Source) :- ir__filter__input(Target, Source).
+unique_set_preserving_relation_operation(Target, Source) :- ir__project__input(Target, Source).
+unique_set_preserving_relation_operation(Target, Source) :- ir__qualify_by_partition__input(Target, Source).
+unique_set_preserving_relation_operation(Join, Left) :-
     unique_join(Join, _),
     ir__join__left(Join, Left).
 
-pass_through_column(Target, SourceColumn, TargetColumn) :-
-    property_preserving_input(Target, Source),
-    ir__relation_expr__output_columns(Source, _, SourceColumn),
-    ir__relation_expr__output_columns(Target, _, TargetColumn),
-    ir__output_column__expression(TargetColumn, Expression),
-    ir__column_ref__column(Expression, SourceColumn).
+missing_pass_through_column(Target, SourceUniqueSet, SourceColumn) :-
+    unique_set_preserving_relation_operation(Target, Source),
+    unique_set_on_relation(SourceUniqueSet, Source),
+    pub__unique_set__columns(SourceUniqueSet, SourceColumn),
+    not target_has_pass_through_column(Target, SourceColumn).
 
-missing_pass_through_column(Target, SourceKey, SourceColumn) :-
-    property_preserving_input(Target, Source),
-    unique_set_on_relation(SourceKey, Source),
-    pub__unique_set__columns(SourceKey, SourceColumn),
-    not pass_through_column(Target, SourceColumn, _).
-
-ambiguous_pass_through_column(Target, SourceKey, SourceColumn) :-
-    property_preserving_input(Target, Source),
-    unique_set_on_relation(SourceKey, Source),
-    pub__unique_set__columns(SourceKey, SourceColumn),
-    pass_through_column(Target, SourceColumn, FirstTargetColumn),
-    pass_through_column(Target, SourceColumn, SecondTargetColumn),
+% A source Unique Set member is ambiguous when it directly feeds more than one
+% output column on the same Target, leaving no single column to carry forward.
+ambiguous_pass_through_column(Target, SourceUniqueSet, SourceColumn) :-
+    unique_set_preserving_relation_operation(Target, Source),
+    unique_set_on_relation(SourceUniqueSet, Source),
+    pub__unique_set__columns(SourceUniqueSet, SourceColumn),
+    ir__relation_expr__output_columns(Target, _, FirstTargetColumn),
+    ir__relation_expr__output_columns(Target, _, SecondTargetColumn),
+    unique_pass_through_column(FirstTargetColumn, SourceColumn),
+    unique_pass_through_column(SecondTargetColumn, SourceColumn),
     FirstTargetColumn != SecondTargetColumn.
 
-complete_unique_set_pass_through(Target, SourceKey) :-
-    property_preserving_input(Target, Source),
-    unique_set_on_relation(SourceKey, Source),
-    not missing_pass_through_column(Target, SourceKey, _),
-    not ambiguous_pass_through_column(Target, SourceKey, _).
+target_has_pass_through_column(Target, SourceColumn) :-
+    ir__relation_expr__output_columns(Target, _, TargetColumn),
+    unique_pass_through_column(TargetColumn, SourceColumn).
 
-pub__unique_set__columns(derived_unique_set(Target, SourceKey), TargetColumn) :-
-    complete_unique_set_pass_through(Target, SourceKey),
-    pub__unique_set__columns(SourceKey, SourceColumn),
-    pass_through_column(Target, SourceColumn, TargetColumn).
+% This marks columns that remain unique when they are unique in the source relation.
+unique_pass_through_column(TargetColumn, SourceColumn) :-
+    unique_set_preserving_relation_operation(Target, Source),
+    column_direct_reference(Target, Source, TargetColumn, SourceColumn).
+
+% A column is carried through without modification in a relation operation.
+column_direct_reference(Target, Source, TargetColumn, SourceColumn) :-
+    ir__relation_expr__output_columns(Source, _, SourceColumn),
+    ir__relation_expr__output_columns(Target, _, TargetColumn),
+    ir__output_column__scalar_expr(TargetColumn, ScalarExpr),
+    ir__column_ref__column(ScalarExpr, SourceColumn).
 
 % A proved ordinary assertion contributes its asserted columns as a Unique Set
 % for later Relation Expressions. Positive derivation prevents self-proof.
@@ -119,29 +137,29 @@ join_right_output(Join, Column) :-
     ir__join__right(Join, Right),
     ir__relation_expr__output_columns(Right, _, Column).
 
-understood_join_operand(Join, Expression) :-
-    ir__constant(Expression),
+understood_join_operand(Join, ScalarExpr) :-
+    ir__constant(ScalarExpr),
     ir__join(Join).
 
-understood_join_operand(Join, Expression) :-
-    ir__column_ref__column(Expression, Column),
+understood_join_operand(Join, ScalarExpr) :-
+    ir__column_ref__column(ScalarExpr, Column),
     join_left_output(Join, Column).
 
 right_column_constrained(Join, Column) :-
     ir__join__equalities(Join, _, Equality),
-    ir__equality__left(Equality, RightExpression),
-    ir__equality__right(Equality, OtherExpression),
-    ir__column_ref__column(RightExpression, Column),
+    ir__equality__left(Equality, RightScalarExpr),
+    ir__equality__right(Equality, OtherScalarExpr),
+    ir__column_ref__column(RightScalarExpr, Column),
     join_right_output(Join, Column),
-    understood_join_operand(Join, OtherExpression).
+    understood_join_operand(Join, OtherScalarExpr).
 
 right_column_constrained(Join, Column) :-
     ir__join__equalities(Join, _, Equality),
-    ir__equality__right(Equality, RightExpression),
-    ir__equality__left(Equality, OtherExpression),
-    ir__column_ref__column(RightExpression, Column),
+    ir__equality__right(Equality, RightScalarExpr),
+    ir__equality__left(Equality, OtherScalarExpr),
+    ir__column_ref__column(RightScalarExpr, Column),
     join_right_output(Join, Column),
-    understood_join_operand(Join, OtherExpression).
+    understood_join_operand(Join, OtherScalarExpr).
 
 column_set(join_right_columns(Join), Right) :-
     supported_unique_join(Join),
