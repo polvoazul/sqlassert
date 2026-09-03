@@ -14,4 +14,4 @@ class NonNullColumn(Knowledge):
 
 
 class UniqueSet(Knowledge):
-    columns: list[OutputColumn]
+    columns: frozenset[OutputColumn]

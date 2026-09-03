@@ -84,6 +84,8 @@ def _field_facts(namespace: str, owner: type, field_name: str, symbol: str, valu
             return []
         case True:
             return [f"{predicate}({symbol})."]
+        case frozenset() as values:
+            return [f"{predicate}({symbol}, {term})." for term in sorted(_term(item, symbols) for item in values)]
         case tuple() | list() as values:
             return [f"{predicate}({symbol}, {position}, {_term(item, symbols)})." for position, item in enumerate(values)]
         case _:

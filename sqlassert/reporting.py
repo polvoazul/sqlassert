@@ -19,17 +19,17 @@ from enum import Enum
 import clingo
 
 from sqlassert import ir
-from sqlassert.diagnostics import Diagnostic
+from sqlassert.diagnostics import DUPLICATE_DECLARATION, Diagnostic
 from sqlassert.engine import EnginePolicyError
 from sqlassert.facts import ClingoEncoding
 from sqlassert.provenance import Origin
 
-_PROVED = "proved"
-_PROOF_KEY = "proof_key"
-_PROVED_BY_CANDIDATE_KEY = "proved_by_candidate_key"
-_UNIQUE_SET = "unique_set"
-_UNIQUE_SET_MEMBER = "unique_set_column"
-_ASSERTION_MISSING_MEMBER = "assertion_missing_member"
+_PROVED = "pub__proved"
+_PROOF_KEY = "pub__proof_key"
+_PROVED_BY_CANDIDATE_KEY = "pub__proved_by_candidate_key"
+_UNIQUE_SET = "pub__unique_set"
+_UNIQUE_SET_MEMBER = "pub__unique_set__columns"
+_ASSERTION_MISSING_MEMBER = "pub__assertion_missing_member"
 
 
 class Outcome(Enum):
@@ -65,7 +65,7 @@ class RelationFacts:
     _unique_sets: dict[str, tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
     def unique_sets(self, relation: str) -> tuple[tuple[str, ...], ...]:
-        """Every Unique Set proved for `relation`, each as its ordered columns."""
+        """Every Unique Set proved for `relation`, canonically ordered for display."""
         return self._unique_sets.get(relation.lower(), ())
 
     def is_unique(self, relation: str, columns: Sequence[str]) -> bool:
@@ -113,8 +113,8 @@ class Reporter:
         self._proved = _proved(model)
         self._proof_keys = _proof_keys(model)
         self._candidate_key_proofs = _candidate_key_proofs(model)
-        self._unique_sets = _unique_sets(model)
-        self._unique_set_relations = _unique_set_relations(model)
+        self._unique_sets = _unique_sets(model, self._encoding)
+        self._unique_set_relations = _unique_set_relations(self._unique_sets, self._encoding)
         self._missing_members = _missing_members(model)
 
     def report(
@@ -128,8 +128,9 @@ class Reporter:
                 "analysis requires exactly one stable model, the rule program produced none"
             )
 
+        accept_proof = all(diagnostic.code != DUPLICATE_DECLARATION for diagnostic in diagnostics)
         return Report(
-            tuple(self._assertion_report(assertion) for assertion in assertions),
+            tuple(self._assertion_report(assertion, accept_proof=accept_proof) for assertion in assertions),
             tuple(diagnostics),
             self._relation_facts(declarations),
             self.stable_model_count,
@@ -157,9 +158,9 @@ class Reporter:
 
         return RelationFacts({name: tuple(unique_sets) for name, unique_sets in by_relation.items()})
 
-    def _assertion_report(self, assertion: ir.Assertion) -> AssertionReport:
+    def _assertion_report(self, assertion: ir.Assertion, *, accept_proof: bool) -> AssertionReport:
         assertion_id = self._encoding.node_to_symbol[assertion]
-        proved = assertion_id in self._proved
+        proved = accept_proof and assertion_id in self._proved
         keys = self._proof_keys.get(assertion_id, ())
         proving_unique_set = self._column_names(self._unique_sets.get(keys[0], ())) if proved and keys else ()
         missing_columns = () if proved else self._missing_columns_for(assertion_id)
@@ -209,7 +210,7 @@ class Reporter:
         )
 
     def _missing_columns_for(self, assertion_id: str) -> tuple[str, ...]:
-        """The closest Unique Set(s)' missing columns, in their declared order."""
+        """The closest Unique Set(s)' missing columns, in canonical display order."""
         per_key = self._missing_members.get(assertion_id, {})
         seen: set[str] = set()
         ordered: list[str] = []
@@ -259,24 +260,38 @@ def _candidate_key_proofs(model: clingo.Model) -> frozenset[str]:
     )
 
 
-def _unique_set_relations(model: clingo.Model) -> dict[str, tuple[str, ...]]:
-    """Every encoded Relation Expression each Unique Set belongs to."""
-    relations: dict[str, list[str]] = {}
-    for symbol in model.symbols(atoms=True):
-        if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 2:
-            key, relation = (str(argument) for argument in symbol.arguments)
-            relations.setdefault(key, []).append(relation)
-    return {key: tuple(found) for key, found in relations.items()}
+def _unique_set_relations(unique_sets: dict[str, tuple[str, ...]], encoding: ClingoEncoding) -> dict[str, tuple[str, ...]]:
+    """Infer each Unique Set's Relation Expressions from its Output Columns."""
+    relation_columns = {
+        symbol: {encoding.node_to_symbol[column] for column in node.output_columns}
+        for symbol, node in encoding.symbol_to_node.items()
+        if isinstance(node, ir.RelationExpr)
+    }
+    return {
+        key: tuple(relation for relation, columns in relation_columns.items() if set(members) <= columns)
+        for key, members in unique_sets.items()
+    }
 
 
-def _unique_sets(model: clingo.Model) -> dict[str, tuple[str, ...]]:
-    """The encoded output-column symbols of every Unique Set, in order."""
-    members: dict[str, list[tuple[int, str]]] = {}
+def _unique_sets(model: clingo.Model, encoding: ClingoEncoding) -> dict[str, tuple[str, ...]]:
+    """Every Unique Set, canonically ordered by its Output Columns for display."""
+    keys = {
+        str(symbol.arguments[0])
+        for symbol in model.symbols(atoms=True)
+        if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 1
+    }
+    members: dict[str, set[str]] = {key: set() for key in keys}
     for symbol in model.symbols(atoms=True):
-        if symbol.name == _UNIQUE_SET_MEMBER and len(symbol.arguments) == 3:
-            key, position, column = symbol.arguments
-            members.setdefault(str(key), []).append((position.number, str(column)))
-    return {key: tuple(column for _, column in sorted(found)) for key, found in members.items()}
+        if symbol.name == _UNIQUE_SET_MEMBER and len(symbol.arguments) == 2:
+            key, column = symbol.arguments
+            if str(key) in keys:
+                members[str(key)].add(str(column))
+    column_order = {
+        symbol: position
+        for position, (node, symbol) in enumerate(encoding.node_to_symbol.items())
+        if isinstance(node, ir.OutputColumn)
+    }
+    return {key: tuple(sorted(found, key=column_order.__getitem__)) for key, found in members.items()}
 
 
 def _missing_members(model: clingo.Model) -> dict[str, dict[str, frozenset[str]]]:

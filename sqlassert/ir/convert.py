@@ -643,7 +643,7 @@ class IrParser:
             members = tuple(columns[name.lower()] for name in column_names if name.lower() in columns)
             if len(members) != len(column_names):
                 continue
-            facts.append(UniqueSet(columns=list(members)))
+            facts.append(UniqueSet(columns=frozenset(members)))
         return tuple(facts)
 
     def _origin(self, node: exp.Expression, line: int | None = None) -> Origin:
