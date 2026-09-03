@@ -81,7 +81,7 @@ def test_sql_lowering_constructs_knowledge_linked_to_ir_nodes():
     unique_set = next(item for item in conversion.knowledge if isinstance(item, UniqueSet))
     non_null = next(item for item in conversion.knowledge if isinstance(item, NonNullColumn))
 
-    assert unique_set.columns == [id_column]
+    assert unique_set.columns == frozenset({id_column})
     assert non_null.column is id_column
 
 
@@ -89,7 +89,7 @@ def test_encoding_uses_the_linked_knowledge_types_as_public_facts():
     conversion = _convert("CREATE TABLE users(id INTEGER); SELECT id FROM users")
     users = conversion.program.declarations[0]
     id_column = users.output_columns[0]
-    knowledge = (NonNullColumn(column=id_column), UniqueSet(columns=[id_column]))
+    knowledge = (NonNullColumn(column=id_column), UniqueSet(columns=frozenset({id_column})))
 
     encoding = encode(conversion.program, knowledge)
     facts = encoding.facts
@@ -102,7 +102,7 @@ def test_encoding_uses_the_linked_knowledge_types_as_public_facts():
 
     assert "pub__non_null_column(" in facts
     assert "pub__unique_set(" in facts
-    assert f"pub__unique_set__columns({unique_set_symbol}, 0, {id_symbol})." in facts
+    assert f"pub__unique_set__columns({unique_set_symbol}, {id_symbol})." in facts
 
 
 def test_engine_grounds_generated_inheritance_rules(monkeypatch):

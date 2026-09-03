@@ -71,6 +71,15 @@ ir__relation_expr__output_columns(r1, 0, c1).  % RelationExpr.output_columns[0]
 ir__relation_expr__output_columns(r1, 1, c2).  % RelationExpr.output_columns[1]
 ```
 
+Unordered collections emit membership facts without a position:
+
+```prolog
+pub__unique_set__columns(k1, c1).
+pub__unique_set__columns(k1, c2).
+```
+
+The encoder sorts unordered members by their assigned solver symbols before emitting facts so the encoded text is deterministic. That serialization order has no semantic meaning.
+
 Every field of every reachable `Node` is encoded by default. Optional fields produce no fact for `None`; enums become lowercase atoms such as `view` and `inner`; user-provided text becomes a string. `Node.origin` is explicitly excluded because provenance remains outside Clingo. Unsupported values fail encoding.
 
 ### Boolean fields
@@ -103,14 +112,24 @@ schema_incomplete(Relation) :-
 Knowledge and solver results share the public API:
 
 ```prolog
-pub__unique_set(Key, Relation).
-pub__unique_set_column(Key, Position, Column).
-pub__non_null_column(Relation, Column).
+pub__unique_set(Key).
+pub__unique_set__columns(Key, Column).
+pub__non_null_column(NonNullFact).
+pub__non_null_column__column(NonNullFact, Column).
 pub__proved(Assertion).
 pub__proof_key(Assertion, Key).
 ```
 
-Public predicates need no export wrappers. Internal predicates connect the IR encoding to reasoning:
+Public predicates need no export wrappers. A Unique Set has no relation field: its Output Columns identify their own Relation Expression. Rules derive that association internally only when a question needs it:
+
+```prolog
+unique_set_on_relation(Key, Relation) :-
+    pub__unique_set(Key),
+    pub__unique_set__columns(Key, Column),
+    ir__relation_expr__output_columns(Relation, _, Column).
+```
+
+Other internal predicates connect the IR encoding to reasoning:
 
 ```prolog
 relation_input(Filter, Input) :-
@@ -130,19 +149,13 @@ Knowledge is a separate IR-linked type hierarchy. Its concrete types define the 
 class Knowledge(metaclass=NodeMeta, abstract=True): ...
 
 class NonNullColumn(Knowledge):
-    relation: RelationExpr
     column: OutputColumn
 
 class UniqueSet(Knowledge):
-    relation: RelationExpr
-
-class UniqueSetColumn(Knowledge):
-    unique_set: UniqueSet
-    position: int
-    column: OutputColumn
+    columns: frozenset[OutputColumn]
 ```
 
-The public encoder writes `pub__<knowledge class>` from those fields. SQL lowering constructs linked Knowledge directly. A database gatherer resolves qualified names before constructing the same objects; the engine never resolves relation or column names. Database hydration is tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
+The public encoder writes `pub__<knowledge class>` from those fields. A Unique Set's columns are set members, not an ordered child collection, so `pub__unique_set__columns/2` has no position argument. SQL lowering constructs linked Knowledge directly. A database gatherer resolves qualified names before constructing the same objects; the engine never resolves relation or column names. Database hydration is tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
 `facts.py` assigns solver identities and states IR structure and public Knowledge. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in logic rules.
 
