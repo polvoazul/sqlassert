@@ -142,11 +142,10 @@ as declarations. Reporting checks for a public Unique Join property referencing
 the assertion's join. Accepted and derived Unique Join properties both preserve
 left-side unique sets.
 
-Reporting reads these public properties directly to determine assertion
-outcomes. It uses coverage and missing-member facts for explanations, without
-reimplementing their inference or treating evidence as a property. This evidence is
-keyed by column-set context (`asserted_columns(a1)` or `join_right_columns(j1)`),
-and reporting associates it with assertions. The logic rules do not reference
+Reporting reads public properties directly to determine assertion outcomes.
+Coverage and missing-member checks are internal inference helpers, not part of
+the Python interface. Proof explanations are deferred until there is a standard
+Clingo annotation interface and Python consumer. The logic rules do not reference
 assertion nodes.
 
 ### Public and internal logic
@@ -160,8 +159,6 @@ pub__non_null_column(NonNullFact).
 pub__non_null_column__column(NonNullFact, Column).
 pub__unique_join(Property).
 pub__unique_join__join(Property, Join).
-pub__covers_unique_set(Context, Key).
-pub__missing_unique_set_member(Context, Key, Column).
 ```
 
 Public predicates need no export wrappers. A Unique Set has no relation field: its Output Columns identify their own Relation Expression. Rules derive that association internally only when a question needs it:
@@ -180,7 +177,14 @@ unique_set_preserving_relation_operation(Target, Source) :-
 
 unique_pass_through_column(TargetColumn, SourceColumn) :-
     unique_set_preserving_relation_operation(Target, Source),
-    column_direct_reference(Target, Source, TargetColumn, SourceColumn).
+    ir__relation_expr__output_columns(Source, _, SourceColumn),
+    ir__relation_expr__output_columns(Target, _, TargetColumn),
+    ir__output_column__scalar_expr(TargetColumn, ScalarExpr),
+    injective_scalar_expression(ScalarExpr, SourceColumn).
+
+% More operations can be added when their semantics guarantee injectivity.
+injective_scalar_expression(ScalarExpr, SourceColumn) :-
+    ir__column_ref__column(ScalarExpr, SourceColumn).
 ```
 
 ### Accepted Properties

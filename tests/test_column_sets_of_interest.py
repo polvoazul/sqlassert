@@ -66,7 +66,7 @@ def test_a_subset_of_a_known_composite_unique_set_is_not_proved_unique():
     """)
 
     assert "pub__unique_set(requested)" not in atoms
-    assert "pub__missing_unique_set_member(requested,known,region)" in atoms
+    assert "missing_unique_set_member(requested,known)" in atoms
 
 
 def test_join_coverage_does_not_generalize_to_a_new_unique_set():
@@ -82,7 +82,7 @@ def test_join_coverage_does_not_generalize_to_a_new_unique_set():
         ir__constant(value).
     """)
 
-    assert "pub__covers_unique_set(join_right_columns(j),known)" in atoms
+    assert "covers_unique_set(join_right_columns(j),known)" in atoms
     assert "pub__unique_join(established_unique_join(j))" in atoms
     assert "pub__unique_join__join(established_unique_join(j),j)" in atoms
     assert not any(atom.startswith("pub__column_set_of_interest(") for atom in atoms)

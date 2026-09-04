@@ -29,7 +29,6 @@ def test_a_root_select_with_its_own_projection_still_proves_its_join():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_root_select_with_its_own_where_still_proves_its_join():

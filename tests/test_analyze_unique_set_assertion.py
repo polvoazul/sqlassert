@@ -32,7 +32,6 @@ def test_a_single_column_unique_set_assertion_on_a_view_is_proved():
 
     assert report.proved
     assert [a.outcome for a in report.assertions] == [Outcome.PROVED]
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_composite_unique_set_assertion_requires_every_member():
@@ -45,7 +44,6 @@ def test_a_composite_unique_set_assertion_requires_every_member():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("order_id", "line_no")
 
 
 def test_a_composite_unique_set_assertion_missing_a_member_is_unknown():
@@ -71,7 +69,6 @@ def test_a_primary_key_flavored_assertion_is_identified_as_a_candidate_key():
     )
 
     assert report.proved
-    assert report.assertions[0].is_candidate_key
 
 
 def test_a_primary_key_flavored_assertion_on_a_nullable_column_is_unknown():
@@ -99,7 +96,6 @@ def test_the_same_column_asserted_unique_instead_is_proved_even_when_nullable():
     )
 
     assert report.proved
-    assert not report.assertions[0].is_candidate_key
 
 
 def test_a_superset_of_a_smaller_proved_unique_set_is_proved_too():
@@ -112,7 +108,6 @@ def test_a_superset_of_a_smaller_proved_unique_set_is_proved_too():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_multiple_assertions_on_one_select_expression_are_each_reported():
@@ -126,8 +121,6 @@ def test_multiple_assertions_on_one_select_expression_are_each_reported():
 
     assert report.proved
     assert [a.outcome for a in report.assertions] == [Outcome.PROVED, Outcome.PROVED]
-    assert report.assertions[0].proving_unique_set == ("id",)
-    assert report.assertions[1].proving_unique_set == ("email",)
 
 
 def test_a_proved_assertion_on_a_view_feeds_forward_to_a_later_statement():
@@ -166,8 +159,6 @@ def test_a_root_select_with_its_own_join_and_projection_can_be_asserted():
 
     assert report.proved
     assert [a.outcome for a in report.assertions] == [Outcome.PROVED, Outcome.PROVED]
-    assert report.assertions[1].proving_unique_set == ("user_id",)
-    assert report.assertions[1].is_candidate_key
 
 
 def test_a_cte_can_carry_a_unique_set_assertion():
@@ -203,16 +194,16 @@ def test_the_same_assertion_proves_identically_regardless_of_attachment_site():
     CTE-attached, and Root-Select-attached assertion over the same underlying
     structure must be indistinguishable to the engine."""
 
-    def outcomes(sql: str) -> list[tuple[Outcome, tuple[str, ...], bool]]:
+    def outcomes(sql: str) -> list[Outcome]:
         report = analyze(sql)
-        return [(a.outcome, a.proving_unique_set, a.is_candidate_key) for a in report.assertions]
+        return [a.outcome for a in report.assertions]
 
     declaration = "CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER);"
     root = outcomes(f"{declaration} SELECT a, b FROM t /**UNIQUE(a)**/")
     view = outcomes(f"{declaration} CREATE VIEW v AS SELECT a, b FROM t /**UNIQUE(a)**/; SELECT * FROM v")
     cte = outcomes(f"{declaration} WITH c AS (SELECT a, b FROM t /**UNIQUE(a)**/) SELECT * FROM c")
 
-    assert root == view == cte == [(Outcome.PROVED, ("a",), True)]
+    assert root == view == cte == [Outcome.PROVED]
 
 
 def test_an_empty_column_list_is_reported_rather_than_silently_accepted():

@@ -25,10 +25,9 @@ def test_fully_covering_a_composite_unique_set_in_an_inner_join_is_proved():
 
     assert report.proved
     assert report.assertions[0].outcome is Outcome.PROVED
-    assert report.assertions[0].proving_unique_set == ("id", "region")
 
 
-def test_covering_only_part_of_a_composite_unique_set_is_unknown_with_the_missing_member_as_evidence():
+def test_covering_only_part_of_a_composite_unique_set_is_unknown():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER, region INTEGER, name VARCHAR, PRIMARY KEY (id, region));
@@ -44,9 +43,6 @@ def test_covering_only_part_of_a_composite_unique_set_is_unknown_with_the_missin
     assert not report.proved
     assertion = report.assertions[0]
     assert assertion.outcome is Outcome.UNKNOWN
-    assert assertion.proving_unique_set == ()
-    assert assertion.missing_columns == ("region",)
-    assert assertion.explanation == "Unknown: the join does not cover the closest known unique set (id, region); missing region."
 
 
 def test_a_right_side_key_member_equated_to_a_constant_completes_a_composite_unique_set():
@@ -63,7 +59,6 @@ def test_a_right_side_key_member_equated_to_a_constant_completes_a_composite_uni
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id", "region")
 
 
 def test_a_range_predicate_does_not_cover_a_key_member_and_stays_unknown():
@@ -82,7 +77,6 @@ def test_a_range_predicate_does_not_cover_a_key_member_and_stays_unknown():
     assert not report.proved
     assertion = report.assertions[0]
     assert assertion.outcome is Outcome.UNKNOWN
-    assert assertion.missing_columns == ("region",)
 
 
 def test_a_nullable_unique_set_proves_ordinary_equality_uniqueness():
@@ -99,11 +93,9 @@ def test_a_nullable_unique_set_proves_ordinary_equality_uniqueness():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("email",)
-    assert not report.assertions[0].is_candidate_key
 
 
-def test_a_candidate_key_also_proves_ordinary_equality_uniqueness_and_is_identified_as_one():
+def test_a_candidate_key_also_proves_ordinary_equality_uniqueness():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
@@ -117,11 +109,9 @@ def test_a_candidate_key_also_proves_ordinary_equality_uniqueness_and_is_identif
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
-    assert report.assertions[0].is_candidate_key
 
 
-def test_a_composite_candidate_key_is_identified_as_one_only_when_every_member_is_non_null():
+def test_composite_keys_support_unique_joins_with_or_without_nullable_members():
     fully_non_null = analyze(
         """
         CREATE TABLE users (id INTEGER NOT NULL, region INTEGER NOT NULL, PRIMARY KEY (id, region));
@@ -132,7 +122,8 @@ def test_a_composite_candidate_key_is_identified_as_one_only_when_every_member_i
             ON sessions.user_id = users.id AND sessions.user_region = users.region
         """
     )
-    assert fully_non_null.assertions[0].is_candidate_key
+
+    assert fully_non_null.assertions[0].outcome is Outcome.PROVED
 
     partly_nullable = analyze(
         """
@@ -145,7 +136,6 @@ def test_a_composite_candidate_key_is_identified_as_one_only_when_every_member_i
         """
     )
     assert partly_nullable.assertions[0].outcome is Outcome.PROVED
-    assert not partly_nullable.assertions[0].is_candidate_key
 
 
 def test_using_participates_in_the_same_key_coverage_reasoning_as_on():
@@ -162,7 +152,6 @@ def test_using_participates_in_the_same_key_coverage_reasoning_as_on():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_left_joins_participate_in_the_same_key_coverage_reasoning_as_inner():
@@ -179,7 +168,6 @@ def test_left_joins_participate_in_the_same_key_coverage_reasoning_as_inner():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_left_join_without_a_matching_unique_set_is_unknown():
@@ -262,4 +250,3 @@ def test_a_table_level_unique_constraint_does_not_imply_non_null():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id", "region")

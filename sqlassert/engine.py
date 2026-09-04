@@ -1,7 +1,7 @@
 """Run the property engine.
 
-Clingo derives properties and their supporting evidence from ground facts and
-nothing else: parsing, name resolution, and provenance stay outside the solver.
+Clingo derives properties from ground facts: parsing, name resolution, and
+SQL source locations stay outside the solver.
 The engine asks for enough models to expose nondeterminism; whoever consumes
 them enforces the one-model policy, because only the consumer can tell how many
 it was handed.

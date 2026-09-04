@@ -41,7 +41,6 @@ def test_a_qualify_by_partition_subquery_joined_on_its_full_partition_key_is_pro
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("customer_id",)
 
 
 def test_a_qualify_by_partition_subquery_joined_on_its_full_composite_partition_key_is_proved():
@@ -64,7 +63,6 @@ def test_a_qualify_by_partition_subquery_joined_on_its_full_composite_partition_
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("customer_id", "region")
 
 
 def test_joining_on_part_of_a_composite_partition_key_is_unknown():
@@ -105,7 +103,6 @@ def test_an_aliased_partition_key_maps_the_unique_set_to_the_outer_column(orders
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("cid",)
 
 
 def test_a_partition_key_absent_from_the_select_list_is_unsupported_and_unknown(orders_and_customers):

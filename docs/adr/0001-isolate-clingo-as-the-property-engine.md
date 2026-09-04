@@ -1,3 +1,3 @@
 # Isolate Clingo as the property engine
 
-Use Clingo only to derive properties and their supporting evidence from normalized semantic facts. SQL parsing, name resolution, catalog access, and source provenance remain outside the solver. For the MVP, a `Reporter` instance consumes the live `clingo.Model` through its bound `on_model` callback and stores only the durable report; this deliberate reporting-to-Clingo coupling avoids an intermediate evidence model until that coupling causes a concrete problem.
+Use Clingo to derive properties from normalized semantic facts. SQL parsing, name resolution, catalog access, and source locations remain outside the solver. A `Reporter` instance consumes public properties from the live `clingo.Model` through its bound `on_model` callback and stores plain values for the durable report. Proof explanations are deferred until a standard Clingo annotation interface and Python consumer are designed.
