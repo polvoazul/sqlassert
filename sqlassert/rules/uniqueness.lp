@@ -80,21 +80,40 @@ column_direct_reference(Target, Source, TargetColumn, SourceColumn) :-
     ir__output_column__scalar_expr(TargetColumn, ScalarExpr),
     ir__column_ref__column(ScalarExpr, SourceColumn).
 
-% A proved ordinary assertion contributes its asserted columns as a Unique Set
-% for later Relation Expressions. Positive derivation prevents self-proof.
+% -----------------------------------------------------------------------------
+% Proved Assertions as Unique Sets
+% -----------------------------------------------------------------------------
+
+% A proved ordinary Unique Set Assertion:
+% - gets a fresh `asserted_unique_set(Assertion)` identity;
+% - contributes each asserted column to that Unique Set; and
+% - makes the Unique Set available to later Relation Expressions.
+% Candidate Key assertions are excluded from this ordinary Unique Set path.
+% Requiring a positive proof prevents an assertion from establishing itself.
 pub__unique_set__columns(asserted_unique_set(Assertion), Column) :-
     pub__proved(Assertion),
-    ir__unique_set_assertion__columns(Assertion, _, Column),
-    not ir__unique_set_assertion__is_candidate_key(Assertion).
+    ir__assertion__property(Assertion, unique_set),
+    ir__assertion__columns(Assertion, Column).
 
-% Generic arbitrary-column-set containment.
+% -----------------------------------------------------------------------------
+% Column Set Inputs
+% -----------------------------------------------------------------------------
+
+% Locate an ordinary assertion's Unique Set on the Relation Expression that
+% owns its columns, then present it to the generic coverage rules below.
+% Unique Joins provide another kind of Column Set later.
 column_set(asserted_columns(Assertion), Relation) :-
-    ir__unique_set_assertion__subject(Assertion, Relation),
-    not ir__unique_set_assertion__is_candidate_key(Assertion).
+    ir__assertion__property(Assertion, unique_set),
+    ir__assertion__columns(Assertion, Column),
+    ir__relation_expr__output_columns(Relation, _, Column).
 
 column_set_column(asserted_columns(Assertion), Column) :-
-    ir__unique_set_assertion__columns(Assertion, _, Column),
-    not ir__unique_set_assertion__is_candidate_key(Assertion).
+    ir__assertion__property(Assertion, unique_set),
+    ir__assertion__columns(Assertion, Column).
+
+% -----------------------------------------------------------------------------
+% Generic Unique Set Coverage
+% -----------------------------------------------------------------------------
 
 candidate_unique_set(Context, Key) :-
     column_set(Context, Relation),
@@ -102,7 +121,7 @@ candidate_unique_set(Context, Key) :-
     not excluded_unique_set(Context, Key).
 
 excluded_unique_set(asserted_columns(Assertion), asserted_unique_set(Assertion)) :-
-    ir__unique_set_assertion(Assertion).
+    ir__assertion__property(Assertion, unique_set).
 
 missing_unique_set_member(Context, Key, Column) :-
     candidate_unique_set(Context, Key),
@@ -113,19 +132,27 @@ covers_unique_set(Context, Key) :-
     candidate_unique_set(Context, Key),
     not missing_unique_set_member(Context, Key, _).
 
+% -----------------------------------------------------------------------------
+% Unique Set Assertion Outputs
+% -----------------------------------------------------------------------------
+
 pub__proved(Assertion) :-
-    ir__unique_set_assertion(Assertion),
+    ir__assertion__property(Assertion, unique_set),
     covers_unique_set(asserted_columns(Assertion), _).
 
 pub__proof_key(Assertion, Key) :-
-    ir__unique_set_assertion(Assertion),
+    ir__assertion__property(Assertion, unique_set),
     covers_unique_set(asserted_columns(Assertion), Key).
 
 pub__assertion_missing_member(Assertion, Key, Column) :-
-    ir__unique_set_assertion(Assertion),
+    ir__assertion__property(Assertion, unique_set),
     missing_unique_set_member(asserted_columns(Assertion), Key, Column).
 
-% A Join's constrained right-side columns are another arbitrary column set.
+% -----------------------------------------------------------------------------
+% Unique Join Assertions
+% -----------------------------------------------------------------------------
+
+% A Join's constrained right-side columns are another arbitrary Column Set.
 supported_unique_join(Join) :- ir__join__kind(Join, "inner").
 supported_unique_join(Join) :- ir__join__kind(Join, "left").
 
@@ -173,13 +200,16 @@ unique_join(Join, Key) :-
     covers_unique_set(join_right_columns(Join), Key).
 
 pub__proved(Assertion) :-
-    ir__unique_join_assertion__subject(Assertion, Join),
+    ir__assertion__property(Assertion, unique_join),
+    ir__assertion__join(Assertion, Join),
     unique_join(Join, _).
 
 pub__proof_key(Assertion, Key) :-
-    ir__unique_join_assertion__subject(Assertion, Join),
+    ir__assertion__property(Assertion, unique_join),
+    ir__assertion__join(Assertion, Join),
     unique_join(Join, Key).
 
 pub__assertion_missing_member(Assertion, Key, Column) :-
-    ir__unique_join_assertion__subject(Assertion, Join),
+    ir__assertion__property(Assertion, unique_join),
+    ir__assertion__join(Assertion, Join),
     missing_unique_set_member(join_right_columns(Join), Key, Column).

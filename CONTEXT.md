@@ -5,23 +5,40 @@ This context describes static claims about SQL queries and the evidence used to 
 ## Language
 
 **Assertion**:
-A property that a SQL author requires a query construct to satisfy.
-_Avoid_: Check, annotation
+A request from a SQL author to validate that a Property holds, like an
+assertion in a programming language. An Assertion is a proof obligation: it
+does not make the Property true, and remains Unknown when no proof is available.
+_Avoid_: Property Declaration, assumption, annotation
+
+**Property Declaration**:
+A trusted statement from a SQL author that a Property is true. A Property
+Declaration places that Property directly among the program's declarations,
+contributes Knowledge without requiring proof, and does not produce an
+assertion result.
+_Avoid_: Assertion, Proof, Create Statement
 
 **Unique Join Assertion**:
 An assertion that a join cannot increase the number of rows contributed by its left-hand input.
 _Avoid_: Unique join marker, duplicate check
 
 **Unique Set Assertion**:
-An assertion that a named set of a Select Expression's output columns forms a Unique Set, or, when declared as a key, a Candidate Key.
+An assertion that a named set of a Select Expression's output columns forms a Unique Set, or, when asserted as a key, a Candidate Key.
 _Avoid_: Unique constraint, primary key marker, uniqueness check
 
-**Marker**:
-The comment syntax an author writes to state an assertion, such as `/**UNIQUE**/`. The marker is the syntax; the assertion is the property it states. A comment shaped like a marker but not recognized as one is reported rather than ignored, because a marker its author believed in is worse than no marker at all.
-_Avoid_: Assertion, annotation, hint
+**Property Marker**:
+The comment syntax an author writes to introduce an Assertion or Property
+Declaration. An Assertion Marker means “please validate that this is true”; a
+Property Declaration Marker means “I state that this is true.” The marker is
+syntax, while the Assertion or Property Declaration determines how its Property
+enters reasoning. A comment shaped like a marker but not recognized as one is
+reported rather than ignored, because a marker its author believed in is worse
+than no marker at all.
+_Avoid_: Assertion, Property Declaration, annotation, hint
 
 **Property**:
-A semantic statement about a relation or query construct that can be established from query structure and catalog knowledge.
+A structural semantic statement about a relation or query construct. The same
+Property types are used in two ways: an Assertion wraps one as a query, while a
+Property Declaration lists one as accepted Knowledge.
 _Avoid_: Rule, flag
 
 **Proof**:
@@ -79,7 +96,12 @@ The SQL location or catalog object from which a semantic element or piece of kno
 _Avoid_: SQLGlot node
 
 **Knowledge**:
-Typed semantic facts known about Named Relations and their columns independently of the analyzed query, such as uniqueness, nullability, and column membership. Knowledge contains no SQL definitions or parser structures.
+Properties accepted as true for inference. Knowledge may come from a catalog,
+an explicit Property Declaration, query structure, or a proved Assertion. A
+Property Declaration is therefore a source of Knowledge; an Assertion is a
+query whose Property is not accepted as Knowledge unless proved. Knowledge is
+the status and collection of accepted Properties, not a separate Property base
+type. It contains no SQL definitions or parser structures.
 _Avoid_: View SQL, database connection, SQLGlot AST
 
 **Unique Set**:
