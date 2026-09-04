@@ -1,4 +1,4 @@
-"""Clingo rules establish public relational properties and coverage evidence.
+"""Clingo rules establish public relational properties.
 
 The rules derive and propagate unique sets, generalize uniqueness to column
 sets of interest, and establish unique joins from right-side key coverage.

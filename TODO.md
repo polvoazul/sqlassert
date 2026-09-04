@@ -1,5 +1,13 @@
 # TODO
 
+## Ideas
+
+- [ ] Check invariants: verify that every column-set member belongs to a
+  relation and that every member belongs to each relation associated with the
+  set. Cover accepted and inferred Unique Sets, sets of interest, and join
+  coverage inputs. Consider running these checks across all engine tests;
+  decide the checking mechanism and empty-set semantics before implementing.
+
 ## Task 1 — Replace bare markers with explicit `ASSERT`
 
 **What to build:** Explicit `ASSERT` becomes the only assertion syntax. Unique
@@ -245,3 +253,30 @@ Assert simple `EXACTLY ONE` joins.
   Enumerated Domains, and Foreign Keys to corresponding join outputs.
 - [ ] Unsupported join kinds and predicates remain explicit `UNKNOWN` outcomes
   or diagnostics rather than optimistic proofs.
+
+## Task 11 — Standardize proof explanations across Clingo and Python
+
+**What to build:** A generic explanation mechanism for all assertion types,
+with standard annotations for property derivations in Clingo and a common
+consumer in Python. Apply the same mechanism to every
+derivation block, including directly established properties, preservation,
+superset generalization, and unique joins.
+
+**Blocked by:** None — design the annotation contract first.
+
+**Status:** design-needed
+
+- [ ] Define a generic annotation contract covering all assertion and property
+  types, including how node references and multiple supporting properties are
+  represented in Clingo. `explanation__unique_set(Key, "reason", Nodes)` is
+  only an illustrative example, not the proposed scope or required schema.
+- [ ] Distinguish accepted facts from derived properties, and support multiple
+  justifications for the same property without depending on identifier naming.
+- [ ] Define how Python reads annotations and resolves referenced nodes through
+  the encoding's symbol mapping, using existing SQL source locations for display.
+- [ ] Cover all derivation blocks with the same explanation mechanism; decide
+  how incomplete proofs and `UNKNOWN` outcomes should be explained.
+- [ ] Keep assertion outcomes as direct public-property checks. Explanation
+  annotations must not affect which properties the engine derives.
+- [ ] Test annotation production and Python consumption together, including
+  chained derivations and multiple possible justifications.

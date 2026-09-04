@@ -25,7 +25,6 @@ def test_a_filter_preserves_an_existing_unique_set():
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_projecting_every_member_of_a_unique_set_preserves_it():
@@ -42,7 +41,6 @@ def test_projecting_every_member_of_a_unique_set_preserves_it():
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-    assert report.assertions[0].proving_unique_set == ("order_id", "line_no")
 
 
 def test_renaming_a_projected_unique_column_maps_the_unique_set_to_the_output_name():
@@ -59,7 +57,6 @@ def test_renaming_a_projected_unique_column_maps_the_unique_set_to_the_output_na
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-    assert report.assertions[0].proving_unique_set == ("uid",)
 
 
 def test_dropping_a_required_key_member_is_unknown():
@@ -107,7 +104,6 @@ def test_two_aliases_of_the_same_relation_are_separate_occurrences():
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_self_join_stays_unknown_independently_of_a_valid_join_elsewhere():
