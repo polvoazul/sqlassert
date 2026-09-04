@@ -1,9 +1,4 @@
-"""The public analysis seam.
-
-`analyze` composes the whole pipeline — parse, convert, ground, solve, report —
-and returns a durable Report without printing. It is the only behavioural seam
-the tests use, so parser, IR, facts, and rules can all change beneath it.
-"""
+"""Compose parsing, IR conversion, encoding, solving, and public-property reporting."""
 
 from __future__ import annotations
 

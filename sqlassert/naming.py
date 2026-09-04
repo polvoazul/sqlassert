@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 RELATION = "rel"
 COLUMN = "col"
-KEY = "key"
 JOIN = "join"
 EXPRESSION = "expr"
 ASSERTION = "assert"
@@ -27,8 +26,8 @@ _UNSAFE = re.compile(r"[^a-z0-9]+")
 class NameGiver:
     """Deterministic name generator, one per Clingo encoding.
 
-    Uniqueness comes from the shared counter used for encoded nodes and Unique
-    Sets together.
+    Uniqueness comes from the shared counter used for encoded nodes and
+    accepted Properties together.
     """
 
     _next_id: int = 0

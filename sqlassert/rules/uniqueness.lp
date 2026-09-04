@@ -1,6 +1,6 @@
 % Establish and apply Unique Sets.
 
-% A Unique Set is only a list of Output Columns. Relation membership is derived
+% A Unique Set is a set of Output Columns. Relation membership is derived
 % internally when a rule needs it.
 pub__unique_set(UniqueSet) :- pub__unique_set__columns(UniqueSet, _).
 
@@ -43,7 +43,7 @@ unique_set_preserving_relation_operation(Target, Source) :- ir__filter__input(Ta
 unique_set_preserving_relation_operation(Target, Source) :- ir__project__input(Target, Source).
 unique_set_preserving_relation_operation(Target, Source) :- ir__qualify_by_partition__input(Target, Source).
 unique_set_preserving_relation_operation(Join, Left) :-
-    unique_join(Join, _),
+    pub__unique_join__join(_, Join),
     ir__join__left(Join, Left).
 
 missing_pass_through_column(Target, SourceUniqueSet, SourceColumn) :-
@@ -81,35 +81,31 @@ column_direct_reference(Target, Source, TargetColumn, SourceColumn) :-
     ir__column_ref__column(ScalarExpr, SourceColumn).
 
 % -----------------------------------------------------------------------------
-% Proved Assertions as Unique Sets
+% Generalize uniqueness to Column Sets of Interest
 % -----------------------------------------------------------------------------
 
-% A proved ordinary Unique Set Assertion:
-% - gets a fresh `asserted_unique_set(Assertion)` identity;
-% - contributes each asserted column to that Unique Set; and
-% - makes the Unique Set available to later Relation Expressions.
-% Candidate Key assertions are excluded from this ordinary Unique Set path.
-% Requiring a positive proof prevents an assertion from establishing itself.
-pub__unique_set__columns(asserted_unique_set(Assertion), Column) :-
-    pub__proved(Assertion),
-    ir__assertion__property(Assertion, unique_set),
-    ir__assertion__columns(Assertion, Column).
+% Assertions describe the sets under analysis without declaring them unique.
+% These are sets of interest. Only these sets receive the superset uniqueness implication.
+% Other supersets are not generated as a performance optimization.
+% This inference does not depend on assertion proof results.
+pub__unique_set__columns(ColumnSet, Column) :-
+    pub__column_set_of_interest__columns(ColumnSet, Column),
+    pub__covers_unique_set(ColumnSet, _).
 
 % -----------------------------------------------------------------------------
 % Column Set Inputs
 % -----------------------------------------------------------------------------
 
-% Locate an ordinary assertion's Unique Set on the Relation Expression that
-% owns its columns, then present it to the generic coverage rules below.
-% Unique Joins provide another kind of Column Set later.
-column_set(asserted_columns(Assertion), Relation) :-
-    ir__assertion__property(Assertion, unique_set),
-    ir__assertion__columns(Assertion, Column),
+% Descriptive membership is separate from established unique-set membership.
+% Join coverage uses internal Column Sets below, without marking them of interest.
+column_set(ColumnSet, Relation) :-
+    pub__column_set_of_interest(ColumnSet),
+    pub__column_set_of_interest__columns(ColumnSet, Column),
     ir__relation_expr__output_columns(Relation, _, Column).
 
-column_set_column(asserted_columns(Assertion), Column) :-
-    ir__assertion__property(Assertion, unique_set),
-    ir__assertion__columns(Assertion, Column).
+column_set_column(ColumnSet, Column) :-
+    pub__column_set_of_interest(ColumnSet),
+    pub__column_set_of_interest__columns(ColumnSet, Column).
 
 % -----------------------------------------------------------------------------
 % Generic Unique Set Coverage
@@ -118,38 +114,19 @@ column_set_column(asserted_columns(Assertion), Column) :-
 candidate_unique_set(Context, Key) :-
     column_set(Context, Relation),
     unique_set_on_relation(Key, Relation),
-    not excluded_unique_set(Context, Key).
+    Context != Key.
 
-excluded_unique_set(asserted_columns(Assertion), asserted_unique_set(Assertion)) :-
-    ir__assertion__property(Assertion, unique_set).
-
-missing_unique_set_member(Context, Key, Column) :-
+pub__missing_unique_set_member(Context, Key, Column) :-
     candidate_unique_set(Context, Key),
     pub__unique_set__columns(Key, Column),
     not column_set_column(Context, Column).
 
-covers_unique_set(Context, Key) :-
+pub__covers_unique_set(Context, Key) :-
     candidate_unique_set(Context, Key),
-    not missing_unique_set_member(Context, Key, _).
+    not pub__missing_unique_set_member(Context, Key, _).
 
 % -----------------------------------------------------------------------------
-% Unique Set Assertion Outputs
-% -----------------------------------------------------------------------------
-
-pub__proved(Assertion) :-
-    ir__assertion__property(Assertion, unique_set),
-    covers_unique_set(asserted_columns(Assertion), _).
-
-pub__proof_key(Assertion, Key) :-
-    ir__assertion__property(Assertion, unique_set),
-    covers_unique_set(asserted_columns(Assertion), Key).
-
-pub__assertion_missing_member(Assertion, Key, Column) :-
-    ir__assertion__property(Assertion, unique_set),
-    missing_unique_set_member(asserted_columns(Assertion), Key, Column).
-
-% -----------------------------------------------------------------------------
-% Unique Join Assertions
+% Unique Joins
 % -----------------------------------------------------------------------------
 
 % A Join's constrained right-side columns are another arbitrary Column Set.
@@ -196,20 +173,8 @@ column_set_column(join_right_columns(Join), Column) :-
     supported_unique_join(Join),
     right_column_constrained(Join, Column).
 
-unique_join(Join, Key) :-
-    covers_unique_set(join_right_columns(Join), Key).
+% Publish the structural property independently of assertion queries.
+pub__unique_join__join(established_unique_join(Join), Join) :-
+    pub__covers_unique_set(join_right_columns(Join), _).
 
-pub__proved(Assertion) :-
-    ir__assertion__property(Assertion, unique_join),
-    ir__assertion__join(Assertion, Join),
-    unique_join(Join, _).
-
-pub__proof_key(Assertion, Key) :-
-    ir__assertion__property(Assertion, unique_join),
-    ir__assertion__join(Assertion, Join),
-    unique_join(Join, Key).
-
-pub__assertion_missing_member(Assertion, Key, Column) :-
-    ir__assertion__property(Assertion, unique_join),
-    ir__assertion__join(Assertion, Join),
-    missing_unique_set_member(join_right_columns(Join), Key, Column).
+pub__unique_join(Property) :- pub__unique_join__join(Property, _).

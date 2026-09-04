@@ -114,8 +114,16 @@ def test_assertion_properties_are_queries_while_declarations_are_public_facts():
 
     query_encoding = encode(conversion.program, conversion.knowledge)
     assertion_symbol = query_encoding.node_to_symbol[assertion]
-    assert f"ir__assertion__property({assertion_symbol}, unique_set)." in query_encoding.facts
+    assert "ir__assertion__" not in query_encoding.facts
+    column_set = f"asserted_columns({assertion_symbol})"
+    assert f"pub__column_set_of_interest({column_set})." in query_encoding.facts
+    for column in assertion.property.columns:
+        assert (
+            f"pub__column_set_of_interest__columns({column_set}, {query_encoding.node_to_symbol[column]})."
+            in query_encoding.facts
+        )
     assert "pub__unique_set(" not in query_encoding.facts
+    assert "pub__unique_set__columns(" not in query_encoding.facts
 
     declared_program = ir.Program(
         named_relations=conversion.program.named_relations,
@@ -127,16 +135,14 @@ def test_assertion_properties_are_queries_while_declarations_are_public_facts():
     assert "pub__unique_set(" in declared_encoding.facts
 
 
-def test_assertion_property_kind_distinguishes_candidate_keys_and_unique_joins():
+def test_only_column_set_assertions_register_sets_of_interest():
     candidate = _convert("SELECT id FROM users /**PRIMARY KEY(id)**/")
     candidate_assertion = candidate.program.assertions[0]
     candidate_encoding = encode(candidate.program, candidate.knowledge)
 
     assert isinstance(candidate_assertion.property, CandidateKey)
-    assert (
-        f"ir__assertion__property({candidate_encoding.node_to_symbol[candidate_assertion]}, candidate_key)."
-        in candidate_encoding.facts
-    )
+    assert "ir__assertion__" not in candidate_encoding.facts
+    assert "pub__column_set_of_interest(" in candidate_encoding.facts
 
     unique_join = _convert(
         "SELECT * FROM users /**UNIQUE**/ JOIN orders ON users.id = orders.user_id"
@@ -145,10 +151,8 @@ def test_assertion_property_kind_distinguishes_candidate_keys_and_unique_joins()
     join_encoding = encode(unique_join.program, unique_join.knowledge)
 
     assert isinstance(join_assertion.property, UniqueJoin)
-    assert (
-        f"ir__assertion__join({join_encoding.node_to_symbol[join_assertion]}, "
-        in join_encoding.facts
-    )
+    assert "ir__assertion__" not in join_encoding.facts
+    assert "pub__column_set_of_interest(" not in join_encoding.facts
 
 
 def test_engine_grounds_generated_inheritance_rules(monkeypatch):
