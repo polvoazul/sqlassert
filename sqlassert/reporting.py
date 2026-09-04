@@ -22,15 +22,16 @@ from sqlassert import ir
 from sqlassert.diagnostics import DUPLICATE_DECLARATION, Diagnostic
 from sqlassert.engine import EnginePolicyError
 from sqlassert.facts import ClingoEncoding
-from sqlassert.properties import UniqueJoin, UniqueSet
+from sqlassert.properties import CandidateKey, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin
 
-_PROVED = "pub__proved"
-_PROOF_KEY = "pub__proof_key"
-_PROVED_BY_CANDIDATE_KEY = "pub__proved_by_candidate_key"
+_COVERS_UNIQUE_SET = "pub__covers_unique_set"
+_CANDIDATE_KEY = "pub__candidate_key"
 _UNIQUE_SET = "pub__unique_set"
 _UNIQUE_SET_MEMBER = "pub__unique_set__columns"
-_ASSERTION_MISSING_MEMBER = "pub__assertion_missing_member"
+_UNIQUE_JOIN = "pub__unique_join"
+_UNIQUE_JOIN_SUBJECT = "pub__unique_join__join"
+_MISSING_UNIQUE_SET_MEMBER = "pub__missing_unique_set_member"
 
 
 class Outcome(Enum):
@@ -96,9 +97,9 @@ class Reporter:
 
     def __init__(self, encoding: ClingoEncoding) -> None:
         self._encoding = encoding
-        self._proved: frozenset[str] = frozenset()
         self._proof_keys: dict[str, tuple[str, ...]] = {}
-        self._candidate_key_proofs: frozenset[str] = frozenset()
+        self._candidate_keys: frozenset[str] = frozenset()
+        self._unique_joins: frozenset[str] = frozenset()
         self._unique_sets: dict[str, tuple[str, ...]] = {}
         self._unique_set_relations: dict[str, tuple[str, ...]] = {}
         self._missing_members: dict[str, dict[str, frozenset[str]]] = {}
@@ -111,9 +112,9 @@ class Reporter:
             )
         self.stable_model_count = 1
 
-        self._proved = _proved(model)
         self._proof_keys = _proof_keys(model)
-        self._candidate_key_proofs = _candidate_key_proofs(model)
+        self._candidate_keys = _property_ids(model, _CANDIDATE_KEY)
+        self._unique_joins = _unique_joins(model)
         self._unique_sets = _unique_sets(model, self._encoding)
         self._unique_set_relations = _unique_set_relations(self._unique_sets, self._encoding)
         self._missing_members = _missing_members(model)
@@ -161,19 +162,40 @@ class Reporter:
 
     def _assertion_report(self, assertion: ir.Assertion, *, accept_proof: bool) -> AssertionReport:
         assertion_id = self._encoding.node_to_symbol[assertion]
-        proved = accept_proof and assertion_id in self._proved
-        keys = self._proof_keys.get(assertion_id, ())
-        proving_unique_set = self._column_names(self._unique_sets.get(keys[0], ())) if proved and keys else ()
-        missing_columns = () if proved else self._missing_columns_for(assertion_id)
+        proved = accept_proof and self._property_holds(assertion)
+        context = self._column_set_context(assertion)
+        keys = self._proof_keys.get(context, ())
+        proof_key = keys[0] if keys else context
+        proving_unique_set = self._column_names(self._unique_sets.get(proof_key, ())) if proved else ()
+        missing_columns = () if proved else self._missing_columns_for(context)
         return AssertionReport(
             assertion_id=assertion_id,
             outcome=Outcome.PROVED if proved else Outcome.UNKNOWN,
             origin=assertion.origin,
             explanation=self._explanation(assertion, proved, proving_unique_set, missing_columns),
             proving_unique_set=proving_unique_set,
-            is_candidate_key=proved and assertion_id in self._candidate_key_proofs,
+            is_candidate_key=proved and (
+                context in self._candidate_keys or any(key in self._candidate_keys for key in keys)
+            ),
             missing_columns=missing_columns,
         )
+
+    def _property_holds(self, assertion: ir.Assertion) -> bool:
+        """Look up the requested public property; implication belongs in the rules."""
+        property = assertion.property
+        if isinstance(property, UniqueJoin):
+            return self._encoding.node_to_symbol[property.join] in self._unique_joins
+        requested_set = self._column_set_context(assertion)
+        if isinstance(property, CandidateKey):
+            return requested_set in self._candidate_keys
+        if isinstance(property, UniqueSet):
+            return requested_set in self._unique_sets
+        return False
+
+    def _column_set_context(self, assertion: ir.Assertion) -> str:
+        if isinstance(assertion.property, UniqueJoin):
+            return f"join_right_columns({self._encoding.node_to_symbol[assertion.property.join]})"
+        return f"asserted_columns({self._encoding.node_to_symbol[assertion]})"
 
     def _explanation(self, assertion: ir.Assertion, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
         if isinstance(assertion.property, UniqueJoin):
@@ -187,6 +209,8 @@ class Reporter:
             return "Unknown: this assertion does not contain a Unique Join property."
         join = assertion.property.join
         if proved:
+            if not proving_unique_set:
+                return "Proved: the join is known not to multiply rows from its left input."
             return f"Proved: the join covers the right side's unique set {_format_columns(proving_unique_set)}."
         if join.kind not in {ir.INNER, "left"}:
             return f"Unknown: {join.kind.upper()} joins are not supported for uniqueness proofs."
@@ -195,7 +219,7 @@ class Reporter:
         if not right_keys:
             return "Unknown: no unique set is known for the right side of this join."
         if missing_columns:
-            closest = self._closest_key_columns(self._encoding.node_to_symbol[assertion])
+            closest = self._closest_key_columns(self._column_set_context(assertion))
             return f"Unknown: the join does not cover the closest known unique set {_format_columns(closest)}; missing {', '.join(missing_columns)}."
         return "Unknown: the join predicate does not establish coverage of a known unique set."
 
@@ -213,9 +237,9 @@ class Reporter:
             if isinstance((node := self._encoding.symbol_to_node.get(symbol)), ir.OutputColumn)
         )
 
-    def _missing_columns_for(self, assertion_id: str) -> tuple[str, ...]:
+    def _missing_columns_for(self, context: str) -> tuple[str, ...]:
         """The closest Unique Set(s)' missing columns, in canonical display order."""
-        per_key = self._missing_members.get(assertion_id, {})
+        per_key = self._missing_members.get(context, {})
         seen: set[str] = set()
         ordered: list[str] = []
         for key in sorted(per_key):
@@ -227,8 +251,8 @@ class Reporter:
                         ordered.append(node.name)
         return tuple(ordered)
 
-    def _closest_key_columns(self, assertion_id: str) -> tuple[str, ...]:
-        keys = self._missing_members.get(assertion_id, {})
+    def _closest_key_columns(self, context: str) -> tuple[str, ...]:
+        keys = self._missing_members.get(context, {})
         return self._column_names(self._unique_sets.get(sorted(keys)[0], ())) if keys else ()
 
 
@@ -236,31 +260,33 @@ def _format_columns(columns: tuple[str, ...]) -> str:
     return f"({', '.join(columns)})"
 
 
-def _proved(model: clingo.Model) -> frozenset[str]:
-    """Every assertion the engine proved."""
+def _property_ids(model: clingo.Model, predicate: str) -> frozenset[str]:
+    """Identities carrying a public property in the solved model."""
     return frozenset(
         str(symbol.arguments[0])
         for symbol in model.symbols(atoms=True)
-        if symbol.name == _PROVED and len(symbol.arguments) == 1
+        if symbol.name == predicate and len(symbol.arguments) == 1
     )
 
 
 def _proof_keys(model: clingo.Model) -> dict[str, tuple[str, ...]]:
-    """Which Unique Sets proved which assertion, read from the live model."""
+    """Known Unique Sets covered by each column set under analysis."""
     keys: dict[str, list[str]] = {}
     for symbol in model.symbols(atoms=True):
-        if symbol.name == _PROOF_KEY and len(symbol.arguments) == 2:
-            assertion, key = (str(argument) for argument in symbol.arguments)
-            keys.setdefault(assertion, []).append(key)
-    return {assertion: tuple(sorted(found)) for assertion, found in keys.items()}
+        if symbol.name == _COVERS_UNIQUE_SET and len(symbol.arguments) == 2:
+            context, key = (str(argument) for argument in symbol.arguments)
+            keys.setdefault(context, []).append(key)
+    return {context: tuple(sorted(found)) for context, found in keys.items()}
 
 
-def _candidate_key_proofs(model: clingo.Model) -> frozenset[str]:
-    """Every assertion proved by a Unique Set that is also a Candidate Key."""
+def _unique_joins(model: clingo.Model) -> frozenset[str]:
+    """Join subjects of established or accepted public UniqueJoin properties."""
+    properties = _property_ids(model, _UNIQUE_JOIN)
     return frozenset(
-        str(symbol.arguments[0])
+        str(symbol.arguments[1])
         for symbol in model.symbols(atoms=True)
-        if symbol.name == _PROVED_BY_CANDIDATE_KEY and len(symbol.arguments) == 1
+        if symbol.name == _UNIQUE_JOIN_SUBJECT and len(symbol.arguments) == 2
+        and str(symbol.arguments[0]) in properties
     )
 
 
@@ -279,11 +305,7 @@ def _unique_set_relations(unique_sets: dict[str, tuple[str, ...]], encoding: Cli
 
 def _unique_sets(model: clingo.Model, encoding: ClingoEncoding) -> dict[str, tuple[str, ...]]:
     """Every Unique Set, canonically ordered by its Output Columns for display."""
-    keys = {
-        str(symbol.arguments[0])
-        for symbol in model.symbols(atoms=True)
-        if symbol.name == _UNIQUE_SET and len(symbol.arguments) == 1
-    }
+    keys = _property_ids(model, _UNIQUE_SET)
     members: dict[str, set[str]] = {key: set() for key in keys}
     for symbol in model.symbols(atoms=True):
         if symbol.name == _UNIQUE_SET_MEMBER and len(symbol.arguments) == 2:
@@ -299,10 +321,10 @@ def _unique_sets(model: clingo.Model, encoding: ClingoEncoding) -> dict[str, tup
 
 
 def _missing_members(model: clingo.Model) -> dict[str, dict[str, frozenset[str]]]:
-    """Best-effort UNKNOWN evidence: per assertion, per closest Unique Set, its missing columns."""
+    """Missing key members per column set, for explaining UNKNOWN outcomes."""
     members: dict[str, dict[str, set[str]]] = {}
     for symbol in model.symbols(atoms=True):
-        if symbol.name == _ASSERTION_MISSING_MEMBER and len(symbol.arguments) == 3:
-            assertion, key, column = (str(argument) for argument in symbol.arguments)
-            members.setdefault(assertion, {}).setdefault(key, set()).add(column)
-    return {assertion: {key: frozenset(columns) for key, columns in found.items()} for assertion, found in members.items()}
+        if symbol.name == _MISSING_UNIQUE_SET_MEMBER and len(symbol.arguments) == 3:
+            context, key, column = (str(argument) for argument in symbol.arguments)
+            members.setdefault(context, {}).setdefault(key, set()).add(column)
+    return {context: {key: frozenset(columns) for key, columns in found.items()} for context, found in members.items()}
