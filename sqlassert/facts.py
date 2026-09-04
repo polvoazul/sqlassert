@@ -11,7 +11,7 @@ from enum import Enum
 import case_conversion
 
 from sqlassert import ir, naming
-from sqlassert.properties import CandidateKey, Property, UniqueJoin, UniqueSet
+from sqlassert.properties import Property, UniqueJoin, UniqueSet
 from sqlassert.naming import NameGiver
 
 type Symbols = dict[ir.Node | Property, str]
@@ -27,7 +27,7 @@ class ClingoEncoding:
 
 EXCEPTIONS: dict[type[ir.Node], Callable[[ir.Node, str, Symbols], Iterable[str]]] = {
     ir.Node: lambda node, symbol, symbols: (),  # Node.origin remains outside Clingo.
-    ir.Assertion: lambda node, symbol, symbols: _assertion_property_facts(node, symbol, symbols),
+    ir.Assertion: lambda node, symbol, symbols: _assertion_interest_facts(node, symbol, symbols),
 }
 
 
@@ -69,29 +69,25 @@ def _ir_facts(nodes: tuple[ir.Node, ...], symbols: Symbols) -> list[str]:
     return lines
 
 
-def _assertion_property_facts(assertion: ir.Node, assertion_symbol: str, symbols: Symbols) -> list[str]:
+def _assertion_interest_facts(assertion: ir.Node, assertion_symbol: str, symbols: Symbols) -> list[str]:
+    """Describe requested column sets without sending assertion queries to Clingo.
+    Registering columns of interest is a performance optimization to avoid generating unnecessary grounding for irrelevant columns.
+    """
     if not isinstance(assertion, ir.Assertion):
         raise TypeError("Assertion.property encoding requires an Assertion")
     match assertion.property:
-        case CandidateKey(columns=columns):
-            kind = "candidate_key"
-            join = None
         case UniqueSet(columns=columns):
-            kind = "unique_set"
-            join = None
-        case UniqueJoin(join=join):
-            kind = "unique_join"
-            columns = frozenset()
+            column_set = f"asserted_columns({assertion_symbol})"
+            lines = [f"pub__column_set_of_interest({column_set})."]
+            lines.extend(
+                f"pub__column_set_of_interest__columns({column_set}, {_term(column, symbols)})."
+                for column in sorted(columns, key=lambda column: symbols[column])
+            )
+            return lines
+        case UniqueJoin():
+            return []
         case property:
             raise TypeError(f"cannot encode {type(property).__name__} as an assertion query")
-    lines = [f"ir__assertion__property({assertion_symbol}, {kind})."]
-    lines.extend(
-        f"ir__assertion__columns({assertion_symbol}, {_term(column, symbols)})."
-        for column in sorted(columns, key=lambda column: symbols[column])
-    )
-    if join is not None:
-        lines.append(f"ir__assertion__join({assertion_symbol}, {_term(join, symbols)}).")
-    return lines
 
 
 def _public_facts(properties: tuple[Property, ...], symbols: Symbols) -> list[str]:

@@ -48,7 +48,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
   into that model.
 - `facts.py` assigns deterministic encoding symbols at the Clingo boundary and
-  states the IR, assertion queries, and accepted Properties as ground ASP facts. It states facts only; every
+  states the IR, column sets of interest, and accepted Properties as ground ASP facts. It states facts only; every
   inference lives in `rules/`.
 - `engine.py` adds encoded facts and rules to Clingo, grounds them, and solves,
   handing each model to a callback.
@@ -99,7 +99,7 @@ encoding walk. The suffix establishes identity; the hint is for readability only
 - Relation Expressions use `rel`, for example `rel_users_1` and
   `rel_customer_2`.
 - Output Columns use `col`, for example `col_id_3`.
-- Unique Sets use `key`, for example `key_users_pk_4`.
+- Accepted Properties use `property`, for example `property_candidate_key_4`.
 - Joins use `join`; an identifier with no natural hint omits the hint segment,
   for example `join_5`.
 - Expressions and assertions use `expr` and `assert`, following the same rule.

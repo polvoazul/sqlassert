@@ -16,7 +16,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-  "duckdb",
   "pytest",
 ]
 dev = [

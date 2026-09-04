@@ -80,7 +80,7 @@ pub__unique_set__columns(k1, c2).
 
 The encoder sorts unordered members by their assigned solver symbols before emitting facts so the encoded text is deterministic. That serialization order has no semantic meaning.
 
-Every field of every reachable `Node` is encoded by default. Optional fields produce no fact for `None`; enums become lowercase atoms such as `view` and `inner`; user-provided text becomes a string. `Node.origin` is explicitly excluded because provenance remains outside Clingo. Unsupported values fail encoding.
+Every field of every reachable `Node` is encoded by default. Optional fields produce no fact for `None`; enums become lowercase atoms such as `view` and `inner`; user-provided text becomes a string. `Node.origin` is explicitly excluded because provenance remains outside Clingo. `Assertion.property` registers column sets of interest instead of query predicates, as described below. Unsupported values fail encoding.
 
 ### Boolean fields
 
@@ -114,16 +114,40 @@ class Assertion(Node):
 
 The Property carries the relevant graph references: a `UniqueSet` has its
 columns, while a `UniqueJoin` has its join. The wrapper requests proof; it does
-not make the Property true. The encoder flattens its query without assigning
-the queried Property a public fact identity:
+not make the Property true. Assertion kinds and graph references remain in
+Python for reporting; the encoder does not flatten them into assertion-query
+predicates. Unique Set and Candidate Key assertions register the column set
+under analysis:
 
 ```prolog
-ir__assertion__property(a1, unique_set).
-ir__assertion__columns(a1, c1).
+pub__column_set_of_interest(asserted_columns(a1)).
+pub__column_set_of_interest__columns(asserted_columns(a1), c1).
 ```
 
-Candidate Key queries use the `candidate_key` kind. Unique Join queries use
-`unique_join` and `ir__assertion__join/2`.
+Only assertions register sets of interest. These descriptive facts do not
+establish uniqueness. When a set of interest contains a known unique set,
+the rules publish its unique-set membership; the general membership rule then
+derives `pub__unique_set(Set)`.
+Unrequested supersets are not generated. An ordinary Unique Set assertion
+is reported as proved by directly checking
+`pub__unique_set(asserted_columns(Assertion))`. Candidate Key assertions check
+`pub__candidate_key` for that same set identity, so uniqueness alone cannot
+satisfy them. No assertion-result predicate feeds back into property inference.
+
+Join coverage retains its internal column sets and does not register sets of
+interest or use this superset generalization to create new unique sets.
+The rules publish established Unique Join properties through
+`pub__unique_join__join/2` and `pub__unique_join/1`, using the same public shape
+as declarations. Reporting checks for a public Unique Join property referencing
+the assertion's join. Accepted and derived Unique Join properties both preserve
+left-side unique sets.
+
+Reporting reads these public properties directly to determine assertion
+outcomes. It uses coverage and missing-member facts for explanations, without
+reimplementing their inference or treating evidence as a property. This evidence is
+keyed by column-set context (`asserted_columns(a1)` or `join_right_columns(j1)`),
+and reporting associates it with assertions. The logic rules do not reference
+assertion nodes.
 
 ### Public and internal logic
 
@@ -134,15 +158,16 @@ pub__unique_set(Key).
 pub__unique_set__columns(Key, Column).
 pub__non_null_column(NonNullFact).
 pub__non_null_column__column(NonNullFact, Column).
-pub__proved(Assertion).
-pub__proof_key(Assertion, Key).
+pub__unique_join(Property).
+pub__unique_join__join(Property, Join).
+pub__covers_unique_set(Context, Key).
+pub__missing_unique_set_member(Context, Key, Column).
 ```
 
 Public predicates need no export wrappers. A Unique Set has no relation field: its Output Columns identify their own Relation Expression. Rules derive that association internally only when a question needs it:
 
 ```prolog
 unique_set_on_relation(Key, Relation) :-
-    pub__unique_set(Key),
     pub__unique_set__columns(Key, Column),
     ir__relation_expr__output_columns(Relation, _, Column).
 ```
@@ -150,13 +175,12 @@ unique_set_on_relation(Key, Relation) :-
 Other internal predicates connect the IR encoding to reasoning:
 
 ```prolog
-relation_input(Filter, Input) :-
-    ir__filter(Filter),
-    ir__filter__input(Filter, Input).
+unique_set_preserving_relation_operation(Target, Source) :-
+    ir__filter__input(Target, Source).
 
-direct_column_reference(Expression, Column) :-
-    ir__column_ref(Expression),
-    ir__column_ref__column(Expression, Column).
+unique_pass_through_column(TargetColumn, SourceColumn) :-
+    unique_set_preserving_relation_operation(Target, Source),
+    column_direct_reference(Target, Source, TargetColumn, SourceColumn).
 ```
 
 ### Accepted Properties
@@ -190,7 +214,7 @@ linked Properties directly. A database gatherer resolves qualified names before
 constructing the same objects; the engine never resolves relation or column
 names. Database hydration is tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
-`facts.py` assigns solver identities and states IR structure, assertion queries,
+`facts.py` assigns solver identities and states IR structure, column sets of interest,
 and accepted Properties. Decisions such as which relation operations propagate
 Unique Sets or Non-Nullness belong in logic rules.
 
@@ -211,7 +235,8 @@ The encoding module owns one deliberately small escape hatch:
 
 ```python
 EXCEPTIONS = {
-    ir.Node: lambda node, symbol: (),  # Do not reflect Node.origin
+    ir.Node: lambda node, symbol, symbols: (),  # Do not reflect Node.origin
+    ir.Assertion: lambda node, symbol, symbols: _assertion_interest_facts(node, symbol, symbols),
 }
 ```
 

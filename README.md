@@ -101,8 +101,6 @@ Database knowledge gatherers bind facts to this Program's IR nodes before it
 reaches the engine; `analyze` itself accepts one SQL Program. This work is
 tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
-> **Migrating from `validate_unique_joins`?** That DuckDB-connection-based checker has been superseded by `analyze` above -- same idea, proved from declared schema instead of a live connection, with broader join/predicate coverage and conservative diagnostics instead of a boolean `valid`/`reason`. It is no longer part of the public API; see [`deprecated/unique.py`](deprecated/unique.py) if you still need it.
-
 ## Details
 
 ### Unique Join Syntax
