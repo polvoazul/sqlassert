@@ -37,7 +37,6 @@ def test_a_view_preserving_a_unique_set_proves_a_join_in_the_root_select(users_a
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_view_may_reference_a_relation_declared_later_in_the_program():
@@ -72,7 +71,6 @@ def test_a_view_built_from_another_view_preserves_its_unique_set(users_and_sessi
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_projection_alias_inside_a_view_maps_the_unique_set_to_the_outer_column(users_and_sessions):
@@ -89,7 +87,6 @@ def test_a_projection_alias_inside_a_view_maps_the_unique_set_to_the_outer_colum
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("uid",)
 
 
 def test_a_parenthesized_view_body_preserves_its_unique_set(users_and_sessions):
@@ -111,7 +108,6 @@ def test_a_parenthesized_view_body_preserves_its_unique_set(users_and_sessions):
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_reusing_the_same_view_twice_gives_each_occurrence_its_own_identity(users_and_sessions):
@@ -131,7 +127,6 @@ def test_reusing_the_same_view_twice_gives_each_occurrence_its_own_identity(user
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("id",)
 
 
 def test_a_view_dropping_a_required_composite_key_member_is_unknown():

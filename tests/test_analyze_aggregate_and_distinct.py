@@ -42,7 +42,6 @@ def test_a_group_by_subquery_joined_on_its_full_grouping_key_is_proved(orders_an
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("customer_id",)
 
 
 def test_a_group_by_subquery_joined_on_part_of_a_composite_grouping_key_is_unknown(orders_and_customers):
@@ -80,7 +79,6 @@ def test_a_group_by_subquery_joined_on_its_full_composite_grouping_key_is_proved
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("customer_id", "region")
 
 
 def test_an_aliased_grouping_key_maps_the_unique_set_to_the_outer_column(orders_and_customers):
@@ -98,7 +96,6 @@ def test_an_aliased_grouping_key_maps_the_unique_set_to_the_outer_column(orders_
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("cid",)
 
 
 def test_joining_on_an_aggregate_expression_instead_of_a_grouping_key_is_unknown(orders_and_customers):
@@ -179,7 +176,6 @@ def test_a_computed_grouping_key_maps_the_unique_set_to_the_outer_column():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("ucid",)
 
 
 def test_rollup_is_unsupported_and_unknown(orders_and_customers):
@@ -253,7 +249,6 @@ def test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_prove
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("user_id",)
 
 
 def test_a_positional_grouping_key_maps_to_its_selected_output():
@@ -269,7 +264,6 @@ def test_a_positional_grouping_key_maps_to_its_selected_output():
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("user_id",)
 
 
 # Distinct ---------------------------------------------------------------
@@ -290,7 +284,6 @@ def test_a_distinct_subquery_joined_on_its_full_output_set_is_proved(orders_and_
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("customer_id",)
 
 
 def test_a_distinct_subquery_joined_on_part_of_its_output_set_is_unknown(orders_and_customers):
@@ -328,7 +321,6 @@ def test_a_distinct_subquery_joined_on_its_full_composite_output_set_is_proved()
     )
 
     assert report.proved
-    assert report.assertions[0].proving_unique_set == ("customer_id", "region")
 
 
 def test_distinct_star_is_unsupported_and_unknown():

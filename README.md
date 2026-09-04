@@ -88,10 +88,7 @@ def test_query_join_contract():
 ```python
 for assertion in report.assertions:
     print(assertion.outcome)          # Outcome.PROVED or Outcome.UNKNOWN
-    print(assertion.explanation)      # why the engine reached that result
-    print(assertion.proving_unique_set)
-    print(assertion.is_candidate_key)
-    print(assertion.missing_columns)  # best-effort, when UNKNOWN
+    print(assertion.origin)           # SQL source location
 
 for diagnostic in report.diagnostics:
     print(diagnostic.code, diagnostic.message)
@@ -129,11 +126,7 @@ The marker applies to the next join after the comment.
 
 `sqlassert` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
 
-Instead, it proves uniqueness using fast information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, validation fails with an explanation:
-
-```text
-in join "INNER JOIN events ON sessions.event_id = events.id", we can't prove that RHS column id is unique
-```
+Instead, it proves uniqueness using information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, the assertion outcome is `UNKNOWN` and `report.proved` is false. Proof explanations are planned in `TODO.md`.
 
 Supported uniqueness proofs today:
 
