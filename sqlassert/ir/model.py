@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from enum import Enum
-from typing import dataclass_transform
+from typing import TYPE_CHECKING, dataclass_transform
 
 from sqlassert.provenance import Origin
+
+if TYPE_CHECKING:
+    from sqlassert.properties import Property
 
 INNER = "inner"
 
@@ -153,25 +156,18 @@ class RecursiveRelation(OpaqueRelation):
     relation_name: str
 
 
-class Assertion(Node, abstract=True):
-    """A requirement over a node in the relation graph."""
+class Assertion(Node):
+    """A request to prove one Property. For now its just a wrapper around a Property, but it could be extended with metadata in the future"""
 
-
-class UniqueJoinAssertion(Assertion):
-    subject: Join
-
-
-class UniqueSetAssertion(Assertion):
-    subject: RelationExpr
-    columns: tuple[OutputColumn, ...]
-    is_candidate_key: bool
+    property: Property
 
 
 @dataclass(frozen=True)
 class Program:
-    declarations: tuple[NamedRelation, ...] = ()
-    root: RelationExpr | None = None
-    assertions: tuple[Assertion, ...] = ()
+    named_relations: tuple[NamedRelation, ...] = () # First pass collects all named relations so that we can reference them
+    root: RelationExpr | None = None # The root of the query tree, which is the entry point for the engine to start reasoning
+    assertions: tuple[Assertion, ...] = () # The properties that the engine should attempt to prove
+    declarations: tuple[Property, ...] = () # The properties that the engine should assume to be true
 
 
 def children(node: Node) -> tuple[Node, ...]:

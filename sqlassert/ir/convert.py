@@ -15,7 +15,7 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.knowledge import Knowledge, NonNullColumn, UniqueSet
+from sqlassert.properties import CandidateKey, NonNullColumn, Property, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin, SQL
 from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, unique_set_assertions
 
@@ -23,7 +23,7 @@ from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, uniq
 @dataclass(frozen=True)
 class IrConversionResult:
     program: ir.Program
-    knowledge: tuple[Knowledge, ...]
+    knowledge: tuple[Property, ...]
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
@@ -61,7 +61,7 @@ class IrParser:
     _source_expressions: dict[int, exp.Expression] = field(default_factory=dict)
     _named_relations: dict[_Symbol, ir.NamedRelation] = field(default_factory=dict)
     _resolving: set[_Symbol] = field(default_factory=set)
-    _knowledge: list[Knowledge] = field(default_factory=list)
+    _knowledge: list[Property] = field(default_factory=list)
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
     _handled_unique_set_lines: set[int] = field(default_factory=set)
@@ -81,8 +81,8 @@ class IrParser:
         root = self._lower_query(ast.root_select, root=True) if ast.root_select is not None else None
         self._report_unanalyzed(ast)
 
-        declarations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        return IrConversionResult(ir.Program(declarations=declarations, root=root, assertions=tuple(self._assertions)), tuple(self._knowledge), tuple(self._diagnostics))
+        named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
+        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions)), tuple(self._knowledge), tuple(self._diagnostics))
 
     # Declaration and symbol discovery ---------------------------------------
 
@@ -376,7 +376,12 @@ class IrParser:
             for binding in left.bindings + right.bindings
         )
         if assertion_line(join) is not None:
-            self._assertions.append(ir.UniqueJoinAssertion(origin=join_origin(join, self.dialect), subject=relation))
+            self._assertions.append(
+                ir.Assertion(
+                    origin=join_origin(join, self.dialect),
+                    property=UniqueJoin(join=relation),
+                )
+            )
         return _Lowered(relation, bindings)
 
     def _lower_join_predicate(self, join: exp.Join, left: _Lowered, right: _Lowered) -> tuple[ir.Equality, ...]:
@@ -570,11 +575,11 @@ class IrParser:
             if unknown:
                 continue
             self._assertions.append(
-                ir.UniqueSetAssertion(
+                ir.Assertion(
                     origin=origin,
-                    subject=relation,
-                    columns=tuple(by_name[column.lower()] for column in columns),
-                    is_candidate_key=kind == "key",
+                    property=(CandidateKey if kind == "key" else UniqueSet)(
+                        columns=frozenset(by_name[column.lower()] for column in columns)
+                    ),
                 )
             )
 
@@ -591,7 +596,11 @@ class IrParser:
         )
 
     def _report_unanalyzed(self, ast: ParsedProgram) -> None:
-        analyzed = {assertion.origin.line for assertion in self._assertions if isinstance(assertion, ir.UniqueJoinAssertion)}
+        analyzed = {
+            assertion.origin.line
+            for assertion in self._assertions
+            if isinstance(assertion.property, UniqueJoin)
+        }
         for join in _asserted_joins(ast):
             line = assertion_line(join)
             if line in analyzed:
@@ -615,11 +624,11 @@ class IrParser:
                     )
                 )
 
-    def _table_knowledge(self, relation: ir.NamedRelation, statement: exp.Create | None) -> tuple[Knowledge, ...]:
+    def _table_knowledge(self, relation: ir.NamedRelation, statement: exp.Create | None) -> tuple[Property, ...]:
         if statement is None:
             return ()
         columns = {column.name.lower(): column for column in relation.output_columns}
-        facts: list[Knowledge] = []
+        facts: list[Property] = []
         unique_sets: list[tuple[str, ...]] = []
         non_null: set[str] = set()
         for definition in statement.this.find_all(exp.ColumnDef):

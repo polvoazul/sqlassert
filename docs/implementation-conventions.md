@@ -48,7 +48,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
   into that model.
 - `facts.py` assigns deterministic encoding symbols at the Clingo boundary and
-  states the IR and Knowledge as ground ASP facts. It states facts only; every
+  states the IR, assertion queries, and accepted Properties as ground ASP facts. It states facts only; every
   inference lives in `rules/`.
 - `engine.py` adds encoded facts and rules to Clingo, grounds them, and solves,
   handing each model to a callback.
@@ -56,7 +56,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   returns durable reporting values.
 - `rules/` contains the Clingo logic-program resources.
 - `discovery/duckdb` is a future adapter that binds database metadata to IR
-  nodes and produces `Knowledge`; it is not part of the MVP engine. See
+  nodes and produces Properties accepted as knowledge; it is not part of the MVP engine. See
   [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
 ## Stage Objects
@@ -72,7 +72,7 @@ the nodes themselves. `facts.encode` performs one deterministic identity walk,
 assigns every reachable node a Clingo symbol, and returns both directions of
 the mapping. No generated identifier exists in the IR.
 
-`IrParser` accumulates the declarations and assertions of one program, and a
+`IrParser` accumulates the named relations and assertions of one program, and a
 `Reporter` accumulates the results of one solve, so neither survives a second
 analysis. The `Reporter` needs nothing about the assertions while solving:
 `on_model` harvests evidence out of the live model as plain values, and
