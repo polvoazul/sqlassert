@@ -18,7 +18,7 @@ KEY = "key"
 JOIN = "join"
 EXPRESSION = "expr"
 ASSERTION = "assert"
-KNOWLEDGE = "knowledge"
+PROPERTY = "property"
 
 _UNSAFE = re.compile(r"[^a-z0-9]+")
 

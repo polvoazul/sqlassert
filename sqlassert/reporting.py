@@ -22,6 +22,7 @@ from sqlassert import ir
 from sqlassert.diagnostics import DUPLICATE_DECLARATION, Diagnostic
 from sqlassert.engine import EnginePolicyError
 from sqlassert.facts import ClingoEncoding
+from sqlassert.properties import UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin
 
 _PROVED = "pub__proved"
@@ -121,7 +122,7 @@ class Reporter:
         self,
         assertions: Sequence[ir.Assertion],
         diagnostics: Sequence[Diagnostic] = (),
-        declarations: Sequence[ir.NamedRelation] = (),
+        named_relations: Sequence[ir.NamedRelation] = (),
     ) -> Report:
         if not self.stable_model_count:
             raise EnginePolicyError(
@@ -132,16 +133,16 @@ class Reporter:
         return Report(
             tuple(self._assertion_report(assertion, accept_proof=accept_proof) for assertion in assertions),
             tuple(diagnostics),
-            self._relation_facts(declarations),
+            self._relation_facts(named_relations),
             self.stable_model_count,
         )
 
-    def _relation_facts(self, declarations: Sequence[ir.NamedRelation]) -> RelationFacts:
+    def _relation_facts(self, named_relations: Sequence[ir.NamedRelation]) -> RelationFacts:
         """Every proved Unique Set grouped by its named relation."""
         names_by_id = {
-            self._encoding.node_to_symbol[declaration]: declaration.report_name
-            for declaration in declarations
-            if declaration in self._encoding.node_to_symbol
+            self._encoding.node_to_symbol[relation]: relation.report_name
+            for relation in named_relations
+            if relation in self._encoding.node_to_symbol
         }
 
         by_relation: dict[str, list[tuple[str, ...]]] = {}
@@ -175,18 +176,21 @@ class Reporter:
         )
 
     def _explanation(self, assertion: ir.Assertion, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
-        if isinstance(assertion, ir.UniqueJoinAssertion):
+        if isinstance(assertion.property, UniqueJoin):
             return self._unique_join_explanation(assertion, proved, proving_unique_set, missing_columns)
-        if isinstance(assertion, ir.UniqueSetAssertion):
+        if isinstance(assertion.property, UniqueSet):
             return self._unique_set_explanation(proved, proving_unique_set, missing_columns)
         return "Unknown: this assertion type has no explanation."
 
-    def _unique_join_explanation(self, assertion: ir.UniqueJoinAssertion, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
+    def _unique_join_explanation(self, assertion: ir.Assertion, proved: bool, proving_unique_set: tuple[str, ...], missing_columns: tuple[str, ...]) -> str:
+        if not isinstance(assertion.property, UniqueJoin):
+            return "Unknown: this assertion does not contain a Unique Join property."
+        join = assertion.property.join
         if proved:
             return f"Proved: the join covers the right side's unique set {_format_columns(proving_unique_set)}."
-        if assertion.subject.kind not in {ir.INNER, "left"}:
-            return f"Unknown: {assertion.subject.kind.upper()} joins are not supported for uniqueness proofs."
-        right_symbol = self._encoding.node_to_symbol[assertion.subject.right]
+        if join.kind not in {ir.INNER, "left"}:
+            return f"Unknown: {join.kind.upper()} joins are not supported for uniqueness proofs."
+        right_symbol = self._encoding.node_to_symbol[join.right]
         right_keys = [key for key, relations in self._unique_set_relations.items() if right_symbol in relations]
         if not right_keys:
             return "Unknown: no unique set is known for the right side of this join."

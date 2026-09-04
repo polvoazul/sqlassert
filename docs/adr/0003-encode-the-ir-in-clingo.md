@@ -89,16 +89,12 @@ Boolean fields begin with `is_` in the Python IR:
 ```python
 class RelationExpr(Node, abstract=True):
     is_schema_complete: bool = False
-
-class UniqueSetAssertion(Assertion):
-    is_candidate_key: bool
 ```
 
 Encoding preserves those names. True produces a unary fact; false produces no fact:
 
 ```prolog
 ir__relation_expr__is_schema_complete(r1).
-ir__unique_set_assertion__is_candidate_key(a1).
 ```
 
 ```prolog
@@ -106,6 +102,28 @@ schema_incomplete(Relation) :-
     ir__relation_expr(Relation),
     not ir__relation_expr__is_schema_complete(Relation).
 ```
+
+### Assertions query Properties
+
+An Assertion wraps exactly one Property:
+
+```python
+class Assertion(Node):
+    property: Property
+```
+
+The Property carries the relevant graph references: a `UniqueSet` has its
+columns, while a `UniqueJoin` has its join. The wrapper requests proof; it does
+not make the Property true. The encoder flattens its query without assigning
+the queried Property a public fact identity:
+
+```prolog
+ir__assertion__property(a1, unique_set).
+ir__assertion__columns(a1, c1).
+```
+
+Candidate Key queries use the `candidate_key` kind. Unique Join queries use
+`unique_join` and `ir__assertion__join/2`.
 
 ### Public and internal logic
 
@@ -141,23 +159,40 @@ direct_column_reference(Expression, Column) :-
     ir__column_ref__column(Expression, Column).
 ```
 
-### Public Knowledge
+### Accepted Properties
 
-Knowledge is a separate IR-linked type hierarchy. Its concrete types define the public facts the engine can receive:
+`properties.py` defines the IR-linked Property hierarchy shared by assertion queries,
+declarations, and externally supplied knowledge:
 
 ```python
-class Knowledge(metaclass=NodeMeta, abstract=True): ...
+class Property(metaclass=NodeMeta, abstract=True): ...
 
-class NonNullColumn(Knowledge):
+class NonNullColumn(Property):
     column: OutputColumn
 
-class UniqueSet(Knowledge):
+class UniqueSet(Property):
     columns: frozenset[OutputColumn]
+
+class CandidateKey(UniqueSet): ...
+
+class UniqueJoin(Property):
+    join: Join
 ```
 
-The public encoder writes `pub__<knowledge class>` from those fields. A Unique Set's columns are set members, not an ordered child collection, so `pub__unique_set__columns/2` has no position argument. SQL lowering constructs linked Knowledge directly. A database gatherer resolves qualified names before constructing the same objects; the engine never resolves relation or column names. Database hydration is tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
+`Program.declarations` is a tuple of Properties accepted without proof.
+`conversion.knowledge` is likewise a tuple of accepted Properties, currently
+supplied by schema lowering. Both collections emit `pub__<property class>`
+facts. `Program.named_relations` separately holds tables, views, and CTEs.
 
-`facts.py` assigns solver identities and states IR structure and public Knowledge. Decisions such as which relation operations propagate Unique Sets or Non-Nullness belong in logic rules.
+A Unique Set's columns are set members, not an ordered child collection, so
+`pub__unique_set__columns/2` has no position argument. SQL lowering constructs
+linked Properties directly. A database gatherer resolves qualified names before
+constructing the same objects; the engine never resolves relation or column
+names. Database hydration is tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
+
+`facts.py` assigns solver identities and states IR structure, assertion queries,
+and accepted Properties. Decisions such as which relation operations propagate
+Unique Sets or Non-Nullness belong in logic rules.
 
 ### Generation
 

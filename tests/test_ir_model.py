@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError, is_dataclass
 import pytest
 
 from sqlassert import ir
-from sqlassert.knowledge import Knowledge
+from sqlassert.properties import Property, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin, SQL
 
 
@@ -43,28 +43,35 @@ def test_ir_nodes_are_frozen_identity_dataclasses_with_direct_references():
 
 
 def test_assertions_point_directly_into_the_relation_graph():
-    empty = ir.OpaqueRelation(origin=_origin("unsupported"), output_columns=(), description="unsupported")
-    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=empty, right=empty)
-    join_assertion = ir.UniqueJoinAssertion(origin=_origin("marker"), subject=join)
-    set_assertion = ir.UniqueSetAssertion(
-        origin=_origin("marker"), subject=empty, columns=(), is_candidate_key=False
+    column = ir.OutputColumn(
+        origin=_origin("result.id"),
+        name="id",
+        scalar_expr=ir.OpaqueExpression(origin=_origin("result.id"), description="result column"),
     )
-    program = ir.Program(declarations=(), root=join, assertions=(join_assertion, set_assertion))
+    empty = ir.OpaqueRelation(origin=_origin("unsupported"), output_columns=(column,), description="unsupported")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=empty, right=empty)
+    join_property = UniqueJoin(join=join)
+    set_property = UniqueSet(columns=frozenset({column}))
+    join_assertion = ir.Assertion(origin=_origin("marker"), property=join_property)
+    set_assertion = ir.Assertion(origin=_origin("marker"), property=set_property)
+    program = ir.Program(named_relations=(), root=join, assertions=(join_assertion, set_assertion))
 
     assert program.root is join
-    assert join_assertion.subject is join
-    assert set_assertion.subject is empty
+    assert join_assertion.property is join_property
+    assert join_property.join is join
+    assert set_assertion.property is set_property
+    assert set_property.columns == frozenset({column})
 
 
 def test_only_concrete_ir_nodes_can_be_constructed():
-    for node_type in (ir.Node, ir.ScalarExpr, ir.RelationExpr, ir.Assertion):
+    for node_type in (ir.Node, ir.ScalarExpr, ir.RelationExpr):
         with pytest.raises(TypeError, match="abstract"):
             node_type(origin=_origin("abstract"))  # ty: ignore[missing-argument]
 
 
-def test_knowledge_is_an_abstract_ir_like_type():
+def test_property_is_an_abstract_ir_like_type():
     with pytest.raises(TypeError, match="abstract"):
-        Knowledge()
+        Property()
 
 
 def test_every_node_subclass_is_a_dataclass_without_repeating_the_decorator():

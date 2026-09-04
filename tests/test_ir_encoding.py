@@ -7,7 +7,7 @@ from sqlassert import ir
 from sqlassert.engine import Engine
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
-from sqlassert.knowledge import NonNullColumn, UniqueSet
+from sqlassert.properties import CandidateKey, NonNullColumn, UniqueJoin, UniqueSet
 from sqlassert.sql_parse import SqlParser
 
 
@@ -59,7 +59,7 @@ def test_encoding_is_deterministic_and_preserves_graph_identity():
     assert isinstance(join.left, ir.Alias)
     assert isinstance(join.right, ir.Alias)
     assert join.left is not join.right
-    assert join.left.source is join.right.source is first.program.declarations[0]
+    assert join.left.source is join.right.source is first.program.named_relations[0]
     assert first_encoding.node_to_symbol[join.left] != first_encoding.node_to_symbol[join.right]
     assert first_encoding.node_to_symbol[join.left.source] == first_encoding.node_to_symbol[join.right.source]
 
@@ -76,7 +76,7 @@ def test_encoding_reflects_boolean_fields_and_public_knowledge():
 
 def test_sql_lowering_constructs_knowledge_linked_to_ir_nodes():
     conversion = _convert("CREATE TABLE users(id INTEGER PRIMARY KEY); SELECT id FROM users")
-    users = conversion.program.declarations[0]
+    users = conversion.program.named_relations[0]
     id_column = users.output_columns[0]
     unique_set = next(item for item in conversion.knowledge if isinstance(item, UniqueSet))
     non_null = next(item for item in conversion.knowledge if isinstance(item, NonNullColumn))
@@ -85,9 +85,9 @@ def test_sql_lowering_constructs_knowledge_linked_to_ir_nodes():
     assert non_null.column is id_column
 
 
-def test_encoding_uses_the_linked_knowledge_types_as_public_facts():
+def test_encoding_uses_the_linked_property_types_as_public_facts():
     conversion = _convert("CREATE TABLE users(id INTEGER); SELECT id FROM users")
-    users = conversion.program.declarations[0]
+    users = conversion.program.named_relations[0]
     id_column = users.output_columns[0]
     knowledge = (NonNullColumn(column=id_column), UniqueSet(columns=frozenset({id_column})))
 
@@ -103,6 +103,52 @@ def test_encoding_uses_the_linked_knowledge_types_as_public_facts():
     assert "pub__non_null_column(" in facts
     assert "pub__unique_set(" in facts
     assert f"pub__unique_set__columns({unique_set_symbol}, {id_symbol})." in facts
+
+
+def test_assertion_properties_are_queries_while_declarations_are_public_facts():
+    conversion = _convert(
+        "SELECT customer_id, region FROM orders /**UNIQUE(region, customer_id)**/"
+    )
+    assertion = conversion.program.assertions[0]
+    assert isinstance(assertion.property, UniqueSet)
+
+    query_encoding = encode(conversion.program, conversion.knowledge)
+    assertion_symbol = query_encoding.node_to_symbol[assertion]
+    assert f"ir__assertion__property({assertion_symbol}, unique_set)." in query_encoding.facts
+    assert "pub__unique_set(" not in query_encoding.facts
+
+    declared_program = ir.Program(
+        named_relations=conversion.program.named_relations,
+        root=conversion.program.root,
+        assertions=conversion.program.assertions,
+        declarations=(assertion.property,),
+    )
+    declared_encoding = encode(declared_program, conversion.knowledge)
+    assert "pub__unique_set(" in declared_encoding.facts
+
+
+def test_assertion_property_kind_distinguishes_candidate_keys_and_unique_joins():
+    candidate = _convert("SELECT id FROM users /**PRIMARY KEY(id)**/")
+    candidate_assertion = candidate.program.assertions[0]
+    candidate_encoding = encode(candidate.program, candidate.knowledge)
+
+    assert isinstance(candidate_assertion.property, CandidateKey)
+    assert (
+        f"ir__assertion__property({candidate_encoding.node_to_symbol[candidate_assertion]}, candidate_key)."
+        in candidate_encoding.facts
+    )
+
+    unique_join = _convert(
+        "SELECT * FROM users /**UNIQUE**/ JOIN orders ON users.id = orders.user_id"
+    )
+    join_assertion = unique_join.program.assertions[0]
+    join_encoding = encode(unique_join.program, unique_join.knowledge)
+
+    assert isinstance(join_assertion.property, UniqueJoin)
+    assert (
+        f"ir__assertion__join({join_encoding.node_to_symbol[join_assertion]}, "
+        in join_encoding.facts
+    )
 
 
 def test_engine_grounds_generated_inheritance_rules(monkeypatch):

@@ -36,5 +36,5 @@ def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT) -> Report:
     return reporter.report(
         conversion.program.assertions,
         ast.diagnostics + conversion.diagnostics,
-        conversion.program.declarations,
+        conversion.program.named_relations,
     )
