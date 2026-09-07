@@ -82,7 +82,7 @@ def test_join_coverage_does_not_generalize_to_a_new_unique_set():
         ir__constant(value).
     """)
 
-    assert "covers_unique_set(join_right_columns(j),known)" in atoms
+    assert "covers_unique_set(rhs_match_multiplicity_columns(j),known)" in atoms
     assert "pub__unique_join(established_unique_join(j))" in atoms
     assert "pub__unique_join__join(established_unique_join(j),j)" in atoms
     assert not any(atom.startswith("pub__column_set_of_interest(") for atom in atoms)

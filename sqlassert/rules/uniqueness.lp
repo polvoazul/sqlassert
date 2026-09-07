@@ -24,8 +24,8 @@ pub__unique_set__columns(established_unique_set(Relation), Column) :-
 % -----------------------------------------------------------------------------
 % 2. Unique Sets preserved through an operation
 %
-% Carry Unique Sets through aliases, filters, projections, and Unique Joins
-% when every Output Column in the Unique Set maps to exactly one Output Column.
+% Carry Unique Sets through registered preserving operations when every Output
+% Column in the Unique Set maps to exactly one Output Column.
 % -----------------------------------------------------------------------------
 
 % A RelationOperation derives a Unique Set from a SourceUniqueSet when:
@@ -52,9 +52,6 @@ unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__named
 unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__filter__input(RelationOperation, Source).
 unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__project__input(RelationOperation, Source).
 unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__qualify_by_partition__input(RelationOperation, Source).
-unique_set_preserving_relation_operation(Join, Left) :-
-    pub__unique_join__join(_, Join),
-    ir__join__left(Join, Left).
 
 % An Output Column in the source Unique Set has no mapping that preserves distinct values.
 missing_pass_through_column(RelationOperation, SourceUniqueSet, SourceColumn) :-
@@ -107,8 +104,8 @@ pub__unique_set__columns(ColumnSet, Column) :-
 % -----------------------------------------------------------------------------
 % 4. Helpers
 %
-% Share Unique Set containment checks between Column Sets of Interest
-% and joins, using Relation Expressions to select relevant Unique Sets.
+% Check Unique Set containment for registered Column Set contexts, using
+% Relation Expressions to select relevant Unique Sets.
 % -----------------------------------------------------------------------------
 
 % The Column Set contains every Output Column of another known Unique Set on the same Relation Expression.

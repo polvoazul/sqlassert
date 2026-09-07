@@ -103,24 +103,27 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # cannot know they exist. This is exactly the private-API coupling
     # documented below, not a type worth narrowing further.
     #
-    # `SQLASSERT_UNIQUE` is deliberately not a `TokenType` (see above), but
-    # SQLGlot's Rust tokenizer -- used whenever the optional `sqlglotrs`
-    # package is installed -- indexes every `KEYWORDS` value against
-    # `TokenType` while building the class, and KeyErrors on ours. Building
-    # this one class with the Rust tokenizer disabled sidesteps that; pinning
-    # its instances to the Python tokenizer keeps them consistent, since no
-    # Rust settings were ever built for this `KEYWORDS` dict.
-    previous_use_rs_tokenizer = sqlglot_tokens.USE_RS_TOKENIZER
-    sqlglot_tokens.USE_RS_TOKENIZER = False
-    try:
+    # `SQLASSERT_UNIQUE` is deliberately not a `TokenType` (see above). Before
+    # SQLGlot 30, the optional Rust tokenizer indexed every `KEYWORDS` value
+    # against `TokenType` while building the class and KeyErrored on ours. Those
+    # versions expose a private switch which lets this dialect consistently use
+    # the Python tokenizer. SQLGlot 30 removed both that switch and the matching
+    # constructor argument; its tokenizer core accepts our Enum directly.
+    if hasattr(sqlglot_tokens, "USE_RS_TOKENIZER"):
+        previous_use_rs_tokenizer = getattr(sqlglot_tokens, "USE_RS_TOKENIZER")
+        setattr(sqlglot_tokens, "USE_RS_TOKENIZER", False)
+        try:
+            class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
+                KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
+
+                def __init__(self, *args, **kwargs) -> None:
+                    kwargs.setdefault("use_rs_tokenizer", False)
+                    super().__init__(*args, **kwargs)
+        finally:
+            setattr(sqlglot_tokens, "USE_RS_TOKENIZER", previous_use_rs_tokenizer)
+    else:
         class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
             KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
-
-            def __init__(self, *args, **kwargs) -> None:
-                kwargs.setdefault("use_rs_tokenizer", False)
-                super().__init__(*args, **kwargs)
-    finally:
-        sqlglot_tokens.USE_RS_TOKENIZER = previous_use_rs_tokenizer
 
     # This hooks SQLGlot's private API: `Tokenizer.KEYWORDS`, `_parse_join`,
     # `_match`, `_prev`, `_curr`. It is the best seam available — SQLGlot exposes
