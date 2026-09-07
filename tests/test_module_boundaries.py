@@ -13,6 +13,7 @@ import pytest
 
 
 PACKAGE = Path(__file__).parents[1] / "sqlassert"
+RULES = PACKAGE / "rules"
 
 FORBIDDEN_IMPORTS = {
     # The IR and its inputs are plain immutable values.
@@ -40,3 +41,10 @@ def test_module_does_not_cross_its_boundary(module: str, forbidden: tuple[str, .
         if line.startswith(("import ", "from "))
     }
     assert not imported & set(forbidden), f"{module} imports across its boundary: {sorted(imported & set(forbidden))}"
+
+
+def test_shared_uniqueness_rules_do_not_depend_on_unique_join_rules():
+    source = (RULES / "uniqueness.lp").read_text()
+
+    assert "pub__unique_join" not in source
+    assert "ir__join" not in source

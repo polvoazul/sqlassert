@@ -1,18 +1,17 @@
 # TODO
 
-## Ideas
-
-- [ ] Check invariants: verify that every column-set member belongs to a
-  relation and that every member belongs to each relation associated with the
-  set. Cover accepted and inferred Unique Sets, sets of interest, and join
-  coverage inputs. Consider running these checks across all engine tests;
-  decide the checking mechanism and empty-set semantics before implementing.
-
 ## Task 1 — Replace bare markers with explicit `ASSERT`
 
 **What to build:** Explicit `ASSERT` becomes the only assertion syntax. Unique
 Join Assertions, Unique Set Assertions, and Candidate Key assertions retain
 their current behavior and reporting, while old bare markers are rejected.
+
+For instance:
+```sql
+SELECT *
+FROM t1
+/**ASSERT UNIQUE**/ INNER JOIN t2
+```
 
 **Blocked by:** None — can start immediately.
 
@@ -27,9 +26,8 @@ their current behavior and reporting, while old bare markers are rejected.
   facts, diagnostics, and explanations.
 - [ ] Bare Unique Join, Unique Set, and Candidate Key markers are removed from
   the accepted grammar and produce clear unrecognized-marker diagnostics.
-- [ ] Marker-shaped misspellings and unattached explicit markers are diagnosed
+- [ ] Marker-shaped (/** **/) that do not comply with syntax are diagnosed
   rather than ignored.
-- [ ] The domain glossary defines Property Marker as the umbrella term and
   Assertion Marker as a proof obligation.
 - [ ] The complete test suite passes with no remaining use of bare assertion
   syntax.
@@ -280,3 +278,11 @@ superset generalization, and unique joins.
   annotations must not affect which properties the engine derives.
 - [ ] Test annotation production and Python consumption together, including
   chained derivations and multiple possible justifications.
+
+## Later Ideas
+
+- [ ] Check rules internal consistency invariants: verify that every column-set member belongs to a
+  relation and that every member belongs to each relation associated with the
+  set. Cover accepted and inferred Unique Sets, sets of interest, and join
+  coverage inputs. Consider running these checks across all engine tests;
+  decide the checking mechanism and empty-set semantics before implementing.
