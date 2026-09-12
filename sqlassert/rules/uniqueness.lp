@@ -42,7 +42,7 @@ pub__unique_set__columns(derived_unique_set(RelationOperation, SourceUniqueSet),
 % Every Output Column in the source Unique Set maps to exactly one Output Column.
 complete_unique_set_pass_through(RelationOperation, SourceUniqueSet) :-
     unique_set_preserving_relation_operation(RelationOperation, Source),
-    unique_set_on_relation(SourceUniqueSet, Source),
+    unique_set__relexp(SourceUniqueSet, Source),
     not missing_pass_through_column(RelationOperation, SourceUniqueSet, _),
     not ambiguous_pass_through_column(RelationOperation, SourceUniqueSet, _).
 
@@ -56,14 +56,14 @@ unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__quali
 % An Output Column in the source Unique Set has no mapping that preserves distinct values.
 missing_pass_through_column(RelationOperation, SourceUniqueSet, SourceColumn) :-
     unique_set_preserving_relation_operation(RelationOperation, Source),
-    unique_set_on_relation(SourceUniqueSet, Source),
+    unique_set__relexp(SourceUniqueSet, Source),
     pub__unique_set__columns(SourceUniqueSet, SourceColumn),
     not target_has_pass_through_column(RelationOperation, SourceColumn).
 
 % An Output Column in the source Unique Set maps to multiple Output Columns.
 ambiguous_pass_through_column(RelationOperation, SourceUniqueSet, SourceColumn) :-
     unique_set_preserving_relation_operation(RelationOperation, Source),
-    unique_set_on_relation(SourceUniqueSet, Source),
+    unique_set__relexp(SourceUniqueSet, Source),
     pub__unique_set__columns(SourceUniqueSet, SourceColumn),
     ir__relation_expr__output_columns(RelationOperation, _, FirstTargetColumn),
     ir__relation_expr__output_columns(RelationOperation, _, SecondTargetColumn),
@@ -117,26 +117,26 @@ covers_unique_set(Context, Key) :-
 missing_unique_set_member(Context, Key) :-
     candidate_unique_set(Context, Key),
     pub__unique_set__columns(Key, Column),
-    not column_set_column(Context, Column).
+    not column_set__columns(Context, Column).
 
 % Select known Unique Sets on the Column Set's Relation Expression, excluding the Column Set itself.
 candidate_unique_set(Context, Key) :-
-    column_set(Context, Relation),
-    unique_set_on_relation(Key, Relation),
+    column_set__relexp(Context, Relation),
+    unique_set__relexp(Key, Relation),
     Context != Key.
 
 % Associate a Unique Set with a Relation Expression through an Output Column in the Unique Set.
-unique_set_on_relation(UniqueSet, Relation) :-
+unique_set__relexp(UniqueSet, Relation) :-
     pub__unique_set__columns(UniqueSet, Column),
     ir__relation_expr__output_columns(Relation, _, Column).
 
 % Associate a Column Set of Interest with a Relation Expression through one of its Output Columns.
-column_set(ColumnSet, Relation) :-
+column_set__relexp(ColumnSet, Relation) :-  % one col set should have a single relation.
     pub__column_set_of_interest(ColumnSet),
     pub__column_set_of_interest__columns(ColumnSet, Column),
     ir__relation_expr__output_columns(Relation, _, Column).
 
 % Expose the Output Columns of a Column Set of Interest for containment checks.
-column_set_column(ColumnSet, Column) :-
+column_set__columns(ColumnSet, Column) :-
     pub__column_set_of_interest(ColumnSet),
     pub__column_set_of_interest__columns(ColumnSet, Column).
