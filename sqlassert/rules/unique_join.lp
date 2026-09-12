@@ -24,22 +24,22 @@ supported_unique_join(Join) :- ir__join__kind(Join, "left").
 %% TO DOUBLE CHECK BELOW THIS LINE
 
 % Associate the right-side match-multiplicity columns with the right relation.
-column_set(rhs_match_multiplicity_columns(Join), Right) :-
+column_set__relexp(rhs_match_multiplicity_columns(Join), Right) :-
     supported_unique_join(Join),
     ir__join__right(Join, Right).
 
 % Expose right Output Columns constrained by equality for key coverage checks.
-column_set_column(rhs_match_multiplicity_columns(Join), Column) :-
+column_set__columns(rhs_match_multiplicity_columns(Join), Column) :-
     supported_unique_join(Join),
     rhs_match_multiplicity_column(Join, Column).
 
 % Identify Output Columns belonging to the join's left input Relation Expression.
-join_lhs_output_columns(Join, Column) :-
+join__lhs_output_columns(Join, Column) :-
     ir__join__left(Join, Left),
     ir__relation_expr__output_columns(Left, _, Column).
 
 % Identify Output Columns belonging to the join's right input Relation Expression.
-join_rhs_output_columns(Join, Column) :-
+join__rhs_output_columns(Join, Column) :-
     ir__join__right(Join, Right),
     ir__relation_expr__output_columns(Right, _, Column).
 
@@ -57,7 +57,7 @@ known_given_left_row(Join, ScalarExpr) :-
 
 known_given_left_row(Join, ScalarExpr) :-
     ir__column_ref__column(ScalarExpr, Column),
-    join_left_output(Join, Column).
+    join__lhs_output_columns(Join, Column).
 
 % A right Output Column affects match multiplicity when an equality constrains
 % it to a value known for the current left row.
@@ -66,7 +66,7 @@ rhs_match_multiplicity_column(Join, Column) :-
     ir__equality__left(Equality, RightScalarExpr),
     ir__equality__right(Equality, OtherScalarExpr),
     ir__column_ref__column(RightScalarExpr, Column),
-    join_right_output(Join, Column),
+    join__rhs_output_columns(Join, Column),
     known_given_left_row(Join, OtherScalarExpr).
 
 rhs_match_multiplicity_column(Join, Column) :-
@@ -74,7 +74,7 @@ rhs_match_multiplicity_column(Join, Column) :-
     ir__equality__right(Equality, RightScalarExpr),
     ir__equality__left(Equality, OtherScalarExpr),
     ir__column_ref__column(RightScalarExpr, Column),
-    join_right_output(Join, Column),
+    join__rhs_output_columns(Join, Column),
     known_given_left_row(Join, OtherScalarExpr).
 
 
