@@ -164,7 +164,7 @@ pub__unique_join__join(Property, Join).
 Public predicates need no export wrappers. A Unique Set has no relation field: its Output Columns identify their own Relation Expression. Rules derive that association internally only when a question needs it:
 
 ```prolog
-unique_set_on_relation(Key, Relation) :-
+unique_set__relexp(Key, Relation) :-
     pub__unique_set__columns(Key, Column),
     ir__relation_expr__output_columns(Relation, _, Column).
 ```
