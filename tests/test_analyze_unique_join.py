@@ -31,6 +31,23 @@ def test_declared_unique_set_covered_by_the_join_predicate_is_proved():
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
 
 
+def test_join_proof_is_independent_of_equality_operand_order():
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+        SELECT *
+        FROM sessions
+        /**UNIQUE**/ JOIN users
+            ON users.id = sessions.user_id
+        """
+    )
+
+    assert report.proved
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
 def test_join_without_a_matching_unique_set_is_unknown_rather_than_disproved():
     report = analyze(UNPROVABLE_PROGRAM)
 

@@ -21,14 +21,18 @@ pub__unique_join__join(established_unique_join(Join), Join) :-
 supported_unique_join(Join) :- ir__join__kind(Join, "inner").
 supported_unique_join(Join) :- ir__join__kind(Join, "left").
 
-%% TO DOUBLE CHECK BELOW THIS LINE
+% `rhs_match_multiplicity_columns(Join)` is the internal Column Set containing
+% the right Output Columns whose equality predicates determine how many right
+% rows a single left row can match. The generic `column_set__*` predicates
+% describe that set to the shared Unique Set coverage rules: `__relexp` ties a
+% Column Set to its Relation Expression, and `__columns` enumerates its members.
 
-% Associate the right-side match-multiplicity columns with the right relation.
+% Associate the RHS match-multiplicity Column Set with the right relation.
 column_set__relexp(rhs_match_multiplicity_columns(Join), Right) :-
     supported_unique_join(Join),
     ir__join__right(Join, Right).
 
-% Expose right Output Columns constrained by equality for key coverage checks.
+% Expose the RHS columns constrained by equality for Unique Set coverage.
 column_set__columns(rhs_match_multiplicity_columns(Join), Column) :-
     supported_unique_join(Join),
     rhs_match_multiplicity_column(Join, Column).
@@ -43,42 +47,38 @@ join__rhs_output_columns(Join, Column) :-
     ir__join__right(Join, Right),
     ir__relation_expr__output_columns(Right, _, Column).
 
-% A scalar is known for a left row when it is a constant used by this join or
-% a direct reference to a left Output Column.
-known_given_left_row(Join, ScalarExpr) :-
-    ir__join__equalities(Join, _, Equality),
-    ir__equality__left(Equality, ScalarExpr),
-    ir__constant(ScalarExpr).
+% Treat an equality's operands as an unordered pair so rules do not need one
+% clause for each possible left/right spelling of the same predicate.
+equality__operand(Equality, ScalarExpr) :-
+    ir__equality__left(Equality, ScalarExpr).
 
+equality__operand(Equality, ScalarExpr) :-
+    ir__equality__right(Equality, ScalarExpr).
+
+% A right Output Column affects match multiplicity when an equality constrains
+% it to a value known for the current left row. Only these RHS columns can
+% restrict the number of matching rows for that particular left row.
+rhs_match_multiplicity_column(Join, Column) :-
+    ir__join__equalities(Join, _, Equality),
+    equality__operand(Equality, LeftScalarExpr),
+    equality__operand(Equality, RightScalarExpr),
+    LeftScalarExpr != RightScalarExpr,
+    known_given_left_row(Join, LeftScalarExpr),
+    ir__column_ref__column(RightScalarExpr, Column),
+    join__rhs_output_columns(Join, Column).
+
+
+% A scalar is known for a left row when it is a constant or a direct reference
+% to a left Output Column. This matters because a Unique Set proves at most one
+% RHS match only when every key column is fixed to one value for each LHS row;
+% an unconstrained RHS expression cannot contribute to that proof.
 known_given_left_row(Join, ScalarExpr) :-
     ir__join__equalities(Join, _, Equality),
-    ir__equality__right(Equality, ScalarExpr),
+    equality__operand(Equality, ScalarExpr),
     ir__constant(ScalarExpr).
 
 known_given_left_row(Join, ScalarExpr) :-
     ir__column_ref__column(ScalarExpr, Column),
     join__lhs_output_columns(Join, Column).
 
-% A right Output Column affects match multiplicity when an equality constrains
-% it to a value known for the current left row.
-rhs_match_multiplicity_column(Join, Column) :-
-    ir__join__equalities(Join, _, Equality),
-    ir__equality__left(Equality, RightScalarExpr),
-    ir__equality__right(Equality, OtherScalarExpr),
-    ir__column_ref__column(RightScalarExpr, Column),
-    join__rhs_output_columns(Join, Column),
-    known_given_left_row(Join, OtherScalarExpr).
 
-rhs_match_multiplicity_column(Join, Column) :-
-    ir__join__equalities(Join, _, Equality),
-    ir__equality__right(Equality, RightScalarExpr),
-    ir__equality__left(Equality, OtherScalarExpr),
-    ir__column_ref__column(RightScalarExpr, Column),
-    join__rhs_output_columns(Join, Column),
-    known_given_left_row(Join, OtherScalarExpr).
-
-
-% A Unique Join preserves the Unique Sets of its left input.
-unique_set_preserving_relation_operation(Join, Left) :-
-    pub__unique_join__join(_, Join),
-    ir__join__left(Join, Left).

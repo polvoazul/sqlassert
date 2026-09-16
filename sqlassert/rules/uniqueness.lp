@@ -53,6 +53,11 @@ unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__filte
 unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__project__input(RelationOperation, Source).
 unique_set_preserving_relation_operation(RelationOperation, Source) :- ir__qualify_by_partition__input(RelationOperation, Source).
 
+% A Unique Join preserves the Unique Sets of its left input.
+unique_set_preserving_relation_operation(RelationOperation, Source) :-
+    pub__unique_join__join(_UJ, RelationOperation), % this join is a Unique Join
+    ir__join__left(RelationOperation, Source).
+
 % An Output Column in the source Unique Set has no mapping that preserves distinct values.
 missing_pass_through_column(RelationOperation, SourceUniqueSet, SourceColumn) :-
     unique_set_preserving_relation_operation(RelationOperation, Source),
