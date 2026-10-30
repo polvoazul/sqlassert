@@ -403,11 +403,12 @@ class IrParser:
             return ()
         conjuncts = list(predicate.flatten()) if isinstance(predicate, exp.And) else [predicate]
         bindings = left.bindings + right.bindings
+        complete = left.relation.is_schema_complete and right.relation.is_schema_complete
         return tuple(
             ir.Equality(
                 origin=self._origin(conjunct),
-                left=self._lower_expression(conjunct.this, bindings),
-                right=self._lower_expression(conjunct.expression, bindings),
+                left=self._lower_expression(conjunct.this, bindings, schema_complete=complete),
+                right=self._lower_expression(conjunct.expression, bindings, schema_complete=complete),
             )
             for conjunct in conjuncts
             if isinstance(conjunct, exp.EQ)
@@ -446,7 +447,11 @@ class IrParser:
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
-                scalar_expr=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, lowered.bindings),
+                scalar_expr=self._lower_expression(
+                    item.this if isinstance(item, exp.Alias) else item,
+                    lowered.bindings,
+                    schema_complete=lowered.relation.is_schema_complete,
+                ),
             )
             for item in items
         )
@@ -465,7 +470,7 @@ class IrParser:
                 return None
             grouped_items.add(id(item))
 
-        output_columns = self._aggregate_output_columns(select.expressions, lowered.bindings, grouped_items)
+        output_columns = self._aggregate_output_columns(select.expressions, lowered, grouped_items)
         grouping_outputs: list[ir.OutputColumn] = []
         for group_expression in group.expressions:
             item = _matching_grouping_output(group_expression, select.expressions)
@@ -482,7 +487,7 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
         return ir.Distinct(
-            origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered.bindings),
+            origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered),
             is_schema_complete=True, input=lowered.relation,
         )
 
@@ -498,7 +503,7 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
 
-        output_columns = self._selected_output_columns(select.expressions, lowered.bindings)
+        output_columns = self._selected_output_columns(select.expressions, lowered)
         partition_outputs: list[ir.OutputColumn] = []
         for partition in partitions:
             item = _matching_output(partition, select.expressions)
@@ -507,39 +512,47 @@ class IrParser:
             partition_outputs.append(output_columns[select.expressions.index(item)])
         order = window.args.get("order")
         ordering = tuple(
-            self._lower_expression(ordered.this, lowered.bindings) for ordered in (order.expressions if order else ())
+            self._lower_expression(ordered.this, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
+            for ordered in (order.expressions if order else ())
         )
         return ir.QualifyByPartition(
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             partition_outputs=tuple(partition_outputs), ordering=ordering,
         )
 
-    def _selected_output_columns(self, items: list[exp.Expression], bindings: tuple[_Binding, ...]) -> tuple[ir.OutputColumn, ...]:
+    def _selected_output_columns(self, items: list[exp.Expression], lowered: _Lowered) -> tuple[ir.OutputColumn, ...]:
         return tuple(
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
-                scalar_expr=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, bindings),
+                scalar_expr=self._lower_expression(
+                    item.this if isinstance(item, exp.Alias) else item,
+                    lowered.bindings,
+                    schema_complete=lowered.relation.is_schema_complete,
+                ),
             )
             for item in items
         )
 
-    def _aggregate_output_columns(self, items: list[exp.Expression], bindings: tuple[_Binding, ...], grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
+    def _aggregate_output_columns(self, items: list[exp.Expression], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
         output_columns: list[ir.OutputColumn] = []
         for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
-            lowered = self._lower_expression(expression, bindings)
+            lowered = self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered)
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 
-    def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...]) -> ir.ScalarExpr:
+    def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool = False) -> ir.ScalarExpr:
+        """An unqualified column resolves by name across several sources only
+        when every source's schema is complete: otherwise the one visible match
+        might be shadowed by a column of a source whose columns are unknown."""
         origin = self._origin(expression)
         if isinstance(expression, exp.Column):
             if expression.table:
                 matches = [binding for binding in bindings if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower()]
-            elif len({binding.qualifier for binding in bindings}) == 1:
+            elif schema_complete or len({binding.qualifier for binding in bindings}) == 1:
                 matches = [binding for binding in bindings if binding.name == expression.name.lower()]
             else:
                 matches = []

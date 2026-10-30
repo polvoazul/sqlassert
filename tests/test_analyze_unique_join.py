@@ -92,3 +92,59 @@ def test_omitted_knowledge_behaves_as_empty_knowledge():
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+def test_unqualified_columns_in_the_on_predicate_resolve_by_name():
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON user_id = id
+        """
+    )
+
+    assert not report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
+def test_an_unaliased_subquery_can_be_the_right_side_of_a_unique_join():
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN (SELECT id FROM users) ON sessions.user_id = id
+        """
+    )
+
+    assert not report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
+def test_an_unqualified_column_is_not_resolved_past_a_source_of_unknown_schema():
+    """`sessions` is undeclared, so it may have its own `id`; the one visible
+    `id` cannot be assumed to be `users.id`."""
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON user_id = id
+        """
+    )
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+def test_an_ambiguous_unqualified_column_is_not_resolved():
+    """Both inputs have `id`; the predicate does not bind `users.id`."""
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+        CREATE TABLE sessions (id INTEGER, user_id INTEGER);
+
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON user_id = id
+        """
+    )
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
