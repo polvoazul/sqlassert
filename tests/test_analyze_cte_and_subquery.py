@@ -277,9 +277,9 @@ def test_a_self_referencing_cte_without_recursive_does_not_hang_and_is_unknown(u
 
 
 def test_an_unaliased_from_subquery_preserves_its_unique_set():
-    """DuckDB allows a FROM subquery without an alias. Today the converter
-    models only aliased subqueries and lowers this one to an opaque relation,
-    so the key on `users.id` is lost and the assertion stays UNKNOWN."""
+    """DuckDB allows a FROM subquery without an alias; it is lowered like an
+    aliased one rather than treated as opaque, so the key on `users.id`
+    survives."""
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
