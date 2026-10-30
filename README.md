@@ -22,7 +22,7 @@ Joins often accidentally multiply rows. A query may look correct against todayâ€
 ```sql
 select *
 from sessions
-/**UNIQUE**/ join users
+/**ASSERT UNIQUE**/ join users
   on sessions.user_id = users.id;
 ```
 
@@ -42,14 +42,31 @@ create view active_users as
 select id, email
 from users
 where id > 0
-/**PRIMARY KEY(id)**/;
+/**ASSERT PRIMARY KEY(id)**/;
 
 select * from active_users;
 ```
 
-The trailing marker applies to the relation produced by that Select Expression. `/**PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
+The trailing marker applies to the relation produced by that Select Expression. `/**ASSERT PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**ASSERT UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
 
 Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subquery. A proved assertion on a named relation is also available to later statements in the same SQL Program.
+
+Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
+
+### Declaring what you know
+
+When you know a fact the SQL cannot show -- say, an upstream job guarantees one row per `user_id` -- state it with `DECLARE` instead of `ASSERT`:
+
+```sql
+with latest as (
+  select user_id, max(ts) as ts from events group by all
+  /**DECLARE UNIQUE(user_id)**/
+)
+select * from orders
+/**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
+```
+
+A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. `DECLARE UNIQUE` can be attached wherever `ASSERT UNIQUE(...)` can.
 
 ## Usage
 
@@ -64,7 +81,7 @@ create table sessions (user_id integer);
 
 select *
 from sessions
-/**UNIQUE**/ join users
+/**ASSERT UNIQUE**/ join users
   on sessions.user_id = users.id
 """
 
@@ -114,12 +131,12 @@ tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
 ### Unique Join Syntax
 
-Place `/**UNIQUE**/` immediately before the join that should be uniqueness-checked:
+Place `/**ASSERT UNIQUE**/` immediately before the join that should be uniqueness-checked:
 
 ```sql
 select *
 from lhs
-/**UNIQUE**/ left join rhs
+/**ASSERT UNIQUE**/ left join rhs
   on lhs.rhs_id = rhs.id;
 ```
 
@@ -128,7 +145,7 @@ from lhs
 ```sql
 select *
 from users
-/**UNIQUE**/ join user_profiles
+/**ASSERT UNIQUE**/ join user_profiles
   using (id);
 ```
 
@@ -156,7 +173,7 @@ Examples:
 -- Proved by primary key.
 select *
 from sessions
-/**UNIQUE**/ join users
+/**ASSERT UNIQUE**/ join users
   on sessions.user_id = users.id;
 ```
 
@@ -164,7 +181,7 @@ from sessions
 -- Proved by composite primary key plus RHS-only filter.
 select *
 from sessions
-/**UNIQUE**/ join orders
+/**ASSERT UNIQUE**/ join orders
   on sessions.user_id = orders.user_id
  and orders.order_id = 1;
 ```
@@ -178,7 +195,7 @@ with latest_session as (
 )
 select *
 from users
-/**UNIQUE**/ join latest_session
+/**ASSERT UNIQUE**/ join latest_session
   on users.id = latest_session.user_id;
 ```
 
@@ -191,7 +208,7 @@ with sessions_ranked as (
 )
 select *
 from users
-/**UNIQUE**/ join sessions_ranked
+/**ASSERT UNIQUE**/ join sessions_ranked
   on users.id = sessions_ranked.user_id;
 ```
 

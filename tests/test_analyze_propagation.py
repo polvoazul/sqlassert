@@ -19,7 +19,7 @@ def test_a_filter_preserves_an_existing_unique_set():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN (SELECT * FROM users WHERE id > 0) AS u
+        /**ASSERT UNIQUE**/ JOIN (SELECT * FROM users WHERE id > 0) AS u
             ON sessions.user_id = u.id
         """
     )
@@ -35,7 +35,7 @@ def test_projecting_every_member_of_a_unique_set_preserves_it():
 
         SELECT *
         FROM orders
-        /**UNIQUE**/ JOIN (SELECT order_id, line_no FROM order_items) AS oi
+        /**ASSERT UNIQUE**/ JOIN (SELECT order_id, line_no FROM order_items) AS oi
             ON orders.id = oi.order_id AND orders.id = oi.line_no
         """
     )
@@ -51,7 +51,7 @@ def test_renaming_a_projected_unique_column_maps_the_unique_set_to_the_output_na
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN (SELECT id AS uid FROM users) AS u
+        /**ASSERT UNIQUE**/ JOIN (SELECT id AS uid FROM users) AS u
             ON sessions.user_id = u.uid
         """
     )
@@ -67,7 +67,7 @@ def test_dropping_a_required_key_member_is_unknown():
 
         SELECT *
         FROM orders
-        /**UNIQUE**/ JOIN (SELECT order_id FROM order_items) AS oi
+        /**ASSERT UNIQUE**/ JOIN (SELECT order_id FROM order_items) AS oi
             ON orders.id = oi.order_id
         """
     )
@@ -83,7 +83,7 @@ def test_replacing_a_key_member_with_a_computed_expression_is_unknown():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN (SELECT id + 0 AS id FROM users) AS u
+        /**ASSERT UNIQUE**/ JOIN (SELECT id + 0 AS id FROM users) AS u
             ON sessions.user_id = u.id
         """
     )
@@ -98,7 +98,7 @@ def test_two_aliases_of_the_same_relation_are_separate_occurrences():
 
         SELECT *
         FROM users a
-        /**UNIQUE**/ JOIN users b
+        /**ASSERT UNIQUE**/ JOIN users b
             ON a.manager_id = b.id
         """
     )
@@ -117,9 +117,9 @@ def test_a_self_join_stays_unknown_independently_of_a_valid_join_elsewhere():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users a
+        /**ASSERT UNIQUE**/ JOIN users a
             ON sessions.user_id = a.id
-        /**UNIQUE**/ JOIN users b
+        /**ASSERT UNIQUE**/ JOIN users b
             ON a.manager_id = b.name
         """
     )
@@ -141,9 +141,9 @@ def test_multiple_supported_assertions_all_proved_report_overall_success():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
-        /**UNIQUE**/ JOIN orders
+        /**ASSERT UNIQUE**/ JOIN orders
             ON sessions.id = orders.id
         """
     )

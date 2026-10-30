@@ -14,7 +14,7 @@ from sqlassert.sql_parse import SqlParser
 SQL = """
 CREATE TABLE users(id INTEGER PRIMARY KEY);
 CREATE TABLE events(user_id INTEGER);
-SELECT events.user_id FROM events /**UNIQUE**/ JOIN users ON events.user_id = users.id
+SELECT events.user_id FROM events /**ASSERT UNIQUE**/ JOIN users ON events.user_id = users.id
 """
 
 
@@ -124,7 +124,7 @@ def test_declared_unique_join_preserves_left_keys_without_an_inferred_proof():
     conversion = convert("""
         CREATE TABLE users(id INTEGER PRIMARY KEY);
         CREATE TABLE events(user_id INTEGER);
-        SELECT users.id FROM users /**UNIQUE**/ JOIN events ON users.id = events.user_id /**UNIQUE(id)**/
+        SELECT users.id FROM users /**ASSERT UNIQUE**/ JOIN events ON users.id = events.user_id /**ASSERT UNIQUE(id)**/
     """)
     join = conversion.program.assertions[0].property.join
     program = replace(conversion.program, declarations=(UniqueJoin(join=join),))
@@ -133,7 +133,7 @@ def test_declared_unique_join_preserves_left_keys_without_an_inferred_proof():
     assert all(a.evidence is not None and a.evidence.value for a in report.assertions)
     evidence = report.assertions[1].evidence
     assert evidence is not None
-    assert "Accepted UniqueJoin" in evidence.explain()
+    assert "Declared UniqueJoin" in evidence.explain()
 
 
 def test_join_proof_retains_schema_and_equality_sources_and_reuses_cached_claims():
@@ -161,7 +161,7 @@ def test_missing_composite_key_column_is_retained_as_unknown_evidence():
     conversion = convert("""
         CREATE TABLE users(id INTEGER, region INTEGER, PRIMARY KEY(id, region));
         CREATE TABLE events(user_id INTEGER);
-        SELECT * FROM events /**UNIQUE**/ JOIN users ON events.user_id = users.id
+        SELECT * FROM events /**ASSERT UNIQUE**/ JOIN users ON events.user_id = users.id
     """)
     proof = Engine().run(conversion.program, conversion.knowledge).assertions[0].evidence
     assert proof is not None
@@ -175,7 +175,7 @@ def test_two_covering_keys_retain_both_justifications():
     conversion = convert("""
         CREATE TABLE users(id INTEGER UNIQUE, email VARCHAR UNIQUE);
         CREATE TABLE events(user_id INTEGER, email VARCHAR);
-        SELECT * FROM events /**UNIQUE**/ JOIN users
+        SELECT * FROM events /**ASSERT UNIQUE**/ JOIN users
         ON events.user_id = users.id AND events.email = users.email
     """)
     proof = Engine().run(conversion.program, conversion.knowledge).assertions[0].evidence

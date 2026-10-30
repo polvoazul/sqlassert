@@ -17,7 +17,7 @@ from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import CandidateKey, NonNullColumn, Property, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin, SQL
-from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, unique_set_assertions
+from sqlassert.sql_parse import DECLARED_KINDS, ParsedProgram, assertion_line, join_origin, unique_set_markers
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,7 @@ class IrParser:
     _resolving: set[_Symbol] = field(default_factory=set)
     _knowledge: list[Property] = field(default_factory=list)
     _assertions: list[ir.Assertion] = field(default_factory=list)
+    _declarations: list[Property] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
     _handled_unique_set_lines: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
@@ -82,7 +83,7 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions)), tuple(self._knowledge), tuple(self._diagnostics))
+        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations)), tuple(self._knowledge), tuple(self._diagnostics))
 
     # Declaration and symbol discovery ---------------------------------------
 
@@ -170,7 +171,7 @@ class IrParser:
                     self._require(source, identifier.name)
 
         if len(sources) == 1 and _star_only(query):
-            for _, columns, _ in unique_set_assertions(query):
+            for _, columns, _ in unique_set_markers(query):
                 for column in columns:
                     self._require(sources[0], column)
 
@@ -255,7 +256,7 @@ class IrParser:
                 lowered = self._lower_join(lowered, join)
 
         relation = self._lower_select_tail(lowered, select)
-        self._register_unique_set_assertions(relation, select)
+        self._register_unique_set_markers(relation, select)
         return relation
 
     def _lower_source(self, source: exp.Expression) -> _Lowered:
@@ -557,9 +558,9 @@ class IrParser:
 
     # Assertions and diagnostics --------------------------------------------
 
-    def _register_unique_set_assertions(self, relation: ir.RelationExpr, select: exp.Select) -> None:
+    def _register_unique_set_markers(self, relation: ir.RelationExpr, select: exp.Select) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
-        for kind, columns, line in unique_set_assertions(select):
+        for kind, columns, line in unique_set_markers(select):
             self._handled_unique_set_lines.add(line)
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
             unknown = [column for column in columns if column.lower() not in by_name]
@@ -567,19 +568,21 @@ class IrParser:
                 self._diagnostics.append(
                     Diagnostic(
                         diag.UNKNOWN_ASSERTED_COLUMN,
-                        f"the unique set assertion on line {line} names {', '.join(unknown)}, which is not among this Select Expression's own output columns",
+                        f"the {_unique_set_marker_noun(kind)} on line {line} names {', '.join(unknown)}, which is not among this Select Expression's own output columns",
                         origin,
                     )
                 )
                 continue
             if unknown:
                 continue
+            members = frozenset(by_name[column.lower()] for column in columns)
+            if kind in DECLARED_KINDS:
+                self._declarations.append(UniqueSet(columns=members))
+                continue
             self._assertions.append(
                 ir.Assertion(
                     origin=origin,
-                    property=(CandidateKey if kind == "key" else UniqueSet)(
-                        columns=frozenset(by_name[column.lower()] for column in columns)
-                    ),
+                    property=(CandidateKey if kind == "key" else UniqueSet)(columns=members),
                 )
             )
 
@@ -613,13 +616,13 @@ class IrParser:
                 )
             )
         for select in _asserted_selects(ast):
-            for _, _, line in unique_set_assertions(select):
+            for kind, _, line in unique_set_markers(select):
                 if line in self._handled_unique_set_lines:
                     continue
                 self._diagnostics.append(
                     Diagnostic(
                         diag.UNANALYZED_ASSERTION,
-                        f"the unique set assertion on line {line} is in a part of the program this analysis does not model",
+                        f"the {_unique_set_marker_noun(kind)} on line {line} is in a part of the program this analysis does not model",
                         Origin(SQL, select.sql(dialect=self.dialect), line),
                     )
                 )
@@ -683,8 +686,12 @@ def _asserted_selects(ast: ParsedProgram) -> list[exp.Select]:
     statements = (*ast.create_statements, ast.root_select)
     return [
         select for statement in statements if statement is not None
-        for select in statement.find_all(exp.Select) if unique_set_assertions(select)
+        for select in statement.find_all(exp.Select) if unique_set_markers(select)
     ]
+
+
+def _unique_set_marker_noun(kind: str) -> str:
+    return "unique set declaration" if kind in DECLARED_KINDS else "unique set assertion"
 
 
 def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] | None:

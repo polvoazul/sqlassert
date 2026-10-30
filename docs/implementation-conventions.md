@@ -7,11 +7,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 ## Package Shape
 
 - `main.py` is the small composition root and owns the public `analyze`
-  operation. It composes parsing, conversion, the selected engine, and
+  operation. It composes parsing, conversion, the Python engine, and
   reporting; it is not a general orchestration module.
 - `sql_parse.py` parses one SQL Program with SQLGlot and resolves assertion
   markers onto the `Join` nodes they mark. A marker is real syntax: a custom
-  dialect tokenizes `/**UNIQUE**/` as a token of its own and the join rule
+  dialect tokenizes `/**ASSERT UNIQUE**/` as a token of its own and the join rule
   consumes it, so the grammar is what requires a marker to sit immediately
   before its join. The line is recorded in the node's `meta`, and nothing
   downstream re-reads SQL text.
@@ -22,21 +22,27 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   syntax, so a near miss is likelier a typo than a note, and a typo that was
   silently dropped would read to its author as a proof.
 
-  A Unique Set Assertion marker (`/**UNIQUE(col, ...)**/`,
-  `/**PRIMARY KEY(col, ...)**/`) carries a variable column list, so it cannot
-  be one fixed `KEYWORDS` literal the way the bare join marker is. `MARKERS`
-  instead holds that marker's fixed open literal (`"/**UNIQUE("`,
-  `"/**PRIMARY KEY("`) and one shared close literal (`"**/"`); the column list
+  A Unique Set marker (`/**ASSERT UNIQUE(col, ...)**/`,
+  `/**ASSERT PRIMARY KEY(col, ...)**/`, `/**DECLARE UNIQUE(col, ...)**/`) carries a
+  variable column list, so it cannot be one fixed `KEYWORDS` literal the way the
+  join marker is. `MARKERS` instead holds each marker's fixed open literal
+  (`"/**ASSERT UNIQUE("`, `"/**ASSERT PRIMARY KEY("`, `"/**DECLARE UNIQUE("`) and one
+  shared close literal (`"**/"`); the column list
   between them is ordinary SQL, parsed with the parser's own identifier-list
   machinery once the open token is matched. `_is_recognized_marker` is what
   reconciles a whole `/**...*/`-shaped span of source text against this split
-  representation -- a marker is recognized when it is either an exact bare
+  representation -- a marker is recognized when it is either an exact
   literal or starts with one of the parameterized opens and ends with the
   close -- and `_unrecognized_markers`'s user-facing list of recognized
   markers is built from whole shapes, not `MARKERS`'s own fragment keys.
   Consumed at the one grammar production common to a Root Select, a CTE
   definition, a view body, and a subquery (`_parse_select_query`), so a
   marker means the same thing regardless of which of these it sits on.
+  Whitespace runs inside a marker collapse to one space, matching how the
+  tokenizer matches multi-word literals. A `DECLARE` marker becomes a
+  `Program.declarations` entry rather than an `Assertion`; the engine accepts it
+  as trusted evidence labelled `Declared`, while schema Knowledge is labelled
+  `Accepted`.
 
   The added token is a member of sqlassert's own plain `Enum`, never of
   SQLGlot's `TokenType`. `TokenType` is an `IntEnum`, so a member sharing an

@@ -7,7 +7,7 @@ def test_a_superset_of_a_known_unique_set_is_proved_and_fed_forward():
     report = analyze(
         """
         CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR);
-        CREATE VIEW v AS SELECT id, name FROM t /**UNIQUE(id, name)**/;
+        CREATE VIEW v AS SELECT id, name FROM t /**ASSERT UNIQUE(id, name)**/;
         SELECT id, name FROM v
         """
     )
@@ -32,7 +32,7 @@ def test_sets_of_interest_cannot_prove_themselves_or_each_other():
     report = analyze(
         """
         CREATE TABLE t (id INTEGER, name VARCHAR);
-        SELECT id, name FROM t /**UNIQUE(id)**/ /**UNIQUE(id, name)**/
+        SELECT id, name FROM t /**ASSERT UNIQUE(id)**/ /**ASSERT UNIQUE(id, name)**/
         """
     )
 
@@ -43,7 +43,7 @@ def test_a_subset_of_a_known_composite_unique_set_is_not_proved_unique():
     report = analyze(
         """
         CREATE TABLE t (id INTEGER, name VARCHAR, region VARCHAR, UNIQUE (id, region));
-        SELECT id, name FROM t /**UNIQUE(id, name)**/
+        SELECT id, name FROM t /**ASSERT UNIQUE(id, name)**/
         """
     )
 
