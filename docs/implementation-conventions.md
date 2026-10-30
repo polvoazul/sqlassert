@@ -47,11 +47,6 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `ir/model.py` contains the immutable semantic model.
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
   into that model.
-- `facts.py` assigns deterministic encoding symbols at the Clingo boundary and
-  states the IR, column sets of interest, and accepted Properties as ground ASP facts. It states facts only; every
-  inference lives in `rules/`.
-- `clingo_engine.py` adds encoded facts and archived rules to Clingo, grounds them, and solves,
-  handing each model to a callback.
 - `python_engine.py` evaluates Python analysis functions with an analysis-scoped
   arena, caching, and trusted declarations. An analysis function returns
   `Result[Value]`: `.value` is its computed Value and its direct fields carry
@@ -62,9 +57,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   concrete descendants in `_subclasses`; one contract test checks every public
   evaluator. Declarations supply accepted results without executing the public
   evaluator body. The arena rejects nested analysis sessions.
-- `reporting.py` consumes the live model, enforces the one-model policy, and
-  returns durable reporting values.
-- `rules/` contains Python inference rules; `rules/_old/` preserves the Clingo resources.
+- `reporting.py` defines the durable Report values.
+- `rules/` contains the analysis functions.
 - `discovery/duckdb` is a future adapter that binds database metadata to IR
   nodes and produces Properties accepted as knowledge; it is not part of the MVP engine. See
   [#14](https://github.com/polvoazul/sqlassert/issues/14).
@@ -72,55 +66,22 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 ## Stage Objects
 
 Each pipeline stage is an object holding only the services it needs:
-`SqlParser(dialect)`, `IrParser(dialect)`, `Engine()`, and
-`Reporter(encoding)`. The program being analysed travels through the call
-instead — `parse(sql)`, `parse(ast)`, `encode(program, knowledge)`,
-and `run(encoding, on_solution_callback)`. `main.py` constructs them per call.
+`SqlParser(dialect)`, `IrParser(dialect)`, and `Engine()`. The program being
+analysed travels through the call instead — `parse(sql)`, `parse(ast)`, and
+`run(program, knowledge, diagnostics)`. `main.py` constructs them per call.
 
 `IrParser` links syntax into direct semantic references and stores Origins on
-the nodes themselves. `facts.encode` performs one deterministic identity walk,
-assigns every reachable node a Clingo symbol, and returns both directions of
-the mapping. No generated identifier exists in the IR.
+the nodes themselves. No generated identifier exists in the IR.
 
-`IrParser` accumulates the named relations and assertions of one program, and a
-`Reporter` accumulates the results of one solve, so neither survives a second
-analysis. The `Reporter` needs nothing about the assertions while solving:
-`on_model` harvests evidence out of the live model as plain values, and
-`report(assertions, diagnostics)` assembles the Report once solving is done.
-
-The one-model policy lives with the `Reporter` rather than the `Engine`, since
-the consumer is what can count the models it was handed. `on_model` raises on a
-second call, and `report` raises if it was never called at all.
+`IrParser` accumulates the named relations and assertions of one program, so it
+does not survive a second analysis. `Engine.run` opens one analysis arena, so
+cached results never leak between analyses.
 
 ## Public Analysis Operation
 
 The public shape is:
 
-`analyze(sql, *, dialect="duckdb", engine="python") -> Report`
+`analyze(sql, *, dialect="duckdb") -> Report`
 
 `sql` is the complete SQL Program. Analysis returns data and never prints.
-Python is the default; use `engine="clingo"` for the preserved solver implementation.
-Python reports have no stable models (`stable_model_count == 0`); assertion
-evidence supports `.explain()`.
-
-## Clingo Identifiers and Fact Transport
-
-Every generated ASP identifier has a short kind prefix, a sanitized readable
-hint when one exists, and one deterministic incrementing suffix shared by the
-encoding walk. The suffix establishes identity; the hint is for readability only.
-
-- Relation Expressions use `rel`, for example `rel_users_1` and
-  `rel_customer_2`.
-- Output Columns use `col`, for example `col_id_3`.
-- Accepted Properties use `property`, for example `property_candidate_key_4`.
-- Joins use `join`; an identifier with no natural hint omits the hint segment,
-  for example `join_5`.
-- Expressions and assertions use `expr` and `assert`, following the same rule.
-
-Hints are lower-cased and sanitized. Different source names may sanitize to the
-same hint; the shared suffix still makes their identities distinct. Raw quoted
-SQL names used as data values in facts are not generated identifiers.
-
-Facts are emitted as readable, ground ASP source and added through
-`clingo.Control.add()`, then grounded together with the rule resources. The
-MVP does not use Clingo's low-level backend or AST-builder APIs.
+Assertion evidence supports `.explain()`.

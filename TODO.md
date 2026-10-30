@@ -254,6 +254,8 @@ Assert simple `EXACTLY ONE` joins.
 
 ## Task 11 — Standardize proof explanations across Clingo and Python
 
+> Obsolete: ADR-0004 made evidence native to inference (`Result.explain()`), and Clingo has been removed.
+
 **What to build:** A generic explanation mechanism for all assertion types,
 with standard annotations for property derivations in Clingo and a common
 consumer in Python. Apply the same mechanism to every
