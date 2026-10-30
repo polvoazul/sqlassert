@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "case-conversion>=3.0.2",
-  "clingo>=5.7",
   "sqlglot>=28",
 ]
 
@@ -24,9 +23,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["sqlassert*"]
-
-[tool.setuptools.package-data]
-"sqlassert.rules" = ["_old/*.lp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

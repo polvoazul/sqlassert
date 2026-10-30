@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0004
+---
+
 # Encode the IR in Clingo
 
 ## IR to logic encoding

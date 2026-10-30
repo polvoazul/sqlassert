@@ -1,7 +1,7 @@
 """Source locations for semantic elements and diagnostics.
 
-Origins hold plain values so that no SQLGlot node, connection, or Clingo
-symbol can escape through reporting.
+Origins hold plain values so that no SQLGlot node or connection can escape
+through reporting.
 """
 
 from __future__ import annotations

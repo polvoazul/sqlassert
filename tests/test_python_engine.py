@@ -201,13 +201,8 @@ def test_unique_set_and_non_null_declarations_use_the_same_decorator():
 def test_default_entry_point_returns_python_proof_evidence():
     report = analyze(SQL)
     assert report.proved
-    assert report.stable_model_count == 0
     evidence = report.assertions[0].evidence
     assert evidence is not None
     assert evidence.value
     assert "Accepted UniqueSet" in evidence.explain()
 
-
-def test_unknown_engine_fails_explicitly():
-    with pytest.raises(ValueError, match="unknown property engine"):
-        analyze(SQL, engine="typo")

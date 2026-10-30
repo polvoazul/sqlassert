@@ -81,13 +81,9 @@ for assertion in report.assertions:
     print(assertion.evidence.explain())
 ```
 
-Clingo remains available with `engine="clingo"`. Its engine is in
-`clingo_engine.py` and its preserved rules are in `rules/_old/`. The Python
-rules are in `rules/unique_join.py` and `rules/uniqueness.py`; shared proof
-composition, declaration lookup, and per-analysis caching live in
-`python_engine.py`. Python reports have `stable_model_count == 0` because no
-solver runs. Both engines currently lack candidate-key derivation; the Python
-engine preserves that limitation rather than adding new inference rules.
+The rules are in `rules/unique_join.py` and `rules/uniqueness.py`; shared
+proof composition, declaration lookup, and per-analysis caching live in
+`python_engine.py`. Candidate-key derivation is not implemented yet.
 
 For a test suite, keep your model/query SQL as strings or load them from files, and include (or generate) the `CREATE` statements for whatever schema the query assumes:
 

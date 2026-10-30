@@ -16,8 +16,7 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - A proven-unique join's own output earns every Unique Set of its left-hand input, so uniqueness composes through a join exactly as it does through Filter and Project.
 - Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, joining, and recognized `row_number() = 1` partition qualification.
 - `PROVED` and `UNKNOWN` outcomes.
-- Deterministic Python analysis with `Result` evidence, plus a preserved Clingo
-  parity engine with one stable model and callback-based reporting.
+- Deterministic Python analysis with `Result` evidence.
 
 ## Limitations and Future Features
 

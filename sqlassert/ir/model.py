@@ -1,7 +1,7 @@
 """Framework-independent relational intermediate representation.
 
 The IR is an immutable semantic object graph. Nodes refer directly to other
-nodes; identifiers are assigned only when the graph is encoded for Clingo.
+nodes and carry no identifiers.
 """
 
 from __future__ import annotations
