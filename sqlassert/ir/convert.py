@@ -271,10 +271,12 @@ class IrParser:
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source))
 
         body = _unwrap_query(source) if isinstance(source, exp.Subquery) else None
-        if isinstance(source, exp.Subquery) and source.alias and isinstance(body, exp.Select):
+        if isinstance(source, exp.Subquery) and isinstance(body, exp.Select):
             relation = self._lower_select(body, allow_joins=False)
             if relation is not None:
-                return self._alias(relation, source.alias, self._origin(source))
+                # DuckDB allows an unaliased FROM subquery; nothing can qualify
+                # a column by its name, so a placeholder serves.
+                return self._alias(relation, source.alias or "subquery", self._origin(source))
 
         opaque = self._opaque_relation(source, self._source_required.get(id(source), set()))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
