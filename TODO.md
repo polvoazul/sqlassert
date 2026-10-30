@@ -15,45 +15,43 @@ FROM t1
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Explicit `ASSERT` syntax works for Unique Join Assertions, Unique Set
+- [x] Explicit `ASSERT` syntax works for Unique Join Assertions, Unique Set
   Assertions, and Candidate Key assertions at every currently supported
   attachment site.
-- [ ] Every repository-owned assertion marker in tests, examples, and
+- [x] Every repository-owned assertion marker in tests, examples, and
   documentation is migrated to explicit `ASSERT` syntax.
-- [ ] Explicit assertions retain the existing proof outcomes, downstream
+- [x] Explicit assertions retain the existing proof outcomes, downstream
   facts, diagnostics, and explanations.
-- [ ] Bare Unique Join, Unique Set, and Candidate Key markers are removed from
+- [x] Bare Unique Join, Unique Set, and Candidate Key markers are removed from
   the accepted grammar and produce clear unrecognized-marker diagnostics.
-- [ ] Marker-shaped (/** **/) that do not comply with syntax are diagnosed
+- [x] Marker-shaped (/** **/) that do not comply with syntax are diagnosed
   rather than ignored.
   Assertion Marker as a proof obligation.
-- [ ] The complete test suite passes with no remaining use of bare assertion
+- [x] The complete test suite passes with no remaining use of bare assertion
   syntax.
 
-## Task 2 — Declare trusted Unique Sets and Candidate Keys
+## Task 2 — Declare trusted Unique Sets
 
 **What to build:** Authors can use Property Declaration Markers to state
-trusted Unique Sets and Candidate Keys on Select Expressions. Declarations
+trusted Unique Sets on Select Expressions. `DECLARE PRIMARY KEY` moved to
+Task 3 because it implies non-nullness. Declarations
 become evidence for downstream proofs without creating assertion results of
 their own.
 
 **Blocked by:** Task 1 — Replace bare markers with explicit `ASSERT`.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `DECLARE UNIQUE` and `DECLARE PRIMARY KEY` work on Root Selects, views,
-  CTEs, and FROM subqueries.
-- [ ] A declaration contributes its property without first requiring a proof.
-- [ ] A declaration never appears as an `AssertionReport`.
-- [ ] A declared property can prove a downstream assertion, including through
+- [x] `DECLARE UNIQUE` works on Root Selects, views, CTEs, and FROM subqueries.
+- [x] A declaration contributes its property without first requiring a proof.
+- [x] A declaration never appears as an `AssertionReport`.
+- [x] A declared property can prove a downstream assertion, including through
   supported property-preserving operations.
-- [ ] Proof explanations identify a Property Declaration as trusted evidence
+- [x] Proof explanations identify a Property Declaration as trusted evidence
   rather than presenting it as a derived proof.
-- [ ] Candidate Key declarations contribute both uniqueness and independent
-  non-nullness for their declared columns.
-- [ ] The domain glossary distinguishes Property Declarations from SQL Create
+- [x] The domain glossary distinguishes Property Declarations from SQL Create
   Statements and explicitly describes declarations as assumptions, not proofs.
 
 ## Task 3 — Assert and declare `NOT NULL`
@@ -62,7 +60,7 @@ their own.
 are non-null. Non-nullness flows through supported relational operations and
 respects expression and join null semantics.
 
-**Blocked by:** Task 2 — Declare trusted Unique Sets and Candidate Keys.
+**Blocked by:** Task 2 — Declare trusted Unique Sets.
 
 **Status:** ready-for-agent
 
@@ -81,6 +79,11 @@ respects expression and join null semantics.
   be proved.
 - [ ] Proved and declared non-nullness is available to downstream Candidate Key
   and Foreign Key reasoning.
+- [ ] Candidate Key inference: `ASSERT PRIMARY KEY` proves when the columns are
+  a Unique Set and every column is non-null.
+- [ ] `DECLARE PRIMARY KEY` works on Root Selects, views, CTEs, and FROM
+  subqueries, contributing both uniqueness and independent non-nullness for
+  its declared columns.
 
 ## Task 4 — Assert and declare string `ENUM` domains
 
@@ -88,7 +91,7 @@ respects expression and join null semantics.
 set of strings. Enumerated Domains can come from assertions, declarations, or
 external Knowledge and can prove compatible downstream domain assertions.
 
-**Blocked by:** Task 2 — Declare trusted Unique Sets and Candidate Keys.
+**Blocked by:** Task 2 — Declare trusted Unique Sets.
 
 **Status:** ready-for-agent
 
@@ -160,7 +163,7 @@ columns of a relation and a Unique Set of a named relation. Direct table
 relationships support qualified names, composite keys, and SQL `MATCH SIMPLE`
 null semantics.
 
-**Blocked by:** Task 2 — Declare trusted Unique Sets and Candidate Keys.
+**Blocked by:** Task 2 — Declare trusted Unique Sets.
 
 **Status:** ready-for-agent
 

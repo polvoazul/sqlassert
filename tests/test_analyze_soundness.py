@@ -20,7 +20,7 @@ def test_a_from_subquery_does_not_inherit_a_declared_table_name_s_unique_set():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN (SELECT user_id AS id FROM sessions) AS users
+        /**ASSERT UNIQUE**/ JOIN (SELECT user_id AS id FROM sessions) AS users
             ON sessions.user_id = users.id
         """
     )
@@ -37,7 +37,7 @@ def test_a_cte_does_not_inherit_a_declared_table_name_s_unique_set():
         WITH users AS (SELECT user_id AS id FROM sessions)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -53,7 +53,7 @@ def test_relations_in_different_schemas_are_different_relations():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN b.users
+        /**ASSERT UNIQUE**/ JOIN b.users
             ON sessions.user_id = b.users.id
         """
     )
@@ -69,7 +69,7 @@ def test_a_duplicate_declaration_is_an_explicit_program_diagnostic():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -80,15 +80,15 @@ def test_a_duplicate_declaration_is_an_explicit_program_diagnostic():
 
 
 MISPLACED_MARKERS = [
-    ("before a comma", "SELECT * FROM a /**UNIQUE**/ , b", "unattached-marker"),
-    ("trailing with no join", "SELECT * FROM a /**UNIQUE**/", "unattached-marker"),
-    ("in the select list", "SELECT /**UNIQUE**/ 1", "unattached-marker"),
-    ("before a create statement", "/**UNIQUE**/ CREATE TABLE t (id INTEGER);", "sql-parse-failed"),
-    ("before a select", "/**UNIQUE**/ SELECT * FROM t", "sql-parse-failed"),
-    ("after the join keyword", "SELECT * FROM a JOIN /**UNIQUE**/ b ON a.x = b.x", "sql-parse-failed"),
+    ("before a comma", "SELECT * FROM a /**ASSERT UNIQUE**/ , b", "unattached-marker"),
+    ("trailing with no join", "SELECT * FROM a /**ASSERT UNIQUE**/", "unattached-marker"),
+    ("in the select list", "SELECT /**ASSERT UNIQUE**/ 1", "unattached-marker"),
+    ("before a create statement", "/**ASSERT UNIQUE**/ CREATE TABLE t (id INTEGER);", "sql-parse-failed"),
+    ("before a select", "/**ASSERT UNIQUE**/ SELECT * FROM t", "sql-parse-failed"),
+    ("after the join keyword", "SELECT * FROM a JOIN /**ASSERT UNIQUE**/ b ON a.x = b.x", "sql-parse-failed"),
     (
         "with the join in a later statement",
-        "/**UNIQUE**/ CREATE TABLE users (id INTEGER PRIMARY KEY);\n"
+        "/**ASSERT UNIQUE**/ CREATE TABLE users (id INTEGER PRIMARY KEY);\n"
         "SELECT * FROM sessions JOIN users ON sessions.user_id = users.id",
         "sql-parse-failed",
     ),
@@ -127,7 +127,7 @@ def test_a_marker_reaches_its_join_through_join_modifier_keywords(join: str):
         CREATE TABLE users (id INTEGER PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
 
-        SELECT * FROM sessions /**UNIQUE**/ {join} users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ {join} users ON sessions.user_id = users.id
         """
     )
 
@@ -136,11 +136,12 @@ def test_a_marker_reaches_its_join_through_join_modifier_keywords(join: str):
 
 
 UNRECOGNIZED_MARKERS = [
-    ("spaced", "/** UNIQUE **/"),
-    ("extra spaces", "/**  UNIQUE  **/"),
-    ("one closing star", "/**UNIQUE*/"),
-    ("three closing stars", "/**UNIQUE***/"),
-    ("an unknown term", "/**UNIQE**/"),
+    ("spaced", "/** ASSERT UNIQUE **/"),
+    ("one closing star", "/**ASSERT UNIQUE*/"),
+    ("three closing stars", "/**ASSERT UNIQUE***/"),
+    ("an unknown term", "/**ASSERT UNIQE**/"),
+    ("an unknown verb", "/**ENSURE UNIQUE**/"),
+    ("a declared join", "/**DECLARE UNIQUE**/"),
     ("a doc comment", "/** explains this join **/"),
 ]
 
@@ -181,8 +182,8 @@ def test_an_ordinary_comment_is_not_mistaken_for_a_marker(comment: str):
     assert report.proved
 
 
-@pytest.mark.parametrize("marker", ["/**UNIQUE**/", "/**unique**/", "/**Unique**/"])
-def test_a_marker_is_recognized_whatever_its_case(marker: str):
+@pytest.mark.parametrize("marker", ["/**ASSERT UNIQUE**/", "/**assert unique**/", "/**Assert Unique**/", "/**ASSERT  UNIQUE**/"])
+def test_a_marker_is_recognized_whatever_its_case_or_inner_spacing(marker: str):
     report = analyze(
         f"""
         CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -194,3 +195,29 @@ def test_a_marker_is_recognized_whatever_its_case(marker: str):
 
     assert report.proved
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
+@pytest.mark.parametrize(
+    ("bare", "explicit"),
+    [
+        ("/**UNIQUE**/", "/**ASSERT UNIQUE**/"),
+        ("/**UNIQUE(id)**/", "/**ASSERT UNIQUE(id)**/"),
+        ("/**PRIMARY KEY(id)**/", "/**ASSERT PRIMARY KEY(id)**/"),
+    ],
+)
+def test_a_bare_marker_is_rejected_and_points_at_its_explicit_spelling(bare: str, explicit: str):
+    """Assertions need an explicit ASSERT. A bare marker was once valid, so its
+    author believes in it: report it, and say how to write it now."""
+    report = analyze(
+        f"""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+
+        SELECT * FROM sessions {bare} JOIN users ON sessions.user_id = users.id
+        """
+    )
+
+    assert report.assertions == ()
+    assert not report.proved
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unrecognized-marker"]
+    assert repr(explicit) in report.diagnostics[0].message

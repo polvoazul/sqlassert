@@ -182,7 +182,9 @@ class Arena:
                     pass
                 case _:
                     raise TypeError(f"Unhandled IR node: {type(node).__name__}")
-        for item in self.knowledge:
+        # Schema Knowledge is accepted; Property Declarations are the author's trusted claims.
+        sources = [("Accepted", item) for item in knowledge] + [("Declared", item) for item in program.declarations]
+        for label, item in sources:
             values = tuple(getattr(item, field.name) for field in fields(item))
             subjects = []
             for value in values:
@@ -191,7 +193,7 @@ class Arena:
                         subjects.extend(value)
                     case _:
                         subjects.append(value)
-            evidence = Result(True, f"Accepted {type(item).__name__}", (item, *subjects), kind="accepted")
+            evidence = Result(True, f"{label} {type(item).__name__}", (item, *subjects), kind="accepted")
             for cls in Property._subclasses:
                 if cls not in type(item).__mro__:
                     continue

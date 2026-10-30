@@ -23,7 +23,7 @@ def test_a_root_select_with_its_own_projection_still_proves_its_join():
 
         SELECT sessions.user_id, users.id
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -39,7 +39,7 @@ def test_a_root_select_with_its_own_where_still_proves_its_join():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         WHERE sessions.ts > TIMESTAMP '2020-01-01'
         """
@@ -56,7 +56,7 @@ def test_a_root_select_with_its_own_group_by_still_proves_its_join():
 
         SELECT sessions.user_id, count(*)
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         GROUP BY sessions.user_id
         """
@@ -73,7 +73,7 @@ def test_a_root_select_with_its_own_distinct_still_proves_its_join():
 
         SELECT DISTINCT sessions.user_id
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -91,10 +91,10 @@ def test_a_union_arm_with_its_own_where_still_proves_its_join():
         CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
         CREATE TABLE orders (user_id INTEGER, ts TIMESTAMP);
 
-        SELECT * FROM sessions /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
             WHERE sessions.ts > TIMESTAMP '2020-01-01'
         UNION ALL
-        SELECT * FROM orders /**UNIQUE**/ JOIN users ON orders.user_id = users.id
+        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON orders.user_id = users.id
         """
     )
 
@@ -111,9 +111,9 @@ def test_a_union_arm_s_own_group_by_output_can_be_asserted():
         CREATE TABLE sessions (user_id INTEGER);
         CREATE TABLE orders (user_id INTEGER);
 
-        SELECT user_id, count(*) FROM sessions GROUP BY user_id /**UNIQUE(user_id)**/
+        SELECT user_id, count(*) FROM sessions GROUP BY user_id /**ASSERT UNIQUE(user_id)**/
         UNION ALL
-        SELECT user_id, count(*) FROM orders GROUP BY user_id /**UNIQUE(user_id)**/
+        SELECT user_id, count(*) FROM orders GROUP BY user_id /**ASSERT UNIQUE(user_id)**/
         """
     )
 

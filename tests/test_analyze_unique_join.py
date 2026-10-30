@@ -9,7 +9,7 @@ PROVABLE_PROGRAM = """
 
     SELECT *
     FROM sessions
-    /**UNIQUE**/ JOIN users
+    /**ASSERT UNIQUE**/ JOIN users
         ON sessions.user_id = users.id
 """
 
@@ -19,7 +19,7 @@ UNPROVABLE_PROGRAM = """
 
     SELECT *
     FROM users
-    /**UNIQUE**/ JOIN sessions
+    /**ASSERT UNIQUE**/ JOIN sessions
         ON users.id = sessions.user_id
 """
 
@@ -39,7 +39,7 @@ def test_join_proof_is_independent_of_equality_operand_order():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON users.id = sessions.user_id
         """
     )
@@ -86,7 +86,7 @@ def test_omitted_knowledge_behaves_as_empty_knowledge():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
