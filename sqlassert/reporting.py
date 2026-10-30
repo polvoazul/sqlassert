@@ -15,15 +15,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import clingo
 
 from sqlassert import ir
 from sqlassert.diagnostics import DUPLICATE_DECLARATION, Diagnostic
-from sqlassert.engine import EnginePolicyError
+from sqlassert.clingo_engine import EnginePolicyError
 from sqlassert.facts import ClingoEncoding
 from sqlassert.properties import CandidateKey, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin
+
+if TYPE_CHECKING:
+    from sqlassert.python_engine import Result
 
 _CANDIDATE_KEY = "pub__candidate_key"
 _UNIQUE_SET = "pub__unique_set"
@@ -44,6 +48,7 @@ class AssertionReport:
     assertion_id: str
     outcome: Outcome
     origin: Origin
+    evidence: Result[bool] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

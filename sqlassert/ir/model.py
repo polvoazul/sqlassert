@@ -22,10 +22,18 @@ INNER = "inner"
 class NodeMeta(type):
     """Turn every Node subclass into the same kind of semantic value."""
 
+    _subclasses: list
+
     def __new__(metaclass, name, bases, namespace, *, abstract: bool = False):
         node_type = super().__new__(metaclass, name, bases, namespace)
         node_type = dataclass(frozen=True, eq=False, kw_only=True)(node_type)
         node_type.__ir_abstract__ = abstract
+        node_type._subclasses = []
+        if not abstract:
+            for base in node_type.__mro__[1:]:
+                match base:
+                    case NodeMeta():
+                        base._subclasses.append(node_type)
         return node_type
 
     def __call__(cls, *args, **kwargs):

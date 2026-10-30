@@ -7,7 +7,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 ## Package Shape
 
 - `main.py` is the small composition root and owns the public `analyze`
-  operation. It composes parsing, conversion, fact generation, solving, and
+  operation. It composes parsing, conversion, the selected engine, and
   reporting; it is not a general orchestration module.
 - `sql_parse.py` parses one SQL Program with SQLGlot and resolves assertion
   markers onto the `Join` nodes they mark. A marker is real syntax: a custom
@@ -50,11 +50,21 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `facts.py` assigns deterministic encoding symbols at the Clingo boundary and
   states the IR, column sets of interest, and accepted Properties as ground ASP facts. It states facts only; every
   inference lives in `rules/`.
-- `engine.py` adds encoded facts and rules to Clingo, grounds them, and solves,
+- `clingo_engine.py` adds encoded facts and archived rules to Clingo, grounds them, and solves,
   handing each model to a callback.
+- `python_engine.py` evaluates Python analysis functions with an analysis-scoped
+  arena, caching, and trusted declarations. An analysis function returns
+  `Result[Value]`: `.value` is its computed Value and its direct fields carry
+  the evidence. `@analysis` provides declaration lookup and analysis-scoped caching
+  for public and underscore-prefixed internal analysis functions. A public
+  function evaluates a `Property`: its snake-case
+  name and parameters match the Property class and fields. `NodeMeta` collects
+  concrete descendants in `_subclasses`; one contract test checks every public
+  evaluator. Declarations supply accepted results without executing the public
+  evaluator body. The arena rejects nested analysis sessions.
 - `reporting.py` consumes the live model, enforces the one-model policy, and
   returns durable reporting values.
-- `rules/` contains the Clingo logic-program resources.
+- `rules/` contains Python inference rules; `rules/_old/` preserves the Clingo resources.
 - `discovery/duckdb` is a future adapter that binds database metadata to IR
   nodes and produces Properties accepted as knowledge; it is not part of the MVP engine. See
   [#14](https://github.com/polvoazul/sqlassert/issues/14).
@@ -86,9 +96,12 @@ second call, and `report` raises if it was never called at all.
 
 The public shape is:
 
-`analyze(sql, *, dialect="duckdb") -> Report`
+`analyze(sql, *, dialect="duckdb", engine="python") -> Report`
 
 `sql` is the complete SQL Program. Analysis returns data and never prints.
+Python is the default; use `engine="clingo"` for the preserved solver implementation.
+Python reports have no stable models (`stable_model_count == 0`); assertion
+evidence supports `.explain()`.
 
 ## Clingo Identifiers and Fact Transport
 

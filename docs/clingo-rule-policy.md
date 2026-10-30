@@ -1,6 +1,6 @@
 # Clingo Rule Policy
 
-The primary property engine must produce one deterministic stable model for a given analysis input. It uses Clingo as a stratified rule engine, not as a search or optimization engine.
+The preserved Clingo parity engine must produce one deterministic stable model for a given analysis input. It uses Clingo as a stratified rule engine, not as a search or optimization engine.
 
 Rules may use:
 

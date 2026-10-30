@@ -1,4 +1,4 @@
-# Clingo Engine MVP Scope
+# Property Engine MVP Scope
 
 The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Program and IR-linked Knowledge. Unsupported semantics produce `UNKNOWN` or an explicit unsupported-program diagnostic; they are never silently approximated.
 
@@ -16,7 +16,8 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - A proven-unique join's own output earns every Unique Set of its left-hand input, so uniqueness composes through a join exactly as it does through Filter and Project.
 - Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, joining, and recognized `row_number() = 1` partition qualification.
 - `PROVED` and `UNKNOWN` outcomes.
-- One deterministic Clingo stable model and callback-based reporting.
+- Deterministic Python analysis with `Result` evidence, plus a preserved Clingo
+  parity engine with one stable model and callback-based reporting.
 
 ## Limitations and Future Features
 
@@ -29,7 +30,6 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - Grouping sets, `ROLLUP`, and `CUBE`.
 - General window-function property reasoning beyond recognized partition qualification.
 - A `DISPROVED` outcome backed by genuine refutation evidence.
-- A reporting abstraction independent of Clingo, if direct use of the Clingo model becomes painful.
 - Polished multi-level reporting for nested view-expansion provenance.
 
 ## Null Semantics

@@ -27,7 +27,10 @@ FORBIDDEN_IMPORTS = {
     "ir/convert.py": ("clingo",),
     # Property reasoning and reporting never see the parser.
     "facts.py": ("sqlglot",),
-    "engine.py": ("sqlglot",),
+    "clingo_engine.py": ("sqlglot",),
+    "python_engine.py": ("sqlglot", "clingo"),
+    "rules/unique_join.py": ("sqlglot", "clingo"),
+    "rules/uniqueness.py": ("sqlglot", "clingo"),
     "reporting.py": ("sqlglot",),
 }
 
@@ -43,8 +46,9 @@ def test_module_does_not_cross_its_boundary(module: str, forbidden: tuple[str, .
     assert not imported & set(forbidden), f"{module} imports across its boundary: {sorted(imported & set(forbidden))}"
 
 
-def test_shared_uniqueness_rules_do_not_depend_on_unique_join_rules():
-    source = (RULES / "uniqueness.lp").read_text()
+def test_unique_set_preservation_lives_in_uniqueness_rules():
+    unique_join = (RULES / "_old" / "unique_join.lp").read_text()
+    uniqueness = (RULES / "_old" / "uniqueness.lp").read_text()
 
-    assert "pub__unique_join" not in source
-    assert "ir__join" not in source
+    assert "unique_set_preserving_relation_operation" not in unique_join
+    assert "pub__unique_join__join" in uniqueness

@@ -73,6 +73,22 @@ report = analyze(program)
 assert report.proved, report.diagnostics
 ```
 
+The default Python engine evaluates the rules directly on the IR:
+
+```python
+report = analyze(program)
+for assertion in report.assertions:
+    print(assertion.evidence.explain())
+```
+
+Clingo remains available with `engine="clingo"`. Its engine is in
+`clingo_engine.py` and its preserved rules are in `rules/_old/`. The Python
+rules are in `rules/unique_join.py` and `rules/uniqueness.py`; shared proof
+composition, declaration lookup, and per-analysis caching live in
+`python_engine.py`. Python reports have `stable_model_count == 0` because no
+solver runs. Both engines currently lack candidate-key derivation; the Python
+engine preserves that limitation rather than adding new inference rules.
+
 For a test suite, keep your model/query SQL as strings or load them from files, and include (or generate) the `CREATE` statements for whatever schema the query assumes:
 
 ```python
@@ -126,7 +142,7 @@ The marker applies to the next join after the comment.
 
 `sqlassert` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
 
-Instead, it proves uniqueness using information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, the assertion outcome is `UNKNOWN` and `report.proved` is false. Proof explanations are planned in `TODO.md`.
+Instead, it proves uniqueness using information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, the assertion outcome is `UNKNOWN` and `report.proved` is false. Python assertion results retain structural evidence and expose it through `assertion.evidence.explain()`.
 
 Supported uniqueness proofs today:
 

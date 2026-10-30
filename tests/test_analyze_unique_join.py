@@ -79,9 +79,9 @@ def test_more_than_one_root_select_is_an_explicit_program_diagnostic():
     assert report.assertions == ()
 
 
-def test_analysis_requires_exactly_one_stable_model():
-    assert analyze(PROVABLE_PROGRAM).stable_model_count == 1
-    assert analyze(UNPROVABLE_PROGRAM).stable_model_count == 1
+def test_default_analysis_does_not_run_a_solver():
+    assert analyze(PROVABLE_PROGRAM).stable_model_count == 0
+    assert analyze(UNPROVABLE_PROGRAM).stable_model_count == 0
 
 
 def test_omitted_knowledge_behaves_as_empty_knowledge():

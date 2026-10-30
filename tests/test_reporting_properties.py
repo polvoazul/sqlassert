@@ -4,7 +4,7 @@ import clingo
 import pytest
 
 from sqlassert import Outcome, ir
-from sqlassert.engine import Engine
+from sqlassert.clingo_engine import Engine
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import UniqueJoin
