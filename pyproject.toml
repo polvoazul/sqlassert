@@ -25,6 +25,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["sqlassert*"]
 
+[tool.setuptools.package-data]
+"sqlassert.rules" = ["_old/*.lp"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

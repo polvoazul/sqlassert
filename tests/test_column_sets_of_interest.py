@@ -3,7 +3,7 @@
 import clingo
 import pytest
 
-from sqlassert.engine import rules
+from sqlassert.clingo_engine import rules
 
 
 def _solve(facts: str) -> set[str]:

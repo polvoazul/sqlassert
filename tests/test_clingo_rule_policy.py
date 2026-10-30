@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-RULES_DIR = Path(__file__).parents[1] / "sqlassert" / "rules"
+RULES_DIR = Path(__file__).parents[1] / "sqlassert" / "rules" / "_old"
 
 
 def _forbidden_constructs(program: str) -> set[str]:
@@ -29,7 +29,9 @@ def _forbidden_constructs(program: str) -> set[str]:
 
 
 def test_clingo_rule_files_avoid_nondeterministic_constructs():
-    for rule_file in RULES_DIR.glob("*.lp"):
+    rule_files = list(RULES_DIR.glob("*.lp"))
+    assert len(rule_files) == 2
+    for rule_file in rule_files:
         violations = _forbidden_constructs(rule_file.read_text())
         assert not violations, f"{rule_file}: forbidden Clingo constructs: {', '.join(sorted(violations))}"
 

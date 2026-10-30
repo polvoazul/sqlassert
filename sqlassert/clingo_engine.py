@@ -40,7 +40,7 @@ class Engine:
 
 def rules() -> str:
     """Every rule resource, concatenated in a stable order."""
-    directory = resources.files("sqlassert.rules")
+    directory = resources.files("sqlassert.rules").joinpath("_old")
     return "\n".join(
         resource.read_text(encoding="utf-8")
         for resource in sorted(directory.iterdir(), key=lambda entry: entry.name)

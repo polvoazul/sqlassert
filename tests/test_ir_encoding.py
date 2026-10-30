@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 from sqlassert import ir
-from sqlassert.engine import Engine
+from sqlassert.clingo_engine import Engine
 from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import CandidateKey, NonNullColumn, UniqueJoin, UniqueSet
@@ -159,7 +159,7 @@ def test_engine_grounds_generated_inheritance_rules(monkeypatch):
     conversion = _convert()
     encoding = encode(conversion.program, conversion.knowledge)
     models: list[set[str]] = []
-    monkeypatch.setattr("sqlassert.engine.rules", lambda: "#show relation/1. relation(Node) :- ir__relation_expr(Node).")
+    monkeypatch.setattr("sqlassert.clingo_engine.rules", lambda: "#show relation/1. relation(Node) :- ir__relation_expr(Node).")
 
     Engine().run(encoding, lambda model: models.append({str(symbol) for symbol in model.symbols(shown=True)}))
 
