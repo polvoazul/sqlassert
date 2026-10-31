@@ -64,6 +64,12 @@ class NullLiteral(ScalarExpr):
     """The NULL literal, kept apart from Constant so it is never taken as non-null."""
 
 
+class Coalesce(ScalarExpr):
+    """The first non-null argument: `coalesce`, `ifnull`, and `nvl`."""
+
+    arguments: tuple[ScalarExpr, ...]
+
+
 class AnyAggregate(ScalarExpr):
     """An arbitrary value selected from the input rows of an aggregate group."""
 

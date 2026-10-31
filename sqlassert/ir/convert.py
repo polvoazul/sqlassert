@@ -558,6 +558,12 @@ class IrParser:
                 matches = []
             if len(matches) == 1:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)
+        if isinstance(expression, exp.Coalesce):
+            arguments = (expression.this, *expression.expressions)
+            return ir.Coalesce(
+                origin=origin,
+                arguments=tuple(self._lower_expression(argument, bindings, schema_complete=schema_complete) for argument in arguments),
+            )
         if isinstance(expression, exp.Null):
             return ir.NullLiteral(origin=origin)
         if isinstance(expression, (exp.Literal, exp.Boolean)):

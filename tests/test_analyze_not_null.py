@@ -39,6 +39,11 @@ PROVED_NOT_NULL = [
     ("group key", "SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(user_id)**/"),
     ("inner join, both sides", "SELECT s.user_id, u.email FROM sessions s JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id, email)**/"),
     ("left join, preserved side", "SELECT s.user_id FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
+    ("coalesce, non-null last argument", "SELECT coalesce(nickname, email) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce, non-null first argument", "SELECT coalesce(email, nickname) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce, literal fallback", "SELECT coalesce(nickname, '') AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("ifnull", "SELECT ifnull(nickname, 'anon') AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce over a null-extended column", "SELECT coalesce(u.nickname, 'anon') AS name FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(name)**/"),
     ("right join, preserved side", "SELECT u.email FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(email)**/"),
 ]
 
@@ -51,7 +56,8 @@ def test_not_null_is_proved(label: str, sql: str):
 UNKNOWN_NOT_NULL = [
     ("nullable column", "SELECT nickname FROM users /**ASSERT NOT NULL(nickname)**/"),
     ("null literal", "SELECT NULL AS nothing FROM users /**ASSERT NOT NULL(nothing)**/"),
-    ("opaque expression", "SELECT coalesce(nickname, email) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("opaque expression", "SELECT upper(email) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce of nullables", "SELECT coalesce(nickname, NULL) AS name FROM users /**ASSERT NOT NULL(name)**/"),
     ("left join, null-extended side", "SELECT u.email FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(email)**/"),
     ("right join, null-extended side", "SELECT s.user_id FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
     ("full join", "SELECT s.user_id FROM sessions s FULL JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
