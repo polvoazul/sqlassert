@@ -51,6 +51,12 @@ The trailing marker applies to the relation produced by that Select Expression. 
 
 Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subquery. A proved assertion on a named relation is also available to later statements in the same SQL Program.
 
+A `PRIMARY KEY` assertion is proved when the columns are a Unique Set and each one is non-null.
+
+### Not Null
+
+`/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, and non-null literals. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. It is lost on the null-extended side of a `LEFT`, `RIGHT`, or `FULL` join, and is never guessed for computed expressions such as `coalesce(...)` or for set operations.
+
 Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
 
 ### Declaring what you know
@@ -66,7 +72,7 @@ select * from orders
 /**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
 ```
 
-A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. `DECLARE UNIQUE` can be attached wherever `ASSERT UNIQUE(...)` can.
+A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, and `DECLARE PRIMARY KEY` -- attached wherever its `ASSERT` form can be. `DECLARE PRIMARY KEY(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
 
 ## Usage
 
@@ -218,6 +224,7 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 
 - Exhaustive case statements that match all items of an enum / union data type.
 - A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Derive that property from the leftmost arm's output columns and lower set-operation bodies when they appear inside a view, CTE, or subquery.
-- Column lineage, column unique status, column nullable status
+- Column lineage, column unique status
+- Non-nullness from predicates: `WHERE x IS NOT NULL`, `WHERE x = 5`, and inner-join equalities all imply `x` is non-null, as do `coalesce(x, <non-null>)` and `count(...)`.
 - Functional-dependency reasoning (`X → Y`): represent and derive when equal values of one column set guarantee equal values of another, including dependencies created by keys, deterministic expressions, and aggregation.
 - General window modeling: eventually represent window expressions and their filtering as separate `Window` and `Filter` operations, with the proof engine deriving uniqueness from recognized shapes. Until then, keep `QUALIFY row_number() over (partition by ...) = 1` as the explicit supported special case.

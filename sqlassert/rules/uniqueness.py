@@ -1,7 +1,7 @@
 """Establish, preserve, and cover unique sets directly on the semantic IR."""
 
 from sqlassert import ir
-from sqlassert.properties import NonNullColumn, UniqueJoin, UniqueSet
+from sqlassert.properties import NonNullColumns, UniqueJoin, UniqueSet
 from sqlassert.python_engine import Result, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import ColumnSet, _column_set
 
@@ -16,13 +16,9 @@ def unique_set(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
 
 @analysis
 def candidate_key(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
-    # The archived LP rules do not derive candidate keys or propagate non-nullness.
-    return unknown("Candidate-key inference is not implemented", *columns)
+    from sqlassert.rules.nullability import non_null_columns
 
-
-@analysis
-def non_null_column(column: ir.OutputColumn) -> Result[bool]:
-    return unknown("Non-null inference is not implemented", column)
+    return unique_set(columns) & non_null_columns(columns)
 
 
 @analysis
@@ -65,7 +61,7 @@ def _unique_sets(relation: ir.RelationExpr) -> Result[dict[frozenset[ir.OutputCo
                     coverage = _coverage(_column_set(relation, columns), known)
                     if coverage.value:
                         _add(keys, columns, coverage)
-            case UniqueJoin() | NonNullColumn():
+            case UniqueJoin() | NonNullColumns():
                 pass
             case _:
                 raise TypeError(f"Unhandled assertion property: {type(assertion.property).__name__}")
@@ -102,7 +98,7 @@ def _pass_through_columns(relation: ir.RelationExpr, columns: frozenset[ir.Outpu
                 case ir.ColumnRef(column=source_column):
                     if source_column is column:
                         matches.append(target)
-                case ir.Constant() | ir.OpaqueExpression() | ir.AnyAggregate() | ir.Equality():
+                case ir.Constant() | ir.NullLiteral() | ir.OpaqueExpression() | ir.AnyAggregate() | ir.Equality():
                     pass
                 case _:
                     raise TypeError(f"Unhandled scalar expression: {type(target.scalar_expr).__name__}")

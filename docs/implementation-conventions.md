@@ -22,11 +22,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   syntax, so a near miss is likelier a typo than a note, and a typo that was
   silently dropped would read to its author as a proof.
 
-  A Unique Set marker (`/**ASSERT UNIQUE(col, ...)**/`,
-  `/**ASSERT PRIMARY KEY(col, ...)**/`, `/**DECLARE UNIQUE(col, ...)**/`) carries a
+  A column marker (`/**ASSERT UNIQUE(col, ...)**/`, `/**ASSERT NOT NULL(...)**/`,
+  `/**DECLARE PRIMARY KEY(...)**/`, and the rest of `_COLUMN_MARKER_OPENS`) carries a
   variable column list, so it cannot be one fixed `KEYWORDS` literal the way the
   join marker is. `MARKERS` instead holds each marker's fixed open literal
-  (`"/**ASSERT UNIQUE("`, `"/**ASSERT PRIMARY KEY("`, `"/**DECLARE UNIQUE("`) and one
+  (`"/**ASSERT UNIQUE("`, `"/**DECLARE NOT NULL("`, ...) and one
   shared close literal (`"**/"`); the column list
   between them is ordinary SQL, parsed with the parser's own identifier-list
   machinery once the open token is matched. `_is_recognized_marker` is what
@@ -40,7 +40,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   marker means the same thing regardless of which of these it sits on.
   Whitespace runs inside a marker collapse to one space, matching how the
   tokenizer matches multi-word literals. A `DECLARE` marker becomes a
-  `Program.declarations` entry rather than an `Assertion`; the engine accepts it
+  `Program.declarations` entry rather than an `Assertion` (`DECLARE PRIMARY KEY`
+  becomes a Candidate Key plus one `NonNullColumn` per column); the engine accepts it
   as trusted evidence labelled `Declared`, while schema Knowledge is labelled
   `Accepted`.
 
