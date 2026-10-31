@@ -55,7 +55,7 @@ A `PRIMARY KEY` assertion is proved when the columns are a Unique Set and each o
 
 ### Not Null
 
-`/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, and non-null literals. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. It is lost on the null-extended side of a `LEFT`, `RIGHT`, or `FULL` join, and is never guessed for computed expressions such as `coalesce(...)` or for set operations.
+`/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, and `coalesce`/`ifnull`/`nvl` with at least one non-null argument. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. It is lost on the null-extended side of a `LEFT`, `RIGHT`, or `FULL` join, and is never guessed for other computed expressions or for set operations.
 
 Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
 
@@ -225,6 +225,6 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 - Exhaustive case statements that match all items of an enum / union data type.
 - A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Derive that property from the leftmost arm's output columns and lower set-operation bodies when they appear inside a view, CTE, or subquery.
 - Column lineage, column unique status
-- Non-nullness from predicates: `WHERE x IS NOT NULL`, `WHERE x = 5`, and inner-join equalities all imply `x` is non-null, as do `coalesce(x, <non-null>)` and `count(...)`.
+- Non-nullness from predicates: `WHERE x IS NOT NULL`, `WHERE x = 5`, and inner-join equalities all imply `x` is non-null, as does `count(...)`.
 - Functional-dependency reasoning (`X → Y`): represent and derive when equal values of one column set guarantee equal values of another, including dependencies created by keys, deterministic expressions, and aggregation.
 - General window modeling: eventually represent window expressions and their filtering as separate `Window` and `Filter` operations, with the proof engine deriving uniqueness from recognized shapes. Until then, keep `QUALIFY row_number() over (partition by ...) = 1` as the explicit supported special case.

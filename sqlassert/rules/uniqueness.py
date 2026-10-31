@@ -98,7 +98,7 @@ def _pass_through_columns(relation: ir.RelationExpr, columns: frozenset[ir.Outpu
                 case ir.ColumnRef(column=source_column):
                     if source_column is column:
                         matches.append(target)
-                case ir.Constant() | ir.NullLiteral() | ir.OpaqueExpression() | ir.AnyAggregate() | ir.Equality():
+                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.OpaqueExpression() | ir.AnyAggregate() | ir.Equality():
                     pass
                 case _:
                     raise TypeError(f"Unhandled scalar expression: {type(target.scalar_expr).__name__}")

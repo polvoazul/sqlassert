@@ -288,8 +288,8 @@ superset generalization, and unique joins.
 ## Later Ideas
 
 - [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
-  equality filters and inner-join equalities imply non-null `x`; so do
-  `coalesce(x, <non-null>)` and `count(...)`. Needs `Filter` to carry its
+  equality filters and inner-join equalities imply non-null `x`; `count(...)`
+  is never null. Needs `Filter` to carry its
   conjuncts.
 
 - [ ] Check rules internal consistency invariants: verify that every column-set member belongs to a

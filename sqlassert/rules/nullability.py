@@ -53,6 +53,11 @@ def _non_null_expression(expression: ir.ScalarExpr) -> Result[bool]:
             return Result(True, "A non-null literal", (expression,))
         case ir.NullLiteral():
             return unknown("A NULL literal is null", expression)
+        case ir.Coalesce(arguments=arguments):
+            # Null only when every argument is, so one non-null argument suffices.
+            return Result(True, "Coalesce is non-null when any argument is", (expression,)) & any_of(
+                _non_null_expression(argument) for argument in arguments
+            )
         case ir.AnyAggregate(input=value):
             # Groups are never empty, so the value comes from some input row.
             return Result(True, "A group's value comes from one of its rows", (expression,)) & _non_null_expression(value)
