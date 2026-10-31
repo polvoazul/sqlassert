@@ -15,7 +15,8 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - Unique Set Assertions (`/**ASSERT UNIQUE(...)**/` and `/**ASSERT PRIMARY KEY(...)**/`) written on any Select Expression -- a Root Select, a view, a CTE, or a subquery -- proved against Unique Sets already derivable for that Relation Expression's output columns, and fed forward as Knowledge-equivalent facts for later statements.
 - A proven-unique join's own output earns every Unique Set of its left-hand input, so uniqueness composes through a join exactly as it does through Filter and Project.
 - Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, joining, and recognized `row_number() = 1` partition qualification.
-- Unique Set Declarations (`/**DECLARE UNIQUE(...)**/`) at the same attachment sites, trusted without proof and producing no assertion result.
+- Not-null Assertions (`/**ASSERT NOT NULL(...)**/`) at the same attachment sites, proved from `NOT NULL`/`PRIMARY KEY` constraints, declarations, and non-null literals, followed through pass-through columns and lost on the null-extended side of an outer join. `/**ASSERT PRIMARY KEY(...)**/` is proved as a Unique Set whose every column is non-null.
+- Property Declarations (`/**DECLARE UNIQUE(...)**/`, `/**DECLARE NOT NULL(...)**/`, `/**DECLARE PRIMARY KEY(...)**/`) at the same attachment sites, trusted without proof and producing no assertion result.
 - `PROVED` and `UNKNOWN` outcomes.
 - Deterministic Python analysis with `Result` evidence.
 
@@ -29,6 +30,7 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - Unique Set inference for `UNION`, `INTERSECT`, and `EXCEPT`, and set-operation bodies inside views, CTEs, or subqueries.
 - Grouping sets, `ROLLUP`, and `CUBE`.
 - General window-function property reasoning beyond recognized partition qualification.
+- Non-nullness implied by predicates (`IS NOT NULL`, equality filters, inner-join equalities) or by null-absorbing expressions such as `coalesce`.
 - A `DISPROVED` outcome backed by genuine refutation evidence.
 - Polished multi-level reporting for nested view-expansion provenance.
 

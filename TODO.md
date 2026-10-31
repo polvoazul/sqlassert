@@ -62,26 +62,27 @@ respects expression and join null semantics.
 
 **Blocked by:** Task 2 — Declare trusted Unique Sets.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `ASSERT NOT NULL` produces one assertion result for its complete column
+- [x] `ASSERT NOT NULL` produces one assertion result for its complete column
   list, and `DECLARE NOT NULL` contributes trusted non-null facts without an
   assertion result.
-- [ ] Non-nullness can be established from table constraints, explicit
+- [x] Non-nullness can be established from table constraints, explicit
   Knowledge, Property Declarations, pass-through columns, renaming, filters,
-  aliases, CTEs, views, and supported non-null literals.
-- [ ] The semantic model distinguishes a null literal from a non-null literal
+  aliases, CTEs, views, and supported non-null literals. Non-nullness implied
+  by predicates (`IS NOT NULL`, equality filters) is a Later Idea.
+- [x] The semantic model distinguishes a null literal from a non-null literal
   and does not guess the nullability of opaque expressions.
-- [ ] Join outputs preserve or lose non-nullness according to the join kind and
+- [x] Join outputs preserve or lose non-nullness according to the join kind and
   null-extended side.
-- [ ] Unknown columns and unsupported attachment sites produce diagnostics.
-- [ ] An unknown assertion identifies every column whose non-nullness could not
+- [x] Unknown columns and unsupported attachment sites produce diagnostics.
+- [x] An unknown assertion identifies every column whose non-nullness could not
   be proved.
-- [ ] Proved and declared non-nullness is available to downstream Candidate Key
+- [x] Proved and declared non-nullness is available to downstream Candidate Key
   and Foreign Key reasoning.
-- [ ] Candidate Key inference: `ASSERT PRIMARY KEY` proves when the columns are
+- [x] Candidate Key inference: `ASSERT PRIMARY KEY` proves when the columns are
   a Unique Set and every column is non-null.
-- [ ] `DECLARE PRIMARY KEY` works on Root Selects, views, CTEs, and FROM
+- [x] `DECLARE PRIMARY KEY` works on Root Selects, views, CTEs, and FROM
   subqueries, contributing both uniqueness and independent non-nullness for
   its declared columns.
 
@@ -285,6 +286,11 @@ superset generalization, and unique joins.
   chained derivations and multiple possible justifications.
 
 ## Later Ideas
+
+- [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
+  equality filters and inner-join equalities imply non-null `x`; so do
+  `coalesce(x, <non-null>)` and `count(...)`. Needs `Filter` to carry its
+  conjuncts.
 
 - [ ] Check rules internal consistency invariants: verify that every column-set member belongs to a
   relation and that every member belongs to each relation associated with the

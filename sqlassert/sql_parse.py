@@ -1,6 +1,6 @@
 """Parse SQL text into a SQL Program: Create Statements plus at most one Root
 Select, with Unique Join Assertion markers resolved onto the joins they mark
-and Unique Set markers resolved onto the Select Expressions they follow.
+and column markers resolved onto the Select Expressions they follow.
 
 The marker is real syntax, not a comment we go looking for: a custom dialect
 tokenizes `/**ASSERT UNIQUE**/` as a token of its own and the join rule consumes it, so
@@ -47,17 +47,20 @@ class SqlassertToken(enum.Enum):
     SQLASSERT_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_CANDIDATE_KEY_OPEN = enum.auto()
     SQLASSERT_DECLARED_UNIQUE_SET_OPEN = enum.auto()
+    SQLASSERT_DECLARED_CANDIDATE_KEY_OPEN = enum.auto()
+    SQLASSERT_NOT_NULL_OPEN = enum.auto()
+    SQLASSERT_DECLARED_NOT_NULL_OPEN = enum.auto()
     SQLASSERT_MARKER_CLOSE = enum.auto()
 
 
 # Every marker sqlassert understands, and the token each becomes. The single
 # source of truth for the Unique Join marker and the fixed opening/closing
-# literals of a Unique Set marker: the dialect tokenizes exactly these, and
+# literals of a column marker: the dialect tokenizes exactly these, and
 # `_unrecognized_markers` reports anything else shaped like one.
 #
 # `ASSERT` asks for a proof; `DECLARE` states a trusted Property Declaration.
-# A Unique Set marker -- `/**ASSERT UNIQUE(col, ...)**/`,
-# `/**ASSERT PRIMARY KEY(col, ...)**/`, or `/**DECLARE UNIQUE(col, ...)**/` --
+# A column marker -- `/**ASSERT UNIQUE(col, ...)**/`, `/**ASSERT NOT NULL(...)**/`,
+# `/**DECLARE PRIMARY KEY(...)**/`, and the rest of `_COLUMN_MARKER_OPENS` --
 # carries a variable column list, so unlike the join marker it cannot be one
 # fixed `KEYWORDS` literal: only its open and close are fixed text; the column
 # list between them is ordinary SQL, parsed with the parser's own
@@ -67,27 +70,44 @@ MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
     "/**ASSERT UNIQUE(": SqlassertToken.SQLASSERT_UNIQUE_SET_OPEN,
     "/**ASSERT PRIMARY KEY(": SqlassertToken.SQLASSERT_CANDIDATE_KEY_OPEN,
+    "/**ASSERT NOT NULL(": SqlassertToken.SQLASSERT_NOT_NULL_OPEN,
     "/**DECLARE UNIQUE(": SqlassertToken.SQLASSERT_DECLARED_UNIQUE_SET_OPEN,
+    "/**DECLARE PRIMARY KEY(": SqlassertToken.SQLASSERT_DECLARED_CANDIDATE_KEY_OPEN,
+    "/**DECLARE NOT NULL(": SqlassertToken.SQLASSERT_DECLARED_NOT_NULL_OPEN,
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
-# The open literals of a Unique Set marker, and the kind each one states --
-# "unique" asserts a nullable-tolerant Unique Set, "key" asserts the stricter,
-# non-null Candidate Key, and "declared-unique" declares a trusted Unique Set.
-_UNIQUE_SET_MARKER_OPENS = {
+# The open literals of a column marker, and the kind each one states --
+# "unique" is a nullable-tolerant Unique Set, "key" the stricter, non-null
+# Candidate Key, and "not-null" non-nullness of every listed column. A
+# "declared-" kind states the same Property as a trusted declaration.
+_COLUMN_MARKER_OPENS = {
     "/**ASSERT UNIQUE(": "unique",
     "/**ASSERT PRIMARY KEY(": "key",
+    "/**ASSERT NOT NULL(": "not-null",
     "/**DECLARE UNIQUE(": "declared-unique",
+    "/**DECLARE PRIMARY KEY(": "declared-key",
+    "/**DECLARE NOT NULL(": "declared-not-null",
 }
 
-# Unique Set marker kinds that are Property Declarations rather than Assertions.
-DECLARED_KINDS = frozenset({"declared-unique"})
+# Column marker kinds that are Property Declarations rather than Assertions.
+DECLARED_KINDS = frozenset({"declared-unique", "declared-key", "declared-not-null"})
 
-# Where a resolved Unique Set Assertion is recorded on its Select node.
-_UNIQUE_SET_ASSERTED_AT = "sqlassert.unique_set_asserted_at"
+# How diagnostics name each column marker kind.
+MARKER_NOUNS = {
+    "unique": "unique set assertion",
+    "key": "primary key assertion",
+    "not-null": "not null assertion",
+    "declared-unique": "unique set declaration",
+    "declared-key": "primary key declaration",
+    "declared-not-null": "not null declaration",
+}
 
-_UNIQUE_SET_OPEN_TOKENS = {
-    MARKERS[open_]: kind for open_, kind in _UNIQUE_SET_MARKER_OPENS.items()
+# Where resolved column markers are recorded on its Select node.
+_COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
+
+_COLUMN_MARKER_OPEN_TOKENS = {
+    MARKERS[open_]: kind for open_, kind in _COLUMN_MARKER_OPENS.items()
 }
 
 
@@ -178,7 +198,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             return join
 
         def _parse_select_query(self, *args, **kwargs):
-            """Consume every trailing Unique Set marker immediately
+            """Consume every trailing column marker immediately
             after building a Select node -- the one production common to a
             Root Select, a CTE definition, a view body, and a subquery, so a
             marker means the same thing regardless of which of these it sits
@@ -192,38 +212,38 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 return result
 
             found: list[tuple[str, tuple[str, ...], int]] = []
-            while self._curr is not None and self._curr.token_type in _UNIQUE_SET_OPEN_TOKENS:
-                kind = _UNIQUE_SET_OPEN_TOKENS[self._curr.token_type]
+            while self._curr is not None and self._curr.token_type in _COLUMN_MARKER_OPEN_TOKENS:
+                kind = _COLUMN_MARKER_OPEN_TOKENS[self._curr.token_type]
                 line = self._curr.line
                 self._advance()
 
                 columns = self._parse_csv(self._parse_id_var)
                 if not columns:
                     raise UnattachedMarker(
-                        f"the unique set marker on line {line} names no columns", line, self._prev.text
+                        f"the {MARKER_NOUNS[kind]} on line {line} names no columns", line, self._prev.text
                     )
                 names = tuple(column.name for column in columns)
                 if len({name.lower() for name in names}) != len(names):
                     raise UnattachedMarker(
-                        f"the unique set marker on line {line} names the same column more than once",
+                        f"the {MARKER_NOUNS[kind]} on line {line} names the same column more than once",
                         line,
                         self._prev.text,
                     )
                 if not self._match(TokenType.R_PAREN):
                     raise UnattachedMarker(
-                        f"the unique set marker on line {line} is missing its closing parenthesis",
+                        f"the {MARKER_NOUNS[kind]} on line {line} is missing its closing parenthesis",
                         line,
                         self._prev.text,
                     )
                 if not self._match(SqlassertToken.SQLASSERT_MARKER_CLOSE):
                     raise UnattachedMarker(
-                        f"the unique set marker on line {line} is not closed with **/", line, self._prev.text
+                        f"the {MARKER_NOUNS[kind]} on line {line} is not closed with **/", line, self._prev.text
                     )
 
                 found.append((kind, names, line))
 
             if found:
-                result.meta[_UNIQUE_SET_ASSERTED_AT] = found
+                result.meta[_COLUMN_MARKERS_AT] = found
 
             # `super()._parse_select_query` already tried, and gave up, on
             # attaching a following UNION/INTERSECT/EXCEPT to this same
@@ -338,7 +358,7 @@ class SqlParser:
 def _is_recognized_marker(text: str) -> bool:
     """Whether `text` (a whole `/**...*/`-shaped span) is a marker this
     dialect's grammar actually tokenizes -- the Unique Join marker exactly,
-    or a Unique Set marker's fixed open literal followed by
+    or a column marker's fixed open literal followed by
     its close, with a variable column list in between that this text-level
     check does not itself validate; the grammar does that once it parses.
 
@@ -348,7 +368,7 @@ def _is_recognized_marker(text: str) -> bool:
     upper = re.sub(r"\s+", " ", text.upper())
     if upper in MARKERS:
         return True
-    return upper.endswith("**/") and any(upper.startswith(open_) for open_ in _UNIQUE_SET_MARKER_OPENS)
+    return upper.endswith("**/") and any(upper.startswith(open_) for open_ in _COLUMN_MARKER_OPENS)
 
 
 def _unrecognized_markers(sql: str) -> list[Diagnostic]:
@@ -365,7 +385,7 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
     # full open-to-close form.
     recognized = ", ".join(
         sorted(literal for literal, token in MARKERS.items() if token is SqlassertToken.SQLASSERT_UNIQUE)
-        + sorted(f"{open_}...)**/" for open_ in _UNIQUE_SET_MARKER_OPENS)
+        + sorted(f"{open_}...)**/" for open_ in _COLUMN_MARKER_OPENS)
     )
     return [
         Diagnostic(
@@ -402,7 +422,7 @@ def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diag
         for join in statement.find_all(exp.Join)
         if assertion_line(join) is not None
     ) + sum(
-        len(select.meta.get(_UNIQUE_SET_ASSERTED_AT, ()))
+        len(select.meta.get(_COLUMN_MARKERS_AT, ()))
         for statement in statements
         for select in statement.find_all(exp.Select)
     )
@@ -435,8 +455,8 @@ def join_origin(join: exp.Join, dialect: str) -> Origin:
     return Origin(SQL, join.sql(dialect=dialect), assertion_line(join))
 
 
-def unique_set_markers(select: exp.Select) -> tuple[tuple[str, tuple[str, ...], int], ...]:
-    """Every Unique Set marker written on `select`, as `(kind, columns, line)`
-    -- `kind` is `"unique"` or `"key"` for an Assertion, or
-    `"declared-unique"` for a Property Declaration (see `DECLARED_KINDS`)."""
-    return tuple(select.meta.get(_UNIQUE_SET_ASSERTED_AT, ()))
+def column_markers(select: exp.Select) -> tuple[tuple[str, tuple[str, ...], int], ...]:
+    """Every column marker written on `select`, as `(kind, columns, line)`
+    -- `kind` is a value of `_COLUMN_MARKER_OPENS`; those in `DECLARED_KINDS`
+    are Property Declarations, the rest Assertions."""
+    return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))

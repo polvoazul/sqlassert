@@ -10,7 +10,7 @@ from sqlassert.sql_parse import (
     SqlassertToken,
     _unresolved_markers,
     sqlassert_dialect,
-    unique_set_markers,
+    column_markers,
 )
 
 
@@ -163,7 +163,7 @@ def test_a_unique_set_assertion_marker_attaches_at_every_select_expression_site(
         for statement in statements
         if statement is not None
         for select in statement.find_all(exp.Select)
-        for markers in [unique_set_markers(select)]
+        for markers in [column_markers(select)]
         if markers
     ]
     assert len(found) == expected_count, label
@@ -176,7 +176,7 @@ def test_a_primary_key_flavored_marker_is_recognized():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = unique_set_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (("key", ("id",), 1),)
 
 
@@ -186,7 +186,7 @@ def test_stacked_unique_set_assertion_markers_are_all_recognized():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = unique_set_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (("unique", ("a",), 1), ("key", ("a", "b"), 1))
 
 
@@ -217,5 +217,5 @@ def test_a_declaration_marker_is_recognized_as_a_declared_kind():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = unique_set_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (("declared-unique", ("a",), 1), ("unique", ("a", "b"), 1))

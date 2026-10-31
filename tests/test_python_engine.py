@@ -7,7 +7,8 @@ from sqlassert.ir.convert import IrParser
 from sqlassert.properties import NonNullColumn, Property, UniqueJoin, UniqueSet
 from sqlassert.python_engine import Engine, Result, all_of, analysis, any_of, cache, current_arena, unknown
 from sqlassert.rules.unique_join import _multiplicity_columns_rhs, unique_join
-from sqlassert.rules.uniqueness import non_null_column, unique_set
+from sqlassert.rules.nullability import non_null_column
+from sqlassert.rules.uniqueness import unique_set
 from sqlassert.sql_parse import SqlParser
 
 

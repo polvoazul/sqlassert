@@ -57,7 +57,11 @@ class OpaqueExpression(ScalarExpr):
 
 
 class Constant(ScalarExpr):
-    """A literal whose concrete value is irrelevant to current proofs."""
+    """A non-null literal whose concrete value is irrelevant to current proofs."""
+
+
+class NullLiteral(ScalarExpr):
+    """The NULL literal, kept apart from Constant so it is never taken as non-null."""
 
 
 class AnyAggregate(ScalarExpr):

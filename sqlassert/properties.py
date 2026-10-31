@@ -13,6 +13,12 @@ class NonNullColumn(Property):
     column: OutputColumn
 
 
+class NonNullColumns(Property):
+    """Every listed column is non-null: one assertion for a whole column list."""
+
+    columns: frozenset[OutputColumn]
+
+
 class UniqueSet(Property):
     columns: frozenset[OutputColumn]
 
