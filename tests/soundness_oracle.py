@@ -185,7 +185,7 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
     return Judgement(checked, tuple(counterexamples), tuple(skipped), tuple(searches))
 
 
-def _undeclared_tables(program: ir.Program) -> tuple[exp.Create, ...]:
+def _undeclared_tables(program: ir.Program) -> tuple[exp.Expression, ...]:
     """A table for each one the program reads without a complete `CREATE`: the
     columns it reads, as INTEGER (analysis assumes nothing about their types).
     A declared table keeps its own `CREATE`."""
@@ -441,7 +441,7 @@ class _Table:
 class _Database:
     """One in-memory DuckDB holding the program's DDL, refilled per example."""
 
-    def __init__(self, parsed: ParsedProgram, undeclared: tuple[exp.Create, ...] = ()) -> None:
+    def __init__(self, parsed: ParsedProgram, undeclared: tuple[exp.Expression, ...] = ()) -> None:
         self.connection = duckdb.connect(config={"threads": 1})
         self._create((*parsed.create_statements, *undeclared))
         numbers, strings = _literals(parsed)
