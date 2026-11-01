@@ -130,9 +130,37 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
         case ir.Equality() | ir.IsNull() | ir.IsNotNull():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []
         case ir.SimpleCase():
-            return {ORGANIC: unknown("Nullability of a CASE is not inferred", expression)}, []
+            return _case_sources(expression)
         case _:
             raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
+
+
+def _case_sources(case: ir.SimpleCase) -> tuple[_Sources, list[Result]]:
+    """A CASE is NULL when the arm it takes is: any THEN, or ELSE (NULL when
+    missing) unless no row reaches it, the operand non-null and every value
+    of its domain listed by a WHEN (issue 32)."""
+    from sqlassert.rules.domain import _else_unreachable  # Domains read non-nullness.
+
+    sources: _Sources = {}
+    premises: list[Result] = []
+
+    def add(reason: str, arm: ir.ScalarExpr, *why: Result) -> None:
+        arm_sources, arm_premises = _expression_sources(arm)
+        premises.extend(arm_premises)
+        for source, evidence in arm_sources.items():
+            named = Result(False, reason, (arm,), [evidence, *why], kind="unknown")
+            sources[source] = sources[source] | named if source in sources else named
+
+    for index, then in enumerate(case.thens, 1):
+        add(f"THEN arm {index} may be NULL", then)
+    unreachable = _else_unreachable(case)
+    if unreachable.value:
+        premises.append(Result(True, "No row reaches ELSE", (case,), [unreachable]))
+    else:
+        missing = isinstance(case.default, ir.NullLiteral) and case.default.origin == case.origin
+        reason = "With no ELSE, a row no WHEN matches is NULL" if missing else "ELSE may be NULL"
+        add(reason, case.default, unreachable)
+    return sources, premises
 
 
 def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, list[Result]]:

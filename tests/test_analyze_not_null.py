@@ -270,3 +270,33 @@ def test_an_unknown_names_each_null_source():
     explanation = evidence.explain()
     assert "nullable in users" in explanation
     assert "padded by the LEFT JOIN" in explanation
+
+
+# Simple CASE (issue 32) ------------------------------------------------------
+
+CASES = """
+CREATE TABLE t (id INTEGER PRIMARY KEY, s VARCHAR NOT NULL, n VARCHAR, x INTEGER);
+"""
+ENUMS = "WITH d AS (SELECT * FROM t /**DECLARE ENUM(s IN ('a', 'b'))**/ /**DECLARE ENUM(n IN ('a', 'b'))**/) "
+
+
+@pytest.mark.parametrize(
+    ("label", "sql", "outcome", "reason"),
+    [
+        ("non-null arms", "SELECT CASE s WHEN 'a' THEN 1 ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/", Outcome.PROVED, None),
+        ("nullable operand, ELSE", "SELECT CASE n WHEN 'a' THEN 1 ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/", Outcome.PROVED, None),
+        ("exhaustive, no ELSE", ENUMS + "SELECT CASE s WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS k FROM d /**ASSERT NOT NULL(k)**/", Outcome.PROVED, None),
+        ("NULL THEN", "SELECT CASE s WHEN 'a' THEN NULL ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/", Outcome.UNKNOWN, "THEN arm 1 may be NULL"),
+        ("nullable THEN", "SELECT CASE s WHEN 'a' THEN 1 WHEN 'b' THEN x ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/", Outcome.UNKNOWN, "THEN arm 2 may be NULL"),
+        ("NULL ELSE", "SELECT CASE s WHEN 'a' THEN 1 ELSE NULL END AS k FROM t /**ASSERT NOT NULL(k)**/", Outcome.UNKNOWN, "ELSE may be NULL"),
+        ("no ELSE, not exhaustive", "SELECT CASE s WHEN 'a' THEN 1 END AS k FROM t /**ASSERT NOT NULL(k)**/", Outcome.UNKNOWN, "With no ELSE"),
+        ("no ELSE, nullable operand", ENUMS + "SELECT CASE n WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS k FROM d /**ASSERT NOT NULL(k)**/", Outcome.UNKNOWN, "With no ELSE"),
+    ],
+)
+def test_a_simple_case_is_non_null_when_every_arm_it_can_take_is(label: str, sql: str, outcome: Outcome, reason: str | None):
+    report = analyze(CASES + sql)
+
+    assert [assertion.outcome for assertion in report.assertions] == [outcome], label
+    if reason is not None:
+        evidence = report.assertions[0].evidence
+        assert evidence is not None and reason in evidence.explain(), label
