@@ -17,8 +17,9 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   Done in issue 24: `Join.conjuncts` holds the whole condition, recognized as
   in `Filter`; the rest are opaque conjuncts the rules read only as "may
   depend on anything". Ranges, `LIKE`, and `OR` are still not reasoned about.
-- [ ] Scalar expressions are column, literal, `NULL`, or opaque. `CASE`,
-  `COALESCE`, `CAST`, and function calls are opaque, so no injectivity
+- [ ] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
+  `CASE` (`ir.SimpleCase`, issue 18), or opaque. Searched `CASE`, `CAST`, and
+  function calls are opaque, so no injectivity
   (`id + 0`, lossless casts) and no non-nullness (`coalesce(x, 0)`, `count(*)`).
 - [ ] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:

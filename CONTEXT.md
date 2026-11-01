@@ -29,6 +29,12 @@ with guaranteed matching (at least one): a non-null left column with Referential
 Coverage onto the right predicate column.
 _Avoid_: Lookup join, mandatory join, 1:1 join
 
+**Exhaustive Case Assertion**:
+An assertion that a simple `CASE` has an explicit `WHEN` arm for every value
+of its operand's Enumerated Domain, so no non-null operand value reaches
+`ELSE`. `ELSE` never counts as an arm; a NULL operand is left to `NOT NULL`.
+_Avoid_: Complete case, total match
+
 **Unique Set Assertion**:
 An assertion that a named set of a Select Expression's output columns forms a Unique Set, or, when asserted as a key, a Candidate Key.
 _Avoid_: Unique constraint, primary key marker, uniqueness check
@@ -194,9 +200,9 @@ _Avoid_: Select-like expression, query, statement
 
 **Attachment Site**:
 A place in the SQL text where a Property Marker can be written: right before a
-JOIN, or right after the last token of a Select Expression. Every marker
-attaches at one; `suggest` names each by its line and the JOIN or Select
-Expression it marks.
+JOIN, right after the last token of a Select Expression, or right before a
+simple `CASE`. Every marker attaches at one; `suggest` names each JOIN or
+Select Expression site by its line and what it marks.
 _Avoid_: Marker position, anchor
 
 **Create Statement**:

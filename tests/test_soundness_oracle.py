@@ -342,6 +342,76 @@ def test_two_distinct_literals_can_equal_one_string():
     assert len(judgement.counterexamples) == 1
 
 
+def test_a_true_exhaustive_case_proof_has_no_counterexample():
+    sql = """
+        CREATE TABLE orders (status VARCHAR);
+        SELECT /**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END AS n
+        FROM orders WHERE status IN ('new', 'paid')
+    """
+    report = analyze(sql)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+    judgement = judged(sql, report)
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+
+
+def test_a_false_exhaustive_case_claim_is_refuted_by_a_value_with_no_arm():
+    # ELSE catches the value, but does not count as an arm.
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (status VARCHAR);
+        SELECT /**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 ELSE 0 END AS n
+        FROM orders WHERE status IN ('new', 'paid')
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.witness == [("paid",)]
+
+
+def test_a_null_operand_never_violates_an_exhaustive_case():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (status VARCHAR);
+        SELECT /**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 END AS n FROM orders WHERE status IS NULL
+    """))
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+
+
+def test_a_false_exhaustive_case_claim_over_a_cte_is_refuted_with_its_context():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (status VARCHAR);
+        WITH o AS (SELECT status FROM orders WHERE status IN ('new', 'paid'))
+        SELECT /**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 END AS n FROM o
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.witness == [("paid",)]
+
+
+def test_a_false_exhaustive_case_claim_in_where_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (id INTEGER, status VARCHAR);
+        SELECT id FROM orders WHERE /**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 END = 1
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_a_false_exhaustive_case_claim_in_a_join_is_refuted_on_the_pairs_it_compares():
+    # Evaluated on every pair the ON condition sees, matched or not.
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (id INTEGER, status VARCHAR);
+        CREATE TABLE items (order_id INTEGER);
+        SELECT o.id FROM orders o LEFT JOIN items i
+          ON /**ASSERT EXHAUSTIVE**/ CASE o.status WHEN 'new' THEN 1 END = i.order_id
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["items"] != []
+
+
 def test_instances_that_break_a_property_declaration_are_rejected():
     # The declaration is a trusted assumption, so data violating it is no
     # counterexample to the proof built on it.
