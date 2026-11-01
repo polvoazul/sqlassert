@@ -128,7 +128,7 @@ Dependencies come from keys, equalities and constants in `WHERE` and `ON`, group
 
 ### Enum
 
-`/**ASSERT ENUM(status IN ('new', 'paid'))**/` proves that every non-null value of `status` is one of the listed strings. NULL is never in the set: `NOT NULL` governs it separately. One marker names one column, and lists distinct, non-null string literals.
+`/**ASSERT ENUM(status IN ('new', 'paid'))**/` proves that every non-null value of `status` is one of the listed values. NULL is never in the set: `NOT NULL` governs it separately. One marker names one column, and lists distinct, non-null string, numeric, and boolean literals, which may be mixed: `/**ASSERT ENUM(priority IN (1, 2, 3))**/`, `/**DECLARE ENUM(active IN (TRUE))**/`. Anything else -- `NULL`, an empty list, a repeated value, `DATE '2020-01-01'`, a column, an expression -- is reported as a malformed marker.
 
 ```sql
 with o as (
@@ -139,7 +139,9 @@ select status from o where status <> 'void' and status in ('new', 'paid')
 /**ASSERT ENUM(status IN ('new', 'paid'))**/;
 ```
 
-Domains come from `DECLARE ENUM` and external Knowledge, string literals, and `coalesce` of enumerated arguments, and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated. Numeric and boolean values are not supported yet.
+Domains come from `DECLARE ENUM` and external Knowledge, literals, and `coalesce` of enumerated arguments, and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated.
+
+A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side; strings are assumed to be compared as text.
 
 ### Declaring what you know
 

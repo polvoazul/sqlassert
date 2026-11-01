@@ -48,11 +48,16 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   its column list at `->`; the parser records the determinant as the
   `ColumnMarker`'s `columns` and the rest as its `dependent`. An Enumerated
   Domain marker (`/**ASSERT ENUM(status IN ('new', 'paid'))**/`) names one
-  column, recorded as `columns`, and its literals as SQLGlot parsed them, as
-  `values`; the parser accepts only distinct string literals, and the IR
-  parser turns each into an `ir.LiteralValue` (a type plus canonical text, so
-  typed values can join without colliding with strings). An `ir.Constant`
-  carries the same `LiteralValue` when its type is modelled.
+  column, recorded as `columns`, and its literals as `values`: each an
+  `ir.LiteralValue` (a type -- string, numeric, or boolean -- plus canonical
+  text) built by `sql_parse.literal_value`, so a number never collides with a
+  string spelled alike. The parser rejects any other expression, NULL, and a
+  repeated typed value. An `ir.Constant` carries the same `LiteralValue` when
+  its type is modelled. A number's text is its spelling, normalized only
+  where the SQL type is unchanged (an integer's sign and leading zeros); see
+  `LiteralValue`. `rules/domain.py` covers by identity but meets domains by
+  `_may_coincide`, since implicit casts can make one value equal two distinct
+  literals.
   Consumed at the one grammar production common to a Root Select, a CTE
   definition, a view body, and a subquery (`_parse_select_query`), so a
   marker means the same thing regardless of which of these it sits on.

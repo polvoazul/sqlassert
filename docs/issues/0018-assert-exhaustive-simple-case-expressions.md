@@ -14,7 +14,7 @@ supported literal.
 
 ## Blocked by
 
- [#17](0017-complete-typed-enum-support.md) (Task 5) — Complete typed `ENUM` support.
+- Issue 17 (done) — Complete typed `ENUM` support.
 
 ## Acceptance criteria
 

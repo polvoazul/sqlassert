@@ -4,6 +4,7 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.tokens import TokenType
 
+from sqlassert.ir import LiteralValue
 from sqlassert.sql_parse import (
     ColumnMarker,
     ParsedProgram,
@@ -268,15 +269,25 @@ def test_an_unrecognized_marker_lists_the_foreign_key_shape():
     assert "/**ASSERT FOREIGN KEY(...) REFERENCES relation(...)**/" in program.diagnostics[0].message
 
 
-def test_an_enum_marker_records_its_column_and_string_literals():
-    program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT ENUM(a IN ('x', 'y'))**/ /**DECLARE ENUM(a IN ('x'))**/")
+def test_an_enum_marker_records_its_column_and_typed_literals():
+    program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT ENUM(a IN ('x', 1, -2.50, 1e3, TRUE))**/ /**DECLARE ENUM(a IN (+007))**/")
 
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert [(m.kind, m.columns, [v.this for v in m.values]) for m in markers] == [
-        ("enum", ("a",), ["x", "y"]),
-        ("declared-enum", ("a",), ["x"]),
+    assert [(m.kind, m.columns, m.values) for m in markers] == [
+        (
+            "enum",
+            ("a",),
+            (
+                LiteralValue(type="string", text="x"),
+                LiteralValue(type="numeric", text="1"),
+                LiteralValue(type="numeric", text="-2.50"),
+                LiteralValue(type="numeric", text="1e3"),
+                LiteralValue(type="boolean", text="TRUE"),
+            ),
+        ),
+        ("declared-enum", ("a",), (LiteralValue(type="numeric", text="7"),)),
     ]
 
 

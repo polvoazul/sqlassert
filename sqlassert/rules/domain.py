@@ -9,9 +9,20 @@ domains of every column in its equality group: on every row they carry one
 value, or are all NULL. An unbounded domain is `None`.
 
 NULL is outside every domain, so padding and NULL literals never widen one.
+
+Members are typed literals, and covering is by identity: a value is covered
+only by an identical literal, so numeric 1 never covers string '1', nor 1.0.
+Intersecting is not by identity, because a column is compared with a literal
+after implicit casts, so two distinct literals can both equal its value: a
+FLOAT equals 0.1 and 0.100000001, a VARCHAR '1.4' equals 1 and 1.4. A meet
+therefore keeps every value that may equal one on each other side
+(`_may_coincide`), which only ever keeps more than the true intersection.
 """
 
 from __future__ import annotations
+
+from decimal import Decimal
+from fractions import Fraction
 
 from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
@@ -46,7 +57,7 @@ def _domain(column: ir.OutputColumn) -> Result[Domain]:
     known = [own for own in owns if own.value is not None]
     if not known:
         return Result(None, f"No finite domain is known for {column.name}", (column,), owns)
-    value = frozenset.intersection(*(own.value for own in known if own.value is not None))
+    value = _meet([own.value for own in known if own.value is not None])
     premises = [group, *known] if len(members) > 1 else known
     return Result(value, f"{column.name} is one of {_render(value)}", (column,), premises)
 
@@ -148,9 +159,73 @@ def _intersection(column: ir.OutputColumn, sources: list[Result[Domain]]) -> Res
         return Result(None, f"No finite domain is known for {column.name}", (column,), sources)
     if len(known) == 1:
         return known[0]
-    value = frozenset.intersection(*(source.value for source in known if source.value is not None))
+    value = _meet([source.value for source in known if source.value is not None])
     return Result(value, f"{column.name} is one of {_render(value)}", (column,), known)
 
 
+def _meet(domains: list[frozenset[ir.LiteralValue]]) -> frozenset[ir.LiteralValue]:
+    """The first domain's values that may equal a value of every other one.
+
+    A column's value equals some member of each domain, so the member of the
+    first it equals may coincide with one of every other and is kept.
+    """
+    first, *others = domains
+    return frozenset(value for value in first if all(any(_may_coincide(value, other) for other in domain) for domain in others))
+
+
+# A FLOAT keeps 24 significant bits: two numbers rounding to one FLOAT differ
+# by at most its precision relative to their size, with margin for a literal
+# rounded through DOUBLE first, or are both too small to tell from zero.
+_FLOAT_RELATIVE = Fraction(1, 2**22)
+_FLOAT_ABSOLUTE = Fraction(1, 2**148)
+
+
+def _may_coincide(first: ir.LiteralValue, second: ir.LiteralValue) -> bool:
+    """Whether some column value may equal both literals.
+
+    Literals of different types may: SQL casts one side, so '1' and 1 both
+    equal INTEGER 1. Distinct booleans never do. Distinct strings are taken
+    never to: a string is assumed compared as text. Distinct numbers may when
+    one value rounds to both.
+    """
+    if first == second or first.type != second.type:
+        return True
+    match first.type:
+        case "string" | "boolean":
+            return False
+        case "numeric":
+            return _numbers_may_coincide(first.text, second.text)
+        case _:
+            raise ValueError(f"Unhandled literal type: {first.type}")
+
+
+def _numbers_may_coincide(first: str, second: str) -> bool:
+    gap = abs(_number(first) - _number(second))
+    # A string is cast to an exact literal's type, rounding half away from
+    # zero to its scale: one value rounds to both when the cells overlap.
+    if gap < _half_step(first) + _half_step(second):
+        return True
+    # A FLOAT or DOUBLE is compared at its own precision.
+    return gap <= max(abs(_number(first)), abs(_number(second))) * _FLOAT_RELATIVE or gap <= _FLOAT_ABSOLUTE
+
+
+def _half_step(text: str) -> Fraction:
+    """Half the rounding step of a numeric literal's SQL type: an integer's
+    is one, a decimal's its last digit, and an exponent form is a DOUBLE."""
+    if "e" in text:
+        return Fraction(0)
+    _, _, decimals = text.partition(".")
+    return Fraction(1, 2 * 10 ** len(decimals))
+
+
+def _number(text: str) -> Fraction:
+    return Fraction(Decimal(text))
+
+
 def _render(values: frozenset[ir.LiteralValue]) -> str:
-    return ", ".join(value.sql() for value in sorted(values)) if values else "no non-null value"
+    return ", ".join(value.sql() for value in sorted(values, key=_order)) if values else "no non-null value"
+
+
+def _order(value: ir.LiteralValue) -> tuple[str, Fraction, str]:
+    """Booleans, then numbers by value, then strings: a fixed reading order."""
+    return value.type, _number(value.text) if value.type == "numeric" else Fraction(0), value.text

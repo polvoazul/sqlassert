@@ -56,19 +56,32 @@ class OpaqueExpression(ScalarExpr):
     description: str
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class LiteralValue:
     """A non-null SQL literal's value: its SQL type and canonical text.
 
-    Two values are the same only when both match, so a typed value never
-    collides with a string spelled alike. Only "string" exists for now.
+    `type` is "string", "numeric", or "boolean". Two values are the same only
+    when both match, so numeric 1 never collides with string '1'. A string's
+    text is its contents; a boolean's is TRUE or FALSE. A numeric literal's
+    text is its spelling, which carries its SQL type: an integer is written
+    without sign or leading zeros (`+007` is `7`), while a decimal keeps its
+    scale (`1.0` is not `1`) and an exponent form stays a double (`1e0` is
+    not `1`). Those differ in how a column is compared with them, so only
+    identical literals are the same value; whether distinct ones can equal one
+    value is a separate, conservative question (`rules/domain.py`).
     """
 
     type: str
     text: str
 
     def sql(self) -> str:
-        return "'" + self.text.replace("'", "''") + "'"
+        match self.type:
+            case "string":
+                return "'" + self.text.replace("'", "''") + "'"
+            case "numeric" | "boolean":
+                return self.text
+            case _:
+                raise ValueError(f"Unhandled literal type: {self.type}")
 
 
 class Constant(ScalarExpr):
