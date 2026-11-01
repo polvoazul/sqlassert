@@ -168,6 +168,14 @@ _Avoid_: Reference, relationship, join key
 A Property of a relation, written `X → Y` (`DETERMINES`): any two rows that agree on the columns X also agree on the columns Y, for every database the schema allows. Strict when NULL counts as agreeing with NULL; lax when it holds only on rows whose X columns are all non-null.
 _Avoid_: Correlation, derived column
 
+**Enumerated Domain**:
+A Property of one column: every non-null value it takes belongs to a finite set
+of literals, for every database the schema allows. It says nothing about which
+values occur (occurrence), and NULL is outside it, governed by `NOT NULL`
+(nullability). It is a structural claim sqlassert proves or is told, not a
+database enum type, though a catalog's enum type could supply it as Knowledge.
+_Avoid_: Enum type, value set, check constraint
+
 **Equality Group**:
 An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE` and inner-join `ON` `a = b`), never by an outer join's `ON`. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
 _Avoid_: Equivalence class, alias set

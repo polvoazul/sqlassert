@@ -377,8 +377,9 @@ with its line.
 - On a row an outer join padded, a group of the padded side is NULL in every
   member: value-equal, NULL agreeing with NULL. Consumers read non-null
   values (Enumerated Domains, `MATCH SIMPLE` Foreign Keys), so this is enough.
-- Not yet: constants (`a = literal`; the IR's `Constant` carries no value),
-  and the ON of a proved Exactly One LEFT join, which pads nothing.
+- Not yet: constants (`a = literal` merges nothing; Enumerated Domains read
+  such conjuncts directly), and the ON of a proved Exactly One LEFT join,
+  which pads nothing.
 
 ### Kept outside the FD closure
 
@@ -404,10 +405,10 @@ the canonical statement, and `@analysis` asserts it on every call:
 5. Closure, and `DETERMINES` assertions.
 6. Unique sets.
 7. Foreign keys.
+8. Enumerated domains (equality groups, then each member's own domain).
 
 Predicate extraction needs no stratum: it is a plain helper over the IR's
-conjuncts. Domains (ENUM) slot in above unique sets when they arrive. Two
-exceptions to plan for:
+conjuncts. Two exceptions to plan for:
 
 - **Correlated subqueries** make the inner relation depend on the outer one
   and vice versa, a cycle across relations. Lower them as a dependent join
