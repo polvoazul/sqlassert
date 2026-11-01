@@ -66,6 +66,12 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   evaluator body. The arena rejects nested analysis sessions.
 - `reporting.py` defines the durable Report values.
 - `rules/` contains the analysis functions.
+- `suggest.py` composes the same stages as `main.py` to list provable
+  Properties as markers. The IR keeps no SQLGlot nodes, so it pairs each JOIN
+  and Select with its IR node by subclassing `IrParser` at the two points
+  where markers attach, and reads the marker offset `sql_parse.py` records on
+  every Join and Select. It proves candidates through `Arena.prove` only, never
+  through internal analysis functions. `__main__.py` is the CLI over it.
 - `discovery/duckdb` is a future adapter that binds database metadata to IR
   nodes and produces Properties accepted as knowledge; it is not part of the MVP engine. See
   [#14](https://github.com/polvoazul/sqlassert/issues/14).
@@ -92,3 +98,7 @@ The public shape is:
 
 `sql` is the complete SQL Program. Analysis returns data and never prints.
 Assertion evidence supports `.explain()`.
+
+`suggest(sql, *, dialect="duckdb", max_size=3) -> SuggestionReport` lists the
+Properties `analyze` would prove if their markers were pasted in. Like
+`analyze`, it returns data and never prints.
