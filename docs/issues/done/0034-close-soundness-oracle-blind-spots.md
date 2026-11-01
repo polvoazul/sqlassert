@@ -1,6 +1,6 @@
 # 34. Close the soundness oracle's blind spots
 
-- **State:** open
+- **State:** done
 - **Labels:** ready-for-agent
 - **Created:** 2026-11-01
 
@@ -27,5 +27,15 @@ judged against DuckDB:
 
 ## Acceptance criteria
 
-- [ ] The oracle's skip count is 0, or each remaining skip is listed with why.
-- [ ] 0 counterexamples.
+- [x] The oracle's skip count is 0, or each remaining skip is listed with why.
+- [x] 0 counterexamples.
+
+## Done
+
+The oracle's skip count is 0 (697 programs, 480 PROVED assertions judged).
+The two `per_user` self-joins got aliases; the self-referencing view test now
+creates `plain_tree`. The oracle creates every schema a qualified table names,
+runs `ALTER TABLE ... ADD UNIQUE` (as a unique index) after the other DDL so
+`SET NOT NULL` on the same column works, and prefixes a checked Select's own
+CTEs to its violation query, so a Foreign Key onto a CTE is judged by its
+`NOT EXISTS` coverage query.
