@@ -170,3 +170,14 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
   Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
   passes), which is exactly what ENUM means.
+- [ ] **R11** (§3.2.4, footnote 9): only `=`, `IN (...)` and `IS NOT NULL`
+  reject NULL. Paulley counts every false-interpreted comparison as
+  null-intolerant: `<`, `>`, `<=`, `>=`, `<>`, `BETWEEN`, `LIKE` with column
+  operands. `WHERE total > 0` should make `total` non-null (and enable the
+  INNER JOIN suggestion). Cheapest and most common of these rows.
+- [ ] **R4** (Claim 20): `WHERE b = a + 1` should give `a → b` when the
+  expression is deterministic and its inputs compare by identity (the same
+  rule as a computed column, `uniqueness._computed`).
+- [ ] **R10** (§3.2.4): `WHERE a = (uncorrelated scalar subquery)` makes `a`
+  constant (`∅ → a`).
+- [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.

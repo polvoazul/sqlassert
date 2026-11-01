@@ -58,6 +58,15 @@ CASES = {
     "C2": ("SELECT t.id, u.k FROM t CROSS JOIN u /**ASSERT UNIQUE(id, k)**/", PROVED),
     "C2-": ("SELECT t.id, u.k FROM t CROSS JOIN u /**ASSERT UNIQUE(id)**/", UNKNOWN),
     "C3": ("SELECT t.id FROM t CROSS JOIN (SELECT count(*) AS n FROM v) AS c /**ASSERT UNIQUE(id)**/", PROVED),
+    # Restriction (§3.2.4).
+    "R1": ("SELECT id, a FROM t WHERE b = 1 /**ASSERT UNIQUE(id)**/", PROVED),
+    "R2": ("WITH s AS (SELECT * FROM t /**DECLARE DETERMINES(a -> b)**/ /**DECLARE DETERMINES(b -> c)**/) SELECT a, b, c FROM s WHERE b IS NOT NULL /**ASSERT DETERMINES(a -> c)**/", PROVED),
+    "R5": ("SELECT a, b FROM t WHERE a = b /**ASSERT DETERMINES(a -> b)**/", PROVED),
+    "R7": ("SELECT a FROM t WHERE a IS NOT NULL /**ASSERT NOT NULL(a)**/", PROVED),
+    "R8": ("SELECT a, b FROM t WHERE a IS NULL /**ASSERT DETERMINES(b -> a)**/", PROVED),
+    "R11": ("SELECT a, b FROM t WHERE a = b /**ASSERT NOT NULL(a, b)**/", PROVED),
+    "R12": ("SELECT a FROM t WHERE EXISTS (SELECT 1 FROM v WHERE v.w = t.a) /**ASSERT NOT NULL(a)**/", PROVED),
+    "R13-": ("SELECT a FROM t WHERE a = 1 OR a = 2 /**ASSERT ENUM(a IN (1, 2))**/", UNKNOWN),
 }
 
 
