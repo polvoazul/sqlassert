@@ -23,6 +23,18 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   syntax, so a near miss is likelier a typo than a note, and a typo that was
   silently dropped would read to its author as a proof.
 
+  The case marker (`/**ASSERT EXHAUSTIVE**/`) is another fixed literal, written
+  inside an expression: the dialect adds its token to `PRIMARY_PARSERS`, so it
+  parses as a primary expression whose rule requires `CASE` next and records
+  the marker's line on the `exp.Case` (`exhaustive_line`). The same rule
+  rejects a searched CASE and any `WHEN` value that is not a distinct
+  non-null literal (`literal_value`), and the join and Select rules reject the
+  token where they meet it, so a misplaced marker is an unattached marker
+  rather than a bare parse failure. `ir/convert.py` lowers every simple CASE
+  to `ir.SimpleCase` and states `ExhaustiveCase` once per marked CASE it
+  lowers; one inside an opaque expression is reported unanalyzed.
+  `DECLARE EXHAUSTIVE` is not a marker: exhaustiveness is only ever proved.
+
   A column marker (`/**ASSERT UNIQUE(col, ...)**/`, `/**ASSERT NOT NULL(...)**/`,
   `/**DECLARE NOT NULL UNIQUE(...)**/`, and the rest of `_COLUMN_MARKER_OPENS`) carries a
   variable column list, so it cannot be one fixed `KEYWORDS` literal the way the
@@ -93,7 +105,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   Sources; `uniqueness.py` holds functional dependencies, their
   closure, and the Unique Set and Functional Dependency evaluators built on it;
   `unique_join.py`, `foreign_key.py`, and `exactly_one.py` build on those.
-  `domain.py` computes Enumerated Domains, intersected across Equality Groups. The
+  `domain.py` computes Enumerated Domains, intersected across Equality Groups,
+  and proves exhaustive simple CASEs from their operand's domain. The
   design and its soundness arguments are in `docs/functional-dependencies.md`.
 - `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
   `Join.conjuncts`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and

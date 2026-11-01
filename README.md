@@ -139,9 +139,29 @@ select status from o where status <> 'void' and status in ('new', 'paid')
 /**ASSERT ENUM(status IN ('new', 'paid'))**/;
 ```
 
-Domains come from `DECLARE ENUM` and external Knowledge, literals, and `coalesce` of enumerated arguments, and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated.
+Domains come from `DECLARE ENUM` and external Knowledge, literals, `coalesce` of enumerated arguments, and simple `CASE` expressions (see below), and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated.
 
 A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` with no `COLLATE`, in DuckDB or PostgreSQL (whose default collation is binary). A column of unknown type, including one read from a database catalog, is not narrowed that way.
+
+### Exhaustive CASE
+
+`/**ASSERT EXHAUSTIVE**/`, written immediately before a simple `CASE`, proves that every value in the operand's known Enumerated Domain has a `WHEN` arm of its own:
+
+```sql
+with o as (
+  select * from orders
+  /**DECLARE ENUM(status IN ('new', 'paid', 'void'))**/
+)
+select id,
+  /**ASSERT EXHAUSTIVE**/ case status when 'new' then 'open' when 'paid' then 'closed' when 'void' then 'closed' end as state
+from o;
+```
+
+`ELSE` never stands in for an arm: add a status to the declaration without a matching `WHEN`, and the assertion is `UNKNOWN` with "status may be 'refunded', which no WHEN arm lists". Arms cover values by identity, as for `ENUM`: `WHEN 1` does not cover `'1'` or `1.0`. A NULL operand matches no arm; that is `NOT NULL`'s business, asserted separately. With no known domain for the operand, the assertion is `UNKNOWN`.
+
+The marker may mark a `CASE` anywhere it is lowered: a select list, `WHERE`, or a join's `ON`. A `CASE` nested inside a function call or an aggregate is reported as unanalyzed. A searched `CASE WHEN ...`, a `WHEN` value that is not a string, numeric, or boolean literal (including `NULL`), a repeated `WHEN` value, and a marker not immediately followed by `CASE` are reported as malformed markers. Exhaustiveness can only be asserted: `/**DECLARE EXHAUSTIVE**/` is reported.
+
+A simple `CASE` takes one of its `THEN` values or its `ELSE` value (NULL when it has none), so its result has an Enumerated Domain when they all do. When the `CASE` is exhaustive and its operand `NOT NULL`, `ELSE` is unreachable and drops out: above, with `status` also declared `NOT NULL`, `state` is proved `ENUM(state IN ('open', 'closed'))` even if the `CASE` had `ELSE 'unknown'`.
 
 ### Declaring what you know
 
