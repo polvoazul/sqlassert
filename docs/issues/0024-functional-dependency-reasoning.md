@@ -86,7 +86,7 @@ Still open: whether `RelationFacts` reports minimal keys only (step 5).
 
 Follow-ups, not in this plan: a null-equal strict key Property (needs a name
 and a marker), window functions, deterministic and injective expressions,
-equality groups for value facts ([issue 16](0016-assert-and-declare-string-enum-domains.md)),
+equality groups for value facts ([issue 26](0026-equality-groups.md)),
 assertions from optimizer preconditions.
 
 ## Someday/maybe (from `TODO.md` Later Ideas)

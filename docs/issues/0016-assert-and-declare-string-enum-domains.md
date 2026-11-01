@@ -11,21 +11,16 @@ Authors can constrain a column's non-null values to a finite
 set of strings. Enumerated Domains can come from assertions, declarations, or
 external Knowledge and can prove compatible downstream domain assertions.
 
-## Design note: equality groups
+## Design note: domains cross equalities
 
 A domain crosses an equality: with `WHERE a = b` (or an inner-join
-`ON a = b`), `b`'s domain is `a`'s, intersected with its own. FDs cannot carry
-this: `a ↔ b` also holds for an injective `a = f(b)`, whose values differ. This
-is the first property that needs value equality, so introduce equality groups
-here: a union-find per relation over **strict** equalities only (inner-join ON,
-`WHERE`; never outer-join ON, whose equality fails on padded rows). Later users:
-constant values, Foreign Key propagation ([issue 20](0020-propagate-foreign-keys-through-queries.md)).
-See [`functional-dependencies.md`](../functional-dependencies.md#kept-outside-the-fd-closure).
-Needs `Filter` to carry its predicate ([issue 23](0023-close-ir-lowering-gaps.md)).
+`ON a = b`), `b`'s domain is `a`'s, intersected with its own. Read this from
+equality groups ([issue 26](0026-equality-groups.md)).
 
 ## Blocked by
 
-Task 2 (done) — Declare trusted Unique Sets.
+- Task 2 (done) — Declare trusted Unique Sets.
+- [issue 26](0026-equality-groups.md) — Equality groups.
 
 ## Acceptance criteria
 
