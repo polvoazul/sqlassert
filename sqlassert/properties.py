@@ -33,6 +33,16 @@ class UniqueJoin(Property):
     join: Join
 
 
+class ExactlyOneJoin(Property):
+    """A join in which every row of its left input matches exactly one right row.
+
+    The join neither multiplies nor removes left rows, and a left join
+    null-extends none of them.
+    """
+
+    join: Join
+
+
 class ReferentialCoverage(Property):
     """Every row whose referencing columns are all non-null has a row of the
     referenced relation equal to it on the paired referenced columns.

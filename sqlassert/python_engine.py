@@ -245,7 +245,7 @@ class Engine:
     def session(self, program: ir.Program, knowledge: tuple[Property, ...] = ()) -> Iterator[Arena]:
         assert _active.get(None) is None, "An analysis arena is already active"
         # Importing registers analysis functions; inference remains in rules/.
-        from sqlassert.rules import foreign_key, nullability, unique_join, uniqueness  # noqa: F401
+        from sqlassert.rules import exactly_one, foreign_key, nullability, unique_join, uniqueness  # noqa: F401
 
         arena = Arena(program, knowledge)
         token = _active.set(arena)
