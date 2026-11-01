@@ -33,7 +33,7 @@ from sqlglot import exp
 import sqlassert
 import sqlassert.main
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
-from sqlassert.properties import ForeignKey, FunctionalDependency
+from sqlassert.properties import EnumeratedDomain, ForeignKey, FunctionalDependency
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
 from sqlassert.provenance import SQL, Origin
@@ -53,7 +53,7 @@ KNOWN_UNSOUND: dict[tuple[str, str], str] = {}
 # The marker kind each asserted Property is written with.
 _MARKER_KINDS: dict[type[Property], str] = {
     UniqueSet: "unique", NonNullUniqueSet: "key", NonNullColumns: "not-null", ForeignKey: "foreign-key",
-    FunctionalDependency: "determines",
+    FunctionalDependency: "determines", EnumeratedDomain: "enum",
 }
 
 
@@ -185,6 +185,11 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         ):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower() for column in asserted}
+            values: set[str] | None = None
+        case EnumeratedDomain(column=column, values=domain):
+            kind = _MARKER_KINDS[type(property)]
+            columns = {column.name.lower()}
+            values = {value.text for value in domain}
         case _:
             raise TypeError(f"Unhandled asserted Property: {type(property).__name__}")
     select, marker = next(
@@ -193,6 +198,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         for select in statement.find_all(exp.Select)
         for marker in column_markers(select)
         if marker.kind == kind and {name.lower() for name in marker.columns} == columns
+        and (values is None or {value.this for value in marker.values} == values)
         and Origin(SQL, select.sql(dialect=dialect), marker.line) == origin
     )
     return _violation_query(select, marker)
@@ -233,6 +239,10 @@ def _violation_query(select: exp.Select, marker: ColumnMarker) -> str:
             dependent = ", ".join(_quoted(name) for name in marker.dependent)
             values = f"SELECT DISTINCT {', '.join(columns)}, {dependent} FROM {relation} WHERE {all_present}"
             query = f"SELECT {', '.join(columns)}, count(*) FROM ({values}) GROUP BY ALL HAVING count(*) > 1"
+        case "enum":
+            # NULL is outside the domain and never violates it.
+            listed = ", ".join(value.sql(dialect="duckdb") for value in marker.values)
+            query = f"SELECT {columns[0]} FROM {relation} WHERE {all_present} AND {columns[0]} NOT IN ({listed})"
         case "foreign-key" | "coverage":
             # MATCH SIMPLE: a row with a null referencing column is exempt.
             assert marker.referenced_relation is not None
@@ -448,13 +458,16 @@ def _respecting_keys(rows: list[tuple], keys: tuple[tuple[int, ...], ...]) -> li
 
 
 def _literals(parsed: ParsedProgram) -> tuple[list[object], list[str]]:
-    """The program's own literals, so its filters and join constants are hit."""
+    """The program's own literals, so its filters and join constants are hit,
+    and its ENUM markers' values, so instances can respect a declared domain."""
     numbers: list[object] = []
     strings: list[str] = []
     for statement in (*parsed.create_statements, parsed.root_select):
         if statement is None:
             continue
-        for literal in statement.find_all(exp.Literal):
+        marked = (value for select in statement.find_all(exp.Select) for marker in column_markers(select) for value in marker.values)
+        for literal in (*statement.find_all(exp.Literal), *marked):
+            assert isinstance(literal, exp.Literal)
             if literal.is_string:
                 strings.append(literal.this)
             else:

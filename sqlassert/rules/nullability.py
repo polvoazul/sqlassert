@@ -187,7 +187,7 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
         match conjunct:
             case ir.Equality(left=left, right=right):
                 operands: tuple[ir.ScalarExpr, ...] = (left, right)
-            case ir.IsNotNull(operand=operand):
+            case ir.IsNotNull(operand=operand) | ir.InList(operand=operand):
                 operands = (operand,)
             case _:
                 operands = ()  # IS NULL and opaque conjuncts may hold on NULL.

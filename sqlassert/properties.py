@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlassert.ir.model import Join, NodeMeta, OutputColumn
+from sqlassert.ir.model import Join, LiteralValue, NodeMeta, OutputColumn
 
 
 class Property(metaclass=NodeMeta, abstract=True):
@@ -34,6 +34,17 @@ class FunctionalDependency(Property):
 
     determinant: frozenset[OutputColumn]
     dependent: frozenset[OutputColumn]
+
+
+class EnumeratedDomain(Property):
+    """Every non-null value of `column` is one of `values`.
+
+    NULL is outside every domain (`NOT NULL` governs it), and a domain does
+    not claim that each of its values occurs.
+    """
+
+    column: OutputColumn
+    values: frozenset[LiteralValue]
 
 
 class UniqueJoin(Property):

@@ -126,6 +126,21 @@ Dependencies come from keys, equalities and constants in `WHERE` and `ON`, group
 
 `/**DECLARE DETERMINES(zip -> city)**/` states a business rule no schema shows. Closure uses it like any other dependency, so `(zip, street)` is unique when `(city, street)` is and `city` is non-null.
 
+### Enum
+
+`/**ASSERT ENUM(status IN ('new', 'paid'))**/` proves that every non-null value of `status` is one of the listed strings. NULL is never in the set: `NOT NULL` governs it separately. One marker names one column, and lists distinct, non-null string literals.
+
+```sql
+with o as (
+  select * from orders
+  /**DECLARE ENUM(status IN ('new', 'paid', 'void'))**/
+)
+select status from o where status <> 'void' and status in ('new', 'paid')
+/**ASSERT ENUM(status IN ('new', 'paid'))**/;
+```
+
+Domains come from `DECLARE ENUM` and external Knowledge, string literals, and `coalesce` of enumerated arguments, and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated. Numeric and boolean values are not supported yet.
+
 ### Declaring what you know
 
 When you know a fact the SQL cannot show -- say, an upstream job guarantees one row per `user_id` -- state it with `DECLARE` instead of `ASSERT`:
@@ -139,7 +154,7 @@ select * from orders
 /**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
 ```
 
-A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, `DECLARE NOT NULL UNIQUE`, and `DECLARE DETERMINES` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
+A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, `DECLARE NOT NULL UNIQUE`, `DECLARE DETERMINES`, and `DECLARE ENUM` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
 
 ## Usage
 
