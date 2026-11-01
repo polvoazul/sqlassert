@@ -22,6 +22,7 @@ duckdb = [
 ]
 test = [
   "duckdb>=1.1",
+  "hypothesis",
   "pytest",
 ]
 dev = [

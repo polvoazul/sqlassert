@@ -1,0 +1,228 @@
+"""The soundness oracle: its own behaviour, and the opt-in run over the suite.
+
+`test_no_proved_assertion_in_the_suite_has_a_counterexample` judges every
+`PROVED` assertion that any test produced in the same run; see
+`soundness_oracle` for how to run it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from soundness_oracle import KNOWN_UNSOUND, Judgement, judge, recorded_programs
+from sqlassert import Outcome, Report, analyze
+
+# Few examples: these programs are tiny, and the counterexamples they need
+# are found almost at once.
+EXAMPLES = 50
+
+
+def claimed_proved(sql: str) -> tuple[str, Report]:
+    """A Report claiming every assertion PROVED, true or not, to show the
+    oracle refutes a false claim."""
+    report = analyze(sql)
+    return sql, replace(report, assertions=tuple(replace(assertion, outcome=Outcome.PROVED) for assertion in report.assertions))
+
+
+def judged(sql: str, report: Report) -> Judgement:
+    return judge(sql, report, max_examples=EXAMPLES)
+
+
+def test_a_true_unique_join_proof_has_no_counterexample():
+    sql = """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+    """
+    report = analyze(sql)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+    judgement = judged(sql, report)
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+    assert judgement.skipped == ()
+
+
+def test_a_false_unique_join_claim_gets_a_two_row_counterexample():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT * FROM users /**ASSERT UNIQUE**/ JOIN sessions ON users.id = sessions.user_id
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.assertion_id == "assert_1"
+    # Shrunk to the minimal instance: one user matched by two sessions.
+    assert len(counterexample.instance["users"]) == 1
+    assert len(counterexample.instance["sessions"]) == 2
+    assert "sessions" in counterexample.explain()
+
+
+def test_a_false_unique_join_claim_over_a_cte_is_refuted_with_its_context():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+        WITH active AS (SELECT id FROM users WHERE id > 0)
+        SELECT * FROM active /**ASSERT UNIQUE**/ JOIN sessions ON active.id = sessions.user_id
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_a_false_claim_on_a_cte_is_refuted_with_the_ctes_before_it():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE sessions (user_id INTEGER);
+        WITH active AS (SELECT user_id FROM sessions WHERE user_id > 0),
+             per_user AS (SELECT user_id FROM active /**ASSERT UNIQUE(user_id)**/)
+        SELECT * FROM per_user
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_a_false_unique_set_claim_on_the_root_select_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT user_id FROM sessions /**ASSERT UNIQUE(user_id)**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert len(counterexample.instance["sessions"]) == 2
+
+
+def test_rows_with_null_never_violate_a_unique_set():
+    sql = """
+        CREATE TABLE t (id INTEGER UNIQUE);
+        SELECT id FROM t /**ASSERT UNIQUE(id)**/
+    """
+    report = analyze(sql)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+    assert judged(sql, report).counterexamples == ()
+
+
+def test_a_null_refutes_a_non_null_unique_set_claim():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE t (id INTEGER UNIQUE);
+        SELECT id FROM t /**ASSERT NOT NULL UNIQUE(id)**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["t"] == [(None,)]
+
+
+def test_a_null_refutes_a_not_null_claim():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE t (a INTEGER NOT NULL, b INTEGER);
+        SELECT a, b FROM t /**ASSERT NOT NULL(a, b)**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["t"] == [(1, None)]
+
+
+def test_a_false_claim_on_a_view_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE sessions (user_id INTEGER);
+        CREATE VIEW per_user AS SELECT user_id FROM sessions /**ASSERT UNIQUE(user_id)**/;
+        SELECT * FROM per_user
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_a_false_claim_on_a_from_subquery_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT * FROM (SELECT user_id FROM sessions /**ASSERT UNIQUE(user_id)**/) AS s
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_query_literals_join_the_value_domain():
+    # Only a literal outside the tiny default domain reaches the rows that collide.
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT user_id FROM sessions WHERE user_id = 47 /**ASSERT UNIQUE(user_id)**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["sessions"] == [(47,), (47,)]
+
+
+def test_instances_that_break_a_property_declaration_are_rejected():
+    # The declaration is a trusted assumption, so data violating it is no
+    # counterexample to the proof built on it.
+    sql = """
+        CREATE TABLE orders (user_id INTEGER);
+        CREATE TABLE sessions (user_id INTEGER);
+        CREATE VIEW latest AS SELECT user_id FROM sessions /**DECLARE UNIQUE(user_id)**/;
+        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN latest ON orders.user_id = latest.user_id
+    """
+    report = analyze(sql)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+    judgement = judged(sql, report)
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+
+
+def test_a_view_may_read_a_table_created_after_it():
+    judgement = judged(*claimed_proved("""
+        CREATE VIEW per_user AS SELECT user_id FROM sessions /**ASSERT UNIQUE(user_id)**/;
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT * FROM per_user
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_programs_reading_a_table_without_create_are_skipped():
+    judgement = judged(*claimed_proved("""
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+    """))
+
+    assert judgement.checked == 0
+    assert len(judgement.skipped) == 1
+
+
+def test_unknown_assertions_are_not_judged():
+    judgement = judged(*(lambda sql: (sql, analyze(sql)))("""
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT user_id FROM sessions /**ASSERT UNIQUE(user_id)**/
+    """))
+
+    assert judgement.checked == 0
+    assert judgement.counterexamples == ()
+
+
+@pytest.mark.soundness_oracle
+def test_no_proved_assertion_in_the_suite_has_a_counterexample(soundness_oracle_summary: list[str]):
+    programs = recorded_programs()
+    assert programs, "no analyze() call was recorded; run the whole suite with --soundness-oracle"
+
+    checked = 0
+    skipped: list[str] = []
+    found: list[str] = []
+    expected: list[str] = []
+    for program in programs:
+        judgement = judge(program.sql, program.report, dialect=program.dialect)
+        checked += judgement.checked
+        skipped.extend(f"{program.test_id}: {reason}" for reason in judgement.skipped)
+        for counterexample in judgement.counterexamples:
+            known = KNOWN_UNSOUND.get((program.test_id, counterexample.assertion_id))
+            target = expected if known else found
+            target.append(f"{program.test_id} ({known or 'new finding'})\n{counterexample.explain()}")
+
+    soundness_oracle_summary.append(
+        f"{len(programs)} programs, {checked} PROVED assertions judged, "
+        f"{len(found)} counterexamples, {len(expected)} known findings, {len(skipped)} skipped"
+    )
+    soundness_oracle_summary.extend(f"skipped {reason}" for reason in skipped)
+    soundness_oracle_summary.extend(f"known finding {finding}" for finding in expected)
+    assert not found, "PROVED assertions with counterexamples:\n\n" + "\n\n".join(found)
