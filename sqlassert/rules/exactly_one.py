@@ -1,16 +1,22 @@
 """Exactly One Joins: every left row matches exactly one right row.
 
-Two halves, reported separately. At most one match is a Unique Join. At least
-one match needs the left predicate column to be non-null, since a null equals
-nothing, and Referential Coverage from it onto the exact right predicate
-column. Only one direct column-to-column equality is supported: any further
-conjunct could remove the guaranteed match.
+Three halves, each reported. At most one match is a Unique Join, which further
+conjuncts only strengthen. At least one match needs every conjunct to be an
+equality between a left and a right column, and Referential Coverage of the
+left columns, as one tuple, onto the right columns they are paired with: a
+row of the right input carrying every left value then satisfies the whole ON.
+Coverage of each column separately does not give a row matching all of them.
+Any other conjunct may reject the covering row, so matching stays unknown.
+Non-null left columns: a null equals nothing, and `MATCH SIMPLE` exempts a
+row with any null referencing component. The input relations may be derived:
+coverage, uniqueness and nullability each follow their own propagation, and
+coverage onto a narrowed right input must hold on its own.
 """
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, analysis, all_of, unknown
 from sqlassert.rules.foreign_key import referential_coverage
-from sqlassert.rules.nullability import non_null_column
+from sqlassert.rules.nullability import non_null_columns
 from sqlassert.rules.unique_join import unique_join
 
 
@@ -18,21 +24,26 @@ from sqlassert.rules.unique_join import unique_join
 def exactly_one_join(join: ir.Join) -> Result[bool]:
     if join.kind not in {"inner", "left"}:
         return unknown("Exactly-one inference supports inner and left joins", join)
-    pair = _direct_equality(join)
-    if pair is None:
-        return unknown(
-            "Exactly-one inference needs a predicate that is a single column-to-column equality between the inputs",
-            join,
+    at_most_one = _half("At most one match: the right predicate columns cover a Unique Set", (join,), unique_join(join))
+    pairs, others = _cross_equalities(join)
+    if not pairs:
+        return at_most_one & unknown(
+            "At least one match needs an equality between a left and a right column", join
         )
-    left, right = pair
+    lefts = tuple(left for left, _ in pairs)
+    rights = tuple(right for _, right in pairs)
+    coverage = referential_coverage(lefts, rights)
+    if others:
+        coverage = all_of((coverage, *(
+            unknown("Only column-to-column equalities between the inputs are known to keep a covering row", conjunct)
+            for conjunct in others
+        )))
     return all_of((
-        _half("At most one match: the right predicate column covers a Unique Set", (join,), unique_join(join)),
+        at_most_one,
+        _half("At least one match: the left columns reference the right predicate columns", (*lefts, *rights), coverage),
         _half(
-            "At least one match: the left column references the right predicate column",
-            (left, right),
-            referential_coverage((left,), (right,)),
+            "Non-null left columns: a null left value matches no row", lefts, non_null_columns(frozenset(lefts))
         ),
-        _half("Non-null left column: a null left value matches no row", (left,), non_null_column(left)),
     ))
 
 
@@ -40,13 +51,23 @@ def _half(reason: str, subjects: tuple[object, ...], evidence: Result[bool]) -> 
     return Result(evidence.value, reason, subjects, [evidence], kind="all")
 
 
-def _direct_equality(join: ir.Join) -> tuple[ir.OutputColumn, ir.OutputColumn] | None:
-    """The (left, right) columns of a predicate that is exactly one equality between them."""
-    match join.conjuncts:
-        case (ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)),):
-            for left, right in ((first, second), (second, first)):
-                if left in join.left.output_columns and right in join.right.output_columns:
-                    return left, right
-            return None
-        case _:
-            return None  # A constant, expression, or opaque operand fixes no column pairing.
+def _cross_equalities(
+    join: ir.Join,
+) -> tuple[list[tuple[ir.OutputColumn, ir.OutputColumn]], list[ir.ScalarExpr]]:
+    """The (left, right) column pairs of ON's cross-input equalities, and every other conjunct."""
+    pairs: list[tuple[ir.OutputColumn, ir.OutputColumn]] = []
+    others: list[ir.ScalarExpr] = []
+    for conjunct in join.conjuncts:
+        match conjunct:
+            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)):
+                pair = next((
+                    (left, right) for left, right in ((first, second), (second, first))
+                    if left in join.left.output_columns and right in join.right.output_columns
+                ), None)
+                if pair is None:
+                    others.append(conjunct)  # Both columns on one side: a filter.
+                elif pair not in pairs:
+                    pairs.append(pair)
+            case _:
+                others.append(conjunct)  # A constant, expression, or opaque operand fixes no column pairing.
+    return pairs, others
