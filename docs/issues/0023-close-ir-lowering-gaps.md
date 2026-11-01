@@ -37,8 +37,21 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   so the IR stays a DAG; a subquery that refers to its outer relation directly
   would create a cycle across relations that the strata cannot order
   ([Strata](../functional-dependencies.md#strata)).
-- [ ] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
-  constraints, and other DDL are ignored.
+- [x] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
+  constraints, and other DDL are ignored. Done: `ALTER TABLE ... ADD PRIMARY
+  KEY / UNIQUE / FOREIGN KEY` (named or not), `ALTER COLUMN ... SET NOT NULL`,
+  and `CREATE UNIQUE INDEX` over plain columns become the Knowledge their
+  `CREATE TABLE` forms state (and a named `CONSTRAINT` in `CREATE TABLE`,
+  previously ignored, now counts too). A statement naming a table not created
+  earlier in the program is a `constraint-without-table` Diagnostic. Any other
+  `ALTER TABLE` action (ADD/DROP COLUMN, DROP NOT NULL, RENAME, CHECK, ...)
+  makes the whole statement `unsupported-statement`: it could invalidate
+  what is known. A partial or expression unique index is
+  `unsupported-create-statement` rather than silent: it is uniqueness the
+  author wrote and sqlassert drops, the same reasoning as for markers. A
+  plain index is accepted silently: it states nothing. Still open:
+  `ADD COLUMN`; a unique expression index over deterministic expressions does
+  imply its columns are unique, which is not used.
 - [ ] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Needs catalog input to `IrParser`, not just knowledge for the engine.

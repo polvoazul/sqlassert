@@ -1,6 +1,7 @@
 """Statements this engine does not model at all: neither a Create Statement of
-a supported kind (TABLE, VIEW) nor a root select. Each must be a durable
-diagnostic, never a crash and never a silently-dropped statement.
+a supported kind (TABLE, VIEW, INDEX), a constraint-adding ALTER TABLE, nor a
+root select. Each must be a durable diagnostic, never a crash and never a
+silently-dropped statement.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ def test_a_top_level_statement_that_is_neither_create_nor_select_is_diagnosed():
     assert [diagnostic.code for diagnostic in report.diagnostics] == [UNSUPPORTED_STATEMENT]
 
 
-def test_create_index_is_reported_and_dropped_not_silently_ignored():
+def test_a_plain_index_is_understood_and_states_nothing():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -36,9 +37,9 @@ def test_create_index_is_reported_and_dropped_not_silently_ignored():
         """
     )
 
-    assert [diagnostic.code for diagnostic in report.diagnostics] == [UNSUPPORTED_CREATE_STATEMENT]
-    # The index declares nothing this analysis models; the table's own
-    # PRIMARY KEY still proves the join.
+    # A non-unique index states nothing about the data, so nothing is lost;
+    # the table's own PRIMARY KEY still proves the join.
+    assert report.diagnostics == ()
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
 
 

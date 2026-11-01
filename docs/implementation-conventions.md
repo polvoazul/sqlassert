@@ -88,7 +88,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   parses identically with and without the customisation.
 - `ir/model.py` contains the immutable semantic model.
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
-  into that model.
+  into that model. Schema statements are read in program order:
+  `ALTER TABLE` and `CREATE UNIQUE INDEX` append table-level constraints, shaped
+  like `CREATE TABLE`'s own, to the table an earlier `CREATE TABLE` declared,
+  so one `_table_constraints` view feeds Unique Sets, primary keys, and
+  `REFERENCES` alike.
 - `python_engine.py` evaluates Python analysis functions with an analysis-scoped
   arena, caching, and trusted declarations. An analysis function returns
   `Result[Value]`: `.value` is its computed Value and its direct fields carry
