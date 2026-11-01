@@ -9,6 +9,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 import duckdb
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from sqlassert.discovery.fetcher import (
     DatabaseColumn,
@@ -31,7 +34,7 @@ WHERE NOT internal AND lower(view_name) IN (SELECT unnest($names))
 """
 
 _COLUMNS = """
-SELECT database_name, schema_name, table_name, column_name, is_nullable FROM duckdb_columns()
+SELECT database_name, schema_name, table_name, column_name, is_nullable, data_type FROM duckdb_columns()
 WHERE list_contains($paths, [database_name, schema_name, table_name])
 ORDER BY database_name, schema_name, table_name, column_index
 """
@@ -47,8 +50,16 @@ ORDER BY database_name, schema_name, table_name, constraint_index
 
 _VIEW = "SELECT sql FROM duckdb_views() WHERE database_name = ? AND schema_name = ? AND view_name = ?"
 
+# duckdb_columns() drops collations; the stored CREATE TABLE keeps them.
+_TABLE_SQL = """
+SELECT database_name, schema_name, table_name, sql FROM duckdb_tables()
+WHERE list_contains($paths, [database_name, schema_name, table_name])
+"""
+
 
 class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
+    type_dialect = "duckdb"
+
     def __init__(self, connection: duckdb.DuckDBPyConnection):
         self.connection = connection
 
@@ -92,8 +103,11 @@ class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
         foreign_keys: dict[_Path, list[DatabaseForeignKey]] = {}
         if tables:
             paths = [list(path) for path in tables]
-            for database, schema, table, column, nullable in self.connection.execute(_COLUMNS, {"paths": paths}).fetchall():
-                columns.setdefault((database, schema, table), []).append(DatabaseColumn(name=column, nullable=nullable))
+            collations = self._collations(paths)
+            for database, schema, table, column, nullable, data_type in self.connection.execute(_COLUMNS, {"paths": paths}).fetchall():
+                path = (database, schema, table)
+                collation = collations.get(path, {}).get(column.lower())
+                columns.setdefault(path, []).append(DatabaseColumn(column, nullable, data_type, collation))
             rows = self.connection.execute(_KEYS, {"paths": paths}).fetchall()
             for database, schema, table, constraint, members, referenced, referenced_members in rows:
                 path = (database, schema, table)
@@ -118,6 +132,33 @@ class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
             for path, kind in resolved.values()
         }
         return {name: metadata[path] for name, (path, _) in resolved.items()}
+
+    def _collations(self, paths: list[list[str]]) -> dict[_Path, dict[str, str]]:
+        """Each table's text columns by name, with the collation their
+        comparisons use: their own COLLATE, else the session's
+        `default_collation` (as set now: a session that runs the query with
+        another one compares differently)."""
+        row = self.connection.execute("SELECT current_setting('default_collation')").fetchone()
+        default = row[0] if row is not None and row[0] else None
+        collations: dict[_Path, dict[str, str]] = {}
+        for database, schema, table, sql in self.connection.execute(_TABLE_SQL, {"paths": paths}).fetchall():
+            try:
+                create = sqlglot.parse_one(sql, read="duckdb")
+            except SqlglotError as error:
+                raise DatabaseMetadataError(f"definition of table {database}.{schema}.{table} could not be parsed: {error}") from error
+            own: dict[str, str] = {}
+            for definition in create.find_all(exp.ColumnDef):
+                collate = next((
+                    constraint.args["kind"] for constraint in definition.constraints
+                    if isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint)
+                ), None)
+                kind = definition.args.get("kind")
+                text = isinstance(kind, exp.DataType) and kind.this in exp.DataType.TEXT_TYPES
+                collation = collate.this.name if collate is not None else default if text else None
+                if collation:
+                    own[definition.name.lower()] = collation
+            collations[(database, schema, table)] = own
+        return collations
 
     def _search_path(self, scope: DatabaseRelationMetadata | None) -> tuple[tuple[str, str], ...]:
         """Where an unqualified name is looked up: a view's own schema first, then temporary objects, then the session's path."""

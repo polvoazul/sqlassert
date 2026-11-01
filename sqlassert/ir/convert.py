@@ -536,8 +536,8 @@ class IrParser:
         return tuple(
             replace(
                 column, binary_text=self._is_binary_text(by_name[column.name]),
-                comparison_type=(comparison := self._comparison_type(by_name[column.name])),
-                identity_comparison=comparison is not None and exp.DataType.build(comparison, dialect=self.dialect).this in _IDENTITY_TYPES,
+                comparison_type=self._comparison_type(by_name[column.name]),
+                identity_comparison=self._identity_comparison(by_name[column.name]),
             )
             if column.name in by_name else column for column in columns
         ), complete
@@ -551,6 +551,12 @@ class IrParser:
         if kind.this in exp.DataType.TEXT_TYPES and not self._is_binary_text(definition):
             return None
         return kind.sql(dialect=self.dialect)
+
+    def _identity_comparison(self, definition: exp.ColumnDef) -> bool:
+        """Declared with a type whose equal values are identical (text only
+        when compared by identity, which `_comparison_type` already checks)."""
+        kind = definition.args.get("kind")
+        return self._comparison_type(definition) is not None and isinstance(kind, exp.DataType) and kind.this in _IDENTITY_TYPES
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
         """Declared VARCHAR or TEXT under the dialect's binary default collation.
@@ -1199,6 +1205,9 @@ class IrParser:
         unique_sets: list[tuple[str, ...]] = []
         non_null = {column.lower() for column in symbol.not_null}
         for definition in statement.this.find_all(exp.ColumnDef):
+            domain = _enum_type_values(definition)
+            if domain is not None and definition.name.lower() in columns:
+                facts.append(EnumeratedDomain(column=columns[definition.name.lower()], values=domain))
             kinds = [type(constraint.args.get("kind")) for constraint in definition.constraints]
             primary_key = exp.PrimaryKeyColumnConstraint in kinds
             unique = exp.UniqueColumnConstraint in kinds
@@ -1459,6 +1468,17 @@ _NOT_A_FUNCTION_OF_ITS_COLUMNS = (
     exp.Anonymous, exp.Rand, exp.Randn, exp.Uuid, exp.AggFunc, exp.Window, exp.Query, exp.Subquery,
     exp.CurrentDate, exp.CurrentDatetime, exp.CurrentTime, exp.CurrentTimestamp, exp.Placeholder, exp.Parameter,
 )
+
+
+def _enum_type_values(definition: exp.ColumnDef) -> frozenset[ir.LiteralValue] | None:
+    """The members of a column declared `ENUM('a', ...)`: its only non-null values."""
+    kind = definition.args.get("kind")
+    if not (isinstance(kind, exp.DataType) and kind.this == exp.DataType.Type.ENUM and kind.expressions):
+        return None
+    values = [literal_value(member) for member in kind.expressions]
+    if any(value is None or value.type != "string" for value in values):
+        return None
+    return frozenset(value for value in values if value is not None)
 
 
 def _is_scalar_aggregate(select: exp.Select) -> bool:
