@@ -13,7 +13,7 @@ or transformations that can invalidate guaranteed matching.
 
 ## Blocked by
 
- [#20](0020-propagate-foreign-keys-through-queries.md) (Task 8) — Propagate Foreign Keys through queries; #21 (done) (Task 9) —
+ #20 (done; see [functional-dependencies.md](../functional-dependencies.md#referential-coverage-through-queries)) (Task 8) — Propagate Foreign Keys through queries; #21 (done) (Task 9) —
 Assert simple `EXACTLY ONE` joins.
 
 ## Acceptance criteria
