@@ -19,10 +19,10 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - Property Declarations (`/**DECLARE UNIQUE(...)**/`, `/**DECLARE NOT NULL(...)**/`, `/**DECLARE NOT NULL UNIQUE(...)**/`) at the same attachment sites, trusted without proof and producing no assertion result.
 - `PROVED` and `UNKNOWN` outcomes.
 - Deterministic Python analysis with `Result` evidence.
+- DuckDB catalog hydration (`analyze_database`): columns, nullability, primary keys, unique constraints, and recursively expanded view definitions of the Relations a Program reaches.
 
 ## Limitations and Future Features
 
-- DuckDB schema and view autodiscovery ([#14](https://github.com/polvoazul/sqlassert/issues/14)).
 - `CREATE INDEX` and unique-index knowledge.
 - `RIGHT`, `FULL`, `SEMI`, `ANTI`, and `CROSS` join analysis.
 - Non-equality, null-safe, and `OR` join predicates.
