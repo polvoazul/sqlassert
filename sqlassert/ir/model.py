@@ -139,10 +139,16 @@ class IsNotNull(ScalarExpr):
 
 
 class OutputColumn(Node):
-    """One named output of one relational stage and the expression producing it."""
+    """One named output of one relational stage and the expression producing it.
+
+    `binary_text` marks a table column declared as text compared by identity:
+    VARCHAR or TEXT, with no COLLATE, in a dialect whose default collation is
+    binary. Equal to such a column, distinct strings are distinct values.
+    """
 
     name: str
     scalar_expr: ScalarExpr
+    binary_text: bool = False
 
     def get_relation(self, program: Program) -> RelationExpr:
         """The one relation in ``program`` whose output includes this column."""
