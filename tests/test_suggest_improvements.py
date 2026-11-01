@@ -266,6 +266,17 @@ def test_the_cli_lists_improvements_before_markers(tmp_path, capsys):
 
 # (original, rewritten, the improvement that justifies the rewrite)
 EQUIVALENT = [
+    # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
+        SCHEMA + "SELECT o.id FROM orders o",
+        Rewrite.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
+        SCHEMA + "SELECT o.id FROM orders o WHERE o.total = 1",
+        Rewrite.REDUNDANT_FILTER,
+    ),
     # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
@@ -423,3 +434,18 @@ def test_a_later_left_join_on_a_column_that_is_not_padded_does_not_chain():
         "LEFT JOIN orders o ON o.total = s.ts WHERE o.total = 1"
     )
     assert [label for rewrite, label, _ in improvements(sql) if rewrite is Rewrite.INNER_JOIN] == ["LEFT JOIN orders AS o"]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A nullable column: a NULL matches nothing.
+        "SELECT s.ts FROM sessions s WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id)",
+        # Another condition may reject the matching row.
+        "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id AND u.nick = 'x')",
+        # NOT EXISTS keeps no row here; it is not redundant.
+        "SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
+    ],
+)
+def test_a_subquery_filter_that_may_reject_a_row_is_kept(sql: str):
+    assert Rewrite.REDUNDANT_FILTER not in rewrites(SCHEMA + sql)
