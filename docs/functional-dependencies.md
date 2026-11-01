@@ -253,19 +253,19 @@ through only with definite determinants.
 | C1 | Cartesian product keeps both inputs' FDs and equivalences | Claim 19, p.75 | implemented | `uniqueness._join_side` delegations for `cross` | `test_paulley_audit.py` C1 |
 | C2 | Cartesian product: ι(S) ∪ ι(T) ↔ ι | Claim 19, p.76 | implemented | `uniqueness._join_dependencies` (`(ι(left), ι(right)) → ι`) | `test_paulley_audit.py` C2, C2- |
 | C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | implemented | `unique_join` with no conjuncts: the right input's empty set reaches its Row Identity; a scalar aggregate is grouped by nothing (issue 23) | `test_paulley_audit.py` C3 |
-| R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | pending | | |
-| R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | pending | | |
-| R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | pending | | |
-| R4 | Function in WHERE: X → λ(X) | Claim 20, p.78 | pending | | |
-| R5 | False-interpreted Type 1/2 equality: strict equivalence, FDs both ways | Claim 20, p.79 | pending | | |
-| R6 | True-interpreted equality (correlation inside a subquery): lax equivalence and FDs | Claim 20, p.79 | pending | | |
-| R7 | IS NOT NULL: attribute definite | §3.2.4, p.77 | pending | | |
-| R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | pending | | |
-| R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | pending | | |
-| R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | pending | | |
-| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | pending | | |
-| R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | pending | | |
-| R13 | Disjunctions give nothing | §3.2.4, p.77 | pending | | |
+| R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | implemented | `uniqueness._row_preserving` (Filter delegates to its input) | `test_paulley_audit.py` R1 |
+| R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | implemented | `uniqueness._definite` reads `non_null_column` of the Filter's output, so a lax step through a column the WHERE makes non-null fires | `test_paulley_audit.py` R2 |
+| R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | missing | see E4 |  |
+| R4 | Function in WHERE: X → λ(X) | Claim 20, p.78 | missing | `WHERE b = a + 1` gives nothing: `_equality_dependencies` reads column-to-column and column-to-literal equalities only, not a deterministic expression's inputs. Filed in issue 23 |  |
+| R5 | False-interpreted Type 1/2 equality: strict equivalence, FDs both ways | Claim 20, p.79 | implemented | `uniqueness._equality_dependencies`, `equality._equality_groups`, `nullability._null_rejected` | `test_paulley_audit.py` R5 |
+| R6 | True-interpreted equality (correlation inside a subquery): lax equivalence and FDs | Claim 20, p.79 | different | EXISTS is lowered as a semi join whose ON is false-interpreted, which is exact (issue 23); the true-interpreted forms (NOT IN, ALL) are not lowered, so no lax facts arise |  |
+| R7 | IS NOT NULL: attribute definite | §3.2.4, p.77 | implemented | `nullability._null_rejected` (IS NOT NULL) | `test_paulley_audit.py` R7 |
+| R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | implemented | `uniqueness._equality_dependencies` (`col IS NULL`: `∅ → col`) | `test_paulley_audit.py` R8 |
+| R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | missing | LIKE is opaque; without wildcards it is an equality. Filed in issue 23 |  |
+| R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | missing | `col = (uncorrelated scalar subquery)` gives nothing; the subquery is one value for every row, so `∅ → col`. Filed in issue 23 |  |
+| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | missing | partly: `=`, `IN` and `IS NOT NULL` reject NULL (`nullability._null_rejected`) and non-nullness spreads through Equality Groups, but other comparisons (`<`, `>`, `<>`, `BETWEEN`, `LIKE`), which Paulley counts as null-intolerant, are opaque. Filed in issue 23 | `test_paulley_audit.py` R11 |
+| R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `test_paulley_audit.py` R12 |
+| R13 | Disjunctions give nothing | §3.2.4, p.77 | implemented | OR is an opaque conjunct (`convert._lower_conjuncts`) | `test_paulley_audit.py` R13- |
 | I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | pending | | |
 | I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | pending | | |
 | I3 | Intersection strengthens lax FDs and equivalences made definite | Claim 21, p.81 | pending | | |
