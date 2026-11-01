@@ -47,7 +47,10 @@ class RelationFacts:
     _unique_sets: dict[str, tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
     def unique_sets(self, relation: str) -> tuple[tuple[str, ...], ...]:
-        """Every Unique Set proved for `relation`, canonically ordered for display."""
+        """The minimal Unique Sets proved for `relation`, smallest first.
+
+        Every minimal set of up to three columns; when none is that small,
+        one minimal set. A superset of any of them is unique too."""
         return self._unique_sets.get(relation.lower(), ())
 
     def is_unique(self, relation: str, columns: Sequence[str]) -> bool:

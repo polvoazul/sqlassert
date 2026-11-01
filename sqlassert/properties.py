@@ -27,6 +27,15 @@ class NonNullUniqueSet(UniqueSet):
     """A Unique Set whose columns are all non-null."""
 
 
+class FunctionalDependency(Property):
+    """Rows agreeing on every `determinant` column, all non-null, agree on
+    every `dependent` column (`DETERMINES`). Lax: NULL in the determinant
+    exempts a row, as it does for a Unique Set."""
+
+    determinant: frozenset[OutputColumn]
+    dependent: frozenset[OutputColumn]
+
+
 class UniqueJoin(Property):
     """A join that cannot multiply rows from its left input."""
 

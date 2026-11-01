@@ -3,8 +3,8 @@
 Unlike `report.assertions`, which only covers `/**ASSERT UNIQUE**/`-marked joins,
 `report.facts` answers "is this column set unique on this relation" for any
 named relation -- a table or a view -- that the analysis actually reasoned
-about. It is read from the same `unique_set`/`unique_set_column` atoms the
-Reporter already captures for assertion evidence; nothing new is derived.
+about. It lists the minimal Unique Sets, decided by the same closure that
+proves Unique Set Assertions.
 """
 
 from __future__ import annotations
@@ -147,3 +147,30 @@ def test_a_cte_shadowing_a_real_table_name_never_borrows_its_knowledge():
     )
 
     assert report.facts.unique_sets("CTE_active_users") == ()
+
+
+def test_only_minimal_unique_sets_are_reported():
+    """A proved superset is still unique, but the report lists the minimal
+    Unique Sets only; `is_unique` answers for every superset of them."""
+    report = analyze(
+        """
+        CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR);
+        CREATE VIEW v AS SELECT id, name FROM t /**ASSERT UNIQUE(id, name)**/;
+        SELECT id, name FROM v
+        """
+    )
+
+    assert report.proved
+    assert report.facts.unique_sets("v") == (("id",),)
+    assert report.facts.is_unique("v", ["id", "name"])
+
+
+def test_every_minimal_unique_set_is_reported():
+    report = analyze(
+        """
+        CREATE TABLE t (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE, a INTEGER, b INTEGER, UNIQUE (a, b));
+        SELECT * FROM t
+        """
+    )
+
+    assert report.facts.unique_sets("t") == (("id",), ("email",), ("a", "b"))

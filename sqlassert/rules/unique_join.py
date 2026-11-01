@@ -1,9 +1,9 @@
-"""Unique joins: equality-bound RHS columns cover a known unique set."""
+"""Unique joins: the right columns an ON equality binds determine the right row."""
 
 from sqlassert import ir
-from sqlassert.python_engine import Result, Stratum, analysis, unknown
+from sqlassert.python_engine import Result, Stratum, all_of, analysis, unknown
 from sqlassert.rules.column_set import ColumnSet
-from sqlassert.rules.uniqueness import _covers_unique_set
+from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 
 
 @analysis(Stratum.UNIQUE_JOIN)
@@ -12,13 +12,18 @@ def unique_join(join: ir.Join) -> Result[bool]:
         return unknown("Unique-join inference supports inner and left joins", join)
 
     cols = _multiplicity_columns_rhs(join)
-    return _covers_unique_set(cols)
+    bound = frozenset(cols.value.columns)
+    # Matching right rows agree on the bound columns, all non-null.
+    reached = _reaches_row_identity(_closure(join.right, bound, bound))
+    return all_of((Result(True, "Right columns bound for each left row", (join,), list(cols.members.values())), reached))
 
 
 @analysis(Stratum.UNIQUE_JOIN)
 def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
     members = {}
-    for equality in join.equalities:
+    for equality in join.conjuncts:
+        if not isinstance(equality, ir.Equality):
+            continue
         for rhs, value in ((equality.left, equality.right), (equality.right, equality.left)):
             if rhs is value:
                 continue

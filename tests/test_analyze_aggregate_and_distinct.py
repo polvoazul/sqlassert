@@ -383,4 +383,6 @@ def test_an_aggregate_nested_inside_a_distinct_still_earns_its_own_unique_set():
     )
 
     assert report.facts.unique_sets("per_customer") == (("customer_id",),)
-    assert report.facts.unique_sets("distinct_wrap") == (("customer_id", "n"),)
+    # `customer_id` determines `n` in `per_customer`, so it alone is the minimal key.
+    assert report.facts.unique_sets("distinct_wrap") == (("customer_id",),)
+    assert report.facts.is_unique("distinct_wrap", ["customer_id", "n"])

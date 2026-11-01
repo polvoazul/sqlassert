@@ -33,7 +33,7 @@ from sqlglot import exp
 import sqlassert
 import sqlassert.main
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
-from sqlassert.properties import ForeignKey
+from sqlassert.properties import ForeignKey, FunctionalDependency
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
 from sqlassert.provenance import SQL, Origin
@@ -53,6 +53,7 @@ KNOWN_UNSOUND: dict[tuple[str, str], str] = {}
 # The marker kind each asserted Property is written with.
 _MARKER_KINDS: dict[type[Property], str] = {
     UniqueSet: "unique", NonNullUniqueSet: "key", NonNullColumns: "not-null", ForeignKey: "foreign-key",
+    FunctionalDependency: "determines",
 }
 
 
@@ -178,7 +179,10 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
                 if assertion_line(join) is not None and join_origin(join, dialect) == origin
             )
             return _join_violation(join, exactly_one=isinstance(property, ExactlyOneJoin))
-        case ForeignKey(columns=asserted) | UniqueSet(columns=asserted) | NonNullColumns(columns=asserted):
+        case (
+            ForeignKey(columns=asserted) | UniqueSet(columns=asserted) | NonNullColumns(columns=asserted)
+            | FunctionalDependency(determinant=asserted)
+        ):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower() for column in asserted}
         case _:
@@ -223,6 +227,12 @@ def _violation_query(select: exp.Select, marker: ColumnMarker) -> str:
             query = f"{duplicates} UNION ALL SELECT *, NULL FROM ({nulls})"
         case "not-null":
             query = nulls
+        case "determines":
+            # Rows agreeing on a non-null determinant with more than one
+            # dependent value; DISTINCT counts NULL as one value.
+            dependent = ", ".join(_quoted(name) for name in marker.dependent)
+            values = f"SELECT DISTINCT {', '.join(columns)}, {dependent} FROM {relation} WHERE {all_present}"
+            query = f"SELECT {', '.join(columns)}, count(*) FROM ({values}) GROUP BY ALL HAVING count(*) > 1"
         case "foreign-key" | "coverage":
             # MATCH SIMPLE: a row with a null referencing column is exempt.
             assert marker.referenced_relation is not None

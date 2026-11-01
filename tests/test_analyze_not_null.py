@@ -177,3 +177,79 @@ def test_a_primary_key_declaration_proves_a_unique_join():
         SELECT * FROM sessions s /**ASSERT UNIQUE**/ JOIN c ON s.ts = c.nickname
         """
     ) == [Outcome.PROVED]
+
+
+# Null sources: organic NULLs and outer-join padding ---------------------------
+
+PADDING_SCHEMA = """
+CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER);
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL, nickname VARCHAR);
+CREATE TABLE payments (id INTEGER PRIMARY KEY, order_id INTEGER, amount INTEGER NOT NULL);
+"""
+
+
+def padded_outcomes(sql: str) -> list[Outcome]:
+    report = analyze(PADDING_SCHEMA + sql)
+    assert not report.diagnostics, report.diagnostics
+    return [assertion.outcome for assertion in report.assertions]
+
+
+def test_a_null_rejecting_where_conjunct_undoes_a_left_join_s_padding():
+    """`u.id = 5` holds on no padded row, so every row left is matched and the
+    right side's NOT NULL columns are non-null again; its keys are keys again."""
+    assert padded_outcomes(
+        """
+        SELECT u.id, u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id
+        WHERE u.id = 5 /**ASSERT NOT NULL(id, email)**/
+        """
+    ) == [Outcome.PROVED]
+    assert padded_outcomes(
+        """
+        SELECT u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id
+        WHERE u.id IS NOT NULL /**ASSERT NOT NULL(email)**/
+        """
+    ) == [Outcome.PROVED]
+
+
+def test_without_a_null_rejecting_conjunct_padding_remains():
+    assert padded_outcomes(
+        """
+        SELECT u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id
+        WHERE o.id = 5 /**ASSERT NOT NULL(email)**/
+        """
+    ) == [Outcome.UNKNOWN]
+    assert padded_outcomes(
+        """
+        SELECT u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id
+        WHERE u.id IS NULL /**ASSERT NOT NULL(email)**/
+        """
+    ) == [Outcome.UNKNOWN]
+
+
+def test_each_outer_join_pads_its_own_columns():
+    nested = """
+        SELECT u.email, p.amount FROM orders o
+        LEFT JOIN users u ON o.user_id = u.id
+        LEFT JOIN payments p ON p.order_id = o.id
+        WHERE {condition} /**ASSERT NOT NULL(amount)**/ /**ASSERT NOT NULL(email)**/
+    """
+    assert padded_outcomes(nested.format(condition="p.id IS NOT NULL")) == [Outcome.PROVED, Outcome.UNKNOWN]
+    assert padded_outcomes(nested.format(condition="u.id IS NOT NULL")) == [Outcome.UNKNOWN, Outcome.PROVED]
+
+
+def test_a_column_both_nullable_and_padded_needs_its_own_rejection():
+    joined = "SELECT u.nickname FROM orders o LEFT JOIN users u ON o.user_id = u.id WHERE {condition} /**ASSERT NOT NULL(nickname)**/"
+    assert padded_outcomes(joined.format(condition="u.id = 5")) == [Outcome.UNKNOWN]
+    assert padded_outcomes(joined.format(condition="u.nickname IS NOT NULL")) == [Outcome.PROVED]
+
+
+def test_an_unknown_names_each_null_source():
+    report = analyze(
+        PADDING_SCHEMA
+        + "SELECT u.nickname FROM orders o LEFT JOIN users u ON o.user_id = u.id /**ASSERT NOT NULL(nickname)**/"
+    )
+    evidence = report.assertions[0].evidence
+    assert evidence is not None
+    explanation = evidence.explain()
+    assert "nullable in users" in explanation
+    assert "padded by the LEFT JOIN" in explanation
