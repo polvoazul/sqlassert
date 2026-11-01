@@ -33,10 +33,13 @@ from sqlglot import exp
 import sqlassert
 import sqlassert.main
 from sqlassert import NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
+from sqlassert.properties import ForeignKey
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
 from sqlassert.provenance import SQL, Origin
-from sqlassert.sql_parse import DECLARED_KINDS, ParsedProgram, SqlParser, assertion_line, column_markers, join_origin
+from sqlassert.sql_parse import (
+    DECLARED_KINDS, ColumnMarker, ParsedProgram, SqlParser, assertion_line, column_markers, join_origin,
+)
 
 # Rows per table. Two complete the search for select-project-join queries; one
 # more gives aggregates and set operations a little room.
@@ -48,7 +51,9 @@ MAX_EXAMPLES = 200
 KNOWN_UNSOUND: dict[tuple[str, str], str] = {}
 
 # The marker kind each asserted Property is written with.
-_MARKER_KINDS: dict[type[Property], str] = {UniqueSet: "unique", NonNullUniqueSet: "key", NonNullColumns: "not-null"}
+_MARKER_KINDS: dict[type[Property], str] = {
+    UniqueSet: "unique", NonNullUniqueSet: "key", NonNullColumns: "not-null", ForeignKey: "foreign-key",
+}
 
 
 # Recording the suite's analyses -------------------------------------------
@@ -130,7 +135,7 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
 
     try:
         database = _Database(parsed)
-        declarations = [_violation_query(select, kind, columns) for select, kind, columns in _declared(parsed)]
+        declarations = [_violation_query(select, marker) for select, marker in _declared(parsed)]
         for query in declarations:
             database.connection.execute(query)
     except duckdb.Error as error:
@@ -173,36 +178,39 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
                 if assertion_line(join) is not None and join_origin(join, dialect) == origin
             )
             return _unique_join_violation(join)
-        case UniqueSet(columns=asserted) | NonNullColumns(columns=asserted):
+        case ForeignKey(columns=asserted) | UniqueSet(columns=asserted) | NonNullColumns(columns=asserted):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower() for column in asserted}
         case _:
             raise TypeError(f"Unhandled asserted Property: {type(property).__name__}")
-    select, names = next(
-        (select, names)
+    select, marker = next(
+        (select, marker)
         for statement in statements
         for select in statement.find_all(exp.Select)
-        for marker_kind, names, line in column_markers(select)
-        if marker_kind == kind and {name.lower() for name in names} == columns
-        and Origin(SQL, select.sql(dialect=dialect), line) == origin
+        for marker in column_markers(select)
+        if marker.kind == kind and {name.lower() for name in marker.columns} == columns
+        and Origin(SQL, select.sql(dialect=dialect), marker.line) == origin
     )
-    return _violation_query(select, kind, names)
+    return _violation_query(select, marker)
 
 
-def _declared(parsed: ParsedProgram) -> list[tuple[exp.Select, str, tuple[str, ...]]]:
+def _declared(parsed: ParsedProgram) -> list[tuple[exp.Select, ColumnMarker]]:
     """Every Property Declaration, as the Select it is written on."""
     statements = [statement for statement in (*parsed.create_statements, parsed.root_select) if statement is not None]
     return [
-        (select, kind.removeprefix("declared-"), names)
+        # A declared Foreign Key is Referential Coverage only: its target's
+        # uniqueness is still proved, so instances need not respect it.
+        (select, marker._replace(kind="coverage" if marker.kind == "declared-foreign-key" else marker.kind.removeprefix("declared-")))
         for statement in statements
         for select in statement.find_all(exp.Select)
-        for kind, names, _ in column_markers(select)
-        if kind in DECLARED_KINDS
+        for marker in column_markers(select)
+        if marker.kind in DECLARED_KINDS
     ]
 
 
-def _violation_query(select: exp.Select, kind: str, names: tuple[str, ...]) -> str:
-    columns = [exp.to_identifier(name, quoted=True).sql(dialect="duckdb") for name in names]
+def _violation_query(select: exp.Select, marker: ColumnMarker) -> str:
+    kind = marker.kind
+    columns = [_quoted(name) for name in marker.columns]
     any_null = " OR ".join(f"{column} IS NULL" for column in columns)
     all_present = " AND ".join(f"{column} IS NOT NULL" for column in columns)
     relation = f"({select.sql(dialect='duckdb')}) AS q"
@@ -215,9 +223,26 @@ def _violation_query(select: exp.Select, kind: str, names: tuple[str, ...]) -> s
             query = f"{duplicates} UNION ALL SELECT *, NULL FROM ({nulls})"
         case "not-null":
             query = nulls
+        case "foreign-key" | "coverage":
+            # MATCH SIMPLE: a row with a null referencing column is exempt.
+            assert marker.referenced_relation is not None
+            referenced = [_quoted(name) for name in marker.referenced_columns]
+            target = marker.referenced_relation
+            matches = " AND ".join(f"r.{key} = q.{column}" for key, column in zip(referenced, columns))
+            unmatched = f"SELECT {', '.join(columns)} FROM {relation} WHERE {all_present} AND NOT EXISTS (SELECT 1 FROM {target} AS r WHERE {matches})"
+            query = unmatched
+            if kind == "foreign-key":
+                # The referenced columns must also form a Unique Set.
+                present = " AND ".join(f"{key} IS NOT NULL" for key in referenced)
+                repeated = f"SELECT {', '.join(referenced)} FROM {target} WHERE {present} GROUP BY ALL HAVING count(*) > 1"
+                query = f"{unmatched} UNION ALL {repeated}"
         case _:
             raise ValueError(f"Unhandled column marker kind: {kind}")
     return _with_context(select, query)
+
+
+def _quoted(name: str) -> str:
+    return exp.to_identifier(name, quoted=True).sql(dialect="duckdb")
 
 
 def _unique_join_violation(join: exp.Join) -> str:

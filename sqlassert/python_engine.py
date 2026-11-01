@@ -146,6 +146,7 @@ class Stratum(IntEnum):
     UNIQUE_JOIN = 10
     NON_NULL = 20
     UNIQUE_SET = 30
+    FOREIGN_KEY = 40
 
 
 def analysis(stratum: Stratum):
@@ -191,8 +192,8 @@ def _subject_relation(program: ir.Program, arguments: Iterable[object]) -> ir.Re
                 return argument
             case ir.OutputColumn():
                 return program.column_to_parent_relation_index.get(argument)
-            case frozenset():
-                return program.relation_of(argument)
+            case frozenset() | tuple():
+                return program.relation_of(frozenset(argument))
             case Result(value=value) if isinstance(getattr(value, "relation", None), ir.RelationExpr):
                 return value.relation
             case _:
@@ -244,7 +245,7 @@ class Engine:
     def session(self, program: ir.Program, knowledge: tuple[Property, ...] = ()) -> Iterator[Arena]:
         assert _active.get(None) is None, "An analysis arena is already active"
         # Importing registers analysis functions; inference remains in rules/.
-        from sqlassert.rules import nullability, unique_join, uniqueness  # noqa: F401
+        from sqlassert.rules import foreign_key, nullability, unique_join, uniqueness  # noqa: F401
 
         arena = Arena(program, knowledge)
         token = _active.set(arena)
