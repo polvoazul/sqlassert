@@ -10,19 +10,17 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [20. Propagate Foreign Keys through queries](0020-propagate-foreign-keys-through-queries.md) — open
 - [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
-- [26. Equality groups](0026-equality-groups.md) — open
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 - [28. Analyze join markers inside CTE bodies](0028-analyze-join-markers-inside-cte-bodies.md) — open
 
 ## Order
 
-Done: 14, 19, 21, 24, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 19, 21, 24, 26, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Next, as dependencies allow:
 
-1. 26 equality groups (unblocked: Filter conjuncts landed with 24).
-2. Values: 16 → 17 → 18 (16 needs 26).
-3. Foreign Keys: 20 (needs 26) → 22.
-4. Independent: 15 High level (rewrite suggestions), 28 CTE join markers.
-5. Skipped for now (need downloaded corpora): 11, 27 Part 2.
+1. Values: 16 → 17 → 18.
+2. Foreign Keys: 20 → 22.
+3. Independent: 15 High level (rewrite suggestions), 28 joins inside CTE, view and subquery bodies.
+4. Skipped for now (need downloaded corpora): 11, 27 Part 2.
