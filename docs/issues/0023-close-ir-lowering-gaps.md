@@ -166,3 +166,7 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   WHERE r.z IS NOT NULL`, z and a are not merged, so Enumerated Domains and
   Foreign Key stand-ins do not cross between them. (The FD closure already
   strengthens the lax FD.)
+- [ ] **S5** (§3.2.1): CHECK constraints are ignored without a diagnostic.
+  `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
+  Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
+  passes), which is exactly what ENUM means.
