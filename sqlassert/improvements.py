@@ -90,8 +90,8 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
                 found.extend(item for item in (removed, inner) if item is not None)
             case ir.Distinct():
                 found.extend(_redundant_distinct(site, relation))
-            case ir.Aggregate():
-                found.extend(_redundant_grouping(site, relation))
+            case ir.Aggregate() if isinstance(node, exp.Select):
+                found.extend(_redundant_grouping(site, relation, node, dialect))
             case _:
                 pass  # Other Select Expressions have nothing to rewrite yet.
     found.extend(_unused_ctes(ast))
@@ -132,7 +132,7 @@ def _inner_join(
     if join.kind == "left":
         exactly_one = arena.prove(ExactlyOneJoin(join=join))
         if exactly_one.value:
-            message = f"every row matches exactly one row, so the {keyword} pads nothing: write JOIN"
+            message = f"every left row matches exactly one right row, so the {keyword} pads nothing: write JOIN"
             return Improvement(site, Rewrite.INNER_JOIN, message, exactly_one)
     relation: ir.RelationExpr = join
     while len(parents.get(relation, ())) == 1:
@@ -265,11 +265,18 @@ def _strict_key(relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...])
     return columns
 
 
-def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[Improvement]:
+def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> list[Improvement]:
     """Each grouping column the grouping columns kept so far strictly determine.
 
     One column always stays: grouping by nothing turns an empty input into one row.
     """
+    group = node.args.get("group")
+    if group is None or len(group.expressions) != len(aggregate.grouping_outputs):
+        return []
+    # Grouping outputs are lowered in GROUP BY order.
+    written = {
+        column: expression.sql(dialect=dialect) for column, expression in zip(aggregate.grouping_outputs, group.expressions)
+    }
     kept = list(aggregate.grouping_outputs)
     found = []
     for grouped in aggregate.grouping_outputs:
@@ -282,10 +289,11 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[I
         if source not in closure.value.columns:
             continue
         kept.remove(grouped)
-        names = ", ".join(other.name for other in others)
+        names = ", ".join(written[other] for other in others)
+        alias = exp.to_identifier(grouped.name).sql(dialect=dialect)
         message = (
-            f"({names}) determine {grouped.name}, NULL equal to NULL: drop {grouped.name} from GROUP BY "
-            f"and select any_value({grouped.name}) AS {grouped.name}"
+            f"({names}) determine {written[grouped]}, NULL equal to NULL: drop {written[grouped]} from GROUP BY "
+            f"and select any_value({written[grouped]}) AS {alias}"
         )
         found.append(Improvement(site, Rewrite.REDUNDANT_GROUPING, message, closure.members[source]))
     return found

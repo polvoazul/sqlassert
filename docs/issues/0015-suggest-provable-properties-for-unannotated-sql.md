@@ -1,6 +1,6 @@
 # 15. Suggest provable properties for unannotated SQL
 
-- **State:** open (Mid level done)
+- **State:** open (High and Mid levels done)
 - **Labels:** needs-design
 - **Created:** 2026-11-01
 
@@ -99,6 +99,40 @@ The High level depends on functional dependencies and null sources
   yields every candidate, proved or not, with its marker; `annotate(sql,
   items)` pastes any of them. Issue 27 Part 2 reuses both.
 
+## Design decisions (High level, built)
+
+- **Improvements, not markers.** `SuggestionReport.improvements` holds
+  `Improvement`s (`sqlassert/improvements.py`): site, `rewrite` kind, a plain
+  `message` saying what to write, and `evidence`. Each carries `level`
+  (`Level.HIGH`); marker `Suggestion`s carry `Level.MID`. The CLI prints a
+  level column and lists every Improvement before any marker.
+- **Result-preserving, as a multiset.** Every rewrite keeps the program's
+  result row for row. `tests/test_suggest_improvements.py` checks each kind
+  against DuckDB: original and rewritten SQL on random tiny instances
+  (the soundness oracle's generator), compared as multisets.
+- **INNER JOIN.** A LEFT join proved Exactly One; or a LEFT or RIGHT join
+  whose padding a null-rejecting conjunct removes (padding promotion): a later
+  join's ON, or the WHERE, of the same Select Expression. The walk stops at
+  the Select's edge: past it a LIMIT, window, or aggregate may see padded rows
+  first, and a CTE's or view's body has other readers.
+- **Redundant / filter-only join.** No column of the right side is used
+  outside the join's own ON, read from the syntax (the IR drops ORDER BY and
+  hides columns inside opaque expressions). Any reference by the right side's
+  alias, any unqualified name among its columns, `*`, USING, or NATURAL counts
+  as a use. A unique LEFT join or an Exactly One inner join is removable; a
+  unique inner join only filters (`WHERE EXISTS`), unless a RIGHT or FULL join
+  follows: the filter would then act after it.
+- **DISTINCT / GROUP BY.** The strict closure (`definite = ∅`, NULL equal to
+  NULL) of the selected column references in the input reaches its Row
+  Identity; a lax Unique Set is not enough (`SELECT DISTINCT email` collapses
+  NULLs). A grouping column is redundant when the grouping columns kept so far
+  strictly determine it, greedily, keeping at least one.
+- **Unused CTE.** Syntactic: a CTE no query of its WITH reaches, through used
+  CTEs only. A same-named table anywhere counts as a reference.
+- **Mid additions.** A join is suggested as `EXACTLY ONE` when proved, else
+  `UNIQUE`; a join that already carries a marker gets neither. ENUM and
+  EXHAUSTIVE markers are still not suggested.
+
 ## Acceptance criteria
 
 Mid level ("add markers"):
@@ -110,11 +144,14 @@ Mid level ("add markers"):
   proves all of them (round-trip test).
 - [x] CLI entry point printing the suggestions.
 
+High level ("native SQL improvements"):
+
+- [x] `INNER JOIN` for a LEFT JOIN that cannot pad, redundant joins,
+  redundant `DISTINCT` / determined `GROUP BY` columns, unused CTEs, each
+  checked for equivalence against DuckDB.
+
 Still open:
 
-- [ ] High level: `INNER JOIN` for a LEFT JOIN that cannot pad, redundant
-  joins, redundant `DISTINCT` / determined `GROUP BY` columns. Needs
-  issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md)).
 - [ ] Low level: other code smells.
 - [ ] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
 

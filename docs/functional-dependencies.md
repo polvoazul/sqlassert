@@ -470,11 +470,12 @@ about one relation's rows at a time.
 - **Assertions from optimizer preconditions** (literature-notes.md): redundant
   `DISTINCT`, redundant `GROUP BY` columns, join elimination, single-valued
   scalar subquery. Each is one closure query.
-- Someday/maybe: **optimization hints** from proved dependencies (Lindner et
-  al., [`references.md`](references.md)): report a redundant `GROUP BY` column
-  when another grouping column determines it, and a join whose right side is
-  unique and contributes no output columns ("join only filters", a semi-join
-  candidate).
+- **Optimization hints** from proved dependencies (Lindner et al.,
+  [`references.md`](references.md)) are `suggest`'s Improvements
+  (`sqlassert/improvements.py`, issue 15): a redundant `GROUP BY` column
+  another grouping column determines, a redundant `DISTINCT`, a join whose
+  right side is unique and contributes no used column (removable, or "join
+  only filters"), and a LEFT JOIN that padding promotion makes inner.
 
 ## Open questions
 
