@@ -4,7 +4,8 @@ Every left row matches exactly one right row. The at-most-one half is a Unique
 Join: the right-side predicate columns cover a Unique Set. The at-least-one half
 needs an ON of cross-input column equalities only, and Referential Coverage of
 the left columns as one tuple onto the exact right relation and columns; every
-left column must be non-null. Only inner and left joins are supported.
+left column must be non-null. Any join kind but semi and anti: the left row's
+matches decide it, whatever a right or full join pads on.
 """
 
 from __future__ import annotations
@@ -53,6 +54,9 @@ PROVED = [
     ("operands reversed", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON users.id = orders.user_id"),
     ("aliased tables", "SELECT * FROM orders AS o /**ASSERT EXACTLY ONE**/ JOIN users AS u ON o.user_id = u.id"),
     ("using", "SELECT * FROM members /**ASSERT EXACTLY ONE**/ JOIN accounts USING (user_id)"),
+    # Every left row matched once; the right rows nothing matched are padded on.
+    ("right join", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ RIGHT JOIN users ON orders.user_id = users.id"),
+    ("full join", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ FULL JOIN users ON orders.user_id = users.id"),
 ]
 
 
@@ -75,8 +79,8 @@ UNKNOWN = [
     ),
     ("equality to a constant", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON users.id = 1"),
     ("non-equality predicate", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id < users.id"),
-    ("right join", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ RIGHT JOIN users ON orders.user_id = users.id"),
-    ("full join", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ FULL JOIN users ON orders.user_id = users.id"),
+    ("right join without coverage", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ RIGHT JOIN users ON orders.buyer = users.id"),
+    ("cross join", "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS n FROM users) AS c"),
     (
         "foreign key onto a narrowed relation",
         "WITH active AS (SELECT * FROM users WHERE name = 'x') "

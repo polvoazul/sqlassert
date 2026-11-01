@@ -8,8 +8,10 @@ from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 
 @analysis(Stratum.UNIQUE_JOIN)
 def unique_join(join: ir.Join) -> Result[bool]:
-    if join.kind not in {"inner", "left"}:
-        return unknown("Unique-join inference supports inner and left joins", join)
+    # Whatever the kind, a left row appears at most once per matching right
+    # row (or once, padded); a cross join is an ON with no conjuncts.
+    if join.kind in {"semi", "anti"}:
+        return unknown(f"Unique-join inference does not model {join.kind} joins", join)
 
     cols = _multiplicity_columns_rhs(join)
     bound = frozenset(cols.value.columns)

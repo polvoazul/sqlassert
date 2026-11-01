@@ -422,7 +422,8 @@ def _join_dependencies(join: ir.Join):
     left, right = RowIdentity(join.left), RowIdentity(join.right)
     identity = RowIdentity(join)
     yield (left, right), identity, True, Result(True, "A joined row is one row of each input", (join,))
-    if join.kind in {"inner", "left"}:
+    # Not for a right or full join: its padded rows share one null left row.
+    if join.kind in {"inner", "left", "cross"}:
         proof = unique_join(join)
         if proof.value:
             yield (left,), identity, True, proof

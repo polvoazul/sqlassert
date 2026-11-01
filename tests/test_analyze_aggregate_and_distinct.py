@@ -386,3 +386,26 @@ def test_an_aggregate_nested_inside_a_distinct_still_earns_its_own_unique_set():
     # `customer_id` determines `n` in `per_customer`, so it alone is the minimal key.
     assert report.facts.unique_sets("distinct_wrap") == (("customer_id",),)
     assert report.facts.is_unique("distinct_wrap", ["customer_id", "n"])
+
+
+# Scalar aggregates --------------------------------------------------------
+
+SCALAR = "CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL);"
+
+
+@pytest.mark.parametrize(
+    ("sql", "outcome"),
+    [
+        # Grouped by nothing: exactly one row, so every column set is unique.
+        ("SELECT count(*) AS n FROM t /**ASSERT NOT NULL UNIQUE(n)**/", Outcome.PROVED),
+        ("SELECT max(id) AS m, count(*) AS n FROM t /**ASSERT UNIQUE(m)**/", Outcome.PROVED),
+        # The one row of an empty input has a NULL sum.
+        ("SELECT sum(x) AS s FROM t /**ASSERT NOT NULL(s)**/", Outcome.UNKNOWN),
+        # A window aggregate keeps every row.
+        ("SELECT x, sum(id) OVER () AS s FROM t /**ASSERT UNIQUE(x)**/", Outcome.UNKNOWN),
+    ],
+)
+def test_a_scalar_aggregate_is_one_row(sql: str, outcome: Outcome):
+    report = analyze(SCALAR + sql)
+
+    assert [assertion.outcome for assertion in report.assertions] == [outcome]

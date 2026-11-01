@@ -19,7 +19,7 @@ Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 34, 15 Mid and 
 
 Priorities (reasoning per item in the open-issues map artifact):
 
-- **P1, now:** #23 outer and cross joins (Paulley §3.2.3, §3.2.10).
+- **P1:** done (#34; #23 connection warnings; #23 outer and cross joins).
 - **P2, next:** #23 set-op arms with #31; #23 function FDs (Paulley §3.1.4);
   #23 correlated subqueries (Paulley §4.4.2); #15 Kossmann triage, then Low
   smells; #15 annotate flag; #32; #30; #33 chain part.
