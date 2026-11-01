@@ -113,7 +113,7 @@ class IrParser:
         self._discover_constraint_references()
         self._propagate_required_columns()
 
-        root = self._lower_query(ast.root_select, root=True) if ast.root_select is not None else None
+        root = self._lower_query(ast.root_select) if ast.root_select is not None else None
         # Referenced relations are linked last: a marker on a view may name
         # the view itself, or one that reads it.
         self._link_constraint_references()
@@ -290,14 +290,15 @@ class IrParser:
 
     # Lowering ---------------------------------------------------------------
 
-    def _lower_query(self, query: exp.Query, *, root: bool = False) -> ir.RelationExpr | None:
+    def _lower_query(self, query: exp.Query) -> ir.RelationExpr | None:
+        """A Root Select, view, CTE, and FROM-subquery body all lower the same way."""
         unwrapped = _unwrap_query(query)
         if unwrapped is None:
             return None
         query = unwrapped
         if isinstance(query, exp.SetOperation):
-            left = self._lower_query(query.this, root=True)
-            right = self._lower_query(query.expression, root=True)
+            left = self._lower_query(query.this)
+            right = self._lower_query(query.expression)
             if left is None:
                 left = self._opaque_relation(query.this)
             if right is None:
@@ -309,19 +310,16 @@ class IrParser:
             )
         if not isinstance(query, exp.Select):
             return None
-        return self._lower_select(query, allow_joins=root)
+        return self._lower_select(query)
 
-    def _lower_select(self, select: exp.Select, *, allow_joins: bool) -> ir.RelationExpr | None:
-        if not allow_joins and any(select.args.get(key) for key in ("with", "joins")):
-            return None
+    def _lower_select(self, select: exp.Select) -> ir.RelationExpr | None:
         source = _from_source(select)
         if source is None:
             return None
 
         lowered = self._lower_source(source)
-        if allow_joins:
-            for join in select.args.get("joins") or ():
-                lowered = self._lower_join(lowered, join)
+        for join in select.args.get("joins") or ():
+            lowered = self._lower_join(lowered, join)
 
         relation = self._lower_select_tail(lowered, select)
         self._register_column_markers(relation, select)
@@ -339,9 +337,8 @@ class IrParser:
                 return self._alias(recursive, alias_name, self._origin(source))
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source))
 
-        body = _unwrap_query(source) if isinstance(source, exp.Subquery) else None
-        if isinstance(source, exp.Subquery) and isinstance(body, exp.Select):
-            relation = self._lower_select(body, allow_joins=False)
+        if isinstance(source, exp.Subquery):
+            relation = self._lower_query(source)
             if relation is not None:
                 # DuckDB allows an unaliased FROM subquery; nothing can qualify
                 # a column by its name, so a placeholder serves.
@@ -366,7 +363,7 @@ class IrParser:
 
         self._resolving.add(symbol)
         try:
-            body = self._lower_query(symbol.body, root=False) if symbol.body is not None else None
+            body = self._lower_query(symbol.body) if symbol.body is not None else None
         finally:
             self._resolving.discard(symbol)
         if body is None:
