@@ -11,6 +11,7 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [32. Infer simple CASE nullability](0032-infer-simple-case-nullability.md) — open
 - [33. INNER JOIN suggestion across join chains and CTEs](0033-inner-join-suggestion-across-join-chains-and-ctes.md) — open
 - [34. Close the soundness oracle's blind spots](0034-close-soundness-oracle-blind-spots.md) — open
+- [35. Check: audit FD propagation against Paulley, operator by operator](0035-audit-fd-propagation-against-paulley.md) — open (check)
 
 ## Order
 
