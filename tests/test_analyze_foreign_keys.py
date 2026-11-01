@@ -19,6 +19,7 @@ from sqlassert.diagnostics import (
     UNATTACHED_MARKER,
     UNKNOWN_ASSERTED_COLUMN,
     UNKNOWN_REFERENCED_COLUMN,
+    UNSUPPORTED_CREATE_STATEMENT,
 )
 
 SCHEMA = """
@@ -95,13 +96,15 @@ def test_a_partial_composite_key_is_not_a_foreign_key():
 def test_qualified_and_named_table_level_constraints():
     report = analyze(
         """
+        CREATE SCHEMA app;
         CREATE TABLE app.users (id INTEGER PRIMARY KEY);
         CREATE TABLE app.orders (user_id INTEGER, CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES app.users(id) MATCH FULL);
         SELECT * FROM app.orders /**ASSERT FOREIGN KEY(user_id) REFERENCES app.users(id)**/
         """
     )
 
-    assert not report.diagnostics
+    # sqlassert reports CREATE SCHEMA as unsupported; DuckDB needs it to run the program.
+    assert [diagnostic.code for diagnostic in report.diagnostics] == [UNSUPPORTED_CREATE_STATEMENT]
     assert [a.outcome for a in report.assertions] == [Outcome.PROVED]
 
 

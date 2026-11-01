@@ -437,13 +437,13 @@ def test_a_view_may_read_a_table_created_after_it():
     assert len(judgement.counterexamples) == 1
 
 
-def test_a_table_without_create_is_judged_over_the_columns_the_program_reads():
+def test_programs_reading_a_table_without_create_are_skipped():
     judgement = judged(*claimed_proved("""
         SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
     """))
 
-    assert judgement.checked == 1
-    assert len(judgement.counterexamples) == 1
+    assert judgement.checked == 0
+    assert len(judgement.skipped) == 1
 
 
 def test_unknown_assertions_are_not_judged():

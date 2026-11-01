@@ -31,7 +31,7 @@ PROVED = [
     ("ADD UNIQUE", "ALTER TABLE users ADD UNIQUE (email);", "SELECT email FROM users /**ASSERT UNIQUE(email)**/"),
     ("named UNIQUE", "ALTER TABLE users ADD CONSTRAINT u UNIQUE (org, email);", "SELECT org, email FROM users /**ASSERT UNIQUE(org, email)**/"),
     ("SET NOT NULL", "ALTER TABLE users ALTER COLUMN nick SET NOT NULL;", "SELECT nick FROM users /**ASSERT NOT NULL(nick)**/"),
-    ("UNIQUE plus SET NOT NULL", "ALTER TABLE users ADD UNIQUE (email); ALTER TABLE users ALTER email SET NOT NULL;", "SELECT email FROM users /**ASSERT NOT NULL UNIQUE(email)**/"),
+    ("UNIQUE plus SET NOT NULL", "ALTER TABLE users ALTER email SET NOT NULL; ALTER TABLE users ADD UNIQUE (email);", "SELECT email FROM users /**ASSERT NOT NULL UNIQUE(email)**/"),
     ("CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX users_email ON users (email);", "SELECT email FROM users /**ASSERT UNIQUE(email)**/"),
     ("composite UNIQUE INDEX", "CREATE UNIQUE INDEX users_org_email ON users (org, email);", "SELECT org, email FROM users /**ASSERT UNIQUE(org, email)**/"),
     (

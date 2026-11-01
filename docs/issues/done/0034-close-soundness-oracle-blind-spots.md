@@ -32,10 +32,20 @@ judged against DuckDB:
 
 ## Done
 
-The oracle's skip count is 0 (697 programs, 480 PROVED assertions judged).
-The two `per_user` self-joins got aliases; the self-referencing view test now
-creates `plain_tree`. The oracle creates every schema a qualified table names,
-runs `ALTER TABLE ... ADD UNIQUE` (as a unique index) after the other DDL so
-`SET NOT NULL` on the same column works, and prefixes a checked Select's own
-CTEs to its violation query, so a Foreign Key onto a CTE is judged by its
+The oracle does not rewrite programs: each test's SQL is runnable on DuckDB
+as written. The two `per_user` self-joins got aliases; the self-referencing
+view test creates `plain_tree`; the qualified-names test runs
+`CREATE SCHEMA app` itself; the "UNIQUE plus SET NOT NULL" amendment sets
+NOT NULL before adding the UNIQUE (DuckDB cannot ALTER a column a unique
+index depends on). The one oracle fix is a bug: a checked Select's own CTEs
+now prefix its violation query, so a Foreign Key onto a CTE is judged by its
 `NOT EXISTS` coverage query.
+
+Remaining skips, each by design: the four programs in
+`tests/test_connection_warnings.py` that read tables with no `CREATE` (they
+test analysis without a connection, so DuckDB has no table to run them on).
+
+Finding: sqlassert reports `CREATE SCHEMA` as `unsupported-create-statement`
+(`test_create_schema_is_reported_and_dropped`), so the qualified-names test
+now expects that one diagnostic. Accepting it silently, like a plain index
+(it states nothing about rows), is a product decision left open.
