@@ -286,7 +286,7 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 
 | Improvement | When |
 |---|---|
-| `INNER JOIN` | A LEFT (or RIGHT) JOIN that never keeps a padded row: it matches exactly one row, or a later inner join's ON or the WHERE clause of the same Select rejects NULL in a column it pads. |
+| `INNER JOIN` | A LEFT (or RIGHT) JOIN that never keeps a padded row: it matches exactly one row, or a later inner join's ON, a `WHERE EXISTS`/`IN` subquery, or the WHERE clause of the same Select rejects NULL in a column it pads, directly or through a later LEFT JOIN whose ON rejects that column (so it pads the same rows). |
 | Redundant Join | No column of the joined relation is used outside its own ON, and the join keeps every left row once: a LEFT JOIN with at most one match, or an Exactly One inner JOIN. |
 | Filter-Only Join | The same for an inner JOIN with at most one match: it only filters, so it can be a `WHERE EXISTS`. Not suggested when a RIGHT or FULL JOIN follows it. |
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |

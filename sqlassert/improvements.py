@@ -5,7 +5,8 @@ as a multiset, and the evidence that it does:
 
 - An outer join that never keeps a padded row is an inner join: it matches
   exactly one row, or a null-rejecting conjunct later in the same FROM and
-  WHERE removes every row it pads (padding promotion).
+  WHERE removes every row it pads (padding promotion), directly or through a
+  later LEFT or FULL JOIN that then pads the same rows.
 - A join none of whose columns is used outside its own ON is redundant when
   it keeps every left row once (a unique LEFT JOIN, an Exactly One JOIN), and
   only filters when it is a unique inner join (a `WHERE EXISTS`).
@@ -139,25 +140,48 @@ def _inner_join(
         if exactly_one.value:
             message = f"every left row matches exactly one right row, so the {keyword} pads nothing: write JOIN"
             return Improvement(site, Rewrite.INNER_JOIN, message, exactly_one)
+    # Joins that pad every row this one pads, each with why (issue 33): a
+    # later LEFT or FULL JOIN whose ON rejects NULL in a column one of them
+    # pads finds no match for those rows, so it pads them too.
+    chained: dict[ir.Join, list[Result[bool]]] = {join: []}
+
+    def padded_by(column: ir.OutputColumn) -> ir.Join | None:
+        return next((
+            source.join for source in _null_sources(column).value
+            if isinstance(source, Padding) and source.join in chained
+        ), None)
+
     relation: ir.RelationExpr = join
     while len(parents.get(relation, ())) == 1:
         parent, = parents[relation]
         match parent:
-            case ir.Join(kind=kind) if kind not in {"semi", "anti"}:
-                rejected, clause = _on_rejected(parent), f"the ON condition of a later {kind.upper()} JOIN"
+            case ir.Join(kind="anti"):
+                rejected, clause = {}, ""
+            case ir.Join(kind=kind):
+                # A semi join (a WHERE EXISTS or IN) keeps only rows its ON holds on.
+                described = "WHERE EXISTS or IN subquery" if kind == "semi" else f"later {kind.upper()} JOIN"
+                rejected, clause = _on_rejected(parent), f"the ON condition of a {described}"
             case ir.Filter():
                 rejected, clause = _null_rejected(parent.conjuncts), "the WHERE clause"
             case _:
                 return None
         for column, conjunct in rejected.items():
-            if any(isinstance(source, Padding) and source.join is join for source in _null_sources(column).value):
-                padded = Result(True, f"{column.name} is padded by the {keyword}", (join, column))
+            via = padded_by(column)
+            if via is not None:
+                how = f"is padded by the {keyword}" if via is join else f"is NULL on every row the {keyword} pads"
+                padded = Result(True, f"{column.name} {how}", (join, column), chained[via])
                 evidence = Result(
                     True, f"{clause} rejects NULL in {column.name}, so every row the {keyword} pads is removed",
                     (conjunct, column), [padded],
                 )
                 message = f"{clause} rejects NULL in {column.name}, so no padded row survives: write JOIN"
                 return Improvement(site, Rewrite.INNER_JOIN, message, evidence)
+        if isinstance(parent, ir.Join) and parent.kind in {"left", "full"}:
+            for column, conjunct in _null_rejected(parent.conjuncts).items():
+                via = padded_by(column)
+                if via is not None and column in parent.left.output_columns and parent not in chained:
+                    reason = f"its ON rejects NULL in {column.name}, so the later {parent.kind.upper()} JOIN pads every row the {keyword} pads"
+                    chained[parent] = [*chained[via], Result(True, reason, (conjunct, column))]
         if isinstance(parent, ir.Filter):
             return None
         relation = parent
