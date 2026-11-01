@@ -13,6 +13,14 @@ The one contract to keep stable is the user-facing one: the Property Markers
 (`/**ASSERT ...**/`, `/**DECLARE ...**/`) and the Properties they introduce.
 Internal representation (IR, analysis functions, rules) may change freely.
 
+## Analysis works without a connection
+
+`analyze(sql)` must work from the SQL alone ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)).
+When the SQL leaves something ambiguous, emit a warning Diagnostic saying how
+to resolve it and treat the affected facts as unknown; never guess. With a
+connection (`analyze_database`), resolve it from the catalog. A connection may
+only add proofs, never change what the SQL alone proves.
+
 ## Where things are
 
 - Domain language: `CONTEXT.md`. Use its terms; it lists terms to avoid.

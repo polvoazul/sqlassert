@@ -54,7 +54,16 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   imply its columns are unique, which is not used.
 - [ ] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
-  Needs catalog input to `IrParser`, not just knowledge for the engine.
+  Today this is silently UNKNOWN. Per
+  [ADR 0005](../adr/0005-analyze-sql-without-a-connection.md):
+  - **Without a connection:** emit a warning Diagnostic naming the column, the
+    candidate sources, and the fix (qualify it, or `CREATE` the tables), and
+    treat facts that depend on that column as unknown.
+  - **With a connection** (`analyze_database`): give `IrParser` the catalog's
+    column lists, so the column resolves to its one real source and is
+    analyzed normally.
+  - Tests: the same SQL warns offline and proves with an in-memory DuckDB
+    catalog; adding the connection never turns PROVED into UNKNOWN.
 - [x] No functional dependencies (`X → Y`). Done in issue 24, except
   deterministic and injective expressions (still opaque). Keys, equality predicates,
   deterministic expressions, and `GROUP BY` all create them; without them,
