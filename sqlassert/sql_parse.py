@@ -1,12 +1,14 @@
 """Parse SQL text into a SQL Program: Create Statements plus at most one Root
-Select, with join markers resolved onto the joins they mark
-and column markers resolved onto the Select Expressions they follow.
+Select, with join markers resolved onto the joins they mark, column markers
+resolved onto the Select Expressions they follow, and case markers resolved
+onto the simple `CASE` expressions they precede.
 
 The marker is real syntax, not a comment we go looking for: a custom dialect
 tokenizes `/**ASSERT UNIQUE**/` as a token of its own and the join rule consumes it, so
 the grammar is what requires a marker to sit immediately before its join. The
 line is then recorded on the `Join` node, and nothing downstream re-reads SQL
-text. SQLGlot objects stop at this boundary; only the IR parser reads them.
+text. `/**ASSERT EXHAUSTIVE**/` is likewise a primary expression of its own
+that must continue with `CASE`. SQLGlot objects stop at this boundary; only the IR parser reads them.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ class SqlassertToken(enum.Enum):
 
     SQLASSERT_UNIQUE = enum.auto()
     SQLASSERT_EXACTLY_ONE = enum.auto()
+    SQLASSERT_EXHAUSTIVE = enum.auto()
     SQLASSERT_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_NON_NULL_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_DECLARED_UNIQUE_SET_OPEN = enum.auto()
@@ -81,9 +84,12 @@ class SqlassertToken(enum.Enum):
 # marker splits its list with `->`: `/**ASSERT DETERMINES(a, b -> c)**/`. An
 # Enumerated Domain marker names one column and the literals its non-null
 # values are drawn from: `/**ASSERT ENUM(status IN ('new', 'paid'))**/`.
+# `/**ASSERT EXHAUSTIVE**/` is written inside an expression, immediately
+# before the simple `CASE` it marks.
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
     "/**ASSERT EXACTLY ONE**/": SqlassertToken.SQLASSERT_EXACTLY_ONE,
+    "/**ASSERT EXHAUSTIVE**/": SqlassertToken.SQLASSERT_EXHAUSTIVE,
     "/**ASSERT UNIQUE(": SqlassertToken.SQLASSERT_UNIQUE_SET_OPEN,
     "/**ASSERT NOT NULL UNIQUE(": SqlassertToken.SQLASSERT_NON_NULL_UNIQUE_SET_OPEN,
     # `PRIMARY KEY` is a convenience alias for `NOT NULL UNIQUE`: it does not
@@ -112,6 +118,12 @@ JOIN_MARKER_KINDS = {
 
 # How diagnostics name each join marker kind.
 JOIN_MARKER_NOUNS = {"unique-join": "unique join", "exactly-one-join": "exactly one join"}
+
+# The markers written as one fixed literal: the join markers and the case marker.
+_FIXED_MARKER_TOKENS = frozenset({*JOIN_MARKER_KINDS, SqlassertToken.SQLASSERT_EXHAUSTIVE})
+
+# Where a resolved case marker's line is recorded on its `Case` node.
+_EXHAUSTIVE_AT = "sqlassert.exhaustive_at"
 
 # The open literals of a column marker, and the kind each one states --
 # "unique" is a nullable-tolerant Unique Set, "key" the stricter
@@ -291,7 +303,49 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # do not remove it, and do not add a fallback that carries on without the
     # hook.
     class _Parser(parent.Parser):  # ty: ignore[unresolved-attribute]
+        # The case marker is a primary expression of its own, so it attaches
+        # to whatever expression follows it, which must be a simple CASE.
+        PRIMARY_PARSERS = {
+            **parent.Parser.PRIMARY_PARSERS,  # ty: ignore[unresolved-attribute]
+            SqlassertToken.SQLASSERT_EXHAUSTIVE: lambda self, token: self._parse_exhaustive_case(token),
+        }
+
+        def _parse_exhaustive_case(self, marker: Token) -> exp.Case:
+            """The simple CASE a case marker precedes.
+
+            Its WHEN values are distinct, non-null string, numeric, and boolean
+            literals: each is compared with the operand, so an arm matches a
+            domain member exactly when it is that literal.
+            """
+            line = marker.line
+
+            def malformed(problem: str) -> UnattachedMarker:
+                return UnattachedMarker(f"the exhaustive assertion on line {line} {problem}", line, marker.text)
+
+            if not self._match(TokenType.CASE):
+                raise _misplaced_case_marker(marker)
+            case = self._parse_case()
+            if not isinstance(case, exp.Case):
+                raise _misplaced_case_marker(marker)
+            if case.this is None:
+                raise malformed("marks a searched CASE; only a simple CASE operand WHEN value ... can be exhaustive")
+            values: list[LiteralValue] = []
+            for arm in case.args.get("ifs") or ():
+                when = arm.this
+                if isinstance(when, exp.Null):
+                    raise malformed("has a WHEN NULL arm, which matches nothing; NOT NULL governs NULL")
+                value = literal_value(when)
+                if value is None:
+                    raise malformed(f"has WHEN {when.sql(dialect=self.dialect)}, which is not a string, numeric, or boolean literal")
+                if value in values:
+                    raise malformed(f"lists WHEN {value.sql()} more than once")
+                values.append(value)
+            case.meta[_EXHAUSTIVE_AT] = line
+            return case
+
         def _parse_join(self, *args, **kwargs):
+            if self._curr is not None and self._curr.token_type is SqlassertToken.SQLASSERT_EXHAUSTIVE:
+                raise _misplaced_case_marker(self._curr)
             if self._curr is None or self._curr.token_type not in JOIN_MARKER_KINDS:
                 start = self._curr
                 join = super()._parse_join(*args, **kwargs)
@@ -362,6 +416,8 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
 
             if found:
                 result.meta[_COLUMN_MARKERS_AT] = found
+            if self._curr is not None and self._curr.token_type is SqlassertToken.SQLASSERT_EXHAUSTIVE:
+                raise _misplaced_case_marker(self._curr)
 
             # `super()._parse_select_query` already tried, and gave up, on
             # attaching a following UNION/INTERSECT/EXCEPT to this same
@@ -482,6 +538,15 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     )
 
 
+def _misplaced_case_marker(marker: Token) -> UnattachedMarker:
+    return UnattachedMarker(
+        f"the exhaustive assertion on line {marker.line} is not followed by CASE; "
+        "it must sit immediately before a simple CASE expression",
+        marker.line,
+        marker.text,
+    )
+
+
 @dataclass(frozen=True)
 class ParsedProgram:
     """One SQL Program. Sequence arguments may be any iterable; what is stored
@@ -552,7 +617,7 @@ class SqlParser:
     def _unparseable(self, sql: str, error: SqlglotError) -> Diagnostic:
         """A parse failure, naming a marker when the program contains one.
 
-        A marker somewhere the join rule never runs breaks the grammar outright,
+        A marker somewhere its rule never runs breaks the grammar outright,
         and the reader should not have to hunt for SQL that is not broken.
         """
         marker = self._marker_token(sql)
@@ -560,7 +625,7 @@ class SqlParser:
             return Diagnostic(diag.SQL_PARSE_FAILED, f"SQL could not be parsed: {error}")
         return Diagnostic(
             diag.SQL_PARSE_FAILED,
-            f"SQL could not be parsed, and a join marker is on line {marker.line}: {error}",
+            f"SQL could not be parsed, and a marker is on line {marker.line}: {error}",
             Origin(SQL, marker.text, marker.line),
         )
 
@@ -570,7 +635,7 @@ class SqlParser:
         except SqlglotError:
             return None
         return next(
-            (token for token in tokens if token.token_type in JOIN_MARKER_KINDS),
+            (token for token in tokens if token.token_type in _FIXED_MARKER_TOKENS),
             None,
         )
 
@@ -604,14 +669,14 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
     # whole shapes: the bare join markers, and each parameterized marker's
     # full open-to-close form.
     recognized = ", ".join(
-        sorted(literal for literal, token in MARKERS.items() if token in JOIN_MARKER_KINDS)
+        sorted(literal for literal, token in MARKERS.items() if token in _FIXED_MARKER_TOKENS)
         + sorted(_marker_shape(open_, kind) for open_, kind in _COLUMN_MARKER_OPENS.items())
     )
     return [
         Diagnostic(
             diag.UNRECOGNIZED_MARKER,
             f"{match.group(0)!r} on line {_line_of(sql, match.start())} is not a sqlassert marker; "
-            f"{_bare_marker_hint(match.group(0))}the markers are {recognized}",
+            f"{_marker_hint(match.group(0))}the markers are {recognized}",
             Origin(SQL, match.group(0), _line_of(sql, match.start())),
         )
         for match in _MARKER_SHAPED.finditer(sql)
@@ -626,8 +691,11 @@ def _marker_shape(open_: str, kind: str) -> str:
     return f"{open_}{columns}){reference}**/"
 
 
-def _bare_marker_hint(text: str) -> str:
-    """Point a marker written without `ASSERT` at its explicit spelling."""
+def _marker_hint(text: str) -> str:
+    """Point a marker written without `ASSERT`, or a `DECLARE` that only an
+    Assertion can be, at its explicit spelling."""
+    if re.sub(r"\s+", " ", text.upper()) == "/**DECLARE EXHAUSTIVE**/":
+        return "exhaustiveness can only be asserted, as in '/**ASSERT EXHAUSTIVE**/', never declared; "
     explicit = "/**ASSERT " + text[3:]
     if _is_recognized_marker(explicit):
         return f"assertions need an explicit ASSERT, as in {explicit!r}; "
@@ -637,7 +705,7 @@ def _bare_marker_hint(text: str) -> str:
 def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diagnostic]:
     """Recognized markers that did not become assertions.
 
-    Every marker in the source should have reached a join or a Select, or
+    Every marker in the source should have reached a join, a Select, or a CASE, or
     raised `UnattachedMarker`. If one merely disappeared, the dialect stopped
     recognising it — and the alternative to reporting that is a program whose
     assertions were never checked reporting as proved.
@@ -652,6 +720,11 @@ def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diag
         len(select.meta.get(_COLUMN_MARKERS_AT, ()))
         for statement in statements
         for select in statement.find_all(exp.Select)
+    ) + sum(
+        1
+        for statement in statements
+        for case in statement.find_all(exp.Case)
+        if exhaustive_line(case) is not None
     )
     if len(written) <= resolved:
         return []
@@ -685,6 +758,11 @@ def join_marker_kind(join: exp.Join) -> str | None:
 def join_origin(join: exp.Join, dialect: str) -> Origin:
     """A readable origin for an asserted join."""
     return Origin(SQL, join.sql(dialect=dialect), assertion_line(join))
+
+
+def exhaustive_line(case: exp.Case) -> int | None:
+    """The source line of the marker asserting this CASE exhaustive, if any."""
+    return case.meta.get(_EXHAUSTIVE_AT)
 
 
 def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:

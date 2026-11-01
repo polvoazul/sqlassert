@@ -16,13 +16,13 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    EnumeratedDomain, ExactlyOneJoin, ForeignKey, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
+    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
     UniqueSet,
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
     FOREIGN_KEY_KINDS, JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
-    join_marker_kind, join_origin, literal_value, marker_position,
+    exhaustive_line, join_marker_kind, join_origin, literal_value, marker_position,
 )
 
 
@@ -94,6 +94,7 @@ class IrParser:
     _declarations: list[Property] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
     _handled_column_marker_lines: set[int] = field(default_factory=set)
+    _handled_cases: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
     _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr]] = field(default_factory=list)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
@@ -681,10 +682,34 @@ class IrParser:
             )
         if isinstance(expression, exp.Null):
             return ir.NullLiteral(origin=origin)
+        if isinstance(expression, exp.Case) and expression.this is not None:
+            return self._lower_case(expression, bindings, schema_complete=schema_complete)
         value = literal_value(expression)
         if value is not None or isinstance(expression, exp.Literal):
             return ir.Constant(origin=origin, value=value)
         return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
+
+    def _lower_case(self, case: exp.Case, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.SimpleCase:
+        """A simple CASE, and the assertion its marker states, once per CASE."""
+
+        def lower(expression: exp.Expression) -> ir.ScalarExpr:
+            return self._lower_expression(expression, bindings, schema_complete=schema_complete)
+
+        arms = case.args.get("ifs") or ()
+        default = case.args.get("default")
+        lowered = ir.SimpleCase(
+            origin=self._origin(case),
+            operand=lower(case.this),
+            whens=tuple(lower(arm.this) for arm in arms),
+            thens=tuple(lower(arm.args["true"]) for arm in arms),
+            default=lower(default) if default is not None else ir.NullLiteral(origin=self._origin(case)),
+        )
+        line = exhaustive_line(case)
+        if line is not None and id(case) not in self._handled_cases:
+            self._handled_cases.add(id(case))
+            origin = Origin(SQL, case.sql(dialect=self.dialect), line)
+            self._assertions.append(ir.Assertion(origin=origin, property=ExhaustiveCase(case=lowered)))
+        return lowered
 
     def _opaque_relation(self, source: exp.Expression, names=()) -> ir.OpaqueRelation:
         origin = self._origin(source)
@@ -866,6 +891,17 @@ class IrParser:
                     join_origin(join, self.dialect),
                 )
             )
+        for case in _asserted_cases(ast):
+            if id(case) in self._handled_cases:
+                continue
+            line = exhaustive_line(case)
+            self._diagnostics.append(
+                Diagnostic(
+                    diag.UNANALYZED_ASSERTION,
+                    f"the exhaustive assertion on line {line} is in a part of the program this analysis does not model",
+                    Origin(SQL, case.sql(dialect=self.dialect), line),
+                )
+            )
         for select in _asserted_selects(ast):
             for marker in column_markers(select):
                 kind, line = marker.kind, marker.line
@@ -956,6 +992,14 @@ def _asserted_selects(ast: ParsedProgram) -> list[exp.Select]:
         for select in statement.find_all(exp.Select) if column_markers(select)
     ]
 
+
+
+def _asserted_cases(ast: ParsedProgram) -> list[exp.Case]:
+    statements = (*ast.create_statements, ast.root_select)
+    return [
+        case for statement in statements if statement is not None
+        for case in statement.find_all(exp.Case) if exhaustive_line(case) is not None
+    ]
 
 
 def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] | None:
