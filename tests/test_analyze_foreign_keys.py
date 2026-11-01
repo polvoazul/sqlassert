@@ -33,6 +33,7 @@ CREATE TABLE orders (
     FOREIGN KEY (org, owner) REFERENCES users(org, name)
 );
 CREATE TABLE events (user_id INTEGER, ts TIMESTAMP);
+CREATE TABLE notes (org INTEGER, author VARCHAR, body VARCHAR);
 """
 
 
@@ -119,7 +120,7 @@ def test_without_a_constraint_the_relationship_is_unknown_and_explained():
     sql = "SELECT * FROM events /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"
 
     assert outcomes(sql) == [Outcome.UNKNOWN]
-    assert "No known Foreign Key from (user_id) to users(id)" in explanation(sql)
+    assert "No known Foreign Key from events(user_id) to users(id)" in explanation(sql)
 
 
 def test_an_unknown_relationship_names_the_known_ones_from_the_same_columns():
@@ -129,11 +130,104 @@ def test_an_unknown_relationship_names_the_known_ones_from_the_same_columns():
     assert "these columns reference users(id)" in explanation(sql)
 
 
-def test_foreign_keys_are_not_yet_propagated_through_filters():
-    sql = "SELECT * FROM orders WHERE id > 0 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"
+# Propagation ----------------------------------------------------------------
+
+PROPAGATED = [
+    ("filter of the referencing relation", "SELECT * FROM orders WHERE id > 0 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("renaming projection", "SELECT id, user_id AS uid FROM orders /**ASSERT FOREIGN KEY(uid) REFERENCES users(id)**/"),
+    ("renamed composite", "SELECT owner AS n, org AS o FROM orders /**ASSERT FOREIGN KEY(o, n) REFERENCES users(org, name)**/"),
+    ("aliased subquery", "SELECT s.u FROM (SELECT user_id AS u FROM orders) AS s /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/"),
+    ("cte", "WITH c AS (SELECT user_id FROM orders WHERE id > 0) SELECT * FROM c /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("view", "CREATE VIEW v AS SELECT org, owner FROM orders; SELECT * FROM v AS x /**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/"),
+    ("assertion in a view body", "CREATE VIEW v AS SELECT user_id FROM orders WHERE id > 0 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/; SELECT * FROM v"),
+    ("distinct", "SELECT DISTINCT user_id FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("grouping key", "SELECT user_id, count(*) AS n FROM orders GROUP BY user_id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("inner join", "SELECT o.user_id, e.ts FROM orders AS o JOIN events AS e ON e.user_id = o.id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("preserved side of a left join", "SELECT o.user_id, e.ts FROM orders AS o LEFT JOIN events AS e ON e.user_id = o.id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    # MATCH SIMPLE: a padded row has a null in every referencing column, so it is exempt.
+    ("padded side of a right join", "SELECT o.user_id, e.ts FROM orders AS o RIGHT JOIN events AS e ON e.user_id = o.id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("padded side of a full join", "SELECT o.org, o.owner FROM orders AS o FULL JOIN events AS e ON e.user_id = o.id /**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/"),
+    ("union of covered branches", "SELECT * FROM (SELECT user_id FROM orders UNION ALL SELECT buyer FROM orders) AS s /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("except keeps left rows", "SELECT * FROM (SELECT user_id FROM orders EXCEPT SELECT user_id FROM events) AS s /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("intersect with a covered right branch", "SELECT * FROM (SELECT user_id FROM events INTERSECT SELECT user_id FROM orders) AS s /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), PROPAGATED)
+def test_a_foreign_key_propagates_through_a_transformation_that_keeps_coverage(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.PROVED], label
+
+
+ESTABLISHED = [
+    ("inner join on the target", "SELECT e.user_id, e.ts FROM events AS e JOIN users AS u ON e.user_id = u.id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("where equality", "SELECT e.user_id FROM events AS e, users AS u WHERE u.id = e.user_id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("composite join", "SELECT n.author, n.org FROM notes AS n JOIN users AS u ON n.org = u.org AND n.author = u.name /**ASSERT FOREIGN KEY(author, org) REFERENCES users(name, org)**/"),
+    ("join through a cte", "WITH u AS (SELECT id FROM users) SELECT e.user_id FROM events AS e JOIN u ON u.id = e.user_id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    # Joining a narrowed relation proves coverage onto it independently.
+    ("join to a narrowed view", "CREATE VIEW a AS SELECT id FROM users WHERE org = 1; SELECT o.user_id FROM orders AS o JOIN a ON a.id = o.user_id /**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), ESTABLISHED)
+def test_an_inner_equality_join_establishes_a_foreign_key(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.PROVED], label
+
+
+WIDENED = [
+    ("projecting view", "CREATE VIEW people AS SELECT id, name FROM users; SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/"),
+    ("distinct view", "CREATE VIEW ids AS SELECT DISTINCT id FROM users; SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES ids(id)**/"),
+    ("renamed composite", "CREATE VIEW people AS SELECT name AS n, org AS o FROM users; SELECT * FROM orders /**ASSERT FOREIGN KEY(org, owner) REFERENCES people(o, n)**/"),
+    ("preserved side of a left join", "CREATE VIEW people AS SELECT u.id FROM users AS u LEFT JOIN users AS m ON m.id = u.id; SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/"),
+    ("declared coverage of a derived relation", "CREATE VIEW people AS SELECT id FROM users; CREATE VIEW v AS SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/; SELECT * FROM v WHERE user_id > 0 /**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), WIDENED)
+def test_coverage_of_a_relation_carries_to_a_relation_keeping_all_its_rows(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.PROVED], label
+
+
+NOT_PROPAGATED = [
+    ("computed column", "SELECT user_id + 0 AS u FROM orders /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/"),
+    ("aggregated column", "SELECT org, max(user_id) AS u FROM orders GROUP BY org /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/"),
+    ("swapped composite renames", "SELECT org AS owner, owner AS org FROM orders /**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/"),
+    ("composite from two join sides", "SELECT o.org, u.name FROM orders AS o JOIN users AS u ON u.id = o.user_id /**ASSERT FOREIGN KEY(org, name) REFERENCES users(org, name)**/"),
+    ("union with an uncovered branch", "SELECT * FROM (SELECT user_id FROM orders UNION SELECT user_id FROM events) AS s /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("outer join ON is not an equality", "SELECT e.user_id FROM events AS e LEFT JOIN users AS u ON e.user_id = u.id /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"),
+    ("filtered target", "WITH a AS (SELECT id FROM users WHERE org = 1) SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/"),
+    ("inner-joined target", "CREATE VIEW a AS SELECT u.id FROM users AS u JOIN users AS m ON m.id = u.id AND m.org = 1; SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), NOT_PROPAGATED)
+def test_a_transformation_that_may_lose_coverage_stops_propagation(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.UNKNOWN], label
+
+
+def test_a_derived_relation_explains_the_closest_missing_relationship():
+    sql = "SELECT s.user_id FROM (SELECT user_id FROM events WHERE ts IS NOT NULL) AS s /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"
 
     assert outcomes(sql) == [Outcome.UNKNOWN]
-    assert "not propagated" in explanation(sql)
+    assert "No known Foreign Key from events(user_id) to users(id)" in explanation(sql)
+
+
+def test_a_computed_column_is_named_where_propagation_stops():
+    sql = "SELECT user_id + 0 AS u FROM orders /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/"
+
+    assert "(u) are not passed through from one input row" in explanation(sql)
+
+
+def test_a_narrowed_target_is_named_in_the_explanation():
+    sql = "WITH a AS (SELECT id FROM users WHERE org = 1) SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/"
+
+    assert "may drop rows of its input" in explanation(sql)
+
+
+def test_a_union_names_the_uncovered_branch():
+    sql = "SELECT * FROM (SELECT user_id FROM orders UNION SELECT user_id FROM events) AS s /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/"
+
+    text = explanation(sql)
+    assert "No known Foreign Key from events(user_id) to users(id)" in text
 
 
 # Declarations ---------------------------------------------------------------
