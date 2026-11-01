@@ -6,6 +6,7 @@ so importing this package never imports a database driver.
 
 from sqlassert.discovery.fetcher import (
     DatabaseColumn,
+    DatabaseForeignKey,
     DatabaseHydration,
     DatabaseKnowledgeFetcher,
     DatabaseMetadataError,
@@ -16,6 +17,7 @@ from sqlassert.discovery.fetcher import (
 
 __all__ = [
     "DatabaseColumn",
+    "DatabaseForeignKey",
     "DatabaseHydration",
     "DatabaseKnowledgeFetcher",
     "DatabaseMetadataError",

@@ -22,6 +22,7 @@ from sqlassert.diagnostics import (
 )
 from sqlassert.discovery import (
     DatabaseColumn,
+    DatabaseForeignKey,
     DatabaseKnowledgeFetcher,
     DatabaseMetadataError,
     DatabaseRelationKind,
@@ -278,3 +279,31 @@ def test_bound_knowledge_holds_only_properties_over_final_ir_nodes():
             for member in members:
                 assert isinstance(member, ir.OutputColumn)
                 assert member in program.column_to_parent_relation_index
+
+
+def test_a_catalog_foreign_key_binds_when_its_referenced_relation_is_reached():
+    payments = DatabaseRelationMetadata(
+        catalog="db", schema="main", name="payments", kind=DatabaseRelationKind.TABLE,
+        columns=(DatabaseColumn(name="user_id", nullable=True),),
+        foreign_keys=(DatabaseForeignKey(("user_id",), "db.main.users", ("id",)),),
+    )
+    fetcher = FakeFetcher((USERS, payments))
+
+    proved = analyze_database("SELECT * FROM payments /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/", fetcher)
+    unreached = analyze_database("SELECT * FROM payments", fetcher)
+
+    assert proved.proved
+    assert unreached.proved
+    assert "users" in fetcher.requested
+
+
+def test_a_catalog_foreign_key_over_unlisted_columns_is_incomplete_metadata():
+    payments = DatabaseRelationMetadata(
+        catalog="db", schema="main", name="payments", kind=DatabaseRelationKind.TABLE,
+        columns=(DatabaseColumn(name="user_id", nullable=True),),
+        foreign_keys=(DatabaseForeignKey(("missing",), "db.main.users", ("id",)),),
+    )
+
+    report = analyze_database("SELECT * FROM payments", FakeFetcher((USERS, payments)))
+
+    assert [d.code for d in report.diagnostics] == [INCOMPLETE_CATALOG_METADATA]
