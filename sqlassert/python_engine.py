@@ -147,8 +147,8 @@ class Stratum(IntEnum):
     dependencies hold only when the join cannot pad an agreeing row) and Unique
     Joins; closure uses dependencies and non-nullness; Unique Sets and
     Functional Dependency assertions are closure questions; Foreign Keys use
-    Unique Sets. Enumerated Domains come last: they read equality groups and
-    nothing above them. A cycle is an internal sqlassert bug, not a problem
+    Unique Sets. Enumerated Domains come last: they read equality groups and,
+    for a CASE's unreachable ELSE, non-nullness. A cycle is an internal sqlassert bug, not a problem
     with the analyzed SQL.
     """
 
