@@ -89,6 +89,10 @@ an inclusion dependency whose right side is a key. Theory behind issues
 
 - Unique Join = at most one match (right key). Inclusion dependency = at least
   one. Together: exactly one; the join neither drops nor duplicates left rows.
+- Composite: `ON l.a = r.x AND l.b = r.y` needs `L[a, b] ⊆ R[x, y]`, the
+  tuple; `L[a] ⊆ R[x]` and `L[b] ⊆ R[y]` may be met by different rows. Every
+  ON conjunct must be such an equality (another may reject the covering row),
+  and `a`, `b` non-null (`MATCH SIMPLE` exempts a row with any NULL component).
 - `o LEFT JOIN u ON o.user_id = u.id` with FK `orders[user_id] ⊆ users[id]`:
   when `o.user_id` is non-null the row is matched, so `u.id = o.user_id` and
   every NOT NULL column of `u` is non-null (nullable `u` columns can still be
@@ -392,7 +396,8 @@ directions, never mixing them:
   branch of a UNION. `_targets(Y)` lists Y and every such upstream column list,
   paired by position. A narrowing relation (Filter, QUALIFY, inner join,
   INTERSECT, EXCEPT) stops it: the rows the referencing values match may be
-  the dropped ones.
+  the dropped ones. A proved Exactly One inner join keeps every left row, so
+  its left columns carry coverage over.
 - **Referencing side, downward.** X holds on a relation when each output row
   takes X from one row of one covered input: Alias, Named Relation body,
   Filter, Project, DISTINCT, QUALIFY, grouping keys, and either side of any
