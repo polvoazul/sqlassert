@@ -19,3 +19,20 @@ class Origin:
     kind: str
     detail: str
     line: int | None = None
+
+
+@dataclass(frozen=True)
+class AttachmentSite:
+    """Where a Property Marker for one JOIN or Select Expression is written.
+
+    `offset` indexes the SQL text: a join marker is inserted there, before the
+    join's first keyword; a trailing column marker is appended there, after
+    the Select Expression's last token. `label` names what the site marks
+    (`JOIN users AS u`, `view v`, `CTE c`, `subquery s`, `Root Select`);
+    anonymous Select Expressions share a label and are told apart by `line`.
+    """
+
+    label: str
+    line: int
+    offset: int
+    trailing: bool
