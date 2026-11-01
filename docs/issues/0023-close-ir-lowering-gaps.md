@@ -194,3 +194,7 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   left column's comparison (`identity_comparison`).
 - [ ] **U2** (§3.2.6, Example 15): equivalences and constants that hold in
   both UNION ALL inputs at the same positions hold in the output.
+- [ ] **F2, F4** (Lemma 10, Thm 4): a full join's ON gives no dependencies
+  today. `t FULL JOIN u ON u.z = t.a` gives `a → z` (a non-null a is a left
+  row, and a fixes which rows it matches) when η holds for z and for every
+  right column of p, and the lax `z → a`.
