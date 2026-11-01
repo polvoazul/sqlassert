@@ -287,6 +287,61 @@ def test_a_declared_enum_constrains_the_instances_searched():
     assert judgement.counterexamples == ()
 
 
+def test_a_false_numeric_enum_claim_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE items (qty INTEGER);
+        SELECT qty FROM items WHERE qty IN (1, 2) /**ASSERT ENUM(qty IN (1))**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.witness == [(2,)]
+
+
+def test_a_false_boolean_enum_claim_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE items (flag BOOLEAN);
+        SELECT flag FROM items /**ASSERT ENUM(flag IN (TRUE))**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.witness == [(False,)]
+
+
+def test_a_member_that_cannot_compare_with_the_column_matches_nothing():
+    # 'a' cannot be cast to INTEGER; the claim stands or falls on 1 alone.
+    sql = """
+        CREATE TABLE items (qty INTEGER);
+        SELECT qty FROM items WHERE qty = 1 /**ASSERT ENUM(qty IN (1, 'a'))**/
+    """
+    assert judged(*claimed_proved(sql)).counterexamples == ()
+
+    false = judged(*claimed_proved(sql.replace("(1, 'a')", "(2, 'a')")))
+    assert [counterexample.witness for counterexample in false.counterexamples] == [[(1,)]]
+
+
+def test_two_distinct_literals_can_equal_one_float():
+    # Why distinct numeric literals may meet: a FLOAT equals both, so the
+    # declared and filtered domains do not intersect to nothing.
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE items (ratio FLOAT);
+        WITH r AS (SELECT * FROM items /**DECLARE ENUM(ratio IN (0.1))**/)
+        SELECT ratio FROM r WHERE ratio = 0.100000001 /**ASSERT ENUM(ratio IN (5))**/
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_two_distinct_literals_can_equal_one_string():
+    # A VARCHAR is cast to each numeric literal's type, rounding to its scale.
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE items (tag VARCHAR);
+        WITH t AS (SELECT * FROM items /**DECLARE ENUM(tag IN (1))**/)
+        SELECT tag FROM t WHERE tag = 1.4 /**ASSERT ENUM(tag IN (5))**/
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
 def test_instances_that_break_a_property_declaration_are_rejected():
     # The declaration is a trusted assumption, so data violating it is no
     # counterexample to the proof built on it.

@@ -34,11 +34,12 @@ import sqlassert
 import sqlassert.main
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
 from sqlassert.properties import EnumeratedDomain, ForeignKey, FunctionalDependency
+from sqlassert.ir import LiteralValue
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
 from sqlassert.provenance import SQL, Origin
 from sqlassert.sql_parse import (
-    DECLARED_KINDS, ColumnMarker, ParsedProgram, SqlParser, assertion_line, column_markers, join_origin,
+    DECLARED_KINDS, ColumnMarker, ParsedProgram, SqlParser, assertion_line, column_markers, join_origin, literal_value,
 )
 
 # Rows per table. Two complete the search for select-project-join queries; one
@@ -185,11 +186,11 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         ):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower() for column in asserted}
-            values: set[str] | None = None
+            values: frozenset[LiteralValue] | None = None
         case EnumeratedDomain(column=column, values=domain):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower()}
-            values = {value.text for value in domain}
+            values = domain
         case _:
             raise TypeError(f"Unhandled asserted Property: {type(property).__name__}")
     select, marker = next(
@@ -198,7 +199,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         for select in statement.find_all(exp.Select)
         for marker in column_markers(select)
         if marker.kind == kind and {name.lower() for name in marker.columns} == columns
-        and (values is None or {value.this for value in marker.values} == values)
+        and (values is None or frozenset(marker.values) == values)
         and Origin(SQL, select.sql(dialect=dialect), marker.line) == origin
     )
     return _violation_query(select, marker)
@@ -240,9 +241,11 @@ def _violation_query(select: exp.Select, marker: ColumnMarker) -> str:
             values = f"SELECT DISTINCT {', '.join(columns)}, {dependent} FROM {relation} WHERE {all_present}"
             query = f"SELECT {', '.join(columns)}, count(*) FROM ({values}) GROUP BY ALL HAVING count(*) > 1"
         case "enum":
-            # NULL is outside the domain and never violates it.
-            listed = ", ".join(value.sql(dialect="duckdb") for value in marker.values)
-            query = f"SELECT {columns[0]} FROM {relation} WHERE {all_present} AND {columns[0]} NOT IN ({listed})"
+            # NULL is outside the domain and never violates it. A member the
+            # column cannot be compared with (INTEGER against 'a') equals nothing.
+            column = columns[0]
+            matches = " OR ".join(f"coalesce(try({column} = {value.sql()}), false)" for value in marker.values)
+            query = f"SELECT {column} FROM {relation} WHERE {all_present} AND NOT ({matches})"
         case "foreign-key" | "coverage":
             # MATCH SIMPLE: a row with a null referencing column is exempt.
             assert marker.referenced_relation is not None
@@ -465,14 +468,19 @@ def _literals(parsed: ParsedProgram) -> tuple[list[object], list[str]]:
     for statement in (*parsed.create_statements, parsed.root_select):
         if statement is None:
             continue
-        marked = (value for select in statement.find_all(exp.Select) for marker in column_markers(select) for value in marker.values)
-        for literal in (*statement.find_all(exp.Literal), *marked):
-            assert isinstance(literal, exp.Literal)
-            if literal.is_string:
-                strings.append(literal.this)
-            else:
-                number = float(literal.this)
-                numbers.append(int(number) if number.is_integer() else number)
+        marked = [value for select in statement.find_all(exp.Select) for marker in column_markers(select) for value in marker.values]
+        written = [value for literal in statement.find_all(exp.Literal, exp.Neg) if (value := literal_value(literal)) is not None]
+        for value in (*written, *marked):
+            match value.type:
+                case "string":
+                    strings.append(value.text)
+                case "numeric":
+                    number = float(value.text)
+                    numbers.append(int(number) if number.is_integer() else number)
+                    # A text column compared with a number is cast to it.
+                    strings.append(value.text)
+                case _:
+                    pass  # A boolean column already takes both values.
     return numbers, strings
 
 
