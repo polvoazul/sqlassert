@@ -207,7 +207,7 @@ def test_two_covering_keys_retain_both_justifications():
 
 
 def test_unique_set_and_non_null_declarations_use_the_same_decorator():
-    conversion = convert()
+    conversion = convert("CREATE TABLE events(user_id INTEGER); SELECT user_id FROM events")
     column = conversion.program.root.output_columns[0]
     columns = frozenset((column,))
     program = replace(conversion.program, declarations=(UniqueSet(columns=columns), NonNullColumn(column=column)))
