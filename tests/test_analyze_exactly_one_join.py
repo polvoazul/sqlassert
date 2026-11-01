@@ -162,10 +162,10 @@ def test_exactly_one_and_unique_markers_mark_separate_joins():
     ) == [Outcome.PROVED, Outcome.PROVED]
 
 
-def test_an_exactly_one_marker_in_an_unmodelled_part_of_the_program_is_a_diagnostic():
+def test_an_exactly_one_marker_in_an_unreferenced_cte_is_a_diagnostic():
     report = report_of(
         "WITH enriched AS (SELECT orders.id FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id = users.id) "
-        "SELECT * FROM enriched"
+        "SELECT * FROM orders"
     )
 
     assert [diagnostic.code for diagnostic in report.diagnostics] == [UNANALYZED_ASSERTION]
