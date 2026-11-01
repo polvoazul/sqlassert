@@ -416,3 +416,21 @@ def test_a_bare_column_of_a_scalar_aggregate_may_be_null():
     report = analyze(SCALAR + "SELECT x, count(*) AS n FROM t /**ASSERT NOT NULL(x)**/", dialect="mysql")
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+# SELECT without FROM ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sql", "outcome"),
+    [
+        # One row: every column set is unique, literals keep their values.
+        ("SELECT 'p' AS k, 1 AS n /**ASSERT NOT NULL UNIQUE(k)**/", Outcome.PROVED),
+        ("SELECT 'p' AS k /**ASSERT ENUM(k IN ('p'))**/", Outcome.PROVED),
+        ("SELECT 1 AS x WHERE 1 = 2 /**ASSERT UNIQUE(x)**/", Outcome.PROVED),
+        ("SELECT NULL AS x /**ASSERT NOT NULL(x)**/", Outcome.UNKNOWN),
+        ("WITH u AS (SELECT 'a' AS t UNION ALL SELECT 'a') SELECT t FROM u /**ASSERT UNIQUE(t)**/", Outcome.UNKNOWN),
+    ],
+)
+def test_a_select_without_from_is_one_row(sql: str, outcome: Outcome):
+    assert [assertion.outcome for assertion in analyze(sql).assertions] == [outcome]

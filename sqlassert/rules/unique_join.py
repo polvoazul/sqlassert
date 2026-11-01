@@ -1,7 +1,7 @@
 """Unique joins: the right columns an ON equality binds determine the right row."""
 
 from sqlassert import ir
-from sqlassert.python_engine import Result, Stratum, all_of, analysis, unknown
+from sqlassert.python_engine import Result, Stratum, all_of, analysis
 from sqlassert.rules.column_set import ColumnSet
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 
@@ -9,10 +9,8 @@ from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 @analysis(Stratum.UNIQUE_JOIN)
 def unique_join(join: ir.Join) -> Result[bool]:
     # Whatever the kind, a left row appears at most once per matching right
-    # row (or once, padded); a cross join is an ON with no conjuncts.
-    if join.kind in {"semi", "anti"}:
-        return unknown(f"Unique-join inference does not model {join.kind} joins", join)
-
+    # row (or once, padded, or kept or dropped whole by a semi or anti join);
+    # a cross join is an ON with no conjuncts.
     cols = _multiplicity_columns_rhs(join)
     bound = frozenset(cols.value.columns)
     # Matching right rows agree on the bound columns, all non-null.

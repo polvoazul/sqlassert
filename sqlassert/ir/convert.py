@@ -433,9 +433,13 @@ class IrParser:
     def _lower_select(self, select: exp.Select) -> ir.RelationExpr | None:
         source = _from_source(select)
         if source is None:
-            return None
-
-        if any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+            # No FROM: the select list is evaluated once, over one row of no
+            # columns, which an opaque relation limited to one row stands for.
+            origin = self._origin(select)
+            row = ir.OpaqueRelation(origin=origin, output_columns=(), is_schema_complete=True, description="no FROM")
+            one_row = ir.Limit(origin=origin, output_columns=(), is_schema_complete=True, input=row, count=1)
+            relation = self._lower_select_tail(_Lowered(one_row, ()), select)
+        elif any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
             relation = self._opaque_relation(select, _selected_output_names(select))
         else:
             lowered = self._lower_source(source)

@@ -106,7 +106,7 @@ def test_relations_are_found_through_the_preliminary_ir_so_a_cte_is_never_fetche
 
     report = analyze_database(
         """
-        WITH users AS (SELECT 1 AS id)
+        WITH users AS (SELECT 1 AS id UNION ALL SELECT 1)
         SELECT * FROM users /**ASSERT UNIQUE(id)**/
         """,
         fetcher,
