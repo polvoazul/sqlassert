@@ -296,7 +296,7 @@ DESIGN_CASES = [
     (
         "a declared dependency extends a key",
         """
-        CREATE TABLE addresses (zip VARCHAR, city VARCHAR, street VARCHAR, UNIQUE (city, street));
+        CREATE TABLE addresses (zip VARCHAR, city VARCHAR NOT NULL, street VARCHAR, UNIQUE (city, street));
         WITH a AS (SELECT zip, city, street FROM addresses /**DECLARE DETERMINES(zip -> city)**/)
         SELECT zip, city, street FROM a /**ASSERT DETERMINES(zip -> city)**/ /**ASSERT UNIQUE(zip, street)**/
         """,
@@ -330,3 +330,33 @@ def test_an_equality_on_an_outer_join_is_not_a_strict_equivalence():
         """,
         schema="",
     ) == [Outcome.PROVED]
+
+
+def test_a_declared_dependency_onto_a_nullable_column_does_not_extend_a_key():
+    """`zip -> city` lets two rows share a zip with a NULL city, and a NULL
+    city is exempt from `UNIQUE (city, street)`, so `(zip, street)` repeats."""
+    assert outcomes(
+        """
+        CREATE TABLE addresses (zip VARCHAR, city VARCHAR, street VARCHAR, UNIQUE (city, street));
+        WITH a AS (SELECT zip, city, street FROM addresses /**DECLARE DETERMINES(zip -> city)**/)
+        SELECT zip, city, street FROM a /**ASSERT UNIQUE(zip, street)**/
+        """,
+        schema="",
+    ) == [Outcome.UNKNOWN]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["/**ASSERT DETERMINES(zip city)**/", "/**ASSERT DETERMINES(-> city)**/", "/**ASSERT DETERMINES(zip ->)**/",
+     "/**ASSERT DETERMINES(zip, zip -> city)**/", "/**DECLARE DETERMINES(zip -> city**/"],
+)
+def test_a_malformed_dependency_marker_is_reported(marker: str):
+    report = analyze(f"CREATE TABLE addresses (zip VARCHAR, city VARCHAR); SELECT zip, city FROM addresses {marker}")
+    assert report.assertions == ()
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unattached-marker"], marker
+    assert "functional dependency" in report.diagnostics[0].message
+
+
+def test_a_dependency_marker_naming_an_unknown_column_is_reported():
+    report = analyze("CREATE TABLE addresses (zip VARCHAR, city VARCHAR); SELECT zip FROM addresses /**ASSERT DETERMINES(zip -> city)**/")
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unknown-asserted-column"]
