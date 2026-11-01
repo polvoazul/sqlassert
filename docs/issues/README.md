@@ -4,17 +4,15 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
-- [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 24, 26, 28, 29, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Next, as dependencies allow:
 
-1. Foreign Keys: 22.
-2. Independent: 15 High level (rewrite suggestions).
-3. Skipped for now (need downloaded corpora): 11, 27 Part 2.
+1. 15 High level (rewrite suggestions).
+2. Skipped for now (need downloaded corpora): 11, 27 Part 2.
