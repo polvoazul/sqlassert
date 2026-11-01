@@ -4,7 +4,8 @@ A left row appears once per matching right row, or once padded, whatever the
 kind: RIGHT and FULL joins pad right rows on but never repeat a left row more
 than its matches do, so the right side's Unique Set proves them as it proves
 INNER and LEFT joins. A CROSS join is an ON with no conjuncts: unique only when
-the right input has at most one row. SEMI and ANTI joins are not modelled.
+the right input has at most one row. SEMI and ANTI joins keep or drop each
+left row whole; the same proof applies to them, unchanged.
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ def outcomes(sql: str) -> list[Outcome]:
         "FULL JOIN users ON sessions.user_id = users.id",
         "FULL OUTER JOIN users ON sessions.user_id = users.id",
         "CROSS JOIN (SELECT count(*) AS n FROM users) AS c",
+        "SEMI JOIN users ON sessions.user_id = users.id",
+        "ANTI JOIN users ON sessions.user_id = users.id",
     ],
 )
 def test_a_join_against_a_primary_key_is_proved_whatever_its_kind(join: str):
@@ -49,15 +52,11 @@ def test_a_join_against_a_primary_key_is_proved_whatever_its_kind(join: str):
         ("full without a key", "FULL JOIN sessions AS s2 ON sessions.user_id = s2.user_id"),
         ("cross onto many rows", "CROSS JOIN users"),
         ("positional", "POSITIONAL JOIN users"),
-        ("semi", "SEMI JOIN users ON sessions.user_id = users.id"),
-        ("left semi", "LEFT SEMI JOIN users ON sessions.user_id = users.id"),
-        ("anti", "ANTI JOIN users ON sessions.user_id = users.id"),
-        ("left anti", "LEFT ANTI JOIN users ON sessions.user_id = users.id"),
         ("right semi", "RIGHT SEMI JOIN users ON sessions.user_id = users.id"),
         ("right anti", "RIGHT ANTI JOIN users ON sessions.user_id = users.id"),
     ],
 )
-def test_unproved_or_unmodelled_joins_stay_unknown(label: str, join: str):
+def test_unproved_joins_stay_unknown(label: str, join: str):
     assert outcomes(f"SELECT * FROM sessions /**ASSERT UNIQUE**/ {join}") == [Outcome.UNKNOWN], label
 
 

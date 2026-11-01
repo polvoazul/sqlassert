@@ -81,7 +81,7 @@ def test_what_a_constraint_does_not_state_is_not_proved(label: str, ddl: str, qu
         "ALTER TABLE users ADD UNIQUE (email); CREATE TABLE users (id INTEGER, email VARCHAR);",
         "CREATE UNIQUE INDEX users_email ON users (email); CREATE TABLE users (id INTEGER, email VARCHAR);",
         "ALTER TABLE users ADD UNIQUE (email);",
-        "CREATE VIEW users AS SELECT 1 AS email; ALTER TABLE users ADD UNIQUE (email);",
+        "CREATE VIEW users AS SELECT 1 AS email UNION ALL SELECT 1; ALTER TABLE users ADD UNIQUE (email);",
     ],
     ids=["ALTER before CREATE", "INDEX before CREATE", "never created", "a view"],
 )

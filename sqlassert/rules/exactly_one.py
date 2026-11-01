@@ -22,9 +22,10 @@ from sqlassert.rules.unique_join import unique_join
 
 @analysis(Stratum.UNIQUE_JOIN)
 def exactly_one_join(join: ir.Join) -> Result[bool]:
-    # As for a Unique Join, the left row's matches decide it whatever the kind.
-    if join.kind in {"semi", "anti"}:
-        return unknown(f"Exactly-one inference does not model {join.kind} joins", join)
+    # As for a Unique Join, the left row's matches decide it, except that an
+    # anti join drops every matched row.
+    if join.kind == "anti":
+        return unknown("An anti join drops the rows it matches", join)
     at_most_one = _half("At most one match: the right predicate columns cover a Unique Set", (join,), unique_join(join))
     pairs, others = _cross_equalities(join)
     if not pairs:

@@ -67,6 +67,12 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   lowered: `NOT IN` (NULL semantics), tuple `IN`, an EXISTS body with
   `GROUP BY`, `HAVING`, `DISTINCT`, `LIMIT` or `WITH`, subqueries in the
   select list, and `ANY`/`ALL` comparisons.
+  Semi and anti joins take the ordinary Unique Join proof (a left row is kept
+  or dropped whole); Exactly One applies to semi joins, not anti joins, which
+  drop every row they match.
+- [x] A Select with no FROM was opaque. Done: it lowers over one row (an opaque
+  relation of no columns under `LIMIT 1`), so the empty set is its key and its
+  literals keep their values.
 - [x] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
   constraints, and other DDL are ignored. Done: `ALTER TABLE ... ADD PRIMARY
   KEY / UNIQUE / FOREIGN KEY` (named or not), `ALTER COLUMN ... SET NOT NULL`,

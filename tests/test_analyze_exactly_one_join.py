@@ -237,6 +237,10 @@ CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
 
 COMPOSITE_PROVED = [
     (
+        "semi join",
+        "SELECT * FROM shops AS s /**ASSERT EXACTLY ONE**/ SEMI JOIN regions AS r ON s.country = r.country AND s.code = r.code",
+    ),
+    (
         "composite key",
         "SELECT * FROM shops AS s /**ASSERT EXACTLY ONE**/ JOIN regions AS r ON s.country = r.country AND s.code = r.code",
     ),
@@ -356,8 +360,8 @@ COMPOSITE_UNKNOWN = [
         "/**ASSERT EXACTLY ONE**/ JOIN regions AS r ON s.country = r.country AND s.code = r.code",
     ),
     (
-        "semi join",
-        "SELECT * FROM shops AS s /**ASSERT EXACTLY ONE**/ SEMI JOIN regions AS r ON s.country = r.country AND s.code = r.code",
+        "anti join",
+        "SELECT * FROM shops AS s /**ASSERT EXACTLY ONE**/ ANTI JOIN regions AS r ON s.country = r.country AND s.code = r.code",
     ),
 ]
 

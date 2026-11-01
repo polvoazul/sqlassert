@@ -192,7 +192,6 @@ UNKNOWN = [
     ("outer join ON never crosses", DECLARED + "SELECT c.code FROM codes c LEFT JOIN o ON c.code = o.status /**ASSERT ENUM(code IN ('new', 'paid'))**/"),
     ("disjunction", "SELECT status FROM orders WHERE status = 'a' OR id = 1 /**ASSERT ENUM(status IN ('a'))**/"),
     ("negated in list", "SELECT status FROM orders WHERE status NOT IN ('a') /**ASSERT ENUM(status IN ('b'))**/"),
-    ("union", "WITH u AS (SELECT 'a' AS tag UNION ALL SELECT 'b') SELECT tag FROM u /**ASSERT ENUM(tag IN ('a', 'b'))**/"),
     ("aggregate", DECLARED + "SELECT max(status) AS m FROM o /**ASSERT ENUM(m IN ('new', 'paid'))**/"),
 ]
 
@@ -290,6 +289,7 @@ def test_values_of_different_types_spelled_alike_are_not_duplicates():
 # Set operations (issue 31) ---------------------------------------------------
 
 SET_OPERATIONS = [
+    ("union without FROM", "WITH u AS (SELECT 'a' AS tag UNION ALL SELECT 'b') SELECT tag FROM u /**ASSERT ENUM(tag IN ('a', 'b'))**/", Outcome.PROVED),
     ("union of literals", "WITH u AS (SELECT 'new' AS s FROM orders UNION SELECT 'paid' FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new', 'paid'))**/", Outcome.PROVED),
     ("union with a declared source", DECLARED + ", u AS (SELECT status FROM o UNION ALL SELECT 'void' FROM orders) SELECT status FROM u /**ASSERT ENUM(status IN ('new', 'paid', 'void'))**/", Outcome.PROVED),
     ("union missing a value", "WITH u AS (SELECT 'new' AS s FROM orders UNION SELECT 'paid' FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new'))**/", Outcome.UNKNOWN),
