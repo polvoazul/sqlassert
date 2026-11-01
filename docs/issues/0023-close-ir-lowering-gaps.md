@@ -63,3 +63,12 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   as separate `Window` and `Filter` operations, with the engine deriving
   uniqueness from recognized shapes. Until then, keep
   `QUALIFY row_number() over (partition by ...) = 1` as the explicit special case.
+
+## Found while building issue 28
+
+- [ ] A column marker naming a column that is not visible in a relation with
+  an incomplete schema is dropped silently: no assertion and no diagnostic.
+  Example, with `a` and `b` undeclared:
+  `SELECT * FROM a JOIN b ON a.id = b.aid /**ASSERT UNIQUE(name)**/`.
+  Report it instead (a dropped marker reads to its author as a proof).
+
