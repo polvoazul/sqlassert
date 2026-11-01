@@ -16,7 +16,7 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    ExactlyOneJoin, ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
+    ExactlyOneJoin, ForeignKey, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
     UniqueSet,
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
@@ -210,7 +210,7 @@ class IrParser:
 
         if len(sources) == 1 and _star_only(query):
             for marker in column_markers(query):
-                for column in marker.columns:
+                for column in (*marker.columns, *marker.dependent):
                     self._require(sources[0], column)
 
         for marker in column_markers(query):
@@ -682,7 +682,7 @@ class IrParser:
             kind, columns, line = marker.kind, marker.columns, marker.line
             self._handled_column_marker_lines.add(line)
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
-            unknown = [column for column in columns if column.lower() not in by_name]
+            unknown = [column for column in (*columns, *marker.dependent) if column.lower() not in by_name]
             if unknown and relation.is_schema_complete:
                 self._diagnostics.append(
                     Diagnostic(
@@ -701,6 +701,7 @@ class IrParser:
                 ))
                 continue
             members = frozenset(by_name[column.lower()] for column in columns)
+            dependent = frozenset(by_name[column.lower()] for column in marker.dependent)
             match kind:
                 case "unique":
                     self._assertions.append(ir.Assertion(origin=origin, property=UniqueSet(columns=members)))
@@ -717,6 +718,11 @@ class IrParser:
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
                 case "declared-not-null":
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
+                case "determines":
+                    property = FunctionalDependency(determinant=members, dependent=dependent)
+                    self._assertions.append(ir.Assertion(origin=origin, property=property))
+                case "declared-determines":
+                    self._declarations.append(FunctionalDependency(determinant=members, dependent=dependent))
                 case _:
                     raise ValueError(f"Unhandled column marker kind: {kind}")
 
