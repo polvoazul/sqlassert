@@ -267,7 +267,7 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
   equalities are FD pairs; constants are FDs from `∅`. A column set is a
   Unique Set when its closure reaches the relation's Row Identity, and a join
   is a Unique Join when the right columns the ON condition binds reach the
-  right input's. Union-find arrives later for value facts only (issue 26); it
+  right input's. Union-find serves value facts only ([Equality groups](#equality-groups)); it
   never decides uniqueness, because it covers equalities and constants only
   and forgets which equality merged two columns, which `explain()` needs.
 - **Strict and lax in one closure.** `_closure(relation, columns, definite)`
@@ -355,12 +355,36 @@ Non-null means the set is empty, so `NonNullColumn` keeps its meaning.
 Explanations name each source: "nickname is nullable in users", "nickname is
 padded by the LEFT JOIN".
 
+### Equality groups
+
+`sqlassert/rules/equality.py`. `_equality_groups(relation)` partitions a
+relation's output columns into groups that carry one value on every row
+(`EqualityGroups.groups`, each in output order); `_equal_columns(column)` is
+the group of one column, the question Enumerated Domains and Foreign Key
+propagation ask. Each group's evidence cites every equality that merged it,
+with its line.
+
+- A union-find over **strict** equalities only: `WHERE` and inner-join `ON`
+  conjuncts `a = b` between columns. An outer join's ON never merges, not
+  even within its padded side; neither does `a = f(b)`, a disjunction, or a
+  semi or anti join's ON.
+- Input groups pass through every column that passes an input column
+  through: Alias, Named Relation, Filter, Project, both sides of a join,
+  grouping columns, DISTINCT, QUALIFY, and the left input of INTERSECT and
+  EXCEPT. A computed column (an aggregate included) starts its own group;
+  UNION passes nothing. Groups are closed at each relation, so a column a
+  projection drops still links the columns it was equal to.
+- On a row an outer join padded, a group of the padded side is NULL in every
+  member: value-equal, NULL agreeing with NULL. Consumers read non-null
+  values (Enumerated Domains, `MATCH SIMPLE` Foreign Keys), so this is enough.
+- Not yet: constants (`a = literal`; the IR's `Constant` carries no value),
+  and the ON of a proved Exactly One LEFT join, which pads nothing.
+
 ### Kept outside the FD closure
 
 - **Value equality.** `a = b` is stronger than the FD pair `a ↔ b`. Facts
   about values (a constant's value, ENUM domains, inclusion dependencies) need
-  the equality itself: equality groups, planned in
-  [issue 26](issues/0026-equality-groups.md).
+  the equality itself: [equality groups](#equality-groups).
 - **Inclusion dependencies / foreign keys**: a relation between two relations,
   not a column fact (Referential Coverage, Foreign Key).
 
@@ -373,16 +397,17 @@ about R may use any fact about R's inputs, but facts about R only at its own or
 a lower stratum. `Stratum` in `python_engine.py` encodes it, its docstring is
 the canonical statement, and `@analysis` asserts it on every call:
 
-1. Unique join, exactly-one join.
-2. Non-null (null sources; exactly-one left joins pad nothing).
-3. Functional dependencies (η uses null sources; joins use Unique Joins).
-4. Closure, and `DETERMINES` assertions.
-5. Unique sets.
-6. Foreign keys.
+1. Equality groups (only the relation's own conjuncts and its inputs' groups).
+2. Unique join, exactly-one join.
+3. Non-null (null sources; exactly-one left joins pad nothing).
+4. Functional dependencies (η uses null sources; joins use Unique Joins).
+5. Closure, and `DETERMINES` assertions.
+6. Unique sets.
+7. Foreign keys.
 
 Predicate extraction needs no stratum: it is a plain helper over the IR's
-conjuncts. Equality groups and domains (ENUM) slot in below dependencies and
-above unique sets respectively when they arrive. Two exceptions to plan for:
+conjuncts. Domains (ENUM) slot in above unique sets when they arrive. Two
+exceptions to plan for:
 
 - **Correlated subqueries** make the inner relation depend on the outer one
   and vice versa, a cycle across relations. Lower them as a dependent join
