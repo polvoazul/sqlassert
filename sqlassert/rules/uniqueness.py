@@ -1,7 +1,7 @@
 """Establish, preserve, and cover unique sets directly on the semantic IR."""
 
 from sqlassert import ir
-from sqlassert.properties import NonNullColumns, ReferentialCoverage, UniqueJoin, UniqueSet
+from sqlassert.properties import ExactlyOneJoin, NonNullColumns, ReferentialCoverage, UniqueJoin, UniqueSet
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import ColumnSet, _column_set
 
@@ -61,7 +61,7 @@ def _unique_sets(relation: ir.RelationExpr) -> Result[dict[frozenset[ir.OutputCo
                     coverage = _coverage(_column_set(relation, columns), known)
                     if coverage.value:
                         _add(keys, columns, coverage)
-            case UniqueJoin() | NonNullColumns() | ReferentialCoverage():
+            case UniqueJoin() | ExactlyOneJoin() | NonNullColumns() | ReferentialCoverage():
                 pass
             case _:
                 raise TypeError(f"Unhandled assertion property: {type(assertion.property).__name__}")

@@ -137,6 +137,8 @@ class Join(RelationExpr):
     left: RelationExpr
     right: RelationExpr
     equalities: tuple[Equality, ...] = ()
+    # The predicate's other conjuncts: they may only remove matches.
+    residual_conjuncts: tuple[ScalarExpr, ...] = ()
 
 
 class Filter(RelationExpr):

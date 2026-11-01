@@ -11,10 +11,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   reporting; it is not a general orchestration module.
 - `sql_parse.py` parses one SQL Program with SQLGlot and resolves assertion
   markers onto the `Join` nodes they mark. A marker is real syntax: a custom
-  dialect tokenizes `/**ASSERT UNIQUE**/` as a token of its own and the join rule
-  consumes it, so the grammar is what requires a marker to sit immediately
-  before its join. The line is recorded in the node's `meta`, and nothing
-  downstream re-reads SQL text.
+  dialect tokenizes each join marker (`/**ASSERT UNIQUE**/`,
+  `/**ASSERT EXACTLY ONE**/`; `JOIN_MARKER_KINDS`) as a token of its own and the
+  join rule consumes it, so the grammar is what requires a marker to sit
+  immediately before its join. The line and marker kind are recorded in the
+  node's `meta`, and nothing downstream re-reads SQL text.
 
   `MARKERS` in that module is the single source of truth for what a marker is:
   the dialect tokenizes exactly those literals, and any other `/**...*/` comment
