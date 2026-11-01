@@ -371,7 +371,7 @@ nullable in `users`, and padded by the LEFT JOIN on line 3".
   predicates always emit their FD pair (enough for uniqueness). Facts about
   values (a constant's value, ENUM domains, inclusion dependencies) need the
   equality itself: equality groups, a union-find over **strict** equalities
-  only, added when the first such property needs it ([issue 16](issues/0016-assert-and-declare-string-enum-domains.md)).
+  only, planned in [issue 26](issues/0026-equality-groups.md).
   Non-nullness from `a = b` is neither: the predicate rejects NULL on both
   sides, so the Filter rule emits non-null facts for both columns directly.
 - **Inclusion dependencies / foreign keys**: a relation between two relations,
