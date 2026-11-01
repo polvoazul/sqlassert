@@ -67,6 +67,19 @@ CASES = {
     "R11": ("SELECT a, b FROM t WHERE a = b /**ASSERT NOT NULL(a, b)**/", PROVED),
     "R12": ("SELECT a FROM t WHERE EXISTS (SELECT 1 FROM v WHERE v.w = t.a) /**ASSERT NOT NULL(a)**/", PROVED),
     "R13-": ("SELECT a FROM t WHERE a = 1 OR a = 2 /**ASSERT ENUM(a IN (1, 2))**/", UNKNOWN),
+    # Set operations (§3.2.5–3.2.7), asserted on a CTE: a trailing marker would mark the last input.
+    "I1": ("WITH q AS (SELECT id, a FROM t INTERSECT ALL SELECT id, a FROM t WHERE a = 1) SELECT id, a FROM q /**ASSERT DETERMINES(id -> a)**/", PROVED),
+    "I2": ("WITH q AS (SELECT id FROM t INTERSECT ALL SELECT a FROM t) SELECT id FROM q /**ASSERT UNIQUE(id)**/", PROVED),
+    "I3": ("WITH q AS (SELECT x FROM u INTERSECT ALL SELECT d FROM t) SELECT x FROM q /**ASSERT NOT NULL UNIQUE(x)**/", PROVED),
+    "U1-": ("WITH q AS (SELECT id, a FROM t UNION ALL SELECT id, b FROM t) SELECT id, a FROM q /**ASSERT DETERMINES(id -> a)**/", UNKNOWN),
+    "U3": ("WITH q AS (SELECT a, b FROM t UNION SELECT c, d FROM t) SELECT a, b FROM q /**ASSERT UNIQUE(a, b)**/", PROVED),
+    "D1": ("WITH q AS (SELECT id, a FROM t EXCEPT ALL SELECT id, a FROM t WHERE a = 1) SELECT id, a FROM q /**ASSERT UNIQUE(id)**/", PROVED),
+    # Grouping and aggregation (§3.2.8).
+    "G1": ("SELECT id, a, count(*) AS n FROM t GROUP BY id, a /**ASSERT UNIQUE(id)**/", PROVED),
+    "G2": ("SELECT a, a + 1 AS k, count(*) AS n FROM t GROUP BY a, a + 1 /**ASSERT UNIQUE(a)**/", PROVED),
+    "G3": ("SELECT a, b, count(*) AS n FROM t GROUP BY a, b /**ASSERT UNIQUE(a, b)**/", PROVED),
+    "G3e": ("SELECT count(*) AS n, max(a) AS m FROM t /**ASSERT UNIQUE(m)**/", PROVED),
+    "G4": ("SELECT a, count(*) AS n, sum(b) AS s FROM t GROUP BY a /**ASSERT DETERMINES(a -> n, s)**/", PROVED),
 }
 
 
