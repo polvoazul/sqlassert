@@ -166,6 +166,13 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   WHERE r.z IS NOT NULL`, z and a are not merged, so Enumerated Domains and
   Foreign Key stand-ins do not cross between them. (The FD closure already
   strengthens the lax FD.)
+  Related, **L14**: for Enumerated Domains a lax equivalence is enough, since
+  NULL is outside every domain: after `LEFT JOIN u ON u.z = t.a WHERE t.a =
+  5`, z is 5 or NULL, so `ENUM(z IN (5))` holds; today it is UNKNOWN.
+- [ ] **L13** (Thm 3, strict equivalence 4): an ON equality within the padded
+  side of an outer join (`ON ... AND u.x = u.z`) is a strict equivalence in
+  the result (both NULL on padded rows), but does not merge an Equality Group,
+  so `u.z = 3` in the same ON does not bound x's domain.
 - [ ] **S5** (§3.2.1): CHECK constraints are ignored without a diagnostic.
   `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
   Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
