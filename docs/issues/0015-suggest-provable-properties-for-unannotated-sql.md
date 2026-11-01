@@ -44,6 +44,8 @@ Suggestions are ranked by how directly they improve the SQL:
   - A redundant join: exactly-one, and contributes no columns the query uses.
   - A redundant `DISTINCT`, or a `GROUP BY` column another grouping column
     determines.
+  - A CTE nothing references: dead code. Today it is never lowered, so any
+    marker in it goes unchecked as well.
 - **Mid: add markers.** Lock in what is provable but not asserted, e.g.
   `/**ASSERT PRIMARY KEY(id)**/` (the candidates below).
 - **Low: other code smells.** Open.
