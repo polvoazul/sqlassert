@@ -141,8 +141,9 @@ class Stratum(IntEnum):
     DAG, so this keeps the whole call graph acyclic: the memoized engine cannot
     compute mutually recursive facts, which would need a fixpoint.
 
-    Unique Joins (and Exactly One Joins) come first, so a relation's Null
-    Sources may use them; dependencies use Null Sources (a padded side's
+    Equality groups come first: they read only the relation's own conjuncts
+    and its inputs' groups. Unique Joins (and Exactly One Joins) follow, so a
+    relation's Null Sources may use them; dependencies use Null Sources (a padded side's
     dependencies hold only when the join cannot pad an agreeing row) and Unique
     Joins; closure uses dependencies and non-nullness; Unique Sets and
     Functional Dependency assertions are closure questions; Foreign Keys use
@@ -150,6 +151,7 @@ class Stratum(IntEnum):
     analyzed SQL.
     """
 
+    EQUALITY_GROUP = 5
     UNIQUE_JOIN = 10
     NON_NULL = 20
     FUNCTIONAL_DEPENDENCY = 30
@@ -254,7 +256,7 @@ class Engine:
     def session(self, program: ir.Program, knowledge: tuple[Property, ...] = ()) -> Iterator[Arena]:
         assert _active.get(None) is None, "An analysis arena is already active"
         # Importing registers analysis functions; inference remains in rules/.
-        from sqlassert.rules import exactly_one, foreign_key, nullability, unique_join, uniqueness  # noqa: F401
+        from sqlassert.rules import equality, exactly_one, foreign_key, nullability, unique_join, uniqueness  # noqa: F401
 
         arena = Arena(program, knowledge)
         token = _active.set(arena)
