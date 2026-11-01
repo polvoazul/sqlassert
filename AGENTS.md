@@ -16,10 +16,11 @@ Internal representation (IR, analysis functions, rules) may change freely.
 ## Analysis works without a connection
 
 `analyze(sql)` must work from the SQL alone ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)).
-When the SQL leaves something ambiguous, emit a warning Diagnostic saying how
-to resolve it and treat the affected facts as unknown; never guess. With a
-connection (`analyze_database`), resolve it from the catalog. A connection may
-only add proofs, never change what the SQL alone proves.
+Whenever a connection would have helped (a table with no `CREATE`, an unknown
+column type, an ambiguous column), emit a warning Diagnostic saying what is
+missing and how to supply it, and treat the affected facts as unknown; never
+guess. With a connection (`analyze_database`), resolve it from the catalog. A
+connection may only add proofs, never change what the SQL alone proves.
 
 ## Where things are
 

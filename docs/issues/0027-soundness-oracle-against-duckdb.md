@@ -34,9 +34,10 @@ search, not a complete one. See
 ## Part 1 — judge existing `PROVED` outcomes
 
 Done: `tests/soundness_oracle.py`, run with `python -m pytest --soundness-oracle`.
-`tests/conftest.py` wraps `analyze` to record every program the suite
-analyzes, and the marked oracle test runs last to judge each `PROVED`
-assertion. Part 2 and the z3 alternative remain open.
+`tests/conftest.py` wraps `analyze` to record each test's programs and judge
+its `PROVED` assertions after fixture teardown. A counterexample is reported
+as a teardown error on the originating test. Part 2 and the z3 alternative
+remain open.
 
 DDL Foreign Keys are removed from the oracle's physical tables and checked
 with coverage queries after the complete generated instance is loaded. This
@@ -50,34 +51,30 @@ valid, and rejected predicate evaluation counts (including shrinking).
 `Judgement.searches` associates those results with assertion IDs. An
 insufficient-data result is reported as skipped, not counted as judged.
 
-The final oracle test judges programs in a process pool (up to eight workers,
-bounded by available CPUs), preserving corpus order in its report. Each program
-has its own in-memory DuckDB with one execution thread; assertions within a
-program remain serial. Workers use `spawn` so they do not inherit DuckDB state
-from the test process.
+Pytest owns parallelism for the entire suite through `pytest-xdist`, with
+`-n auto` configured by default. Use `python -m pytest --soundness-oracle`
+for the parallel oracle run, `-n 0` for serial execution, or `-n 24` to
+choose a worker count. A node ID or `-k` selection checks only those tests.
 
-Compare serial, thread-pool, and process-pool execution with
-`python scripts/benchmark_soundness_oracle.py --workers 8 --repeats 3`.
-The benchmark records the suite once, fixes each search's random seed, and
-requires identical judgements (including search counts and counterexamples).
-Timings include pool startup/shutdown and exclude collecting the corpus.
+Recording spans each test's fixture setup, body, and fixture teardown.
+Repeated SQL/dialect pairs are deduplicated within that test; another test
+using the same SQL gets its own oracle check. Calls made during collection
+are excluded. Checks run after fixture finalizers restore mocks, so the
+oracle uses the real DuckDB implementation. Each program has its own
+in-memory DuckDB with one execution thread, and its assertions run serially
+inside the same pytest worker as the originating test.
 
-Measured on 2026-11-01 on macOS arm64 with 16 available CPUs, Python 3.13.7,
-DuckDB 1.5.2, and Hypothesis 6.170.14. Each mode ran once over the same frozen
-680-program corpus, with 200 examples per assertion and up to three rows per
-table:
+Per-test counts and skipped/known findings travel with pytest's teardown
+reports. The controller combines them into the terminal summary. There is
+no final catch-all test or separate oracle worker pool.
 
-| Mode | DuckDB threads per database | Wall time |
-|---|---|---|
-| Original serial | Default | 296.7 s |
-| Serial | 1 | 239.1 s |
-| Thread pool, 8 workers | 1 | 226.1 s |
-| Process pool, 8 workers | 1 | 51.0 s |
-
-All four runs produced exactly identical judgements: 467 assertions judged,
-seven skipped, no counterexamples, 91,981 valid samples, and 32,652 rejected
-samples. Processes were 5.8 times faster than the original runner, 4.7 times
-faster than serial with one DuckDB thread, and 4.4 times faster than threads.
+Measured on 2026-11-01 with 16 CPUs, Python 3.13.7, DuckDB 1.5.2,
+Hypothesis 6.170.14, and pytest-xdist 3.8.0: the full oracle run passed
+1,125 tests in 30.71 seconds, compared with 45.42 seconds for the prior
+separate-pool implementation. Per-test recording checked 697 program
+analyses and judged 473 assertions, with no counterexamples and seven
+skipped checks. The ordinary suite without the oracle passed in 5.72
+seconds. These are single end-to-end runs, including worker startup.
 
 - [x] Collect `(sql, report)` pairs from the existing tests (fixture or
   conftest hook around `analyze`) without rewriting the tests.
@@ -99,8 +96,8 @@ faster than serial with one DuckDB thread, and 4.4 times faster than threads.
   marker sits on a Select Expression today, so all are enforced by rejection;
   DDL constraints are enforced by DuckDB and by the generator.)
 - [x] Skip programs with tables that have no `CREATE` (no schema to generate).
-- [x] Opt-in suite (marker excluded from the default run) that fails on any
-  `PROVED` with a counterexample, printing the instance.
+- [x] Opt-in checks attached to each test that fail on any `PROVED` with a
+  counterexample, printing the instance.
 
 ### Findings
 

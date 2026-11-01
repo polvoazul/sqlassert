@@ -18,11 +18,17 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
-Next, as dependencies allow:
+Priorities (reasoning per item in the open-issues map artifact):
 
-1. Follow-ups: 30–34 (independent of each other).
-2. 15 Low level: triage Kossmann Table 1 first, then smells; 23 medium and large items.
-3. Skipped for now (need downloaded corpora): 11, 27 Part 2.
+- **P1, now:** #34 oracle blind spots; #23 warn when a connection would help
+  (ADR 0005); #23 outer and cross joins (Paulley §3.2.3, §3.2.10).
+- **P2, next:** #23 set-op arms with #31; #23 function FDs (Paulley §3.1.4);
+  #23 correlated subqueries (Paulley §4.4.2); #15 Kossmann triage, then Low
+  smells; #15 annotate flag; #32; #30; #33 chain part.
+- **P3, needs downloaded corpora:** #11, #27 Part 2.
+- **P4, out of scope for now (not covered by Paulley):** #23 window functions
+  (and #33's CTE part, which needs them), recursive CTEs, column lineage, semi
+  and anti joins and LATERAL, CAST injectivity.
 
 ## Done
 

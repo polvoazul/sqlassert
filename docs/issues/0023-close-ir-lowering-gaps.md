@@ -59,6 +59,11 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   - **Without a connection:** emit a warning Diagnostic naming the column, the
     candidate sources, and the fix (qualify it, or `CREATE` the tables), and
     treat facts that depend on that column as unknown.
+  - **More broadly, warn whenever a connection would have helped**: every
+    table with no `CREATE` (once per table: its keys, nullability and types
+    are unknown), and every comparison whose result depends on an unknown
+    column type (issue 29's conservative string handling). Not emitted by
+    `analyze_database`, where the catalog supplies the facts.
   - **With a connection** (`analyze_database`): give `IrParser` the catalog's
     column lists, so the column resolves to its one real source and is
     analyzed normally.
