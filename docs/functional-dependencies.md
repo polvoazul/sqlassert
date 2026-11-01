@@ -224,28 +224,25 @@ Ordered roughly by payoff over cost.
   Aggregate preserve input unique sets when its grouping columns cover a
   strict key of the input (a Non-Null Unique Set, or a `DISTINCT` / `GROUP BY`
   output).
-- [ ] **Equivalence classes and constant columns** — group columns that hold
-  the same value in every row (a union-find per relation, built from equality
-  predicates), and mark a group constant when it equals a literal. Two payoffs,
-  both UNKNOWN today:
-  - Columns in one group are interchangeable in a key. With `orders` keyed on
-    `(user_id, order_no)`, the ON clause groups `o.user_id` with `u.id`, so
-    this proves:
+- [ ] **Equalities and constants as FDs** — each strict equality predicate
+  emits the FD pair `a ↔ b`; `a = literal` emits `∅ → a`. Closure then proves
+  two cases that are UNKNOWN today:
+  - Columns that determine each other are interchangeable in a key. With
+    `orders` keyed on `(user_id, order_no)`, the ON clause gives
+    `o.user_id ↔ u.id`, so this proves:
     ```sql
     select u.id, o.order_no
     from orders o join users u on o.user_id = u.id
     /**ASSERT UNIQUE(id, order_no)**/
     ```
-  - A constant group drops out of a key. With `items` keyed on
+  - A constant column drops out of a key. With `items` keyed on
     `(tenant_id, id)`, this proves:
     ```sql
     select id from items where tenant_id = 5
     /**ASSERT UNIQUE(id)**/
     ```
-  Uniqueness check: map every column to its group's representative on both
-  sides, drop constant groups, compare. No closure needed. Needs `Filter` to
-  carry its predicate (see [issue 23](issues/0023-close-ir-lowering-gaps.md)). Merge **strict**
-  equivalences only (inner-join ON, `WHERE`): lax ones are not transitive
+  Needs `Filter` to carry its predicate (see [issue 23](issues/0023-close-ir-lowering-gaps.md)).
+  Strict equalities only (inner-join ON, `WHERE`): lax ones are not transitive
   (Paulley eq9b), and an outer join's ON equality does not hold on padded rows.
 - [ ] **General FDs and closure-based coverage** — `_fds(relation)` beside
   `_unique_sets(relation)`, and `_coverage` checks `closure(S) ⊇ key` instead
@@ -261,11 +258,155 @@ Ordered roughly by payoff over cost.
   `QUALIFY row_number() … = 1` is recognized), inherit input keys and FDs, and
   add the `row_number` key and partition-constant aggregate FDs above.
 
+## Representation design (draft)
+
+Combines the proposal from discussion with what the literature adds
+(`literature-notes.md`). Not final; decisions marked **Decide**.
+
+### Vocabulary in the rules
+
+```python
+@dataclass(frozen=True)
+class RowIdentity:          # Paulley's ι: one per relation, never in the IR
+    relation: ir.RelationExpr
+
+@dataclass(frozen=True)
+class FunctionalDependency:
+    determinant: frozenset[ir.OutputColumn]          # empty = constant
+    dependent: ir.OutputColumn | RowIdentity
+    strict: bool                                     # False = lax
+
+@analysis
+def _functional_dependencies(relation) -> Result[dict[FunctionalDependency, Result[bool]]]: ...
+
+@analysis
+def _closure(relation, columns, *, strict: bool) -> Result[ColumnSet]: ...
+```
+
+- **One mechanism for uniqueness.** Keys are FDs to `RowIdentity`;
+  equalities are FD pairs; constants are FDs from `∅`. Queries have tens of
+  columns, so the counter-based closure (Paulley's FD-graph BFS) is cheap.
+  Union-find arrives later for value facts only (see Kept outside the FD
+  closure); it never decides uniqueness.
+- **Why not union-find for uniqueness, given it comes later anyway.** It
+  covers equalities and constants only; injective expressions, `GROUP BY`
+  FDs, multi-column determinants, and lax FDs need closure regardless, which
+  would leave two mechanisms deciding one property. A union-find also forgets
+  which equality merged two columns, while `explain()` needs that chain.
+  Both mechanisms read one shared list of extracted equality facts, so the
+  predicate logic is written once.
+- **Three key kinds fall out of two FD strengths** plus the existing
+  nullability rule:
+  - Unique Set (lax key): `closure(S, strict=False)` reaches `RowIdentity`.
+  - Null-equal strict key (new property): `closure(S, strict=True)` reaches it.
+  - Non-Null Unique Set: strict key and `non_null_columns(S)`.
+- **Lax steps need non-null middles.** In lax mode the closure only steps
+  through a lax FD whose determinant columns are proved non-null; a lax FD
+  with a proved non-null determinant counts as strict (Paulley fd4b, fd6).
+- **Evidence for free.** `_closure` returns a `ColumnSet` whose `members`
+  hold one `Result` per reached column, citing the FD that fired and its
+  determinant's members. `_coverage` and `unique_join` already consume
+  `members` this way, so `explain()` shows chains without new plumbing.
+- **Hide, don't delete.** A relation's FD set may mention its inputs' columns
+  (reachable through `ColumnRef`), so projecting a column away never needs a
+  closure recomputation (Paulley §3.2.2).
+
+### Row identities replace special cases
+
+- Project, Filter, Window: `RowIdentity(out) ↔ RowIdentity(in)`.
+- Join: `{RowIdentity(L), RowIdentity(R)} → RowIdentity(out)`. A Unique Join
+  adds `RowIdentity(L) → RowIdentity(R)`, so left keys reach the output's
+  identity by transitivity. This subsumes `_preserving_input`'s join case.
+- Aggregate, Distinct, `UNION`: a fresh `RowIdentity`, determined by the
+  grouping / all output columns (strict).
+- **Single-row relations**: `∅ → RowIdentity(r)` (an aggregate without
+  `GROUP BY`, or a `WHERE` that pins a key to constants). Joined with
+  anything, the other side's identity determines everything (Paulley p.254).
+  Also the precondition for "scalar subquery is single-valued".
+
+### Inputs the IR must provide first
+
+- `Filter` carries recognized conjuncts: `col = col`, `col = constant`,
+  `IS NOT NULL`, `IS NULL`; everything else opaque.
+- Join ON conjuncts beyond top-level `=`, enough to evaluate η.
+- Outer joins expose which right-side columns are NOT NULL in the right input
+  (for η and the padding `matched` idea).
+
+### Kept outside the FD closure
+
+- **Value equality.** `a = b` is stronger than the FD pair `a ↔ b`: an
+  injective `a = f(b)` gives both FDs with different values. Equality
+  predicates always emit their FD pair (enough for uniqueness). Facts about
+  values (a constant's value, ENUM domains, inclusion dependencies) need the
+  equality itself: equality groups, a union-find over **strict** equalities
+  only, added when the first such property needs it ([issue 16](issues/0016-assert-and-declare-string-enum-domains.md)).
+  Non-nullness from `a = b` is neither: the predicate rejects NULL on both
+  sides, so the Filter rule emits non-null facts for both columns directly.
+- **Inclusion dependencies / foreign keys**: a relation between two relations,
+  not a column fact. A separate property feeding exactly-one joins; an
+  exactly-one join then adds `RowIdentity(out) ↔ RowIdentity(L)`.
+- **Non-null facts** stay in `nullability.py`; FD rules consume them, and
+  null-rejecting `Filter` conjuncts feed them. Nullability reads only the raw
+  equality facts, never FDs or closure, so it stays below them (see Strata).
+
+### Strata
+
+The memoized engine cannot compute mutually recursive facts. The IR's
+relations form a DAG, so a cycle can only happen between facts about the
+**same** relation. Facts about one relation are therefore ordered: an analysis
+about R may use any fact about R's inputs, but facts about R only at its own or
+a lower stratum. `Stratum` in `python_engine.py` encodes it, and `@analysis`
+asserts it on every call.
+
+When the planned strata are implemented, each new level is added to `Stratum`
+in `python_engine.py`, whose docstring is the canonical, in-code statement of
+this order as the engine's way to avoid cycles. If a cycle still happens, the
+arena's cycle check raises an error that says it is an internal sqlassert bug,
+not a problem with the user's SQL.
+
+Planned order (existing strata in bold):
+
+1. **Column sets** (value helpers).
+2. Raw predicate facts (equalities, constants, null-rejecting conjuncts).
+3. Equality groups.
+4. **Unique join**, exactly-one join.
+5. **Non-null** (exactly-one left joins make right columns non-null).
+6. FDs.
+7. Closure and **unique sets** / keys.
+8. Domains (ENUM).
+
+Checked against every planned feature, none needs a fact from a higher stratum
+about the same relation. Two exceptions to plan for, and one non-issue:
+
+- **Correlated subqueries** make the inner relation depend on the outer one
+  and vice versa, a cycle across relations. Lower them as a dependent join
+  (apply), so the outer input sits below the subquery and the DAG holds
+  ([issue 23](issues/0023-close-ir-lowering-gaps.md)).
+- **Recursive CTEs** are a genuine fixpoint. They stay opaque; supporting them
+  needs bespoke fixpoint machinery, not strata.
+- Self joins are fine: each side is its own `Alias` relation over one shared
+  `NamedRelation`, and facts about the shared relation are computed once.
+
+### New user-facing possibilities
+
+- **`DECLARE` an FD**: business-logic FDs (`zip → city`) are the ones no
+  schema states. A marker like `/**DECLARE DETERMINES(zip -> city)**/` lets
+  authors supply them, as Oracle dimensions did.
+- **Assertions from optimizer preconditions** (literature-notes.md): redundant
+  `DISTINCT`, redundant `GROUP BY` columns, join elimination, single-valued
+  scalar subquery. Each is one closure query.
+
+### Migration
+
+**Decide**: run FDs beside `_unique_sets` and move one operator at a time
+(tests stay green), then delete `_unique_sets`; or replace it in one step.
+Seed the work with Paulley's examples as tests first: counterexamples as
+`UNKNOWN` tests, worked examples as `PROVED` tests (literature-notes.md,
+Testing and guarantees).
+
 ## Open questions
 
-- **Next to discuss — representation design**: what `_fds(relation)` returns,
-  how strict vs lax FDs are stored, and how FD evidence appears in
-  `Result.explain()`.
+- Representation design: see the draft above; its **Decide** points are open.
 - Representation: equivalence classes + constants only, or general FD sets
   from the start? Unary FDs (`a → b`) fit an N×N boolean matrix whose
   transitive closure (Warshall, or repeated squaring of `I + A`) is the

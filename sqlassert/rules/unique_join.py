@@ -1,12 +1,12 @@
 """Unique joins: equality-bound RHS columns cover a known unique set."""
 
 from sqlassert import ir
-from sqlassert.python_engine import Result, analysis, unknown
+from sqlassert.python_engine import Result, Stratum, analysis, unknown
 from sqlassert.rules.column_set import ColumnSet
 from sqlassert.rules.uniqueness import _covers_unique_set
 
 
-@analysis
+@analysis(Stratum.UNIQUE_JOIN)
 def unique_join(join: ir.Join) -> Result[bool]:
     if join.kind not in {"inner", "left"}:
         return unknown("Unique-join inference supports inner and left joins", join)
@@ -15,7 +15,7 @@ def unique_join(join: ir.Join) -> Result[bool]:
     return _covers_unique_set(cols)
 
 
-@analysis
+@analysis(Stratum.UNIQUE_JOIN)
 def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
     members = {}
     for equality in join.equalities:

@@ -2,10 +2,10 @@
 pass-through columns back to their source unless a join null-extends them."""
 
 from sqlassert import ir
-from sqlassert.python_engine import Result, all_of, analysis, any_of, current_arena, unknown
+from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 
 
-@analysis
+@analysis(Stratum.NON_NULL)
 def non_null_columns(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
     relation = current_arena().program.relation_of(columns)
     if relation is None:
@@ -15,12 +15,12 @@ def non_null_columns(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
     return all_of(non_null_column(column) for column in ordered)
 
 
-@analysis
+@analysis(Stratum.NON_NULL)
 def non_null_column(column: ir.OutputColumn) -> Result[bool]:
     return _non_null_output(column.get_relation(current_arena().program), column)
 
 
-@analysis
+@analysis(Stratum.NON_NULL)
 def _non_null_output(relation: ir.RelationExpr, column: ir.OutputColumn) -> Result[bool]:
     match relation:
         case ir.Join():
@@ -41,7 +41,7 @@ def _non_null_output(relation: ir.RelationExpr, column: ir.OutputColumn) -> Resu
     return _non_null_expression(column.scalar_expr)
 
 
-@analysis
+@analysis(Stratum.NON_NULL)
 def _non_null_expression(expression: ir.ScalarExpr) -> Result[bool]:
     match expression:
         case ir.ColumnRef(column=source):
