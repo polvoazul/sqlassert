@@ -19,10 +19,14 @@ from sqlassert.sql_parse import SqlParser
 SCHEMA = """
 CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, channel VARCHAR, kind VARCHAR);
 CREATE TABLE codes (code VARCHAR, label VARCHAR);
+CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR);
 """
 
 # A source of statuses the author vouches for.
 DECLARED = "WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) "
+
+# A source of quantities and flags the author vouches for.
+TYPED = "WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/ /**DECLARE ENUM(flag IN (TRUE))**/) "
 
 
 def outcomes(sql: str) -> list[Outcome]:
@@ -70,6 +74,79 @@ PROVED = [
         DECLARED + ", i AS (SELECT status FROM o INTERSECT SELECT status FROM orders) SELECT status FROM i /**ASSERT ENUM(status IN ('new', 'paid'))**/",
     ),
 ]
+
+
+TYPED_PROVED = [
+    ("numeric literal", "SELECT 1 AS n FROM orders /**ASSERT ENUM(n IN (1, 2))**/"),
+    ("negative numeric literal", "SELECT -1 AS n FROM orders /**ASSERT ENUM(n IN (-1, 0))**/"),
+    ("decimal literal", "SELECT 2.5 AS n FROM orders /**ASSERT ENUM(n IN (2.5))**/"),
+    ("boolean literal", "SELECT TRUE AS f FROM orders /**ASSERT ENUM(f IN (TRUE, FALSE))**/"),
+    ("integer spellings are one value", "SELECT 007 AS n FROM orders /**ASSERT ENUM(n IN (7))**/"),
+    ("coalesce of typed literals", "SELECT coalesce(NULL, 3, 4) AS n FROM orders /**ASSERT ENUM(n IN (3, 4))**/"),
+    ("where numeric equality", "SELECT qty FROM items WHERE qty = 3 /**ASSERT ENUM(qty IN (3))**/"),
+    ("where numeric in list", "SELECT qty FROM items WHERE qty IN (1, 2) /**ASSERT ENUM(qty IN (1, 2, 3))**/"),
+    ("where boolean equality", "SELECT flag FROM items WHERE flag = FALSE /**ASSERT ENUM(flag IN (FALSE))**/"),
+    ("declared numeric", TYPED + "SELECT qty FROM i /**ASSERT ENUM(qty IN (3, 2, 1))**/"),
+    ("declared boolean", TYPED + "SELECT flag FROM i /**ASSERT ENUM(flag IN (TRUE))**/"),
+    ("declared and narrowed", TYPED + "SELECT qty FROM i WHERE qty IN (2, 5) /**ASSERT ENUM(qty IN (2))**/"),
+    ("across a numeric equality", TYPED + "SELECT size FROM i WHERE size = qty /**ASSERT ENUM(size IN (1, 2, 3))**/"),
+    ("view", "CREATE VIEW v AS SELECT qty FROM items /**DECLARE ENUM(qty IN (1, 2))**/; SELECT qty FROM v /**ASSERT ENUM(qty IN (1, 2))**/"),
+    (
+        "mixed types",
+        "WITH m AS (SELECT * FROM items /**DECLARE ENUM(tag IN ('a', 1, TRUE))**/) SELECT tag FROM m /**ASSERT ENUM(tag IN (TRUE, 1, 'a'))**/",
+    ),
+]
+
+TYPED_UNKNOWN = [
+    ("numeric one is not string one", "SELECT 1 AS n FROM orders /**ASSERT ENUM(n IN ('1'))**/"),
+    ("string one is not numeric one", "SELECT '1' AS n FROM orders /**ASSERT ENUM(n IN (1))**/"),
+    ("boolean true is not numeric one", "SELECT TRUE AS f FROM orders /**ASSERT ENUM(f IN (1))**/"),
+    ("decimal scale is part of the literal", "SELECT 1.0 AS n FROM orders /**ASSERT ENUM(n IN (1))**/"),
+    ("exponent literal is not the integer", "SELECT 1e0 AS n FROM orders /**ASSERT ENUM(n IN (1))**/"),
+    ("declared, subset asserted", TYPED + "SELECT qty FROM i /**ASSERT ENUM(qty IN (1, 2))**/"),
+    ("table column", "SELECT qty FROM items /**ASSERT ENUM(qty IN (1))**/"),
+    # Two literals that differ can both equal one value, so their domains
+    # meeting is not an empty intersection.
+    (
+        "float rounding",
+        "WITH r AS (SELECT * FROM items /**DECLARE ENUM(ratio IN (0.1))**/) SELECT ratio FROM r WHERE ratio = 0.100000001 /**ASSERT ENUM(ratio IN (5))**/",
+    ),
+    (
+        "text cast to a numeric literal's scale",
+        "WITH t AS (SELECT * FROM items /**DECLARE ENUM(tag IN (1))**/) SELECT tag FROM t WHERE tag = 1.4 /**ASSERT ENUM(tag IN (5))**/",
+    ),
+    (
+        "a string and a number may meet",
+        "WITH t AS (SELECT * FROM items /**DECLARE ENUM(qty IN ('1'))**/) SELECT qty FROM t WHERE qty = 1 /**ASSERT ENUM(qty IN (5))**/",
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), TYPED_PROVED)
+def test_typed_enum_is_proved(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.PROVED], label
+
+
+@pytest.mark.parametrize(("label", "sql"), TYPED_UNKNOWN)
+def test_typed_enum_is_not_guessed(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.UNKNOWN], label
+
+
+def test_distinct_numeric_literals_do_not_meet():
+    # Integers 2 and 3 never equal one value, so the declared domain narrows.
+    sql = TYPED + "SELECT qty FROM i WHERE qty IN (3, 4) /**ASSERT ENUM(qty IN (3))**/"
+
+    assert outcomes(sql) == [Outcome.PROVED]
+
+
+def test_an_unknown_report_lists_mixed_types_in_a_fixed_order():
+    sql = (
+        "WITH m AS (SELECT * FROM items /**DECLARE ENUM(tag IN (10, 'b', 2, TRUE, 'a', FALSE, -1.5))**/) "
+        "SELECT tag FROM m /**ASSERT ENUM(tag IN ('zzz'))**/"
+    )
+    report = analyze(f"{SCHEMA} {sql}")
+
+    assert "tag may be FALSE, TRUE, -1.5, 2, 10, 'a', 'b', which the assertion does not cover" in explanation(report.assertions[0])
 
 
 @pytest.mark.parametrize(("label", "sql"), PROVED)
@@ -155,9 +232,15 @@ def test_an_enum_marker_on_a_missing_column_is_diagnosed():
     ("marker", "message"),
     [
         ("/**ASSERT ENUM(status IN ())**/", "lists no values"),
-        ("/**ASSERT ENUM(status IN (1, 2))**/", "only string literals"),
         ("/**ASSERT ENUM(status IN ('a', NULL))**/", "NULL is never"),
-        ("/**ASSERT ENUM(status IN ('a', 'a'))**/", "more than once"),
+        ("/**ASSERT ENUM(status IN ('a', 'a'))**/", "lists 'a' more than once"),
+        ("/**ASSERT ENUM(status IN (1, 2, 1))**/", "lists 1 more than once"),
+        ("/**ASSERT ENUM(status IN (7, 007))**/", "lists 7 more than once"),
+        ("/**ASSERT ENUM(status IN (TRUE, true))**/", "lists TRUE more than once"),
+        ("/**ASSERT ENUM(status IN (DATE '2020-01-01'))**/", "lists CAST('2020-01-01' AS DATE), which is not a string, numeric, or boolean literal"),
+        ("/**ASSERT ENUM(status IN (1 + 1))**/", "lists 1 + 1, which is not"),
+        ("/**ASSERT ENUM(status IN (channel))**/", "lists channel, which is not"),
+        ("/**ASSERT ENUM(status IN (-'a'))**/", "which is not"),
         ("/**ASSERT ENUM(status ('a'))**/", "must be written"),
         ("/**ASSERT ENUM(status, channel IN ('a'))**/", "must be written"),
     ],
@@ -168,3 +251,9 @@ def test_a_malformed_enum_marker_is_diagnosed(marker: str, message: str):
     diagnostic, = report.diagnostics
     assert diagnostic.code == UNATTACHED_MARKER
     assert message in diagnostic.message
+
+
+def test_values_of_different_types_spelled_alike_are_not_duplicates():
+    report = analyze(f"{SCHEMA} SELECT status FROM orders /**ASSERT ENUM(status IN (1, '1', TRUE, 'TRUE', 1.0))**/")
+
+    assert report.diagnostics == ()

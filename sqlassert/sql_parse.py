@@ -25,6 +25,7 @@ from sqlglot.tokens import Token, TokenType
 
 from sqlassert import diagnostics as diag
 from sqlassert.diagnostics import Diagnostic
+from sqlassert.ir.model import LiteralValue
 from sqlassert.provenance import SQL, Origin
 
 # Where a resolved assertion is recorded on its Join node, and which join marker it was.
@@ -180,6 +181,34 @@ _COLUMN_MARKER_OPEN_TOKENS = {
 }
 
 
+_INTEGER = re.compile(r"\d+")
+_DECIMAL = re.compile(r"\d+\.\d*|\.\d+")
+_EXPONENT = re.compile(r"(\d+\.?\d*|\.\d+)[eE][+-]?\d+")
+
+
+def literal_value(expression: exp.Expression) -> LiteralValue | None:
+    """The typed value of a string, numeric, or boolean literal, or None for
+    any other expression. A numeric literal may be negated."""
+    if isinstance(expression, exp.Boolean):
+        return LiteralValue(type="boolean", text="TRUE" if expression.this else "FALSE")
+    if isinstance(expression, exp.Literal) and expression.is_string:
+        return LiteralValue(type="string", text=expression.this)
+    negative = isinstance(expression, exp.Neg)
+    number = expression.this if negative else expression
+    if not isinstance(number, exp.Literal) or number.is_string:
+        return None
+    text: str = number.this
+    if _INTEGER.fullmatch(text):
+        # Leading zeros change neither the value nor the SQL type.
+        text = str(int(text))
+        negative = negative and text != "0"
+    elif _EXPONENT.fullmatch(text):
+        text = text.lower()
+    elif not _DECIMAL.fullmatch(text):
+        return None
+    return LiteralValue(type="numeric", text="-" + text if negative else text)
+
+
 class ColumnMarker(NamedTuple):
     """One column marker as written: `kind` is a value of `_COLUMN_MARKER_OPENS`.
 
@@ -187,7 +216,7 @@ class ColumnMarker(NamedTuple):
     its referenced columns, paired with `columns` by position. A Functional
     Dependency marker's `columns` are its determinant and `dependent` the
     columns after `->`. An Enumerated Domain marker's one column is `columns`
-    and its literals, as SQLGlot parsed them, are `values`.
+    and its distinct typed literals, in the order written, are `values`.
     """
 
     kind: str
@@ -196,7 +225,7 @@ class ColumnMarker(NamedTuple):
     referenced_relation: str | None = None
     referenced_columns: tuple[str, ...] = ()
     dependent: tuple[str, ...] = ()
-    values: tuple[exp.Expression, ...] = ()
+    values: tuple[LiteralValue, ...] = ()
 
 
 class UnattachedMarker(ParseError):
@@ -314,7 +343,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 self._advance()
 
                 dependent: tuple[str, ...] = ()
-                values: tuple[exp.Expression, ...] = ()
+                values: tuple[LiteralValue, ...] = ()
                 if kind in DETERMINES_KINDS:
                     names, dependent = self._parse_marker_dependency(kind, line)
                 elif kind in ENUM_KINDS:
@@ -392,10 +421,10 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 )
             return determinant, dependent
 
-        def _parse_marker_domain(self, kind: str, line: int) -> tuple[tuple[str, ...], tuple[exp.Expression, ...]]:
+        def _parse_marker_domain(self, kind: str, line: int) -> tuple[tuple[str, ...], tuple[LiteralValue, ...]]:
             """`column IN (literal, ...)`, through the marker's closing parenthesis.
 
-            Only distinct, non-null string literals are domain members for now.
+            Members are distinct, non-null string, numeric, and boolean literals.
             """
 
             def malformed(problem: str) -> UnattachedMarker:
@@ -404,18 +433,22 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             column = self._parse_id_var(any_token=False)
             if column is None or not self._match(TokenType.IN) or not self._match(TokenType.L_PAREN):
                 raise malformed("must be written as ENUM(column IN ('value', ...))")
-            values = tuple(self._parse_csv(self._parse_bitwise))
+            expressions = tuple(self._parse_csv(self._parse_bitwise))
             if not self._match(TokenType.R_PAREN) or not self._match(TokenType.R_PAREN):
                 raise malformed("must be written as ENUM(column IN ('value', ...))")
-            if not values:
+            if not expressions:
                 raise malformed("lists no values")
-            if any(isinstance(value, exp.Null) for value in values):
-                raise malformed("lists NULL; NULL is never in an Enumerated Domain, and NOT NULL governs it")
-            if not all(isinstance(value, exp.Literal) and value.is_string for value in values):
-                raise malformed("lists a value that is not a string; only string literals are supported")
-            if len({value.this for value in values}) != len(values):
-                raise malformed("lists the same value more than once")
-            return (column.name,), values
+            values: list[LiteralValue] = []
+            for expression in expressions:
+                if isinstance(expression, exp.Null):
+                    raise malformed("lists NULL; NULL is never in an Enumerated Domain, and NOT NULL governs it")
+                value = literal_value(expression)
+                if value is None:
+                    raise malformed(f"lists {expression.sql(dialect=self.dialect)}, which is not a string, numeric, or boolean literal")
+                if value in values:
+                    raise malformed(f"lists {value.sql()} more than once")
+                values.append(value)
+            return (column.name,), tuple(values)
 
         def _parse_marker_reference(self, kind: str, line: int, count: int) -> tuple[str, tuple[str, ...]]:
             """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
