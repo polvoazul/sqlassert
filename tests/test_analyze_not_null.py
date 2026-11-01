@@ -25,6 +25,10 @@ def outcomes(sql: str) -> list[Outcome]:
 
 
 PROVED_NOT_NULL = [
+    # Set operations (Paulley §3.2.5-3.2.6), inputs paired by position.
+    ("union", "WITH c AS (SELECT id FROM users UNION ALL SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+    ("intersect, non-null on the right", "WITH c AS (SELECT nickname FROM users INTERSECT SELECT email FROM users) SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/"),
+    ("except", "WITH c AS (SELECT email FROM users EXCEPT SELECT nickname FROM users) SELECT email FROM c /**ASSERT NOT NULL(email)**/"),
     ("primary key column", "SELECT id FROM users /**ASSERT NOT NULL(id)**/"),
     ("NOT NULL column", "SELECT email FROM users /**ASSERT NOT NULL(email)**/"),
     ("several columns", "SELECT id, email FROM users /**ASSERT NOT NULL(id, email)**/"),
@@ -68,7 +72,10 @@ UNKNOWN_NOT_NULL = [
     ("left join, null-extended side", "SELECT u.email FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(email)**/"),
     ("right join, null-extended side", "SELECT s.user_id FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
     ("full join", "SELECT s.user_id FROM sessions s FULL JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
-    ("union", "WITH c AS (SELECT id FROM users UNION ALL SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+    ("union, nullable in one input", "WITH c AS (SELECT id FROM users UNION ALL SELECT nickname FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+    ("union by name", "WITH c AS (SELECT id FROM users UNION BY NAME SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+    ("intersect, nullable in both", "WITH c AS (SELECT nickname FROM users INTERSECT SELECT nickname FROM users) SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/"),
+    ("except, nullable on the left", "WITH c AS (SELECT nickname FROM users EXCEPT SELECT email FROM users) SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/"),
     ("count padded by a later outer join", "WITH c AS (SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id) SELECT c.n FROM users u LEFT JOIN c ON c.user_id = u.id /**ASSERT NOT NULL(n)**/"),
     ("count inside another expression", "SELECT user_id, nullif(count(*), 0) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),
     ("sum", "SELECT user_id, sum(user_id) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),

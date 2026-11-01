@@ -409,3 +409,10 @@ def test_a_scalar_aggregate_is_one_row(sql: str, outcome: Outcome):
     report = analyze(SCALAR + sql)
 
     assert [assertion.outcome for assertion in report.assertions] == [outcome]
+
+
+def test_a_bare_column_of_a_scalar_aggregate_may_be_null():
+    # MySQL allows it; over no rows the one output row has a NULL x.
+    report = analyze(SCALAR + "SELECT x, count(*) AS n FROM t /**ASSERT NOT NULL(x)**/", dialect="mysql")
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]

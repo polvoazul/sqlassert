@@ -149,9 +149,11 @@ def _referencing_side(
 
 def _set_operation(relation: ir.SetOperation, columns: _Columns, referenced_columns: _Columns) -> Result[bool]:
     """Coverage of a set operation's rows, from each branch's columns at the same positions."""
-    positions = [relation.output_columns.index(column) for column in columns]
-    left = referential_coverage(tuple(relation.left.output_columns[i] for i in positions), referenced_columns)
-    right = referential_coverage(tuple(relation.right.output_columns[i] for i in positions), referenced_columns)
+    arms = [relation.arms(column) for column in columns]
+    if None in arms:
+        return unknown("The set operation's inputs are not paired by position", relation, *columns)
+    left = referential_coverage(tuple(arm[0] for arm in filter(None, arms)), referenced_columns)
+    right = referential_coverage(tuple(arm[1] for arm in filter(None, arms)), referenced_columns)
     match relation.operator:
         case "union":
             return Result(True, "A UNION row comes from either branch, so both must be covered", (relation,)) & left & right

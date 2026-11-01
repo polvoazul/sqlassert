@@ -134,15 +134,40 @@ def _computed_domain(relation: ir.RelationExpr, column: ir.OutputColumn) -> Resu
     match relation:
         case ir.NamedRelation(body=None) | ir.OpaqueRelation():
             return Result(None, f"{column.name} is not enumerated", (column,))
-        case ir.SetOperation(operator="union"):
-            # Outputs refer to the left input only; the right one is not tracked.
-            return Result(None, "A UNION column's values are not enumerated", (relation, column))
+        case ir.SetOperation():
+            return _set_operation_domain(relation, column)
         case ir.Filter() | ir.Join():
             return _intersection(column, [_expression_domain(column.scalar_expr), *_narrowings(relation, column)])
-        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.Aggregate() | ir.Distinct() | ir.QualifyByPartition() | ir.SetOperation():
+        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.Aggregate() | ir.Distinct() | ir.QualifyByPartition():
             return _expression_domain(column.scalar_expr)
         case _:
             raise TypeError(f"Unhandled relation: {type(relation).__name__}")
+
+
+def _set_operation_domain(relation: ir.SetOperation, column: ir.OutputColumn) -> Result[Domain]:
+    """A UNION row comes from either input, an INTERSECT row equals a row of
+    both, an EXCEPT row is a left input row (Paulley §3.2.5-3.2.6). Inputs
+    pair by position; a UNION of mixed value types is not enumerated, since
+    the output type may convert one."""
+    left = _expression_domain(column.scalar_expr)
+    arms = relation.arms(column)
+    if relation.operator == "except" or arms is None and relation.operator == "intersect":
+        return left
+    if arms is None:
+        return Result(None, "The UNION's inputs are not paired by position", (relation, column))
+    right = _domain(arms[1])
+    if relation.operator == "intersect":
+        # The row carries the left value, equal to a right one under the left
+        # column's comparison: a string bounds it only if that is identity.
+        if right.value is not None and any(member.type == "string" for member in right.value) and not _binary_text(arms[0]):
+            return left
+        return _intersection(column, [left, right])
+    if left.value is None or right.value is None:
+        return Result(None, f"An input of the UNION does not enumerate {column.name}", (relation, column), [left, right])
+    value = left.value | right.value
+    if len({member.type for member in value}) > 1:
+        return Result(None, f"The UNION's inputs give {column.name} values of different types", (relation, column), [left, right])
+    return Result(value, f"{column.name} is one of either input's values: {_render(value)}", (relation, column), [left, right])
 
 
 def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:

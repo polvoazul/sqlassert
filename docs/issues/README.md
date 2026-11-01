@@ -7,20 +7,19 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 - [30. Read enum types and collations from the catalog](0030-read-enum-types-and-collations-from-the-catalog.md) — open
-- [31. Enumerated Domains through set operations](0031-enumerated-domains-through-set-operations.md) — open
 - [32. Infer simple CASE nullability](0032-infer-simple-case-nullability.md) — open
 - [33. INNER JOIN suggestion across join chains and CTEs](0033-inner-join-suggestion-across-join-chains-and-ctes.md) — open
 - [35. Check: audit FD propagation against Paulley, operator by operator](0035-audit-fd-propagation-against-paulley.md) — open (check)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 34, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 31, 34, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in the open-issues map artifact):
 
 - **P1:** done (#34; #23 connection warnings; #23 outer and cross joins).
-- **P2, next:** #23 set-op arms with #31; #23 function FDs (Paulley §3.1.4);
+- **P2, next:** #23 function FDs (Paulley §3.1.4);
   #23 correlated subqueries (Paulley §4.4.2); #15 Kossmann triage, then Low
   smells; #15 annotate flag; #32; #30; #33 chain part.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
@@ -55,4 +54,5 @@ Priorities (reasoning per item in the open-issues map artifact):
 - [26. Equality groups](done/0026-equality-groups.md)
 - [28. Analyze join markers inside CTE bodies](done/0028-analyze-join-markers-inside-cte-bodies.md)
 - [29. ENUM: distinct string literals may compare equal](done/0029-enum-string-literals-may-coincide.md)
+- [31. Enumerated Domains through set operations](done/0031-enumerated-domains-through-set-operations.md)
 - [34. Close the soundness oracle's blind spots](done/0034-close-soundness-oracle-blind-spots.md)

@@ -253,12 +253,23 @@ class Distinct(RelationExpr):
 
 
 class SetOperation(RelationExpr):
-    """UNION, INTERSECT, or EXCEPT. Output columns refer to the left input."""
+    """UNION, INTERSECT, or EXCEPT. Output columns refer to the left input;
+    `arms` pairs each with the right input's column at its position."""
 
     operator: str
     left: RelationExpr
     right: RelationExpr
     distinct: bool = True
+    by_name: bool = False
+
+    def arms(self, column: OutputColumn) -> tuple[OutputColumn, OutputColumn] | None:
+        """The left and right input columns `column` is computed from, or None
+        when the inputs pair by name (`UNION BY NAME`) or differ in width (an
+        unanalyzed input whose columns are unknown)."""
+        if self.by_name or len(self.left.output_columns) != len(self.right.output_columns):
+            return None
+        position = self.output_columns.index(column)
+        return self.left.output_columns[position], self.right.output_columns[position]
 
 
 class QualifyByPartition(RelationExpr):
