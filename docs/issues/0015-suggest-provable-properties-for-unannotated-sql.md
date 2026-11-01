@@ -167,7 +167,7 @@ High level ("native SQL improvements"):
 
 Still open:
 
-- [ ] Triage Kossmann et al. 2022, Table 1
+- [x] Triage Kossmann et al. 2022, Table 1
   (`papers/2022-kossmann-data-dependencies-for-query-optimization-survey.pdf`):
   about 60 dependency-based optimizations, by dependency (UCC 17, FD 14,
   OD 18, IND 10) and operator. Go through every entry and record, in a table
@@ -178,10 +178,91 @@ Still open:
   property sqlassert can prove ([literature-notes.md](../literature-notes.md),
   "Ideas to adopt"). Order dependencies (ORDER BY / sort elimination) are
   untouched so far.
+  Done: see "Kossmann Table 1 triage" below.
 - [ ] Low level: other code smells, from the *add* rows of that triage.
 - [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
   Done: `sqlassert suggest --annotate FILE` rewrites FILE with every
   suggested marker; for `-` it prints the annotated SQL instead of the list.
+
+## Kossmann Table 1 triage
+
+Kossmann et al. 2022, Table 1: 59 entries (UCC 17, FD 14, OD 18, IND 10).
+Marks: ∗ cost-independent rewrite, † cost-based, ‡ estimation. *Covered*
+names the sqlassert feature; *add* names the level and the Property that is
+its precondition; *n/a* says why. Every † and ‡ entry is *n/a*: sqlassert
+reasons about the query, not its plan, cost or cardinality.
+
+### Unique Column Combinations (Sec. 5)
+
+| Entry | Area | Mark | Triage |
+|---|---|---|---|
+| Spurious-free back-joins [129] | Join | ∗ | covered: Unique Join / Exactly One Join Assertions |
+| Semijoin transformation [89] | Join | ∗ | covered: High "filter-only join" (`WHERE EXISTS`) |
+| Pipeline with grouping [30, 126] | Join | † | n/a: physical pipelining |
+| Invisible join [2] | Join | † | n/a: column-store execution |
+| Early abort (5.6) | Selection | ∗ | add, High: `LIMIT`/`ORDER BY` on a Select proved to return at most one row is redundant (precondition: the empty set is a Unique Set) |
+| Accurate cardinalities (5.6) | Selection | ‡ | n/a: estimation |
+| Grouping is redundant [23] | Grouping | ∗ | add, High: a `GROUP BY` whose grouping columns are a Unique Set of its input is a projection (precondition: strict closure reaches the input's Row Identity, as for DISTINCT); aggregates then see one row each |
+| Accurate cardinalities (5.6) | Grouping | ‡ | n/a: estimation |
+| Avoid DISTINCT [101–103] | Projection | ∗ | covered: High "redundant DISTINCT" |
+| Reduce attributes (5.6) | Sorting | ∗ | add, High: `ORDER BY` keys after a prefix that is a Unique Set are redundant (needs ORDER BY lowered) |
+| Unstable sorting (5.6) | Sorting | ∗ | add, Low: `ORDER BY … LIMIT` whose sort keys are not proved a Unique Set picks arbitrary rows among ties (the inverse precondition) |
+| EXCEPT to EXCEPT ALL [102] | Set ops | ∗ | add, High: `EXCEPT` → `EXCEPT ALL` when the left input is unique on all columns (strict) |
+| INTERSECT to INTERSECT ALL [60, 101] | Set ops | ∗ | add, High: same, for either input of `INTERSECT` |
+| INTERSECT to join [101, 102] | Set ops | † | n/a: cost-based |
+| Accurate cardinalities (5.6) | Set ops | ‡ | n/a: estimation |
+| Subquery to join [101, 102] | Other | ∗ | covered: WHERE subqueries lowered as semi joins (issue 23); not a suggestion, the join form is not simpler SQL |
+| Subquery sort avoidance [110] | Other | † | n/a: physical |
+
+### Functional Dependencies (Sec. 6)
+
+| Entry | Area | Mark | Triage |
+|---|---|---|---|
+| Simplification / avoidance [65] | Join | ∗ | covered: High "redundant join" |
+| Complexity reduction (6.2) | Join | ∗ | add, Low: an ON conjunct the other equated columns already imply (precondition: FD from the other conjuncts' columns on both inputs) |
+| Self-join avoidance [6] | Join | ∗ | add, High: an Exactly One self-join onto a Unique Set of the same relation reads one row twice; one scan suffices |
+| Plan generation [38] | Join | † | n/a: join ordering |
+| Early abort (6.3) | Selection | ∗ | n/a: execution-time abort |
+| Substitute attributes [24, 68] | Selection | † | n/a: index choice |
+| Estimations without independence [25, 58, 108] | Selection | ‡ | n/a: estimation |
+| Reduce attributes [17, 116] | Grouping | ∗ | covered: High "determined GROUP BY column" |
+| Distinctness: see grouping [123] | Projection | ∗ | covered: High "redundant DISTINCT" (closure) |
+| Simplification [29] | Projection | ∗ | covered: the same closure |
+| Estimate projections [44] | Projection | ‡ | n/a: estimation |
+| Reduce attributes [24, 112, 116] | Sorting | ∗ | add, High: an `ORDER BY` key earlier keys determine (strictly) is redundant (needs ORDER BY lowered) |
+| Scalar subqueries [29] | Other | — | add, Low: a scalar subquery not proved to return at most one row (precondition: its correlated columns are a Unique Set, as a Unique Join; needs select-list subqueries lowered) |
+| Table decomposition rewrites [45] | Other | — | n/a: physical schema design |
+
+### Order Dependencies (Sec. 7)
+
+No Order Dependency Property exists and ORDER BY is not lowered, so every
+entry is *n/a* for now (P4: Paulley does not cover order). The ∗ entries
+(join avoidance [117, 119], simplify MIN/MAX/MEDIAN [95, 102], reduce sort
+attributes [115–117], avoid sort [49, 102], ORDER BY with index [117]) would
+become *add* once an Order Dependency Property exists; the † and ‡ entries
+(pipeline with grouping, avoid sort for sort-merge joins, attribute
+substitution, pipeline index scan with join, binary search, sort-based
+grouping, distinctness via sorting, main-memory sorts, substitute attributes,
+accurate estimates, set-operation order optimizations, correlated subqueries,
+sparse over dense indexes) are physical or estimation.
+
+### Inclusion Dependencies (Sec. 8)
+
+| Entry | Area | Mark | Triage |
+|---|---|---|---|
+| Join elimination [24, 64] | Join | ∗ | covered: Exactly One Join via Foreign Keys, High "redundant join" |
+| Substitute relations [33] | Join | † | n/a: cost-based |
+| Avoid semijoin reductions (8.1) | Join | † | n/a: distributed execution |
+| Accurate cardinalities [56] | Join | ‡ | n/a: estimation |
+| Simplify UNION (8.2) | Set ops | ∗ | add, High: `A UNION B` is `B` (distinct) when A's columns are covered by B's (precondition: Referential Coverage of the whole row, and NULL-free A: MATCH SIMPLE exempts NULLs that UNION keeps) |
+| Simplify INTERSECT (8.2) | Set ops | ∗ | add, High: `A INTERSECT B` is `SELECT DISTINCT` A under the same precondition |
+| Eliminate EXCEPT (8.2) | Set ops | ∗ | add, Low: `A EXCEPT B` is always empty under the same precondition |
+| Accurate cardinalities (8.2) | Set ops | ‡ | n/a: estimation |
+| Query folding [33, 51, 57] | Other | ∗ | n/a: reuses other queries' results |
+| Eliminate correlated subqueries in EXISTS [85] (8.2) | Other | ∗ | add, High: an `EXISTS`/`IN` filter every row passes (the semi join's at-least-one half: coverage onto the ON columns, non-null, only cross-input equalities) is redundant |
+
+Chosen first (no new lowering needed): the redundant `EXISTS`/`IN` filter
+(High) and the arbitrary `ORDER BY … LIMIT` (Low).
 
 ## Related
 
