@@ -1,10 +1,10 @@
 """Exactly One Join Assertions: `/**ASSERT EXACTLY ONE**/` before a JOIN.
 
 Every left row matches exactly one right row. The at-most-one half is a Unique
-Join: the right-side predicate column covers a Unique Set. The at-least-one half
-needs a non-null left column with Referential Coverage onto the exact right
-relation and predicate column. Only inner and left joins with one direct
-column-to-column equality are supported here.
+Join: the right-side predicate columns cover a Unique Set. The at-least-one half
+needs an ON of cross-input column equalities only, and Referential Coverage of
+the left columns as one tuple onto the exact right relation and columns; every
+left column must be non-null. Only inner and left joins are supported.
 """
 
 from __future__ import annotations
