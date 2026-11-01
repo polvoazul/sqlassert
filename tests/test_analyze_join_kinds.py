@@ -1,9 +1,10 @@
-"""Uniqueness proof is sound only for INNER and LEFT equi-joins: those are
-the only kinds where the right side's Unique Set says anything about how many
-rows the join produces per left row. RIGHT, FULL, SEMI, ANTI, and CROSS joins
-must never inherit that proof, even when the joined relation has every
-property that would prove an INNER or LEFT join -- a PRIMARY KEY on the very
-column the join predicate uses.
+"""A Unique Join Assertion through every join kind.
+
+A left row appears once per matching right row, or once padded, whatever the
+kind: RIGHT and FULL joins pad right rows on but never repeat a left row more
+than its matches do, so the right side's Unique Set proves them as it proves
+INNER and LEFT joins. A CROSS join is an ON with no conjuncts: unique only when
+the right input has at most one row. SEMI and ANTI joins are not modelled.
 """
 
 from __future__ import annotations
@@ -18,13 +19,36 @@ CREATE TABLE sessions (user_id INTEGER);
 """
 
 
+def outcomes(sql: str) -> list[Outcome]:
+    report = analyze(USERS_AND_SESSIONS + sql)
+    assert not report.diagnostics, report.diagnostics
+    return [assertion.outcome for assertion in report.assertions]
+
+
 @pytest.mark.parametrize(
-    ("label", "join_and_predicate"),
+    "join",
     [
-        ("right", "RIGHT JOIN users ON sessions.user_id = users.id"),
-        ("full", "FULL JOIN users ON sessions.user_id = users.id"),
-        ("full outer", "FULL OUTER JOIN users ON sessions.user_id = users.id"),
-        ("cross", "CROSS JOIN users"),
+        "JOIN users ON sessions.user_id = users.id",
+        "INNER JOIN users ON sessions.user_id = users.id",
+        "LEFT JOIN users ON sessions.user_id = users.id",
+        "LEFT OUTER JOIN users ON sessions.user_id = users.id",
+        "RIGHT JOIN users ON sessions.user_id = users.id",
+        "FULL JOIN users ON sessions.user_id = users.id",
+        "FULL OUTER JOIN users ON sessions.user_id = users.id",
+        "CROSS JOIN (SELECT count(*) AS n FROM users) AS c",
+    ],
+)
+def test_a_join_against_a_primary_key_is_proved_whatever_its_kind(join: str):
+    assert outcomes(f"SELECT * FROM sessions /**ASSERT UNIQUE**/ {join}") == [Outcome.PROVED]
+
+
+@pytest.mark.parametrize(
+    ("label", "join"),
+    [
+        ("right without a key", "RIGHT JOIN sessions AS s2 ON sessions.user_id = s2.user_id"),
+        ("full without a key", "FULL JOIN sessions AS s2 ON sessions.user_id = s2.user_id"),
+        ("cross onto many rows", "CROSS JOIN users"),
+        ("positional", "POSITIONAL JOIN users"),
         ("semi", "SEMI JOIN users ON sessions.user_id = users.id"),
         ("left semi", "LEFT SEMI JOIN users ON sessions.user_id = users.id"),
         ("anti", "ANTI JOIN users ON sessions.user_id = users.id"),
@@ -33,31 +57,26 @@ CREATE TABLE sessions (user_id INTEGER);
         ("right anti", "RIGHT ANTI JOIN users ON sessions.user_id = users.id"),
     ],
 )
-def test_unsupported_join_kinds_stay_unknown_even_against_a_primary_key(
-    label: str, join_and_predicate: str
-):
-    report = analyze(
-        f"""
-        {USERS_AND_SESSIONS}
-        SELECT * FROM sessions /**ASSERT UNIQUE**/ {join_and_predicate}
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN], label
-    assert not report.diagnostics, label
-    assert report.proved is False, label
+def test_unproved_or_unmodelled_joins_stay_unknown(label: str, join: str):
+    assert outcomes(f"SELECT * FROM sessions /**ASSERT UNIQUE**/ {join}") == [Outcome.UNKNOWN], label
 
 
-@pytest.mark.parametrize("join", ["JOIN", "INNER JOIN", "LEFT JOIN", "LEFT OUTER JOIN"])
-def test_supported_join_kinds_are_proved_against_the_same_primary_key(join: str):
-    """The control case: the exact same schema and predicate as the unsupported
-    kinds above, proved for the kinds the engine does support."""
-    report = analyze(
-        f"""
-        {USERS_AND_SESSIONS}
-        SELECT * FROM sessions /**ASSERT UNIQUE**/ {join} users ON sessions.user_id = users.id
-        """
-    )
+def test_a_cross_join_onto_one_row_keeps_the_left_key():
+    sql = "SELECT u.id FROM users AS u CROSS JOIN (SELECT count(*) AS n FROM sessions) AS c /**ASSERT UNIQUE(id)**/"
+    assert outcomes(sql) == [Outcome.PROVED]
 
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-    assert report.proved is True
+
+def test_a_right_join_does_not_keep_the_left_key():
+    # Right rows nothing matched share one padded (NULL) left row.
+    sql = "SELECT u.id, s.user_id FROM users AS u RIGHT JOIN sessions AS s ON u.id = s.user_id /**ASSERT UNIQUE(id)**/"
+    assert outcomes(sql) == [Outcome.UNKNOWN]
+
+
+def test_a_positional_join_pads_both_sides():
+    # A FULL JOIN on row position: the shorter input is padded with NULLs.
+    sql = """
+    CREATE TABLE a (x INTEGER NOT NULL);
+    CREATE TABLE b (y INTEGER NOT NULL);
+    SELECT x, y FROM a POSITIONAL JOIN b /**ASSERT NOT NULL(x)**/ /**ASSERT NOT NULL(y)**/
+    """
+    assert outcomes(sql) == [Outcome.UNKNOWN, Outcome.UNKNOWN]

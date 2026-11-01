@@ -583,6 +583,9 @@ class IrParser:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
         conjuncts = self._lower_join_predicate(join, left, right)
+        if _is_positional(join):
+            # A FULL JOIN on row position: an opaque condition, as no column holds it.
+            conjuncts = (ir.OpaqueExpression(origin=origin, description="row position"),)
         input_columns = left.relation.output_columns + right.relation.output_columns
         output_columns = _pass_output_columns(input_columns, origin)
         remapped = {source: output for source, output in zip(input_columns, output_columns)}
@@ -673,6 +676,9 @@ class IrParser:
         group = select.args.get("group")
         if isinstance(group, exp.Group):
             relation = self._lower_aggregate(lowered, select, group)
+        elif _is_scalar_aggregate(select):
+            # One row, however many rows its input has: grouped by nothing.
+            relation = self._lower_aggregate(lowered, select, exp.Group(expressions=[]))
         elif select.args.get("distinct") is not None:
             relation = self._lower_distinct(lowered, select)
         elif isinstance(select.args.get("qualify"), exp.Qualify):
@@ -1317,7 +1323,21 @@ def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
 _JOIN_KINDS_OVERRIDING_SIDE = {"semi", "anti", "cross"}
 
 
+def _is_scalar_aggregate(select: exp.Select) -> bool:
+    """An aggregate with no GROUP BY: an aggregate function outside any window."""
+    return select.args.get("qualify") is None and any(
+        isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window, exp.Select) is select
+        for item in select.expressions for node in item.find_all(exp.AggFunc)
+    )
+
+
+def _is_positional(join: exp.Join) -> bool:
+    return (join.args.get("method") or "").lower() == "positional"
+
+
 def _join_kind(join: exp.Join) -> str:
+    if _is_positional(join):
+        return "full"
     kind = (join.args.get("kind") or "").lower()
     if kind in _JOIN_KINDS_OVERRIDING_SIDE:
         return kind

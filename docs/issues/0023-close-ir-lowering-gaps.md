@@ -24,8 +24,16 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 - [ ] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:
   `SetOperation.distinct`, issue 24.)
-- [ ] Unique-join analysis models only `inner` and `left`; `right`, `full`,
+- [x] Unique-join analysis models only `inner` and `left`; `right`, `full`,
   `semi`, `anti`, `cross`, and `LATERAL`/`UNNEST` sources are not modelled.
+  Done for `right`, `full` and `cross` (Paulley §3.2.3, §3.2.10): Unique and
+  Exactly One Joins hold by the left row's matches whatever the kind; a cross
+  join is an ON with no conjuncts, unique when the right input has at most one
+  row. A scalar aggregate (no `GROUP BY`) now lowers to an `Aggregate` grouped
+  by nothing, so its one row gives the empty Unique Set. `POSITIONAL JOIN` was
+  lowered as an inner join, which proved `NOT NULL` on columns it pads: it is
+  now a full join on an opaque row-position condition. Still open (P4):
+  `semi`, `anti`, `LATERAL`/`UNNEST`.
 - [ ] Windows: only `QUALIFY row_number() over (partition by ...) = 1` is
   recognized; other window functions are opaque. Planned rules:
   [`docs/functional-dependencies.md`](../functional-dependencies.md#window-functions).
