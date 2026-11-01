@@ -130,8 +130,21 @@ The High level depends on functional dependencies and null sources
 - **Unused CTE.** Syntactic: a CTE no query of its WITH reaches, through used
   CTEs only. A same-named table anywhere counts as a reference.
 - **Mid additions.** A join is suggested as `EXACTLY ONE` when proved, else
-  `UNIQUE`; a join that already carries a marker gets neither. ENUM and
-  EXHAUSTIVE markers are still not suggested.
+  `UNIQUE`; a join that already carries a marker gets neither.
+- **ENUM.** `/**ASSERT ENUM(col IN (...))**/` for every nameable output
+  column whose proved Enumerated Domain has 1 to `MAX_ENUM_VALUES` (10)
+  values, listed booleans, then numbers by value, then strings. A short closed
+  list is a category worth locking in; a longer one mostly restates a long
+  `IN` list, and the marker repeats at every site the column passes through.
+  A column written as a literal gets none: the marker would restate it. The
+  values come from the domain analysis (`rules.domain._domain`), so ENUM is
+  not among `candidates`; the marker is then proved like any other.
+- **EXHAUSTIVE.** Every simple CASE that is lowered is an Attachment Site
+  (label `CASE <operand>`, offset right before `CASE`). `/**ASSERT
+  EXHAUSTIVE**/` is suggested there when proved, the CASE is reachable and
+  unmarked, and every WHEN is a distinct non-null literal, as the marker's
+  grammar requires. A CASE inside an opaque expression is not lowered, so it
+  gets no site.
 
 ## Acceptance criteria
 
@@ -142,6 +155,7 @@ Mid level ("add markers"):
 - [x] Minimal column sets only, strongest property form only.
 - [x] Pasting every suggested marker into the SQL and running `analyze()`
   proves all of them (round-trip test).
+- [x] ENUM and EXHAUSTIVE markers suggested, and in the round-trip test.
 - [x] CLI entry point printing the suggestions.
 
 High level ("native SQL improvements"):
