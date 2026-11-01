@@ -1,4 +1,4 @@
-from sqlassert.main import analyze
+from sqlassert.main import analyze, analyze_database
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin
@@ -18,4 +18,5 @@ __all__ = [
     "UniqueSet",
     "UniqueJoin",
     "analyze",
+    "analyze_database",
 ]

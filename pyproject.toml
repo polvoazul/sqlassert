@@ -14,7 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+duckdb = [
+  "duckdb>=1.1",
+]
 test = [
+  "duckdb>=1.1",
   "pytest",
 ]
 dev = [
