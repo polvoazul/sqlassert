@@ -171,7 +171,7 @@ def test_join_proof_retains_schema_and_equality_sources_and_reuses_cached_claims
         assert set(columns.members) == columns.value.columns
         nodes = tuple(walk(proof))
         assert any(node.kind == "accepted" for node in nodes)
-        assert any(join.equalities[0] in node.subjects for node in nodes)
+        assert any(join.conjuncts[0] in node.subjects for node in nodes)
         text = proof.explain()
         assert "PROVED: unique_join" in text
         assert "line" in text

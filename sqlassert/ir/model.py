@@ -83,8 +83,22 @@ class ColumnRef(ScalarExpr):
 
 
 class Equality(ScalarExpr):
+    """`left = right`. As a conjunct it holds only on rows where both sides are non-null."""
+
     left: ScalarExpr
     right: ScalarExpr
+
+
+class IsNull(ScalarExpr):
+    """`operand IS NULL`."""
+
+    operand: ScalarExpr
+
+
+class IsNotNull(ScalarExpr):
+    """`operand IS NOT NULL`."""
+
+    operand: ScalarExpr
 
 
 class OutputColumn(Node):
@@ -133,16 +147,24 @@ class Alias(RelationExpr):
 
 
 class Join(RelationExpr):
+    """A join and the conjuncts of its ON (or USING) condition.
+
+    Recognized conjuncts are `Equality`, `IsNull`, and `IsNotNull`; any other
+    conjunct is kept as an opaque scalar expression, so the tuple is the whole
+    condition.
+    """
+
     kind: str
     left: RelationExpr
     right: RelationExpr
-    equalities: tuple[Equality, ...] = ()
-    # The predicate's other conjuncts: they may only remove matches.
-    residual_conjuncts: tuple[ScalarExpr, ...] = ()
+    conjuncts: tuple[ScalarExpr, ...] = ()
 
 
 class Filter(RelationExpr):
+    """A WHERE clause and its conjuncts, recognized as in `Join`."""
+
     input: RelationExpr
+    conjuncts: tuple[ScalarExpr, ...] = ()
 
 
 class Project(RelationExpr):
@@ -159,9 +181,12 @@ class Distinct(RelationExpr):
 
 
 class SetOperation(RelationExpr):
+    """UNION, INTERSECT, or EXCEPT. Output columns refer to the left input."""
+
     operator: str
     left: RelationExpr
     right: RelationExpr
+    distinct: bool = True
 
 
 class QualifyByPartition(RelationExpr):

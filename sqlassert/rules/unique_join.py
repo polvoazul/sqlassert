@@ -18,7 +18,9 @@ def unique_join(join: ir.Join) -> Result[bool]:
 @analysis(Stratum.UNIQUE_JOIN)
 def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
     members = {}
-    for equality in join.equalities:
+    for equality in join.conjuncts:
+        if not isinstance(equality, ir.Equality):
+            continue
         for rhs, value in ((equality.left, equality.right), (equality.right, equality.left)):
             if rhs is value:
                 continue

@@ -305,7 +305,7 @@ class IrParser:
             output_columns = _pass_output_columns(left.output_columns, self._origin(query))
             return ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
-                operator=query.key, left=left, right=right,
+                operator=query.key, left=left, right=right, distinct=bool(query.args.get("distinct")),
             )
         if not isinstance(query, exp.Select):
             return None
@@ -430,7 +430,7 @@ class IrParser:
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
-        equalities, residual = self._lower_join_predicate(join, left, right)
+        conjuncts = self._lower_join_predicate(join, left, right)
         input_columns = left.relation.output_columns + right.relation.output_columns
         output_columns = _pass_output_columns(input_columns, origin)
         remapped = {source: output for source, output in zip(input_columns, output_columns)}
@@ -441,8 +441,7 @@ class IrParser:
             kind=_join_kind(join),
             left=left.relation,
             right=right.relation,
-            equalities=equalities,
-            residual_conjuncts=residual,
+            conjuncts=conjuncts,
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column])
@@ -464,8 +463,8 @@ class IrParser:
 
     def _lower_join_predicate(
         self, join: exp.Join, left: _Lowered, right: _Lowered
-    ) -> tuple[tuple[ir.Equality, ...], tuple[ir.ScalarExpr, ...]]:
-        """The predicate's equality conjuncts, and its other conjuncts."""
+    ) -> tuple[ir.ScalarExpr, ...]:
+        """The predicate's conjuncts; USING is one equality per column."""
         using = join.args.get("using")
         if using:
             return tuple(
@@ -475,28 +474,37 @@ class IrParser:
                     right=self._lower_expression(exp.column(identifier.name), right.bindings),
                 )
                 for identifier in using
-            ), ()
+            )
         predicate = join.args.get("on")
         if predicate is None:
-            return (), ()
-        conjuncts = list(predicate.flatten()) if isinstance(predicate, exp.And) else [predicate]
-        bindings = left.bindings + right.bindings
+            return ()
         complete = left.relation.is_schema_complete and right.relation.is_schema_complete
-        equalities = tuple(
-            ir.Equality(
-                origin=self._origin(conjunct),
-                left=self._lower_expression(conjunct.this, bindings, schema_complete=complete),
-                right=self._lower_expression(conjunct.expression, bindings, schema_complete=complete),
-            )
-            for conjunct in conjuncts
-            if isinstance(conjunct, exp.EQ)
-        )
-        residual = tuple(
-            self._lower_expression(conjunct, bindings, schema_complete=complete)
-            for conjunct in conjuncts
-            if not isinstance(conjunct, exp.EQ)
-        )
-        return equalities, residual
+        return self._lower_conjuncts(predicate, left.bindings + right.bindings, schema_complete=complete)
+
+    def _lower_conjuncts(
+        self, predicate: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
+    ) -> tuple[ir.ScalarExpr, ...]:
+        """Every conjunct of `predicate`: `=`, `IS NULL`, and `IS NOT NULL` are
+        recognized; anything else is lowered as an ordinary scalar expression."""
+        lowered: list[ir.ScalarExpr] = []
+        for conjunct in _conjuncts(predicate):
+            origin = self._origin(conjunct)
+            match conjunct:
+                case exp.EQ():
+                    lowered.append(ir.Equality(
+                        origin=origin,
+                        left=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
+                        right=self._lower_expression(conjunct.expression, bindings, schema_complete=schema_complete),
+                    ))
+                case exp.Is(expression=exp.Null()):
+                    operand = self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete)
+                    lowered.append(ir.IsNull(origin=origin, operand=operand))
+                case exp.Not(this=exp.Is(expression=exp.Null()) as test):
+                    operand = self._lower_expression(test.this, bindings, schema_complete=schema_complete)
+                    lowered.append(ir.IsNotNull(origin=origin, operand=operand))
+                case _:
+                    lowered.append(self._lower_expression(conjunct, bindings, schema_complete=schema_complete))
+        return tuple(lowered)
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
         group = select.args.get("group")
@@ -508,18 +516,21 @@ class IrParser:
             relation = self._lower_qualify(lowered, select, select.args["qualify"])
         else:
             if select.args.get("where") is not None:
-                lowered = self._filter(lowered, self._origin(select.args["where"]))
+                lowered = self._filter(lowered, select.args["where"])
             if _star_only(select):
                 relation = lowered.relation
             else:
                 relation = self._project(lowered, select.expressions, self._origin(select))
         return relation if relation is not None else self._opaque_relation(select, _selected_output_names(select))
 
-    def _filter(self, lowered: _Lowered, origin: Origin) -> _Lowered:
+    def _filter(self, lowered: _Lowered, where: exp.Where) -> _Lowered:
+        origin = self._origin(where)
         output_columns = _pass_output_columns(lowered.relation.output_columns, origin)
         remapped = {source: output for source, output in zip(lowered.relation.output_columns, output_columns)}
+        complete = lowered.relation.is_schema_complete
         relation = ir.Filter(
-            origin=origin, output_columns=output_columns, is_schema_complete=lowered.relation.is_schema_complete, input=lowered.relation
+            origin=origin, output_columns=output_columns, is_schema_complete=complete, input=lowered.relation,
+            conjuncts=self._lower_conjuncts(where.this, lowered.bindings, schema_complete=complete),
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
@@ -545,7 +556,7 @@ class IrParser:
         if select.args.get("having") is not None or any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
             return None
         if select.args.get("where") is not None:
-            lowered = self._filter(lowered, self._origin(select.args["where"]))
+            lowered = self._filter(lowered, select.args["where"])
 
         grouped_items: set[int] = set()
         for group_expression in group.expressions:
@@ -569,7 +580,7 @@ class IrParser:
         if distinct is None or distinct.args.get("on") is not None or select.args.get("having") is not None or _star_only(select):
             return None
         if select.args.get("where") is not None:
-            lowered = self._filter(lowered, self._origin(select.args["where"]))
+            lowered = self._filter(lowered, select.args["where"])
         return ir.Distinct(
             origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered),
             is_schema_complete=True, input=lowered.relation,
@@ -585,7 +596,7 @@ class IrParser:
         if not partitions:
             return None
         if select.args.get("where") is not None:
-            lowered = self._filter(lowered, self._origin(select.args["where"]))
+            lowered = self._filter(lowered, select.args["where"])
 
         output_columns = self._selected_output_columns(select.expressions, lowered)
         partition_outputs: list[ir.OutputColumn] = []
@@ -873,6 +884,15 @@ def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) ->
         ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
         for column in inputs
     )
+
+
+def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:
+    """The operands of a predicate's top-level ANDs, parentheses removed."""
+    while isinstance(predicate, exp.Paren):
+        predicate = predicate.this
+    if isinstance(predicate, exp.And):
+        return _conjuncts(predicate.this) + _conjuncts(predicate.expression)
+    return [predicate]
 
 
 def _direct_sources(select: exp.Select) -> list[exp.Expression]:
