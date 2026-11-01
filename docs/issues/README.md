@@ -15,11 +15,11 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [24. Functional-dependency reasoning](0024-functional-dependency-reasoning.md) — open (epic, planned)
 - [25. Check rule consistency invariants](0025-check-rule-consistency-invariants.md) — open (blocked by 24)
 - [26. Equality groups](0026-equality-groups.md) — open
-- [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (do before 24)
+- [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 
 ## Order
 
-1. 27 soundness oracle — the safety net before the rewrite.
+1. 27 soundness oracle, Part 1 — done. Run it before merging any rules change.
 2. 24 functional-dependency reasoning, starting with its 23 prerequisites.
 3. Lanes, one at a time in `sqlassert/rules/`:
    - Values: 26 → 16 → 17 → 18
