@@ -170,6 +170,39 @@ def test_a_grouping_column_another_one_determines_is_redundant():
     assert "name" in improvement.message and "any_value" in improvement.message
 
 
+@pytest.mark.parametrize("grouping", ["1, 2", "id, name"])
+def test_a_grouping_reference_uses_the_resolved_select_expression(grouping: str):
+    sql = SCHEMA + f"SELECT id, name AS label, count(*) AS n FROM users GROUP BY {grouping}"
+    improvement, = suggest(sql).improvements
+    assert "any_value(name) AS label" in improvement.message
+
+
+def test_a_grouping_improvement_remains_available_before_a_limit():
+    sql = SCHEMA + "SELECT id, name, count(*) AS n FROM users GROUP BY id, name LIMIT 5"
+    assert rewrites(sql) == [Rewrite.REDUNDANT_GROUPING]
+
+
+def test_a_natural_join_warns_and_prevents_rewrites(tmp_path, capsys):
+    sql = """
+        CREATE TABLE s (id INTEGER);
+        CREATE TABLE u (uid INTEGER PRIMARY KEY, v INTEGER);
+        CREATE TABLE o (id INTEGER, v INTEGER);
+        SELECT s.id FROM s LEFT JOIN u ON s.id = u.uid NATURAL JOIN o
+    """
+    report = suggest(sql)
+    assert report.suggestions == report.improvements == ()
+    assert any(diagnostic.code == "unsupported-natural-join" for diagnostic in report.diagnostics)
+    path = tmp_path / "natural.sql"
+    path.write_text(sql)
+    assert main(["suggest", str(path)]) == 1
+    assert "NATURAL JOIN" in capsys.readouterr().err
+
+
+def test_a_natural_join_in_an_unused_cte_also_warns():
+    sql = SCHEMA + "WITH unused AS (SELECT * FROM users NATURAL JOIN orders) SELECT id FROM users"
+    assert any(diagnostic.code == "unsupported-natural-join" for diagnostic in suggest(sql).diagnostics)
+
+
 def test_a_grouping_column_determined_only_by_a_nullable_one_is_kept():
     sql = SCHEMA + "SELECT email, name, count(*) AS n FROM users GROUP BY email, name"
     assert rewrites(sql) == []
@@ -235,6 +268,11 @@ def test_the_cli_lists_improvements_before_markers(tmp_path, capsys):
 
 # (original, rewritten, the improvement that justifies the rewrite)
 EQUIVALENT = [
+    (
+        SCHEMA + "SELECT id, name, count(*) AS n FROM users GROUP BY 1, 2",
+        SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users GROUP BY 1",
+        Rewrite.REDUNDANT_GROUPING,
+    ),
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
         SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",

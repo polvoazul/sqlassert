@@ -230,6 +230,32 @@ def test_a_union_names_the_uncovered_branch():
     assert "No known Foreign Key from events(user_id) to users(id)" in text
 
 
+def test_cast_based_equalities_do_not_establish_transitive_coverage():
+    report = analyze("""
+        CREATE TABLE targets (id VARCHAR PRIMARY KEY);
+        CREATE TABLE source (a VARCHAR, b INTEGER);
+        SELECT s.a FROM source s JOIN targets t ON s.b = t.id WHERE s.a = s.b
+        /**ASSERT FOREIGN KEY(a) REFERENCES targets(id)**/
+    """)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+@pytest.mark.parametrize("tail", ["LIMIT 0", "LIMIT 1", "OFFSET 1", "LIMIT 1 OFFSET 1"])
+def test_a_limited_referenced_relation_does_not_inherit_coverage(tail: str):
+    sql = f"WITH target AS (SELECT id FROM users {tail}) SELECT user_id FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/"
+    assert outcomes(sql) == [Outcome.UNKNOWN]
+    assert "may drop rows of its input" in explanation(sql)
+
+
+def test_a_limit_on_the_referencing_side_keeps_coverage():
+    assert outcomes("SELECT user_id FROM orders LIMIT 1 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/") == [Outcome.PROVED]
+
+
+def test_joining_a_limited_target_establishes_coverage_onto_it():
+    sql = "WITH target AS (SELECT id FROM users LIMIT 1) SELECT o.user_id FROM orders o JOIN target t ON o.user_id = t.id /**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/"
+    assert outcomes(sql) == [Outcome.PROVED]
+
+
 # Declarations ---------------------------------------------------------------
 
 DECLARATION_SITES = [

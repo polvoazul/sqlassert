@@ -599,6 +599,10 @@ class SqlParser:
         # A marker only becomes an assertion if the dialect recognised it, so
         # reconcile what the source contains against what parsing produced.
         diagnostics.extend(_unresolved_markers(sql, statements))
+        diagnostics.extend(
+            Diagnostic(diag.UNSUPPORTED_NATURAL_JOIN, "NATURAL JOIN is unsupported and an anti-pattern; write an explicit JOIN with ON or USING", Origin(SQL, join.sql(dialect=self.dialect)))
+            for statement in statements for join in statement.find_all(exp.Join) if join.args.get("method") == "NATURAL"
+        )
 
         if len(selects) > 1:
             diagnostics.append(

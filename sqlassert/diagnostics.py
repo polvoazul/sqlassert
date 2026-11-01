@@ -24,6 +24,7 @@ UNKNOWN_ASSERTED_COLUMN = "unknown-asserted-column"
 UNKNOWN_REFERENCED_COLUMN = "unknown-referenced-column"
 UNRECOGNIZED_MARKER = "unrecognized-marker"
 UNSUPPORTED_CREATE_STATEMENT = "unsupported-create-statement"
+UNSUPPORTED_NATURAL_JOIN = "unsupported-natural-join"
 UNSUPPORTED_STATEMENT = "unsupported-statement"
 
 

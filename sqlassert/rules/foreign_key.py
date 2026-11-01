@@ -179,7 +179,7 @@ def _passed(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple[ir.Rela
     match relation, column.scalar_expr:
         case (
             ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source)
-            | ir.Project(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source),
+            | ir.Project(input=source) | ir.Limit(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source),
             ir.ColumnRef(column=upstream),
         ):
             return source, upstream
@@ -223,7 +223,7 @@ def _exactly_one(join: ir.Join) -> Result[bool]:
 def _narrows(relation: ir.RelationExpr) -> bool:
     """Whether `relation` may drop rows of an input it passes columns from."""
     match relation:
-        case ir.Filter() | ir.QualifyByPartition() | ir.Join() | ir.SetOperation(operator="intersect" | "except"):
+        case ir.Filter() | ir.Limit() | ir.QualifyByPartition() | ir.Join() | ir.SetOperation(operator="intersect" | "except"):
             return True
         case _:
             return False

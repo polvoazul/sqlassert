@@ -87,8 +87,18 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   also why no rule but ours can consume it. Tests assert that ordinary SQL
   parses identically with and without the customisation.
 - `ir/model.py` contains the immutable semantic model.
+- `ir.Limit` retains a subset of its input rows, after the Select's other
+  operations or a set operation. Its optional `count` records a known hard
+  bound; percentages, ties, and unknown bounds supply none. OFFSET needs no
+  separate node: it is the same subset boundary. Input facts follow retained
+  rows; incoming Referential Coverage stops at this boundary.
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
   into that model.
+- Table columns carry a plain `comparison_type` when their declared type has
+  value equality without collation. Equality Groups merge only known matching
+  types, followed through pass-through columns; unknown and mixed types do not
+  rely on SQL's implicit casts. Column-to-column domain narrowing uses the same
+  check. Set operations do not supply comparison types from their left arm.
 - `python_engine.py` evaluates Python analysis functions with an analysis-scoped
   arena, caching, and trusted declarations. An analysis function returns
   `Result[Value]`: `.value` is its computed Value and its direct fields carry
@@ -145,6 +155,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   marker position: the IR keeps neither ORDER BY nor the columns inside an
   opaque expression. Padding is only followed through the joins and WHERE of
   its own Select Expression, where nothing looks at a row as a whole.
+  Grouping replacements use the selected expression already identified by the
+  IR output column, so GROUP BY ordinals never become aggregate constants.
+  NATURAL joins are diagnosed syntactically, including unused bodies, and
+  their Select Expressions remain opaque. `suggest` emits no suggestions for
+  a program containing one.
 
 ## Stage Objects
 

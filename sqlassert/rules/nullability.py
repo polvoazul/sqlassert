@@ -92,7 +92,7 @@ def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple
             # A group's value comes from one of its rows: padding of that row is
             # no longer tied to the rows of the join that padded it.
             return {(ORGANIC if isinstance(source, Padding) else source): evidence for source, evidence in sources.items()}, premises
-        case ir.NamedRelation() | ir.Project() | ir.Distinct() | ir.QualifyByPartition():
+        case ir.NamedRelation() | ir.Project() | ir.Limit() | ir.Distinct() | ir.QualifyByPartition():
             return _expression_sources(column.scalar_expr)
         case _:
             raise TypeError(f"Unhandled relation: {type(relation).__name__}")

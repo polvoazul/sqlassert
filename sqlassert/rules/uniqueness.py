@@ -214,7 +214,7 @@ class _Delegation:
 
 def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
     match relation:
-        case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.QualifyByPartition(input=source):
+        case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.Limit(input=source) | ir.QualifyByPartition(input=source):
             return [_row_preserving(relation, source)]
         case ir.Join(kind="inner" | "cross" | "left" | "right" | "full"):
             return [_join_side(relation, True), _join_side(relation, False)]
@@ -390,7 +390,9 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
             add(partition, identity, True, Result(True, "One row is kept per partition", (relation,)))
         case ir.SetOperation(distinct=True):
             add(relation.output_columns, identity, True, Result(True, f"{relation.operator.upper()} removes duplicate rows", (relation,)))
-        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.SetOperation() | ir.OpaqueRelation():
+        case ir.Limit(count=int() as count) if count <= 1:
+            add((), identity, True, Result(True, "LIMIT keeps at most one row", (relation,)))
+        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.SetOperation() | ir.OpaqueRelation():
             pass
         case _:
             raise TypeError(f"Unhandled relation: {type(relation).__name__}")

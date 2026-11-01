@@ -96,6 +96,12 @@ TYPED_PROVED = [
         "mixed types",
         "WITH m AS (SELECT * FROM items /**DECLARE ENUM(tag IN ('a', 1, TRUE))**/) SELECT tag FROM m /**ASSERT ENUM(tag IN (TRUE, 1, 'a'))**/",
     ),
+    (
+        "a cast-based equality does not change binary text comparison",
+        "WITH a AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('01'))**/ /**DECLARE ENUM(channel IN ('1'))**/), "
+        "j AS (SELECT a.status, a.channel FROM a JOIN items ON a.status = items.qty AND items.qty = a.channel) "
+        "SELECT status FROM j WHERE status = channel /**ASSERT ENUM(status IN ('zz'))**/",
+    ),
 ]
 
 TYPED_UNKNOWN = [
@@ -129,12 +135,6 @@ TYPED_UNKNOWN = [
         "two strings may equal under a collation",
         "WITH p AS (SELECT * FROM people /**DECLARE ENUM(name IN ('a'))**/) SELECT name FROM p WHERE name = 'A' /**ASSERT ENUM(name IN ('b'))**/",
     ),
-    (
-        "text columns equated through an integer",
-        "WITH a AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('01'))**/ /**DECLARE ENUM(channel IN ('1'))**/), "
-        "j AS (SELECT a.status, a.channel FROM a JOIN items ON a.status = items.qty AND items.qty = a.channel) "
-        "SELECT status FROM j WHERE status = channel /**ASSERT ENUM(status IN ('zz'))**/",
-    ),
 ]
 
 
@@ -153,6 +153,11 @@ def test_strings_meet_conservatively_on_a_column_of_unknown_type():
     sql = "WITH t AS (SELECT * FROM ext /**DECLARE ENUM(v IN ('01'))**/) SELECT v FROM t WHERE v = '1' /**ASSERT ENUM(v IN ('2'))**/"
 
     assert [assertion.outcome for assertion in analyze(sql).assertions] == [Outcome.UNKNOWN]
+
+
+def test_a_cast_based_equality_does_not_transfer_a_domain():
+    sql = "WITH t AS (SELECT qty, tag FROM items /**DECLARE ENUM(qty IN ('01'))**/) SELECT tag FROM t WHERE qty = tag /**ASSERT ENUM(tag IN ('01'))**/"
+    assert outcomes(sql) == [Outcome.UNKNOWN]
 
 
 def test_distinct_numeric_literals_do_not_meet():

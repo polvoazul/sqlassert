@@ -141,7 +141,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
 
 # A parse failure leaves nothing to suggest on; duplicate declarations make
 # `analyze` refuse every proof, so nothing suggested could round-trip.
-_BLOCKING = {diag.SQL_PARSE_FAILED, diag.UNATTACHED_MARKER, diag.DUPLICATE_DECLARATION}
+_BLOCKING = {diag.SQL_PARSE_FAILED, diag.UNATTACHED_MARKER, diag.DUPLICATE_DECLARATION, diag.UNSUPPORTED_NATURAL_JOIN}
 
 
 def candidates(
