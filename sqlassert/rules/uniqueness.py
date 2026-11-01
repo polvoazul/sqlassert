@@ -22,12 +22,13 @@ non-null by the caller, or proved non-null.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
+from sqlassert.rules.equality import _identity_comparison
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -163,6 +164,10 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
             for source, attribute in delegation.back.items():
                 if source in closure.value.columns and attribute not in reached:
                     reach(attribute, Result(True, delegation.reason, (relation, attribute), [closure.members[source]]))
+            for attribute, sources in delegation.computed.items():
+                if sources <= closure.value.columns and attribute not in reached:
+                    reason = "A deterministic function of determined input columns"
+                    reach(attribute, Result(True, reason, (relation, attribute), [closure.members[source] for source in sources]))
         if not queue:
             break
     value = Closure(relation, set(reached), tuple(inputs.values()))
@@ -194,8 +199,10 @@ class _Delegation:
     """How rows of a relation map onto rows of one input, for taking closure there.
 
     `down` maps the relation's attributes to the input's; `back` maps input
-    attributes reached there back up. `valid` says whether two rows agreeing
-    on the reached attributes may be compared as input rows at all.
+    attributes reached there back up, and `computed` maps each of the
+    relation's columns computed from input attributes to them: reaching all of
+    them reaches it. `valid` says whether two rows agreeing on the reached
+    attributes may be compared as input rows at all.
     """
 
     input: ir.RelationExpr
@@ -203,6 +210,7 @@ class _Delegation:
     back: dict[Attribute, Attribute]
     reason: str
     valid: Callable[[dict[Attribute, Result[bool]], Callable[[Attribute], bool]], bool] | None = None
+    computed: dict[Attribute, frozenset[Attribute]] = field(default_factory=dict)
 
     def run(self, reached: dict[Attribute, Result[bool]], is_definite: Callable[[Attribute], bool]) -> Result[Closure] | None:
         if self.valid is not None and not self.valid(reached, is_definite):
@@ -247,7 +255,10 @@ def _row_preserving(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Dele
     """Each output row is one input row, so every input dependency holds."""
     down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _pass_through(relation, source).items()}
     down[RowIdentity(relation)] = RowIdentity(source)
-    return _Delegation(source, down, {upstream: own for own, upstream in down.items()}, "Determined in the input")
+    return _Delegation(
+        source, down, {upstream: own for own, upstream in down.items()}, "Determined in the input",
+        computed=_computed(relation, source),
+    )
 
 
 def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
@@ -273,7 +284,26 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
                     back[upstream] = column
                 case _:
                     pass  # Count-sensitive and opaque aggregates are new values.
-    return _Delegation(source, down, back, "Determined in the input rows")
+    # A computed column of an Aggregate that is not a grouping item wraps its
+    # value in AnyAggregate, so only grouping items and DISTINCT values remain.
+    return _Delegation(source, down, back, "Determined in the input rows", computed=_computed(relation, source))
+
+
+def _computed(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[Attribute, frozenset[Attribute]]:
+    """Paulley §3.1.4: each column a deterministic function computes from
+    columns of `source`, with those columns. Only columns compared by identity
+    qualify: under NOCASE `'a' = 'A'` while `upper(x) || x` tells them apart,
+    and a DOUBLE's `-0.0 = 0.0` while its text does not."""
+    computed: dict[Attribute, frozenset[Attribute]] = {}
+    for column in relation.output_columns:
+        match column.scalar_expr:
+            case ir.OpaqueExpression(deterministic=True, inputs=inputs) if all(
+                upstream in source.output_columns and _identity_comparison(upstream).value for upstream in inputs
+            ):
+                computed[column] = frozenset(inputs)
+            case _:
+                pass  # Pass-through columns map back directly; others are new values.
+    return computed
 
 
 def _join_side(join: ir.Join, left: bool) -> _Delegation:

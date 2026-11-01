@@ -53,7 +53,15 @@ class ScalarExpr(Node, abstract=True):
 
 
 class OpaqueExpression(ScalarExpr):
+    """An expression whose value is not modelled.
+
+    `deterministic` ones are a function of exactly the input columns in
+    `inputs` (Paulley §3.1.4): rows agreeing on them agree on it. Nothing else
+    about the value, its nullability or its domain is known."""
+
     description: str
+    deterministic: bool = False
+    inputs: tuple[OutputColumn, ...] = ()
 
 
 class Count(ScalarExpr):
@@ -164,6 +172,11 @@ class OutputColumn(Node):
     `binary_text` marks a table column declared as text compared by identity:
     VARCHAR or TEXT, with no COLLATE, in a dialect whose default collation is
     binary. Equal to such a column, distinct strings are distinct values.
+
+    `identity_comparison` marks a table column whose equal values are
+    identical: an integer, decimal, boolean, date, time, timestamp or UUID
+    type, or binary text. Not a float (`-0.0 = 0.0`), an interval, or text
+    under a collation.
     """
 
     name: str
@@ -171,6 +184,7 @@ class OutputColumn(Node):
     binary_text: bool = False
     # Declared SQL type where equality compares values without casts or collation.
     comparison_type: str | None = None
+    identity_comparison: bool = False
 
     def get_relation(self, program: Program) -> RelationExpr:
         """The one relation in ``program`` whose output includes this column."""

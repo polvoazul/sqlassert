@@ -528,7 +528,11 @@ class IrParser:
         columns = self._opaque_output_columns(names, symbol.origin)
         by_name = {definition.name: definition for definition in definitions}
         return tuple(
-            replace(column, binary_text=self._is_binary_text(by_name[column.name]), comparison_type=self._comparison_type(by_name[column.name]))
+            replace(
+                column, binary_text=self._is_binary_text(by_name[column.name]),
+                comparison_type=(comparison := self._comparison_type(by_name[column.name])),
+                identity_comparison=comparison is not None and exp.DataType.build(comparison, dialect=self.dialect).this in _IDENTITY_TYPES,
+            )
             if column.name in by_name else column for column in columns
         ), complete
 
@@ -852,7 +856,27 @@ class IrParser:
         value = literal_value(expression)
         if value is not None or isinstance(expression, exp.Literal):
             return ir.Constant(origin=origin, value=value)
-        return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
+        inputs = self._function_inputs(expression, bindings, schema_complete=schema_complete)
+        return ir.OpaqueExpression(
+            origin=origin, description=expression.sql(dialect=self.dialect),
+            deterministic=inputs is not None, inputs=inputs or (),
+        )
+
+    def _function_inputs(
+        self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
+    ) -> tuple[ir.OutputColumn, ...] | None:
+        """The input columns `expression` is a deterministic function of, or
+        None when it may not be one: a user-defined or volatile function, an
+        aggregate or window, a subquery, or a column that does not resolve."""
+        if isinstance(expression, exp.Column) or any(isinstance(node, _NOT_A_FUNCTION_OF_ITS_COLUMNS) for node in expression.walk()):
+            return None  # An unresolved column is no function of resolved ones.
+        inputs: dict[ir.OutputColumn, None] = {}
+        for column in expression.find_all(exp.Column):
+            lowered = self._lower_expression(column, bindings, schema_complete=schema_complete)
+            if not isinstance(lowered, ir.ColumnRef):
+                return None
+            inputs[lowered.column] = None
+        return tuple(inputs)
 
     def _lower_case(self, case: exp.Case, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.SimpleCase:
         """A simple CASE, and the assertion its marker states, once per CASE."""
@@ -1328,6 +1352,22 @@ def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
 
 
 _JOIN_KINDS_OVERRIDING_SIDE = {"semi", "anti", "cross"}
+
+
+# Types whose equal values are identical: no collation (text has a comparison
+# type only when compared by identity), no signed zero or NaN, no two
+# spellings of one interval.
+_IDENTITY_TYPES = {
+    *exp.DataType.INTEGER_TYPES, *exp.DataType.TEXT_TYPES,
+    exp.DataType.Type.DECIMAL, exp.DataType.Type.BOOLEAN, exp.DataType.Type.DATE, exp.DataType.Type.TIME,
+    exp.DataType.Type.TIMESTAMP, exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.UUID,
+}
+
+# Nodes whose value is not a function of the columns an expression reads.
+_NOT_A_FUNCTION_OF_ITS_COLUMNS = (
+    exp.Anonymous, exp.Rand, exp.Randn, exp.Uuid, exp.AggFunc, exp.Window, exp.Query, exp.Subquery,
+    exp.CurrentDate, exp.CurrentDatetime, exp.CurrentTime, exp.CurrentTimestamp, exp.Placeholder, exp.Parameter,
+)
 
 
 def _is_scalar_aggregate(select: exp.Select) -> bool:

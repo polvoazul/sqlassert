@@ -228,14 +228,19 @@ Ordered roughly by payoff over cost.
   `select id from items where tenant_id = 5` is unique on `id`, and
   `u.id` stands in for `o.user_id` under `on o.user_id = u.id`.
 - [x] **General FDs and closure-based coverage** — see Representation below.
-- [ ] **Deterministic expressions** — `inputs → f(inputs)`, with a small
-  denylist of impure functions (`random`, `uuid`, `nextval`).
+- [x] **Deterministic expressions** — `inputs → f(inputs)` (Paulley §3.1.4).
+  Built-in functions and operators only: a user-defined (unknown) function,
+  `random`, `uuid`, `current_*`, an aggregate, window or subquery is not a
+  function of its columns. Every input must compare by identity
+  (`OutputColumn.identity_comparison`): under `NOCASE` `'a' = 'A'` and a
+  DOUBLE's `-0.0 = 0.0`, yet a function can tell them apart.
 - [ ] **Injective expressions** — a curated allowlist (lossless casts,
   `x ± constant`); everything else non-injective.
 - [x] **Strict/lax FDs in the left-join rules** above, including η.
 - [x] **Set-operation rules** — UNION / INTERSECT / EXCEPT without `ALL` key
   all their columns; INTERSECT and EXCEPT keep the left input's dependencies.
-  Not yet: tagged `UNION ALL`, and the right arm's columns.
+  Not yet: tagged `UNION ALL`. The right arm's columns are paired by
+  position (`SetOperation.arms`) for nullability and domains, not yet for FDs.
 - [ ] **Window functions** — lower windows into the IR (today only
   `QUALIFY row_number() … = 1` is recognized), inherit input keys and FDs, and
   add the `row_number` key and partition-constant aggregate FDs above.
