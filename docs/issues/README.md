@@ -11,17 +11,19 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [21. Assert simple `EXACTLY ONE` joins](0021-assert-simple-exactly-one-joins.md) — open (two items after 24)
 - [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
-- [24. Functional-dependency reasoning](0024-functional-dependency-reasoning.md) — open (epic, planned)
-- [25. Check rule consistency invariants](0025-check-rule-consistency-invariants.md) — open (blocked by 24)
+- [25. Check rule consistency invariants](0025-check-rule-consistency-invariants.md) — open (re-scope: 24 is done)
 - [26. Equality groups](0026-equality-groups.md) — open
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 
 ## Order
 
-1. 27 soundness oracle, Part 1 — done. Run it before merging any rules change.
-2. 24 functional-dependency reasoning, starting with its 23 prerequisites.
-3. Lanes, one at a time in `sqlassert/rules/`:
-   - Values: 26 → 16 → 17 → 18
-   - Foreign Keys (19, 21 done; 21 leftovers after 24): 26 → 20; 20 → 22
-4. Independent, in parallel at any time: 11, 15 (marker suggestions done;
-   rewrite suggestions wait for 24). 25 is re-scoped after 24.
+Done: 14, 19, 24, 27 Part 1, 15 Mid level, most of 21. Run
+`pytest --soundness-oracle` before merging any rules change.
+
+Next, as dependencies allow:
+
+1. 26 equality groups (unblocked: Filter conjuncts landed with 24).
+2. Values: 16 → 17 → 18 (16 needs 26).
+3. Foreign Keys: 20 (needs 26) → 22.
+4. Unblocked by 24: 15 High level (rewrite suggestions), 25 re-scope or close.
+5. Skipped for now (need downloaded corpora): 11, 27 Part 2.

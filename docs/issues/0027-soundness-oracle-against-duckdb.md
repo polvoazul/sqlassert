@@ -7,7 +7,7 @@
   (its "Extension: oracle-based differential testing" and the `TODO.md` Task 12
   addendum)
 
-Do this before [issue 24](0024-functional-dependency-reasoning.md): that rewrite
+Do this before issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md)): that rewrite
 replaces unique-set propagation outright, and this oracle is the safety net
 that catches an unsound `PROVED` it introduces.
 

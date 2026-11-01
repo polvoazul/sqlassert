@@ -7,7 +7,7 @@
 
 ## Blocked by
 
-[Issue 24](0024-functional-dependency-reasoning.md) deletes sets of interest
+Issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md)) deletes sets of interest
 and `_unique_sets`, which most of this covers. Re-scope against the closure
 and `RowIdentity` once 24 lands, or close it.
 
