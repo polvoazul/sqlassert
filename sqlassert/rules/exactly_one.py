@@ -42,11 +42,8 @@ def _half(reason: str, subjects: tuple[object, ...], evidence: Result[bool]) -> 
 
 def _direct_equality(join: ir.Join) -> tuple[ir.OutputColumn, ir.OutputColumn] | None:
     """The (left, right) columns of a predicate that is exactly one equality between them."""
-    if join.residual_conjuncts or len(join.equalities) != 1:
-        return None
-    equality, = join.equalities
-    match equality.left, equality.right:
-        case ir.ColumnRef(column=first), ir.ColumnRef(column=second):
+    match join.conjuncts:
+        case (ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)),):
             for left, right in ((first, second), (second, first)):
                 if left in join.left.output_columns and right in join.right.output_columns:
                     return left, right
