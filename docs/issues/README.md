@@ -9,10 +9,10 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Next, as dependencies allow:
 
-1. 15 High level (rewrite suggestions).
+1. 15 Low level (other code smells), 23 epic leftovers.
 2. Skipped for now (need downloaded corpora): 11, 27 Part 2.
