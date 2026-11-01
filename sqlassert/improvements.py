@@ -46,6 +46,7 @@ class Level(Enum):
 
     HIGH = "high"
     MID = "mid"
+    LOW = "low"
 
 
 class Rewrite(Enum):

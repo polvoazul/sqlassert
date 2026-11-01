@@ -1,8 +1,9 @@
 """Suggest the Property Markers sqlassert can prove for a SQL Program.
 
-Two levels of suggestion. High: Improvements, rewrites of the SQL itself
+Three levels of suggestion. High: Improvements, rewrites of the SQL itself
 that a proof shows leave its result unchanged (`improvements.py`). Mid:
-markers that lock in what is provable but not asserted.
+markers that lock in what is provable but not asserted. Low: Smells, places
+whose result the SQL leaves unspecified (`smells.py`).
 
 Marker candidates are generated mechanically from the Program IR, one
 Attachment Site at a time: every markable JOIN may be a Unique Join (or
@@ -28,6 +29,7 @@ from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.improvements import Improvement, Level, Rewrite, improvements
 from sqlassert.ir.convert import IrParser
+from sqlassert.smells import Concern, Smell, smells
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import (
     EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property,
@@ -45,7 +47,10 @@ DEFAULT_MAX_SIZE = 3
 # marker would be noise at every site the column passes through.
 MAX_ENUM_VALUES = 10
 
-__all__ = ["Candidate", "Improvement", "Level", "Rewrite", "Suggestion", "SuggestionReport", "annotate", "candidates", "suggest"]
+__all__ = [
+    "Candidate", "Concern", "Improvement", "Level", "Rewrite", "Smell", "Suggestion", "SuggestionReport", "annotate",
+    "candidates", "suggest",
+]
 
 
 @dataclass(frozen=True)
@@ -70,13 +75,15 @@ class Suggestion:
 
 @dataclass(frozen=True)
 class SuggestionReport:
-    """`improvements` (High) rewrite the SQL; `suggestions` (Mid) are markers to paste."""
+    """`improvements` (High) rewrite the SQL; `suggestions` (Mid) are markers
+    to paste; `smells` (Low) point at results the SQL leaves unspecified."""
 
     sql: str
     suggestions: tuple[Suggestion, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     improvements: tuple[Improvement, ...] = ()
     warnings: tuple[Diagnostic, ...] = ()
+    smells: tuple[Smell, ...] = ()
 
     def annotated(self, chosen: Iterable[Suggestion] | None = None) -> str:
         """The SQL with the chosen suggestions' markers pasted in (all by default)."""
@@ -129,6 +136,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
     suggestions: list[Suggestion] = []
     with Engine().session(program, conversion.knowledge) as arena:
         found = improvements(ast, program, arena, dialect)
+        concerns = smells(ast, program, arena)
         for site, relation in program.attachment_sites:
             match relation:
                 case ir.Join() if not site.trailing and relation not in marked_joins and relation in reachable:
@@ -153,7 +161,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
             key=lambda suggestion: suggestion.site.offset,
         )
     )
-    return SuggestionReport(sql, kept, diagnostics, tuple(found), conversion.warnings)
+    return SuggestionReport(sql, kept, diagnostics, tuple(found), conversion.warnings, tuple(concerns))
 
 
 # A parse failure leaves nothing to suggest on; duplicate declarations make

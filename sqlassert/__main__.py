@@ -48,13 +48,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if report.diagnostics else 0
     if arguments.annotate and report.suggestions:
         Path(arguments.file).write_text(report.annotated())
-    # Improvements (High) first, then markers (Mid).
-    items = (*report.improvements, *report.suggestions)
+    # Improvements (High) first, then markers (Mid), then smells (Low).
+    items = (*report.improvements, *report.suggestions, *report.smells)
     rows = [
         (i.level.value, f"line {i.site.line}", i.site.label, i.rewrite.value, i.message) for i in report.improvements
     ] + [
         (s.level.value, f"line {s.site.line}", s.site.label, _KINDS[type(s.property).__name__], s.marker)
         for s in report.suggestions
+    ] + [
+        (s.level.value, f"line {s.site.line}", s.site.label, s.concern.value, s.message) for s in report.smells
     ]
     widths = [max((len(row[i]) for row in rows), default=0) for i in range(4)]
     for row, item in zip(rows, items):
