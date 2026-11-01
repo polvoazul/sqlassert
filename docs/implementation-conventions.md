@@ -135,6 +135,16 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   Join or Select relation in `Program.attachment_sites`. `suggest` proves
   candidates at those sites through `Arena.prove` only, never through
   internal analysis functions. `__main__.py` is the CLI over it.
+- `improvements.py` holds `suggest`'s High level: result-preserving rewrites
+  (Improvements). None of their facts is a Property, so it reads rule
+  internals in the same arena -- null sources and null-rejected conjuncts
+  for an outer join that cannot pad, the strict (`definite = ∅`) closure for
+  `DISTINCT` and grouping columns -- besides `Arena.prove` for Unique and
+  Exactly One Joins. Whether a join's columns are used, and whether a CTE is
+  referenced, is read from the SQLGlot AST, matched to each IR site by its
+  marker position: the IR keeps neither ORDER BY nor the columns inside an
+  opaque expression. Padding is only followed through the joins and WHERE of
+  its own Select Expression, where nothing looks at a row as a whole.
 
 ## Stage Objects
 
