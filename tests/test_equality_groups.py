@@ -87,6 +87,7 @@ MERGED = [
     ),
     ("GROUP BY columns", "SELECT x, y, count(*) AS n FROM t WHERE x = y GROUP BY x, y", {frozenset({"x", "y"})}),
     ("DISTINCT", "SELECT DISTINCT x, y FROM t WHERE x = y", {frozenset({"x", "y"})}),
+    ("LIMIT", "SELECT x, y FROM t WHERE x = y LIMIT 2", {frozenset({"x", "y"})}),
 ]
 
 
@@ -153,6 +154,19 @@ def test_a_column_without_equalities_is_equal_only_to_itself():
 def test_equality_groups_sit_below_every_other_stratum():
     assert _equality_groups.stratum is Stratum.EQUALITY_GROUP
     assert Stratum.EQUALITY_GROUP == min(Stratum)
+
+
+@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b BIGINT", "a VARCHAR COLLATE NOCASE, b VARCHAR"])
+def test_equalities_requiring_casts_or_collations_do_not_merge(columns: str):
+    parsed = IrParser("duckdb").parse(SqlParser("duckdb").parse(
+        f"CREATE TABLE values_ ({columns}); SELECT a, b FROM values_ WHERE a = b"
+    )).program
+    with Engine().session(parsed):
+        assert all(len(group) == 1 for group in _equality_groups(parsed.root).value.groups)
+
+
+def test_columns_of_unknown_type_do_not_merge():
+    assert groups("SELECT a, b FROM external_values WHERE a = b") == set()
 
 
 def test_every_relation_of_a_program_has_groups_without_a_cycle():

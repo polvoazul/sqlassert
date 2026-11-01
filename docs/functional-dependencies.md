@@ -293,7 +293,7 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
   joins (a hidden padded-side column has no value on a padded row); delegation
   avoids both because every closure is about one relation's rows. How rows map
   onto input rows decides when delegating is sound:
-  - Alias, Named Relation, Filter, Project, QUALIFY: one output row is one
+  - Alias, Named Relation, Filter, Project, LIMIT, QUALIFY: one output row is one
     input row; `RowIdentity(out) ↔ RowIdentity(in)`.
   - Join: each side separately. A side the join pads is compared as input rows
     only when the two rows cannot be one matched and one padded: some reached
@@ -331,6 +331,7 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
   unrecognized conjunct, only the preserved row's identity fixes the match.
 - GROUP BY, DISTINCT, QUALIFY, and distinct set operations: their key columns
   → `RowIdentity` (strict, NULLs grouped together).
+- A known hard LIMIT of zero or one: `∅ → RowIdentity`, regardless of input keys.
 - A Row Identity determines every column of its relation.
 
 ### Null sources
@@ -369,11 +370,13 @@ propagation ask. Each group's evidence cites every equality that merged it,
 with its line.
 
 - A union-find over **strict** equalities only: `WHERE` and inner-join `ON`
-  conjuncts `a = b` between columns. An outer join's ON never merges, not
+  conjuncts `a = b` between columns of known matching comparison types,
+  without collation. Implicit casts and unknown types never merge groups.
+  An outer join's ON never merges, not
   even within its padded side; neither does `a = f(b)`, a disjunction, or a
   semi or anti join's ON.
 - Input groups pass through every column that passes an input column
-  through: Alias, Named Relation, Filter, Project, both sides of a join,
+  through: Alias, Named Relation, Filter, Project, LIMIT, both sides of a join,
   grouping columns, DISTINCT, QUALIFY, and the left input of INTERSECT and
   EXCEPT. A computed column (an aggregate included) starts its own group;
   UNION passes nothing. Groups are closed at each relation, so a column a
@@ -394,13 +397,13 @@ directions, never mixing them:
   relation that keeps every input row's values: Alias, Named Relation body,
   Project, DISTINCT, grouping keys, the preserved side of an outer join, either
   branch of a UNION. `_targets(Y)` lists Y and every such upstream column list,
-  paired by position. A narrowing relation (Filter, QUALIFY, inner join,
+  paired by position. A narrowing relation (Filter, LIMIT/OFFSET, QUALIFY, inner join,
   INTERSECT, EXCEPT) stops it: the rows the referencing values match may be
   the dropped ones. A proved Exactly One inner join keeps every left row, so
   its left columns carry coverage over.
 - **Referencing side, downward.** X holds on a relation when each output row
   takes X from one row of one covered input: Alias, Named Relation body,
-  Filter, Project, DISTINCT, QUALIFY, grouping keys, and either side of any
+  Filter, Project, LIMIT, DISTINCT, QUALIFY, grouping keys, and either side of any
   join -- a padded side is NULL in every column, which `MATCH SIMPLE` exempts.
   A UNION needs both branches covered, INTERSECT either, EXCEPT the left.
 - **Equality.** Each column of X may stand in for any column of its

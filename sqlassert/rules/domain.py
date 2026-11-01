@@ -36,7 +36,7 @@ from fractions import Fraction
 from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
-from sqlassert.rules.equality import _equal_columns
+from sqlassert.rules.equality import _equal_columns, _same_type
 from sqlassert.rules.nullability import non_null_column
 
 # A finite set of possible non-null values, or None when any value is possible.
@@ -139,7 +139,7 @@ def _computed_domain(relation: ir.RelationExpr, column: ir.OutputColumn) -> Resu
             return Result(None, "A UNION column's values are not enumerated", (relation, column))
         case ir.Filter() | ir.Join():
             return _intersection(column, [_expression_domain(column.scalar_expr), *_narrowings(relation, column)])
-        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Aggregate() | ir.Distinct() | ir.QualifyByPartition() | ir.SetOperation():
+        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.Aggregate() | ir.Distinct() | ir.QualifyByPartition() | ir.SetOperation():
             return _expression_domain(column.scalar_expr)
         case _:
             raise TypeError(f"Unhandled relation: {type(relation).__name__}")
@@ -203,11 +203,11 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
     for conjunct in conjuncts:
         match conjunct:
             case ir.Equality(left=ir.ColumnRef(column=first), right=other) if first is source:
-                bounds = [_expression_domain(other)]
+                bounds = [_bound_domain(source, other)]
             case ir.Equality(left=other, right=ir.ColumnRef(column=second)) if second is source:
-                bounds = [_expression_domain(other)]
+                bounds = [_bound_domain(source, other)]
             case ir.InList(operand=ir.ColumnRef(column=operand), values=values) if operand is source:
-                bounds = [_expression_domain(value) for value in values]
+                bounds = [_bound_domain(source, value) for value in values]
             case _:
                 continue  # Other conjuncts do not bound this column.
         if any(bound.value is None for bound in bounds):
@@ -215,6 +215,16 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
         value = frozenset().union(*(bound.value for bound in bounds if bound.value is not None))
         narrowings.append(Result(value, f"The {clause} conjunct bounds {column.name} to {_render(value)}", (conjunct,), bounds))
     return narrowings
+
+
+def _bound_domain(column: ir.OutputColumn, expression: ir.ScalarExpr) -> Result[Domain]:
+    match expression:
+        case ir.Constant() | ir.NullLiteral():
+            return _expression_domain(expression)
+        case ir.ColumnRef(column=source) if _same_type(column, source):
+            return _expression_domain(expression)
+        case _:
+            return Result(None, "The comparison may cast its operands, so no value domain is transferred", (expression,))
 
 
 def _intersection(column: ir.OutputColumn, sources: list[Result[Domain]]) -> Result[Domain]:
@@ -241,9 +251,8 @@ def _binary_text(column: ir.OutputColumn) -> bool:
     """Whether `column` and every column equated with it, here or upstream,
     are text compared by identity, so carry one string value.
 
-    A text column equated through an INTEGER one is compared as an integer:
-    '01' and '1' are then equal. A set operation's type may widen its left
-    input's, so its columns are not followed.
+    Only matching comparison types merge Equality Groups. A set operation's
+    type may widen its left input's, so its columns are not followed.
     """
     relation = column.get_relation(current_arena().program)
     for member in _equal_columns(column).value:

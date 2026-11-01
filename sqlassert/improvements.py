@@ -83,6 +83,8 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
             # (Every reachable relation but the root is some relation's input.)
             continue
         node = syntax.get((site.offset, site.trailing))
+        if isinstance(relation, ir.Limit):
+            relation = relation.input
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
                 removed = _redundant_join(arena, site, relation, node, dialect)
@@ -291,9 +293,11 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
         kept.remove(grouped)
         names = ", ".join(written[other] for other in others)
         alias = exp.to_identifier(grouped.name).sql(dialect=dialect)
+        selected = node.expressions[aggregate.output_columns.index(grouped)]
+        expression = selected.this if isinstance(selected, exp.Alias) else selected
         message = (
             f"({names}) determine {written[grouped]}, NULL equal to NULL: drop {written[grouped]} from GROUP BY "
-            f"and select any_value({written[grouped]}) AS {alias}"
+            f"and select any_value({expression.sql(dialect=dialect)}) AS {alias}"
         )
         found.append(Improvement(site, Rewrite.REDUNDANT_GROUPING, message, closure.members[source]))
     return found

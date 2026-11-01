@@ -94,6 +94,11 @@ def test_an_unproved_exactly_one_join_is_unknown(label: str, sql: str):
     assert outcomes(sql) == [Outcome.UNKNOWN], label
 
 
+@pytest.mark.parametrize("body", ["SELECT id FROM users LIMIT 0", "SELECT id FROM users LIMIT 1", "SELECT id FROM users UNION SELECT id FROM users LIMIT 1"])
+def test_a_limited_right_input_does_not_guarantee_a_match(body: str):
+    assert outcomes(f"SELECT * FROM orders o /**ASSERT EXACTLY ONE**/ JOIN ({body}) u ON o.user_id = u.id") == [Outcome.UNKNOWN]
+
+
 def test_a_nullable_left_column_is_reported_as_the_only_missing_evidence():
     explained = explanation(
         "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.buyer = users.id"

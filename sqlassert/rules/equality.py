@@ -78,7 +78,7 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
     conjuncts, clause = _strict_conjuncts(relation)
     for conjunct in conjuncts:
         match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)) if first in outputs and second in outputs:
+            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)) if first in outputs and second in outputs and _same_type(first, second):
                 merge([*outputs[first], *outputs[second]], Result(True, f"{clause} equality", (conjunct,)))
             case _:
                 pass  # Other conjuncts only remove rows.
@@ -97,6 +97,22 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
     return Result(value, "Equality groups", (relation,), list(members.values()), members=members)
 
 
+def _same_type(first: ir.OutputColumn, second: ir.OutputColumn) -> bool:
+    """Equalities are value identities only for known, matching comparison types."""
+    first_type = _comparison_type(first).value
+    return first is second or first_type is not None and first_type == _comparison_type(second).value
+
+
+@analysis(Stratum.EQUALITY_GROUP)
+def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
+    relation = column.get_relation(current_arena().program)
+    match column.scalar_expr:
+        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+            return _comparison_type(source)
+        case _:
+            return Result(column.comparison_type, "Declared comparison type", (column,))
+
+
 def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
     """The inputs whose groups hold on `relation`'s pass-through columns.
 
@@ -104,7 +120,7 @@ def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
     each listed input (or, for a padded side, NULL in every column).
     """
     match relation:
-        case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source):
+        case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.Limit(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source):
             return (source,)
         case ir.Join(kind="inner" | "cross" | "left" | "right" | "full", left=left, right=right):
             return (left, right)

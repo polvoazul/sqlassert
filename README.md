@@ -83,6 +83,10 @@ A Foreign Key needs two things, and an `UNKNOWN` explanation names whichever is 
 
 Nulls follow SQL's `MATCH SIMPLE`: a row with a null in any referencing column is exempt, so nullable referencing columns do not weaken a Foreign Key. Assert `NOT NULL` separately when every row must match.
 
+`LIMIT` preserves facts about the rows it retains, including outgoing Foreign Keys, uniqueness, non-nullness, and Enumerated Domains. It may remove a required referenced row, so coverage onto its input does not establish coverage onto its result. The same boundary applies to `OFFSET`. A hard limit of at most one row also proves uniqueness without an input key.
+
+Equality Groups merge columns only when their declared comparison types are known and match, without collation. Mixed or unknown types leave value propagation unproved, even when SQL would compare them using implicit casts.
+
 `/**DECLARE FOREIGN KEY(...) REFERENCES relation(...)**/` states the coverage as trusted evidence (`Declared ReferentialCoverage` in explanations); it never vouches for the referenced Unique Set, which is still proved separately. A marker naming a column the referenced relation does not have is reported as `unknown-referenced-column`.
 
 ### Exactly One Join
@@ -290,6 +294,8 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 
 `report.improvements` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
+
+`NATURAL JOIN` is unsupported: its presence anywhere in the program produces an `unsupported-natural-join` diagnostic, and `suggest` returns no suggestions. Write explicit `ON` or `USING` conditions instead.
 
 ## Details
 

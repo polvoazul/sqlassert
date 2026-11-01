@@ -162,6 +162,8 @@ class OutputColumn(Node):
     name: str
     scalar_expr: ScalarExpr
     binary_text: bool = False
+    # Declared SQL type where equality compares values without casts or collation.
+    comparison_type: str | None = None
 
     def get_relation(self, program: Program) -> RelationExpr:
         """The one relation in ``program`` whose output includes this column."""
@@ -225,6 +227,13 @@ class Filter(RelationExpr):
 
 class Project(RelationExpr):
     input: RelationExpr
+
+
+class Limit(RelationExpr):
+    """A row subset selected by LIMIT/FETCH or OFFSET; count is a known hard bound, if any."""
+
+    input: RelationExpr
+    count: int | None = None
 
 
 class Aggregate(RelationExpr):

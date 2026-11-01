@@ -305,10 +305,11 @@ class IrParser:
             if right is None:
                 right = self._opaque_relation(query.expression)
             output_columns = _pass_output_columns(left.output_columns, self._origin(query))
-            return ir.SetOperation(
+            relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=query.key, left=left, right=right, distinct=bool(query.args.get("distinct")),
             )
+            return self._lower_limit(relation, query)
         if not isinstance(query, exp.Select):
             return None
         return self._lower_select(query)
@@ -318,14 +319,31 @@ class IrParser:
         if source is None:
             return None
 
-        lowered = self._lower_source(source)
-        for join in select.args.get("joins") or ():
-            lowered = self._lower_join(lowered, join)
-
-        relation = self._lower_select_tail(lowered, select)
+        if any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+            relation = self._opaque_relation(select, _selected_output_names(select))
+        else:
+            lowered = self._lower_source(source)
+            for join in select.args.get("joins") or ():
+                lowered = self._lower_join(lowered, join)
+            relation = self._lower_select_tail(lowered, select)
+        relation = self._lower_limit(relation, select)
         self._register_column_markers(relation, select)
         self._add_attachment_site(select, _select_label(select), relation, trailing=True)
         return relation
+
+    def _lower_limit(self, relation: ir.RelationExpr, query: exp.Query) -> ir.RelationExpr:
+        limit = query.args.get("limit")
+        if limit is None and query.args.get("offset") is None:
+            return relation
+        count = None
+        if limit is not None:
+            expression = limit.args.get("expression") if isinstance(limit, exp.Limit) else limit.args.get("count")
+            options = limit.args.get("limit_options")
+            hard_bound = options is None or not any(options.args.get(key) for key in ("percent", "with_ties"))
+            if hard_bound and isinstance(expression, exp.Literal) and expression.is_int:
+                count = int(expression.this)
+        origin = self._origin(query)
+        return ir.Limit(origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin), is_schema_complete=relation.is_schema_complete, input=relation, count=count)
 
     def _lower_source(self, source: exp.Expression) -> _Lowered:
         if isinstance(source, exp.Table):
@@ -398,8 +416,21 @@ class IrParser:
         names.extend(column for column in sorted(symbol.required_columns, key=str.lower) if column.lower() not in seen)
         complete = symbol.statement is not None and {column.lower() for column in symbol.required_columns} <= seen
         columns = self._opaque_output_columns(names, symbol.origin)
-        text = {definition.name for definition in definitions if self._is_binary_text(definition)}
-        return tuple(replace(column, binary_text=True) if column.name in text else column for column in columns), complete
+        by_name = {definition.name: definition for definition in definitions}
+        return tuple(
+            replace(column, binary_text=self._is_binary_text(by_name[column.name]), comparison_type=self._comparison_type(by_name[column.name]))
+            if column.name in by_name else column for column in columns
+        ), complete
+
+    def _comparison_type(self, definition: exp.ColumnDef) -> str | None:
+        kind = definition.args.get("kind")
+        if not isinstance(kind, exp.DataType):
+            return None
+        if any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints):
+            return None
+        if kind.this in exp.DataType.TEXT_TYPES and not self._is_binary_text(definition):
+            return None
+        return kind.sql(dialect=self.dialect)
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
         """Declared VARCHAR or TEXT under the dialect's binary default collation.
