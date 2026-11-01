@@ -266,19 +266,19 @@ through only with definite determinants.
 | R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | missing | partly: `=`, `IN` and `IS NOT NULL` reject NULL (`nullability._null_rejected`) and non-nullness spreads through Equality Groups, but other comparisons (`<`, `>`, `<>`, `BETWEEN`, `LIKE`), which Paulley counts as null-intolerant, are opaque. Filed in issue 23 | `test_paulley_audit.py` R11 |
 | R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `test_paulley_audit.py` R12 |
 | R13 | Disjunctions give nothing | §3.2.4, p.77 | implemented | OR is an opaque conjunct (`convert._lower_conjuncts`) | `test_paulley_audit.py` R13- |
-| I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | pending | | |
-| I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | pending | | |
-| I3 | Intersection strengthens lax FDs and equivalences made definite | Claim 21, p.81 | pending | | |
-| I4 | Intersection: corresponding attributes strictly equivalent | Claim 21, p.81 | pending | | |
-| I5 | Intersection: ι(S) ↔ ι(T) | Claim 21, p.81 | pending | | |
-| U1 | UNION ALL keeps no input FDs | §3.2.6, p.81 | pending | | |
-| U2 | UNION ALL keeps strict equivalences (and constants) holding in both inputs | §3.2.6, Example 15, p.82 | pending | | |
-| U3 | Distinct UNION: all attributes form a superkey | §3.2.6, p.82 | pending | | |
-| D1 | Difference keeps every FD, equivalence and superkey of the left input | §3.2.7, p.82 | pending | | |
-| G1 | Partition keeps input FDs and equivalences | Claim 22, p.83 | pending | | |
-| G2 | Grouping function: X → λ(X) | Claim 22, p.83 | pending | | |
-| G3 | Grouping attributes → ι; no grouping attributes: one row | Claim 22, p.83 | pending | | |
-| G4 | Aggregate is determined by its group: ι → f | Claim 23, p.84 | pending | | |
+| I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | missing | partly: the left input's FDs hold (`uniqueness._delegations`, `_grouped` onto the left), the right input's do not. Sound only under identity comparison (an INTERSECT row carries the left value). Filed in issue 23 | `test_paulley_audit.py` I1 |
+| I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | missing | partly, as I1: the left input's keys hold, the right input's do not. Filed in issue 23 | `test_paulley_audit.py` I2 |
+| I3 | Intersection strengthens lax FDs and equivalences made definite | Claim 21, p.81 | implemented | nullability through INTERSECT takes either input (`nullability._set_operation_sources`), and the closure then strengthens lax steps (A9) | `test_paulley_audit.py` I3 |
+| I4 | Intersection: corresponding attributes strictly equivalent | Claim 21, p.81 | different | an output column refers to the left input; `SetOperation.arms` pairs the right one by position, used for nullability and domains (domains only under identity comparison for strings) |  |
+| I5 | Intersection: ι(S) ↔ ι(T) | Claim 21, p.81 | n/a | the Row Identity of an INTERSECT is reached through the left input only; the right input's identity is never needed |  |
+| U1 | UNION ALL keeps no input FDs | §3.2.6, p.81 | implemented | `uniqueness._delegations` gives a UNION no delegation | `test_paulley_audit.py` U1- |
+| U2 | UNION ALL keeps strict equivalences (and constants) holding in both inputs | §3.2.6, Example 15, p.82 | missing | equivalences and constants holding in both UNION ALL inputs are dropped (constants survive only as Enumerated Domains). Filed in issue 23 |  |
+| U3 | Distinct UNION: all attributes form a superkey | §3.2.6, p.82 | implemented | `uniqueness._functional_dependencies` (`SetOperation(distinct=True)`: output columns → ι) | `test_paulley_audit.py` U3 |
+| D1 | Difference keeps every FD, equivalence and superkey of the left input | §3.2.7, p.82 | implemented | `uniqueness._delegations` (`EXCEPT` delegates to its left input) | `test_paulley_audit.py` D1 |
+| G1 | Partition keeps input FDs and equivalences | Claim 22, p.83 | implemented | `uniqueness._grouped` delegation onto the input, from the grouping columns | `test_paulley_audit.py` G1 |
+| G2 | Grouping function: X → λ(X) | Claim 22, p.83 | implemented | `uniqueness._computed` for computed grouping items | `test_paulley_audit.py` G2 |
+| G3 | Grouping attributes → ι; no grouping attributes: one row | Claim 22, p.83 | implemented | `uniqueness._functional_dependencies` (Aggregate: grouping outputs → ι; a scalar aggregate has none, so ∅ → ι) | `test_paulley_audit.py` G3, G3e |
+| G4 | Aggregate is determined by its group: ι → f | Claim 23, p.84 | implemented | ι → every column (`_row_attributes`); our extension: MIN/MAX/ANY_VALUE of a determined column pass it through (`AnyAggregate`) | `test_paulley_audit.py` G4 |
 | L1 | Left join keeps the preserved side's strict FDs | Thm 3 strict 1, p.96 | pending | | |
 | L2 | Null-supplying strict FD X → Y survives when η(p, X) | Lemma 7, Thm 3 strict 2, p.87 | pending | | |
 | L3 | …or when X = Y is a strict equivalence in the null-supplying input | Corollary 2, p.88 | pending | | |

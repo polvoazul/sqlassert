@@ -181,3 +181,9 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
 - [ ] **R10** (§3.2.4): `WHERE a = (uncorrelated scalar subquery)` makes `a`
   constant (`∅ → a`).
 - [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.
+- [ ] **I1, I2** (Lemma 6, Corollary 1): the right input's FDs and keys
+  through INTERSECT. Sound only when the paired columns compare by identity:
+  an INTERSECT row carries the left value, equal to the right one under the
+  left column's comparison (`identity_comparison`).
+- [ ] **U2** (§3.2.6, Example 15): equivalences and constants that hold in
+  both UNION ALL inputs at the same positions hold in the output.
