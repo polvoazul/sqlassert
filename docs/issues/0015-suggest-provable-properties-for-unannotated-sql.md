@@ -1,6 +1,6 @@
 # 15. Suggest provable properties for unannotated SQL
 
-- **State:** open
+- **State:** open (Mid level done)
 - **Labels:** needs-design
 - **Created:** 2026-11-01
 
@@ -51,26 +51,70 @@ Suggestions are ranked by how directly they improve the SQL:
 The High level depends on functional dependencies and null sources
 ([issue 24](0024-functional-dependency-reasoning.md)).
 
-## Design questions
+## Design decisions (Mid level, built)
 
-- Which column sets to report: only minimal ones (drop supersets of a reported
-  set), and up to what size?
-- Prefer the strongest form: report a Non-Null Unique Set instead of the Unique
-  Set it implies.
-- Anonymous Select Expressions have no name; identify them by line and marker
-  attachment site.
-- Output: a structured API result first; CLI text and an "annotate in place"
-  rewrite later.
-- Only `PROVED` results are suggested; never data-derived guesses.
+- **Minimal sets, size bound.** Only minimal Unique Sets are suggested: a
+  superset of a proved set is dropped. Sets are searched exhaustively,
+  smallest first, up to `max_size` columns (default **3**). Unique Sets come
+  from declared keys, `GROUP BY`, `DISTINCT`, and `QUALIFY` partitions, and
+  composites past three columns are rare; meanwhile the search grows as
+  C(n, k) (a 40-column select: ~10k sets to size 3, ~100k to size 4, about
+  1.3 s at size 3 today). To not miss a wide key outright, the set of all
+  output columns is also tried, and when it is unique and no smaller set is,
+  it is shrunk greedily to a minimal set. Proof is monotone in the column set,
+  so a select whose whole output is not unique skips the search entirely.
+  This finds one, not every, minimal set wider than `max_size`.
+- **Strongest form.** A minimal set is suggested as a Non-Null Unique Set
+  (`/**ASSERT NOT NULL UNIQUE(...)**/`) when that is proved, else as a Unique
+  Set. A nullable minimal set cannot have a non-null superset proved, so
+  minimality is taken over Unique Sets. The canonical `NOT NULL UNIQUE` is
+  used rather than the `PRIMARY KEY` alias, which reads as "the one key".
+  Non-null columns become one `/**ASSERT NOT NULL(...)**/` per site, leaving
+  out columns a suggested Non-Null Unique Set already makes non-null: nothing
+  suggested at a site is implied by another suggestion there.
+- **Attachment Sites.** Each suggestion names its site by line plus a label:
+  `JOIN users AS u`, `view v`, `CTE c`, `subquery s`, or `Root Select`. The
+  line is where the marker goes (a column marker trails its Select
+  Expression, so it is the Select's last line). Each member of a set
+  operation is a site of its own. A comma join has no site.
+- **Output.** `suggest(sql, *, dialect, max_size) -> SuggestionReport` with
+  `suggestions` (site, `property`, `marker`, `evidence`), `diagnostics`, and
+  `annotated()`, which pastes markers in without moving any line. The CLI
+  `sqlassert suggest FILE [--explain]` (also `python -m sqlassert`) prints one
+  line per suggestion; diagnostics go to stderr and exit 1.
+- **Only PROVED.** Candidates are proved with `Arena.prove` on the
+  unannotated program; nothing is data-derived. Properties already asserted
+  or declared are not suggested again. A program with a parse failure,
+  unattached marker, or duplicate declaration gets no suggestions, since
+  `analyze` would prove none of them.
+- **Columns a marker cannot name** (unnamed, or a name repeated in the
+  output, as in `SELECT a.id, b.id`) take no part in candidates.
+- **Sites live on the IR.** Normal lowering records every site in
+  `Program.attachment_sites`: a plain-valued `AttachmentSite` (label, line,
+  offset, trailing) paired with the IR Join or Select relation. No SQLGlot
+  node enters the IR, and `suggest` needs no hook into `IrParser`.
+- **Shared generator.** `candidates(program, dialect=..., max_size=...)`
+  yields every candidate, proved or not, with its marker; `annotate(sql,
+  items)` pastes any of them. Issue 27 Part 2 reuses both.
 
 ## Acceptance criteria
 
-- [ ] `suggest(sql)` API returning, per attachment site, the provable
+Mid level ("add markers"):
+
+- [x] `suggest(sql)` API returning, per attachment site, the provable
   properties with marker text and evidence.
-- [ ] Minimal column sets only, strongest property form only.
-- [ ] Pasting every suggested marker into the SQL and running `analyze()`
+- [x] Minimal column sets only, strongest property form only.
+- [x] Pasting every suggested marker into the SQL and running `analyze()`
   proves all of them (round-trip test).
-- [ ] CLI entry point printing the suggestions.
+- [x] CLI entry point printing the suggestions.
+
+Still open:
+
+- [ ] High level: `INNER JOIN` for a LEFT JOIN that cannot pad, redundant
+  joins, redundant `DISTINCT` / determined `GROUP BY` columns. Needs
+  [issue 24](0024-functional-dependency-reasoning.md).
+- [ ] Low level: other code smells.
+- [ ] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
 
 ## Related
 

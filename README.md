@@ -147,6 +147,22 @@ The fetcher reads catalog metadata only (columns, nullability, primary keys,
 unique constraints, view definitions), never table rows. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
 
+### Suggesting markers
+
+You rarely start from a blank page. `suggest` reads unannotated SQL and lists what sqlassert can already prove, each with the marker to paste:
+
+```bash
+$ sqlassert suggest query.sql        # or: python -m sqlassert suggest query.sql
+line 7   view active_users       Non-Null Unique Set  /**ASSERT NOT NULL UNIQUE(id)**/
+line 7   view active_users       Unique Set           /**ASSERT UNIQUE(email)**/
+line 7   view active_users       Not Null             /**ASSERT NOT NULL(name)**/
+line 11  JOIN active_users AS u  Unique Join          /**ASSERT UNIQUE**/
+```
+
+A column marker goes at the end of the Select Expression on that line; a join marker goes right before the join. Pick the facts you want locked in: a later change that breaks one turns it `UNKNOWN`. `--explain` prints each proof.
+
+From Python, `suggest(sql)` returns the same suggestions, each with its `site`, `property`, `marker`, and `evidence`; `report.annotated()` returns the SQL with every marker pasted in. Only proved properties are suggested, each Unique Set in its strongest form (`NOT NULL UNIQUE` over `UNIQUE`) and minimal (no superset of another suggestion). Unique Sets are searched exhaustively up to `max_size` columns (default 3); a wider one is still found when no smaller one exists. Properties the SQL already asserts or declares are not suggested again.
+
 ## Details
 
 ### Unique Join Syntax

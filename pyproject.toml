@@ -13,6 +13,9 @@ dependencies = [
   "sqlglot>=28,<31",
 ]
 
+[project.scripts]
+sqlassert = "sqlassert.__main__:main"
+
 [project.optional-dependencies]
 duckdb = [
   "duckdb>=1.1",

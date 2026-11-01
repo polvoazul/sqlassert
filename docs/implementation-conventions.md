@@ -82,6 +82,13 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `discovery/duckdb.py` is the DuckDB adapter, behind the optional `duckdb`
   extra. `analyze_database(sql, fetcher, *, dialect=...)` in `main.py`
   composes it; `analyze` stays pure.
+- `suggest.py` composes the same stages as `main.py` to list provable
+  Properties as markers. `sql_parse.py` records on every Join and Select the
+  source position where its marker would be written; `IrParser` turns each
+  into a plain-valued `AttachmentSite` (`provenance.py`) paired with the IR
+  Join or Select relation in `Program.attachment_sites`. `suggest` proves
+  candidates at those sites through `Arena.prove` only, never through
+  internal analysis functions. `__main__.py` is the CLI over it.
 
 ## Stage Objects
 
@@ -109,3 +116,7 @@ The public shape is:
 catalog-backed variant: the same Program and Report, with external Relations
 hydrated by a `DatabaseKnowledgeFetcher`.
 Assertion evidence supports `.explain()`.
+
+`suggest(sql, *, dialect="duckdb", max_size=3) -> SuggestionReport` lists the
+Properties `analyze` would prove if their markers were pasted in. Like
+`analyze`, it returns data and never prints.
