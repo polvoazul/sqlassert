@@ -20,6 +20,7 @@ SCHEMA = """
 CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, channel VARCHAR, kind VARCHAR);
 CREATE TABLE codes (code VARCHAR, label VARCHAR);
 CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR);
+CREATE TABLE people (name VARCHAR COLLATE NOCASE);
 """
 
 # A source of statuses the author vouches for.
@@ -119,6 +120,21 @@ TYPED_UNKNOWN = [
         "a string and a number may meet",
         "WITH t AS (SELECT * FROM items /**DECLARE ENUM(qty IN ('1'))**/) SELECT qty FROM t WHERE qty = 1 /**ASSERT ENUM(qty IN (5))**/",
     ),
+    # Distinct strings are one value only for text compared by identity.
+    (
+        "two strings may equal one integer",
+        "WITH t AS (SELECT * FROM items /**DECLARE ENUM(qty IN ('01'))**/) SELECT qty FROM t WHERE qty = '1' /**ASSERT ENUM(qty IN ('2'))**/",
+    ),
+    (
+        "two strings may equal under a collation",
+        "WITH p AS (SELECT * FROM people /**DECLARE ENUM(name IN ('a'))**/) SELECT name FROM p WHERE name = 'A' /**ASSERT ENUM(name IN ('b'))**/",
+    ),
+    (
+        "text columns equated through an integer",
+        "WITH a AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('01'))**/ /**DECLARE ENUM(channel IN ('1'))**/), "
+        "j AS (SELECT a.status, a.channel FROM a JOIN items ON a.status = items.qty AND items.qty = a.channel) "
+        "SELECT status FROM j WHERE status = channel /**ASSERT ENUM(status IN ('zz'))**/",
+    ),
 ]
 
 
@@ -130,6 +146,13 @@ def test_typed_enum_is_proved(label: str, sql: str):
 @pytest.mark.parametrize(("label", "sql"), TYPED_UNKNOWN)
 def test_typed_enum_is_not_guessed(label: str, sql: str):
     assert outcomes(sql) == [Outcome.UNKNOWN], label
+
+
+def test_strings_meet_conservatively_on_a_column_of_unknown_type():
+    # Without a CREATE, the column's type and collation are unknown.
+    sql = "WITH t AS (SELECT * FROM ext /**DECLARE ENUM(v IN ('01'))**/) SELECT v FROM t WHERE v = '1' /**ASSERT ENUM(v IN ('2'))**/"
+
+    assert [assertion.outcome for assertion in analyze(sql).assertions] == [Outcome.UNKNOWN]
 
 
 def test_distinct_numeric_literals_do_not_meet():

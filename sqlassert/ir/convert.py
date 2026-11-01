@@ -8,7 +8,7 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 from __future__ import annotations
 
 from collections.abc import Iterable, Set
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sqlglot import exp
 
@@ -391,11 +391,25 @@ class IrParser:
         return named
 
     def _table_output_columns(self, symbol: _Symbol) -> tuple[tuple[ir.OutputColumn, ...], bool]:
-        names = [column.name for column in symbol.statement.this.find_all(exp.ColumnDef)] if symbol.statement is not None else []
+        definitions = list(symbol.statement.this.find_all(exp.ColumnDef)) if symbol.statement is not None else []
+        names = [definition.name for definition in definitions]
         seen = {name.lower() for name in names}
         names.extend(column for column in sorted(symbol.required_columns, key=str.lower) if column.lower() not in seen)
         complete = symbol.statement is not None and {column.lower() for column in symbol.required_columns} <= seen
-        return self._opaque_output_columns(names, symbol.origin), complete
+        columns = self._opaque_output_columns(names, symbol.origin)
+        text = {definition.name for definition in definitions if self._is_binary_text(definition)}
+        return tuple(replace(column, binary_text=True) if column.name in text else column for column in columns), complete
+
+    def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
+        """Declared VARCHAR or TEXT under the dialect's binary default collation.
+
+        CHAR is not: it ignores trailing spaces when compared."""
+        kind = definition.args.get("kind")
+        return (
+            self.dialect in _BINARY_COLLATION_DIALECTS
+            and isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES
+            and not any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints)
+        )
 
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
@@ -993,6 +1007,12 @@ def _missing(relation: ir.RelationExpr, names: Iterable[str]) -> list[str]:
 
 
 _SUPPORTED_CREATE_KINDS = {"TABLE", "VIEW"}
+
+# Dialects whose default collation compares text by identity; MySQL's and
+# SQL Server's ignore case, so distinct strings may compare equal there.
+_BINARY_COLLATION_DIALECTS = {"duckdb", "postgres"}
+
+_TEXT_TYPES = {exp.DataType.Type.VARCHAR, exp.DataType.Type.TEXT}
 
 
 def _created_table(statement: exp.Create) -> exp.Table | None:
