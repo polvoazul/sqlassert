@@ -33,13 +33,14 @@ from sqlglot import exp
 import sqlassert
 import sqlassert.main
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
-from sqlassert.properties import EnumeratedDomain, ForeignKey, FunctionalDependency
+from sqlassert.properties import EnumeratedDomain, ExhaustiveCase, ForeignKey, FunctionalDependency
 from sqlassert.ir import LiteralValue
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
 from sqlassert.provenance import SQL, Origin
 from sqlassert.sql_parse import (
-    DECLARED_KINDS, ColumnMarker, ParsedProgram, SqlParser, assertion_line, column_markers, join_origin, literal_value,
+    DECLARED_KINDS, ColumnMarker, ParsedProgram, SqlParser, assertion_line, column_markers, exhaustive_line, join_origin,
+    literal_value,
 )
 
 # Rows per table. Two complete the search for select-project-join queries; one
@@ -191,6 +192,12 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower()}
             values = domain
+        case ExhaustiveCase(case=_):
+            case, = (
+                case for statement in statements for case in statement.find_all(exp.Case)
+                if (line := exhaustive_line(case)) is not None and Origin(SQL, case.sql(dialect=dialect), line) == origin
+            )
+            return _case_violation(case)
         case _:
             raise TypeError(f"Unhandled asserted Property: {type(property).__name__}")
     select, marker = next(
@@ -308,6 +315,47 @@ def _join_violation(join: exp.Join, *, exactly_one: bool) -> str:
     # From the join, so the Select's own WITH is in scope: the queries above
     # are new Selects that do not carry it.
     return _with_context(join, query)
+
+
+def _case_violation(case: exp.Case) -> str:
+    """Non-null operand values that reach no WHEN arm, on every row the CASE
+    is evaluated for.
+
+    In a Select's WHERE that is every row of its FROM and joins; elsewhere in
+    the Select, every such row passing WHERE; in a join's ON, every pairing of the rows joined so far
+    with the joined source, matched or not. A CASE elsewhere is not judged.
+    The CASE's own comparison decides a match, so `ELSE` marks a violation.
+    """
+    operand = case.this.sql(dialect="duckdb")
+    arms = " ".join(f"WHEN {arm.this.sql(dialect='duckdb')} THEN FALSE" for arm in case.args["ifs"])
+    unmatched = exp.condition(f"({operand}) IS NOT NULL AND CASE {operand} {arms} ELSE TRUE END")
+    child, parent = case, case.parent
+    while not isinstance(parent, exp.Select | exp.Join):
+        assert parent is not None, "an asserted CASE is inside a Select"
+        child, parent = parent, parent.parent
+    select = parent if isinstance(parent, exp.Select) else parent.parent
+    assert isinstance(select, exp.Select), "a join is one of a Select's joins"
+    source = (select.args.get("from_") or select.args["from"]).this
+    joins = select.args.get("joins") or []
+    query = exp.select(operand).from_(source.copy())
+    match parent:
+        case exp.Join() if child is parent.args.get("on"):
+            position = next(index for index, candidate in enumerate(joins) if candidate is parent)
+            paired = exp.Join(this=parent.this.copy(), kind="CROSS")
+            query.set("joins", [*(earlier.copy() for earlier in joins[:position]), paired])
+            query = query.where(unmatched)
+        case exp.Select() if child is parent.args.get("where"):
+            # WHERE evaluates the CASE on rows it has yet to filter.
+            query.set("joins", [join.copy() for join in joins])
+            query = query.where(unmatched)
+        case exp.Select() if child is not parent.args.get("having"):
+            query.set("joins", [join.copy() for join in joins])
+            where = select.args.get("where")
+            query = query.where(where.this.copy() if where is not None else exp.true()).where(unmatched)
+        case _:
+            raise TypeError(f"an asserted CASE in {child.key} is not judged")
+    # From the CASE, so the Select's own WITH is in scope.
+    return _with_context(case, query.sql(dialect="duckdb"))
 
 
 # The flag column an exactly-one check adds to the right input of its join.
