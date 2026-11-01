@@ -154,14 +154,9 @@ NULL (Def 37, Lemma 7). Either way, a NULL in x means a padded row.
     So union-find may not merge `l.x` and `r.y`.
 - If the join is a Unique Join, a left key determines every column, right side
   included.
-- Idea: separate padding NULLs from organic NULLs. Give each outer join a
-  virtual `matched` column. Every right-side column that is NOT NULL in the
-  right input is NULL exactly when `matched` is false, so those columns are
-  NULL together (Paulley's null constraint, Def 38). A null-rejecting
-  predicate on any one of them (`WHERE u.id IS NOT NULL`, `u.id = 5`) forces
-  `matched`, which makes them all non-null, turns lax FDs strict, and lets the
-  LEFT JOIN be treated as INNER. Organic NULLs in nullable right columns stay
-  untracked.
+- Padding NULLs and organic NULLs are tracked apart: see **Null sources**
+  in the representation design (Paulley's null constraint, Def 38, is the
+  single-join case).
 
 ### Aggregate (`GROUP BY g`)
 
@@ -332,6 +327,43 @@ def _closure(relation, columns, *, strict: bool) -> Result[ColumnSet]: ...
 - Outer joins expose which right-side columns are NOT NULL in the right input
   (for η and the padding `matched` idea).
 
+### Null sources (decided, first cut)
+
+Replaces the boolean non-null analysis outright (no compatibility layer, see
+`AGENTS.md`). `null_sources(column)` returns the set of reasons the column can
+be NULL:
+
+- `Organic`: the value itself may be NULL (nullable source column, opaque
+  expression, NULL literal). Per column.
+- `Padding(J)`: outer join J pads the column. The unit is one join's padded
+  column set, not the whole row: a row can be matched by one join and padded
+  by another. Nested outer joins accumulate tags:
+  `o LEFT JOIN (u LEFT JOIN p)` gives the `p` columns `{Padding(J1), Padding(J2)}`.
+
+Non-null means the set is empty, so `NonNullColumn` keeps its meaning.
+
+Rules:
+
+- **Padding promotion** (the `matched` idea). A column carrying `Padding(J)`
+  is NULL on every row J pads. So a null-rejecting conjunct on it
+  (`IS NOT NULL`, `= constant`, `= col`) proves J matched on the surviving
+  rows, and removes `Padding(J)` from **every** column carrying it. When no
+  column carries `Padding(J)` any more, the LEFT JOIN behaves as INNER.
+- **Organic removal** is per column: the same conjunct also removes
+  `Organic` from the column it constrains, and only from that column.
+  One conjunct can do both: `WHERE u.email IS NOT NULL` with `u.email`
+  nullable removes `Organic` from `u.email` and `Padding(J)` everywhere.
+- **The ON condition** acts on the right input's rows before padding: a
+  right-side column rejected by it (`r.y` in `ON l.x = r.y`) loses `Organic`
+  in the join output, leaving only `Padding(J)`.
+- **η and lax-to-strict** reduce to one question: is padding the only NULL
+  source of the determinant column, and has it been removed? A right-side FD
+  stays strict when some determinant column has no `Organic` source; it
+  becomes fully non-null once its padding is removed too.
+
+Motivation: explanations name the source, e.g. "`u.email` may be NULL:
+nullable in `users`, and padded by the LEFT JOIN on line 3".
+
 ### Kept outside the FD closure
 
 - **Value equality.** `a = b` is stronger than the FD pair `a ↔ b`: an
@@ -345,9 +377,10 @@ def _closure(relation, columns, *, strict: bool) -> Result[ColumnSet]: ...
 - **Inclusion dependencies / foreign keys**: a relation between two relations,
   not a column fact. A separate property feeding exactly-one joins; an
   exactly-one join then adds `RowIdentity(out) ↔ RowIdentity(L)`.
-- **Non-null facts** stay in `nullability.py`; FD rules consume them, and
-  null-rejecting `Filter` conjuncts feed them. Nullability reads only the raw
-  equality facts, never FDs or closure, so it stays below them (see Strata).
+- **Null sources** live in `nullability.py` (rewritten as above); FD rules
+  consume them, and null-rejecting `Filter` conjuncts feed them. Nullability
+  reads only the raw predicate facts, never FDs or closure, so it stays below
+  them (see Strata).
 
 ### Strata
 
@@ -389,20 +422,34 @@ about the same relation. Two exceptions to plan for, and one non-issue:
 
 ### New user-facing possibilities
 
-- **`DECLARE` an FD**: business-logic FDs (`zip → city`) are the ones no
-  schema states. A marker like `/**DECLARE DETERMINES(zip -> city)**/` lets
-  authors supply them, as Oracle dimensions did.
+- **`DETERMINES` markers** (decided): Functional Dependency becomes a
+  Property with both marker forms, like every other column marker.
+  `/**ASSERT DETERMINES(zip -> city)**/` asks for a proof;
+  `/**DECLARE DETERMINES(zip -> city)**/` supplies a business-logic FD no
+  schema states, as Oracle dimensions did. Multi-column sides use the existing
+  column-list syntax: `DETERMINES(a, b -> c)`.
 - **Assertions from optimizer preconditions** (literature-notes.md): redundant
   `DISTINCT`, redundant `GROUP BY` columns, join elimination, single-valued
   scalar subquery. Each is one closure query.
 
 ### Migration
 
-**Decide**: run FDs beside `_unique_sets` and move one operator at a time
-(tests stay green), then delete `_unique_sets`; or replace it in one step.
-Seed the work with Paulley's examples as tests first: counterexamples as
-`UNKNOWN` tests, worked examples as `PROVED` tests (literature-notes.md,
-Testing and guarantees).
+Decided: **replace, no compatibility layer** (see `AGENTS.md`). FDs and
+Row Identities replace `_unique_sets`, `_preserving_input`, and
+`_pass_through_columns` outright; nothing old runs beside the new code.
+
+- **Contract kept**: the Property Markers and the Properties they introduce
+  (`UniqueSet`, `NonNullUniqueSet`, `NonNullColumn(s)`, `UniqueJoin`) keep
+  their syntax and meaning. Every existing `analyze()` test is part of the
+  contract and must end green, outcomes unchanged except UNKNOWNs that become
+  PROVED.
+- **Tests first (red)**: add Paulley's examples before touching the rules:
+  counterexamples as `UNKNOWN` tests, worked examples as `PROVED` tests
+  (literature-notes.md, Testing and guarantees). They fail where the current
+  rules are weaker.
+- **Then green**: rewrite the rules on FDs until the whole suite passes; the
+  plan in [issue 24](issues/0024-functional-dependency-reasoning.md) orders
+  the steps.
 
 ## Open questions
 
