@@ -264,7 +264,32 @@ line 11  JOIN active_users AS u  Unique Join          /**ASSERT UNIQUE**/
 
 A column marker goes at the end of the Select Expression on that line; a join marker goes right before the join. Pick the facts you want locked in: a later change that breaks one turns it `UNKNOWN`. `--explain` prints each proof.
 
-From Python, `suggest(sql)` returns the same suggestions, each with its `site`, `property`, `marker`, and `evidence`; `report.annotated()` returns the SQL with every marker pasted in. Only proved properties are suggested, each Unique Set in its strongest form (`NOT NULL UNIQUE` over `UNIQUE`) and minimal (no superset of another suggestion). Unique Sets are searched exhaustively up to `max_size` columns (default 3); a wider one is still found when no smaller one exists. Properties the SQL already asserts or declares are not suggested again.
+From Python, `suggest(sql)` returns the same suggestions, each with its `site`, `property`, `marker`, and `evidence`; `report.annotated()` returns the SQL with every marker pasted in. Only proved properties are suggested, each Unique Set in its strongest form (`NOT NULL UNIQUE` over `UNIQUE`) and minimal (no superset of another suggestion), and each join as `EXACTLY ONE` when that holds, else `UNIQUE`. Unique Sets are searched exhaustively up to `max_size` columns (default 3); a wider one is still found when no smaller one exists. Properties the SQL already asserts or declares are not suggested again.
+
+#### Improvements
+
+Before any marker, `suggest` lists improvements to the SQL itself (level `high`; markers are `mid`). Each is a rewrite a proof shows leaves the result unchanged, row for row:
+
+```bash
+$ sqlassert suggest orders.sql
+high  line 4  CTE big                 Unused CTE          CTE big is never referenced, so it never runs and its markers go unchecked: delete it
+high  line 7  LEFT JOIN users AS u    INNER JOIN          every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+high  line 8  LEFT JOIN coupons AS c  Redundant Join      at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+high  line 9  Root Select             Redundant GROUP BY  (o.id, u.name) determine u.id, NULL equal to NULL: drop u.id from GROUP BY and select any_value(u.id) AS user_id
+mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE**/
+...
+```
+
+| Improvement | When |
+|---|---|
+| `INNER JOIN` | A LEFT (or RIGHT) JOIN that never keeps a padded row: it matches exactly one row, or a later inner join's ON or the WHERE clause of the same Select rejects NULL in a column it pads. |
+| Redundant Join | No column of the joined relation is used outside its own ON, and the join keeps every left row once: a LEFT JOIN with at most one match, or an Exactly One inner JOIN. |
+| Filter-Only Join | The same for an inner JOIN with at most one match: it only filters, so it can be a `WHERE EXISTS`. Not suggested when a RIGHT or FULL JOIN follows it. |
+| Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
+| Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
+| Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
+
+`report.improvements` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
 
 ## Details
 

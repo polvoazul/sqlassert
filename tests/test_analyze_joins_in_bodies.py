@@ -130,4 +130,4 @@ def test_a_join_inside_a_cte_is_an_attachment_site_for_suggest():
         SCHEMA + "WITH c AS (SELECT orders.id FROM orders\nJOIN users ON users.id = orders.user_id)\nSELECT * FROM c"
     )
 
-    assert ("JOIN users", "/**ASSERT UNIQUE**/") in [(s.site.label, s.marker) for s in report.suggestions]
+    assert ("JOIN users", "/**ASSERT EXACTLY ONE**/") in [(s.site.label, s.marker) for s in report.suggestions]

@@ -1,8 +1,12 @@
 """Suggest the Property Markers sqlassert can prove for a SQL Program.
 
-Candidates are generated mechanically from the Program IR, one Attachment
-Site at a time: every markable JOIN may be a Unique Join, and every Select
-Expression's output columns may form Unique Sets or be non-null. `suggest`
+Two levels of suggestion. High: Improvements, rewrites of the SQL itself
+that a proof shows leave its result unchanged (`improvements.py`). Mid:
+markers that lock in what is provable but not asserted.
+
+Marker candidates are generated mechanically from the Program IR, one
+Attachment Site at a time: every markable JOIN may be a Unique Join (or
+Exactly One), and every Select Expression's output columns may form Unique Sets or be non-null. `suggest`
 proves them and keeps only what is PROVED, in its strongest, minimal form.
 `candidates` is the generator alone, for callers that judge candidates by
 other means.
@@ -13,20 +17,26 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
 from itertools import combinations
+from typing import ClassVar
 
 from sqlglot import exp
 
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
+from sqlassert.improvements import Improvement, Level, Rewrite, improvements
 from sqlassert.ir.convert import IrParser
 from sqlassert.main import DEFAULT_DIALECT
-from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
+from sqlassert.properties import (
+    ExactlyOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet,
+)
 from sqlassert.python_engine import Arena, Engine, Result
 from sqlassert.provenance import AttachmentSite
 from sqlassert.sql_parse import SqlParser
 
 DEFAULT_MAX_SIZE = 3
+
+__all__ = ["Candidate", "Improvement", "Level", "Rewrite", "Suggestion", "SuggestionReport", "annotate", "candidates", "suggest"]
 
 
 @dataclass(frozen=True)
@@ -46,13 +56,17 @@ class Suggestion:
     property: Property
     marker: str
     evidence: Result[bool]
+    level: ClassVar[Level] = Level.MID
 
 
 @dataclass(frozen=True)
 class SuggestionReport:
+    """`improvements` (High) rewrite the SQL; `suggestions` (Mid) are markers to paste."""
+
     sql: str
     suggestions: tuple[Suggestion, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
+    improvements: tuple[Improvement, ...] = ()
 
     def annotated(self, chosen: Iterable[Suggestion] | None = None) -> str:
         """The SQL with the chosen suggestions' markers pasted in (all by default)."""
@@ -74,12 +88,14 @@ def annotate(sql: str, items: Iterable[Candidate | Suggestion]) -> str:
 
 
 def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE) -> SuggestionReport:
-    """Every Property sqlassert can prove about `sql`, as markers to paste.
+    """Every Property sqlassert can prove about `sql`, as markers to paste,
+    and every Improvement a proof justifies.
 
     Per Select Expression: each minimal Unique Set up to `max_size` columns,
     as a Non-Null Unique Set when that also holds, plus one minimal set found
     among wider ones when none that small exists; and the non-null columns no
-    suggested Non-Null Unique Set already implies. Per JOIN: Unique Join.
+    suggested Non-Null Unique Set already implies. Per JOIN: Exactly One Join,
+    else Unique Join, unless the join already carries a marker.
     Properties the SQL already asserts or declares are left out.
     """
     ast = SqlParser(dialect).parse(sql)
@@ -95,12 +111,22 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
             (item.column,) if isinstance(item, NonNullColumn) else item.columns if isinstance(item, NonNullColumns) else ()
         )
     }
+    marked_joins = {item.join for item in present if isinstance(item, (UniqueJoin, ExactlyOneJoin))}
+    reachable = set(program.relations())
     suggestions: list[Suggestion] = []
     with Engine().session(program, conversion.knowledge) as arena:
+        found = improvements(ast, program, arena, dialect)
         for site, relation in program.attachment_sites:
             match relation:
+                case ir.Join() if not site.trailing and relation not in marked_joins and relation in reachable:
+                    suggestions.extend(
+                        _proved(arena, site, ExactlyOneJoin(join=relation), (), dialect)
+                        or _proved(arena, site, UniqueJoin(join=relation), (), dialect)
+                    )
                 case ir.Join() if not site.trailing:
-                    suggestions.extend(_proved(arena, site, UniqueJoin(join=relation), (), dialect))
+                    # Already marked, or unreachable: lowered inside a Select that is
+                    # opaque as a whole (one with HAVING, say), so nothing is known about it.
+                    pass
                 case _:
                     suggestions.extend(_select_suggestions(arena, site, relation, max_size, marked_non_null, dialect))
     marked = {_identity(item) for item in present}
@@ -110,7 +136,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
             key=lambda suggestion: suggestion.site.offset,
         )
     )
-    return SuggestionReport(sql, kept, diagnostics)
+    return SuggestionReport(sql, kept, diagnostics, tuple(found))
 
 
 # A parse failure leaves nothing to suggest on; duplicate declarations make
@@ -218,6 +244,8 @@ def _identity(item: Property) -> tuple:
 def _candidate(site: AttachmentSite, property: Property, order: tuple[ir.OutputColumn, ...], dialect: str) -> Candidate:
     """`property` at `site`; its marker lists columns in `order`, the output order."""
     match property:
+        case ExactlyOneJoin():
+            return Candidate(site, property, "/**ASSERT EXACTLY ONE**/")
         case UniqueJoin():
             return Candidate(site, property, "/**ASSERT UNIQUE**/")
         case NonNullUniqueSet(columns=columns):
