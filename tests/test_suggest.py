@@ -6,6 +6,7 @@ import pytest
 
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest
 from sqlassert.__main__ import main
+from sqlassert.properties import EnumeratedDomain, ExhaustiveCase
 from sqlassert.ir.convert import IrParser
 from sqlassert.sql_parse import SqlParser
 from sqlassert.suggest import annotate, candidates
@@ -68,6 +69,7 @@ def test_non_null_columns_not_already_implied_by_a_suggested_key_are_suggested_t
 def test_a_composite_grouping_key_is_suggested_without_its_supersets():
     assert markers(SCHEMA + "SELECT user_id, ts, count(*) AS n FROM sessions GROUP BY user_id, ts") == [
         ("Root Select", "/**ASSERT UNIQUE(user_id, ts)**/"),
+        ("Root Select", "/**ASSERT NOT NULL(n)**/"),
     ]
 
 
@@ -146,6 +148,61 @@ def test_a_program_that_cannot_be_parsed_suggests_nothing_and_says_why():
     assert report.diagnostics
 
 
+ORDERS = "CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR NOT NULL, qty INTEGER);\n"
+
+
+def test_a_column_with_a_small_enumerated_domain_is_suggested_as_an_enum():
+    sql = ORDERS + "SELECT id, status FROM orders WHERE status IN ('paid', 'new')"
+    assert markers(sql) == [
+        ("Root Select", "/**ASSERT NOT NULL UNIQUE(id)**/"),
+        ("Root Select", "/**ASSERT NOT NULL(status)**/"),
+        ("Root Select", "/**ASSERT ENUM(status IN ('new', 'paid'))**/"),
+    ]
+
+
+def test_enum_values_are_listed_in_value_order():
+    sql = ORDERS + "SELECT qty FROM orders WHERE qty IN (10, 2, -1)"
+    assert ("Root Select", "/**ASSERT ENUM(qty IN (-1, 2, 10))**/") in markers(sql)
+
+
+def test_a_large_enumerated_domain_is_not_suggested():
+    values = ", ".join(str(n) for n in range(11))
+    sql = ORDERS + f"SELECT qty FROM orders WHERE qty IN ({values})"
+    assert not any(isinstance(s.property, EnumeratedDomain) for s in suggest(sql).suggestions)
+
+
+def test_a_literal_column_is_not_suggested_as_an_enum():
+    sql = ORDERS + "SELECT id, 'x' AS tag FROM orders"
+    assert not any(isinstance(s.property, EnumeratedDomain) for s in suggest(sql).suggestions)
+
+
+EXHAUSTIVE_SOURCE = ORDERS + "WITH o AS (SELECT * FROM orders WHERE status IN ('new', 'paid')) "
+
+
+def test_a_simple_case_proved_exhaustive_is_suggested():
+    sql = EXHAUSTIVE_SOURCE + "SELECT id, CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END AS n FROM o"
+    report = suggest(sql)
+    exhaustive = [s for s in report.suggestions if isinstance(s.property, ExhaustiveCase)]
+    assert [(s.site.label, s.marker) for s in exhaustive] == [("CASE status", "/**ASSERT EXHAUSTIVE**/")]
+    assert "SELECT id, /**ASSERT EXHAUSTIVE**/ CASE status" in report.annotated(exhaustive)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "CASE status WHEN 'new' THEN 1 END",
+        "CASE qty WHEN 1 THEN 1 END",
+        "CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 WHEN upper('x') THEN 3 END",
+        "/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END",
+        "upper(CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' END)",
+    ],
+    ids=["an arm missing", "no finite domain", "a WHEN no marker allows", "already marked", "inside an opaque expression"],
+)
+def test_a_case_not_provably_exhaustive_or_not_markable_is_not_suggested(case: str):
+    sql = EXHAUSTIVE_SOURCE + f"SELECT id, {case} AS n FROM o"
+    assert not any(isinstance(s.property, ExhaustiveCase) for s in suggest(sql).suggestions)
+
+
 ROUND_TRIP_PROGRAMS = [
     SCHEMA + "SELECT * FROM sessions LEFT JOIN users ON sessions.user_id = users.id",
     SCHEMA + "SELECT id, email, name, nick, coalesce(nick, 'x') AS label FROM users WHERE id > 0",
@@ -171,6 +228,13 @@ ROUND_TRIP_PROGRAMS = [
     """
     CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER, PRIMARY KEY (a, b));
     SELECT a, b, c, d, max(e) AS m FROM t GROUP BY a, b, c, d
+    """,
+    ORDERS + """
+    WITH o AS (SELECT id, status, qty FROM orders WHERE status IN ('new', 'paid') AND qty IN (1, 2.5))
+    SELECT id, status,
+        CASE status WHEN 'new' THEN 'n' WHEN 'paid' THEN 'p' END AS code,
+        CASE qty WHEN 1 THEN 'one' WHEN 2.5 THEN 'more' ELSE 'none' END AS amount
+    FROM o
     """,
 ]
 

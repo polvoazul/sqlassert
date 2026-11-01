@@ -18,9 +18,9 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   in `Filter`; the rest are opaque conjuncts the rules read only as "may
   depend on anything". Ranges, `LIKE`, and `OR` are still not reasoned about.
 - [ ] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
-  `CASE` (`ir.SimpleCase`, issue 18), or opaque. Searched `CASE`, `CAST`, and
-  function calls are opaque, so no injectivity
-  (`id + 0`, lossless casts) and no non-nullness (`coalesce(x, 0)`, `count(*)`).
+  `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
+  Searched `CASE`, `CAST`, and other function calls are opaque, so no
+  injectivity (`id + 0`, lossless casts).
 - [ ] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:
   `SetOperation.distinct`, issue 24.)
@@ -37,8 +37,21 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   so the IR stays a DAG; a subquery that refers to its outer relation directly
   would create a cycle across relations that the strata cannot order
   ([Strata](../functional-dependencies.md#strata)).
-- [ ] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
-  constraints, and other DDL are ignored.
+- [x] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
+  constraints, and other DDL are ignored. Done: `ALTER TABLE ... ADD PRIMARY
+  KEY / UNIQUE / FOREIGN KEY` (named or not), `ALTER COLUMN ... SET NOT NULL`,
+  and `CREATE UNIQUE INDEX` over plain columns become the Knowledge their
+  `CREATE TABLE` forms state (and a named `CONSTRAINT` in `CREATE TABLE`,
+  previously ignored, now counts too). A statement naming a table not created
+  earlier in the program is a `constraint-without-table` Diagnostic. Any other
+  `ALTER TABLE` action (ADD/DROP COLUMN, DROP NOT NULL, RENAME, CHECK, ...)
+  makes the whole statement `unsupported-statement`: it could invalidate
+  what is known. A partial or expression unique index is
+  `unsupported-create-statement` rather than silent: it is uniqueness the
+  author wrote and sqlassert drops, the same reasoning as for markers. A
+  plain index is accepted silently: it states nothing. Still open:
+  `ADD COLUMN`; a unique expression index over deterministic expressions does
+  imply its columns are unique, which is not used.
 - [ ] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Needs catalog input to `IrParser`, not just knowledge for the engine.
@@ -50,9 +63,12 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
 ## Folded in from `TODO.md` Later Ideas and the README Ideas list
 
-- [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
+- [x] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
   `WHERE x = 5`, and inner-join equalities imply non-null `x`; `count(...)` is
-  never null. Predicates done in issue 24 (null sources); `count(...)` remains.
+  never null. Predicates done in issue 24 (null sources); `count(...)` lowers
+  to `ir.Count`, which has no Null Source, with or without `GROUP BY`. Only a
+  bare `count(...)` counts: one under a window, `FILTER`, or another function
+  stays opaque.
 - [x] A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all
   of its output columns, the same way `SELECT DISTINCT` does. Derive it from
   the leftmost arm's output columns, and lower set-operation bodies when they
@@ -67,9 +83,17 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
 ## Found while building issue 28
 
-- [ ] A column marker naming a column that is not visible in a relation with
+- [x] A column marker naming a column that is not visible in a relation with
   an incomplete schema is dropped silently: no assertion and no diagnostic.
   Example, with `a` and `b` undeclared:
   `SELECT * FROM a JOIN b ON a.id = b.aid /**ASSERT UNIQUE(name)**/`.
   Report it instead (a dropped marker reads to its author as a proof).
+  Done: an `unresolved-asserted-column` Diagnostic. Not an UNKNOWN assertion
+  over an invented opaque column: the column may not exist at all, and a
+  made-up output column would leak into every consumer of the relation
+  (`suggest`, relation facts); the Diagnostic also tells the author the fix
+  (declare the table). Markers are now accounted for by identity, not line,
+  so two markers on one line no longer cover for each other;
+  `tests/test_analyze_marker_accounting.py` checks every marker kind in every
+  context for an Assertion, a Declaration, or a Diagnostic on its line.
 

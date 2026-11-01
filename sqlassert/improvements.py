@@ -78,6 +78,8 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
                 parents.setdefault(child, []).append(relation)
     found: list[Improvement] = []
     for site, relation in program.attachment_sites:
+        if isinstance(relation, ir.SimpleCase):
+            continue  # A CASE has nothing to rewrite yet.
         if relation not in parents and relation is not program.root:
             # Unreachable: lowered inside a Select that is opaque as a whole.
             # (Every reachable relation but the root is some relation's input.)

@@ -105,6 +105,8 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             return dict(sources.members), [Result(True, "Column passes through its source", (expression,), [sources])]
         case ir.Constant():
             return {}, [Result(True, "A non-null literal", (expression,))]
+        case ir.Count():
+            return {}, [Result(True, "count(...) is never NULL", (expression,))]
         case ir.NullLiteral():
             return {ORGANIC: unknown("A NULL literal is null", expression)}, []
         case ir.Coalesce(arguments=arguments):
