@@ -91,6 +91,44 @@ def _targets(referenced_columns: _Columns) -> list[tuple[_Columns, list[Result[b
 def _referencing_side(
     columns: _Columns, referenced_columns: _Columns, targets: list[tuple[_Columns, list[Result[bool]]]]
 ) -> list[Result[bool]]:
+    relation = current_arena().program.relation_of(frozenset(columns))
+    semi = _semi_join(relation, columns, referenced_columns) if isinstance(relation, ir.Join) and relation.kind == "semi" else []
+    return [*semi, *_input_rows(columns, referenced_columns, targets)]
+
+
+def _semi_join(join: ir.Join, columns: _Columns, referenced_columns: _Columns) -> list[Result[bool]]:
+    """A semi join keeps a row only when some right row satisfies ON, so
+    columns ON equates with right columns take those columns' values: coverage
+    of the right columns, as one tuple, covers them (`x IN (SELECT id ...)`)."""
+    partners: list[list[tuple[ir.OutputColumn, ir.Equality]]] = []
+    for column in columns:
+        match column.scalar_expr:
+            case ir.ColumnRef(column=upstream):
+                pass
+            case _:
+                raise TypeError(f"Join column {column.name} is not a pass-through")
+        found = [
+            (other.column, conjunct)
+            for conjunct in join.conjuncts if isinstance(conjunct, ir.Equality)
+            for own, other in ((conjunct.left, conjunct.right), (conjunct.right, conjunct.left))
+            if isinstance(own, ir.ColumnRef) and own.column is upstream
+            and isinstance(other, ir.ColumnRef) and other.column in join.right.output_columns
+        ]
+        if not found:
+            return []
+        partners.append(found)
+    alternatives = []
+    for chosen in product(*partners):
+        matched = tuple(partner for partner, _ in chosen)
+        reason = f"({_names(columns)}) equal ({_names(matched)}) of the right row the semi join matched"
+        step = Result(True, reason, (join, *columns), [Result(True, "ON equality", (conjunct,)) for _, conjunct in chosen])
+        alternatives.append(step & referential_coverage(matched, referenced_columns))
+    return alternatives
+
+
+def _input_rows(
+    columns: _Columns, referenced_columns: _Columns, targets: list[tuple[_Columns, list[Result[bool]]]]
+) -> list[Result[bool]]:
     """Coverage of the referencing columns, read from the input rows they come from.
 
     Each output row's passed-through values come from one row of one input, or

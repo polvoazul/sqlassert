@@ -330,6 +330,12 @@ class IrParser:
                 self._marker_targets[id(marker)] = target
                 self._require_undeclared(target, marker.referenced_columns)
 
+        where = query.args.get("where")
+        for conjunct in _conjuncts(where.this) if where is not None else ():
+            matched = _subquery_conjunct(conjunct)
+            if matched is not None:
+                self._discover_query(matched[1], scope)
+
         if with_clause is not None:
             for cte in with_clause.expressions:
                 body = _unwrap_query(cte.this)
@@ -588,6 +594,14 @@ class IrParser:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
         conjuncts = self._lower_join_predicate(join, left, right)
+        if _join_kind(join) in {"semi", "anti"}:
+            # RIGHT SEMI and RIGHT ANTI keep right rows: the same join, inputs swapped.
+            kept, other = (right, left) if (join.args.get("side") or "").lower() == "right" else (left, right)
+            filtered = self._filtering_join(kept, other.relation, _join_kind(join), conjuncts, origin)
+            assert isinstance(filtered.relation, ir.Join)
+            self._join_marker(join, filtered.relation)
+            self._add_attachment_site(join, _join_label(join, self.dialect), filtered.relation, trailing=False)
+            return filtered
         if _is_positional(join):
             # A FULL JOIN on row position: an opaque condition, as no column holds it.
             conjuncts = (ir.OpaqueExpression(origin=origin, description="row position"),)
@@ -607,6 +621,11 @@ class IrParser:
             _Binding(binding.qualifier, binding.name, remapped[binding.column])
             for binding in left.bindings + right.bindings
         )
+        self._join_marker(join, relation)
+        self._add_attachment_site(join, _join_label(join, self.dialect), relation, trailing=False)
+        return _Lowered(relation, bindings)
+
+    def _join_marker(self, join: exp.Join, relation: ir.Join) -> None:
         if join_marker_kind(join) is not None:
             self._handled_joins.add(id(join))
         match join_marker_kind(join):
@@ -620,8 +639,6 @@ class IrParser:
                 pass
             case kind:
                 raise ValueError(f"Unhandled join marker kind: {kind}")
-        self._add_attachment_site(join, _join_label(join, self.dialect), relation, trailing=False)
-        return _Lowered(relation, bindings)
 
     def _lower_join_predicate(
         self, join: exp.Join, left: _Lowered, right: _Lowered
@@ -641,15 +658,15 @@ class IrParser:
         if predicate is None:
             return ()
         complete = left.relation.is_schema_complete and right.relation.is_schema_complete
-        return self._lower_conjuncts(predicate, left.bindings + right.bindings, schema_complete=complete)
+        return self._lower_conjuncts(_conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
 
     def _lower_conjuncts(
-        self, predicate: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
+        self, conjuncts: Iterable[exp.Expression], bindings: tuple[_Binding, ...], *, schema_complete: bool
     ) -> tuple[ir.ScalarExpr, ...]:
-        """Every conjunct of `predicate`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL`
-        are recognized; anything else is lowered as an ordinary scalar expression."""
+        """Each conjunct: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are
+        recognized; anything else is lowered as an ordinary scalar expression."""
         lowered: list[ir.ScalarExpr] = []
-        for conjunct in _conjuncts(predicate):
+        for conjunct in conjuncts:
             origin = self._origin(conjunct, _source_line(conjunct))
             match conjunct:
                 case exp.EQ():
@@ -698,18 +715,77 @@ class IrParser:
         return relation if relation is not None else self._opaque_relation(select, _selected_output_names(select))
 
     def _filter(self, lowered: _Lowered, where: exp.Where) -> _Lowered:
+        """WHERE: each `EXISTS`, `NOT EXISTS`, or `IN (subquery)` conjunct as a
+        semi or anti join (Paulley §4.4.2), the other conjuncts as one Filter."""
+        remaining = []
+        for conjunct in _conjuncts(where.this):
+            joined = self._subquery_join(lowered, conjunct)
+            if joined is None:
+                remaining.append(conjunct)
+            else:
+                lowered = joined
+        if not remaining:
+            return lowered
         origin = self._origin(where)
         output_columns = _pass_output_columns(lowered.relation.output_columns, origin)
         remapped = {source: output for source, output in zip(lowered.relation.output_columns, output_columns)}
         complete = lowered.relation.is_schema_complete
         relation = ir.Filter(
             origin=origin, output_columns=output_columns, is_schema_complete=complete, input=lowered.relation,
-            conjuncts=self._lower_conjuncts(where.this, lowered.bindings, schema_complete=complete),
+            conjuncts=self._lower_conjuncts(remaining, lowered.bindings, schema_complete=complete),
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
         )
         return _Lowered(relation, bindings)
+
+    def _subquery_join(self, lowered: _Lowered, conjunct: exp.Expression) -> _Lowered | None:
+        """`EXISTS (SELECT ... FROM r WHERE p)` as a semi join of r on p, and
+        `NOT EXISTS` as an anti join; `p` may read the outer row (a dependent
+        join, so the IR stays a DAG). `x IN (SELECT a ...)` as a semi join on
+        `x = a`. Not `NOT IN`: a NULL among the values makes it reject every row."""
+        matched = _subquery_conjunct(conjunct)
+        if matched is None:
+            return None
+        kind, select, operand = matched
+        if operand is None:
+            source = _from_source(select)
+            if source is None or any(
+                select.args.get(key) for key in ("group", "having", "qualify", "distinct", "limit", "offset", "with", "windows")
+            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+                return None
+            right = self._lower_source(source)
+            for join in select.args.get("joins") or ():
+                right = self._lower_join(right, join)
+            inner = select.args.get("where")
+            conjuncts = self._lower_conjuncts(
+                _conjuncts(inner.this) if inner is not None else (), lowered.bindings + right.bindings,
+                schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
+            )
+            relation = right.relation
+        else:
+            subquery = self._lower_query(select)
+            if subquery is None or len(subquery.output_columns) != 1:
+                return None
+            relation = subquery
+            conjuncts = (ir.Equality(
+                origin=self._origin(conjunct, _source_line(conjunct)),
+                left=self._lower_expression(operand, lowered.bindings, schema_complete=lowered.relation.is_schema_complete),
+                right=ir.ColumnRef(origin=subquery.origin, column=subquery.output_columns[0]),
+            ),)
+        return self._filtering_join(lowered, relation, kind, conjuncts, self._origin(conjunct))
+
+    def _filtering_join(
+        self, left: _Lowered, right: ir.RelationExpr, kind: str, conjuncts: tuple[ir.ScalarExpr, ...], origin: Origin
+    ) -> _Lowered:
+        """A semi or anti join: it keeps or drops left rows, and outputs only theirs."""
+        output_columns = _pass_output_columns(left.relation.output_columns, origin)
+        remapped = {source: output for source, output in zip(left.relation.output_columns, output_columns)}
+        relation = ir.Join(
+            origin=origin, output_columns=output_columns, is_schema_complete=left.relation.is_schema_complete,
+            kind=kind, left=left.relation, right=right, conjuncts=conjuncts,
+        )
+        return _Lowered(relation, tuple(_Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in left.bindings))
 
     def _project(self, lowered: _Lowered, items: list[exp.Expression], origin: Origin) -> ir.Project:
         output_columns = tuple(
@@ -1161,6 +1237,21 @@ def _source_line(node: exp.Expression) -> int | None:
     """The first source line of `node`, from the positions SQLGlot keeps on its tokens."""
     lines = [descendant.meta["line"] for descendant in node.walk() if "line" in descendant.meta]
     return min(lines, default=None)
+
+
+def _subquery_conjunct(conjunct: exp.Expression) -> tuple[str, exp.Select, exp.Expression | None] | None:
+    """A WHERE conjunct lowered as a filtering join: its kind, the subquery,
+    and the IN operand (None for EXISTS)."""
+    match conjunct:
+        case exp.Exists(this=exp.Select() as select):
+            return "semi", select, None
+        case exp.Not(this=exp.Exists(this=exp.Select() as select)):
+            return "anti", select, None
+        case exp.In(this=operand, args={"query": exp.Subquery() as subquery}) if not isinstance(operand, exp.Tuple):
+            body = _unwrap_query(subquery)
+            return ("semi", body, operand) if isinstance(body, exp.Select) else None
+        case _:
+            return None
 
 
 def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:

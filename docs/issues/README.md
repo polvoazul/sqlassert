@@ -19,13 +19,12 @@ Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 31, 34, 15 Mid 
 Priorities (reasoning per item in the open-issues map artifact):
 
 - **P1:** done (#34; #23 connection warnings; #23 outer and cross joins).
-- **P2, next:**
-  #23 correlated subqueries (Paulley §4.4.2); #15 Kossmann triage, then Low
+- **P2, next:** #15 Kossmann triage, then Low
   smells; #15 annotate flag; #32; #30; #33 chain part.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P4, out of scope for now (not covered by Paulley):** #23 window functions
-  (and #33's CTE part, which needs them), recursive CTEs, column lineage, semi
-  and anti joins and LATERAL, CAST injectivity.
+  (and #33's CTE part, which needs them), recursive CTEs, column lineage,
+  LATERAL, CAST injectivity.
 
 ## Done
 

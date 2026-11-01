@@ -176,6 +176,8 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
 
 def _row_attributes(relation: ir.RelationExpr) -> tuple[Attribute, ...]:
     match relation:
+        case ir.Join(kind="semi" | "anti", left=left):
+            return (*relation.output_columns, RowIdentity(left))
         case ir.Join(left=left, right=right):
             return (*relation.output_columns, RowIdentity(left), RowIdentity(right))
         case _:
@@ -226,6 +228,9 @@ def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
             return [_row_preserving(relation, source)]
         case ir.Join(kind="inner" | "cross" | "left" | "right" | "full"):
             return [_join_side(relation, True), _join_side(relation, False)]
+        case ir.Join(kind="semi" | "anti", left=source):
+            # Each output row is one left row.
+            return [_row_preserving(relation, source)]
         case ir.Aggregate(input=source):
             return [_grouped(relation, source)]
         case ir.Distinct(input=source):
@@ -447,8 +452,14 @@ def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[i
 def _join_dependencies(join: ir.Join):
     from sqlassert.rules.unique_join import unique_join
 
-    if join.kind in {"semi", "anti"}:
+    outputs = _join_outputs(join)
+    if join.kind == "semi":
+        # The matched right row satisfies ON; only left columns are output.
+        for determinant, dependent, strict_evidence in _equality_dependencies(join.conjuncts, outputs, "ON"):
+            yield determinant, dependent, True, strict_evidence
         return
+    if join.kind == "anti":
+        return  # No right row satisfies ON.
     left, right = RowIdentity(join.left), RowIdentity(join.right)
     identity = RowIdentity(join)
     yield (left, right), identity, True, Result(True, "A joined row is one row of each input", (join,))
@@ -458,7 +469,6 @@ def _join_dependencies(join: ir.Join):
         if proof.value:
             yield (left,), identity, True, proof
             yield (left,), right, True, proof
-    outputs = _join_outputs(join)
     match join.kind:
         case "inner" | "cross":
             for determinant, dependent, strict_evidence in _equality_dependencies(join.conjuncts, outputs, "ON"):

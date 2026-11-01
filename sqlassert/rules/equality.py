@@ -153,10 +153,11 @@ def _strict_conjuncts(relation: ir.RelationExpr) -> tuple[tuple[ir.ScalarExpr, .
     match relation:
         case ir.Filter(conjuncts=conjuncts):
             return conjuncts, "WHERE"
-        case ir.Join(kind="inner" | "cross", conjuncts=conjuncts):
+        case ir.Join(kind="inner" | "cross" | "semi", conjuncts=conjuncts):
+            # A semi join's on each output row with its matched right row.
             return conjuncts, "ON"
         case _:
-            # An outer join's ON holds on matched rows only; a semi or anti join's on no output row.
+            # An outer join's ON holds on matched rows only; an anti join's on no output row.
             return (), ""
 
 
