@@ -1,7 +1,7 @@
 from sqlassert.main import analyze, analyze_database
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    ExactlyOneJoin, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet,
+    EnumeratedDomain, ExactlyOneJoin, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet,
 )
 from sqlassert.provenance import AttachmentSite, Origin
 from sqlassert.reporting import AssertionReport, Outcome, RelationFacts, Report
@@ -11,6 +11,7 @@ __all__ = [
     "AssertionReport",
     "AttachmentSite",
     "Diagnostic",
+    "EnumeratedDomain",
     "ExactlyOneJoin",
     "FunctionalDependency",
     "NonNullColumn",
