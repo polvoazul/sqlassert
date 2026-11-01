@@ -13,7 +13,7 @@ Curate a fixture corpus of realistic SELECT statements with joins (SQL text only
 
 1. Run `SqlParser.parse` and `IrParser.parse` and confirm no exception escapes (as opposed to being turned into a `Diagnostic`, which `SqlParser` already does for known-bad input).
 2. For each JOIN in the statement, produce one mutated variant with a single `/**ASSERT UNIQUE**/` marker inserted immediately before that JOIN's keyword (one marker per variant, isolating which join is under test), and run the mutated SQL through `analyze()` end-to-end, confirming no exception escapes.
-3. For any join whose kind is RIGHT/FULL/SEMI/ANTI/CROSS, or whose condition contains OR, a non-equality operator, or null-safe equality, assert the resulting `AssertionReport.outcome` is not `PROVED` — this checks the exclusion list in `docs/mvp-scope.md` at corpus scale, not only in hand-written cases.
+3. For unsupported join kinds (RIGHT/FULL/SEMI/ANTI/CROSS), assert the resulting `AssertionReport.outcome` is not `PROVED`. Unrecognized conditions must not supply proof facts, but their presence does not forbid a proof from supported conjuncts: `lhs.id = rhs.id AND rhs.amount > 0` remains unique when `rhs.id` is unique, because the range only removes matches. The same applies to an additional OR or null-safe condition. Use the oracle to judge any `PROVED` result, rather than rejecting it solely because such a condition appears.
 4. When a run surfaces an interesting failure or an unexpected `PROVED`, promote the reduced SQL into a named test in the relevant `tests/test_analyze_*.py` file with a comment noting what it exercises and where it came from, rather than keeping the whole corpus as the permanent regression surface.
 
 Keep this suite opt-in / separate from the default fast run (a dedicated marker or a file excluded from the default `pytest` invocation), since running `analyze()` over a whole corpus is not free.
@@ -23,7 +23,7 @@ Keep this suite opt-in / separate from the default fast run (a dedicated marker 
 - [ ] A curated SQL corpus of realistic multi-join SELECT statements is checked into the repo as static fixtures, with its provenance documented (source, license, why each file was included).
 - [ ] Every corpus statement parses through `SqlParser` and `IrParser` without an unhandled exception; any statement that cannot be handled produces a `Diagnostic` instead.
 - [ ] Every corpus statement, mutated with one `/**ASSERT UNIQUE**/` marker per JOIN in turn, runs through `analyze()` without an unhandled exception.
-- [ ] No mutated case whose marked join is RIGHT/FULL/SEMI/ANTI/CROSS, or whose join condition contains OR/non-equality/null-safe equality, reports `PROVED`.
+- [ ] Unsupported join kinds never report `PROVED`. Unsupported predicates supply no proof facts; additional filters do not invalidate uniqueness established by supported conjuncts.
 - [ ] The corpus-fuzz suite is excluded from the default fast test run and documented as an opt-in suite with instructions to run it.
 - [ ] At least one real finding from running the harness (a crash or an incorrect `PROVED`) is fixed or promoted into a first-class named test in `tests/test_analyze_*.py`, demonstrating the harness catches something the hand-written suite would miss.
 
