@@ -183,9 +183,10 @@ MARKER_NOUNS = {
 # Where resolved column markers are recorded on its Select node.
 _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 
-# The source offset and line at which a marker for this Join or Select would be written:
-# a join marker right before the join's first keyword, a column marker right
-# after the Select's last token. `suggest` pastes markers there.
+# The source offset and line at which a marker for this Join, Select, or simple
+# CASE would be written: a join marker right before the join's first keyword, a
+# column marker right after the Select's last token, a case marker right before
+# CASE. `suggest` pastes markers there.
 _MARKER_POSITION = "sqlassert.marker_position"
 
 _COLUMN_MARKER_OPEN_TOKENS = {
@@ -341,6 +342,15 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                     raise malformed(f"lists WHEN {value.sql()} more than once")
                 values.append(value)
             case.meta[_EXHAUSTIVE_AT] = line
+            return case
+
+        def _parse_case(self, *args, **kwargs):
+            """Record where a simple CASE's marker would be written: right
+            before its CASE keyword, already consumed here."""
+            start = self._prev
+            case = super()._parse_case(*args, **kwargs)
+            if isinstance(case, exp.Case) and case.this is not None and start is not None:
+                case.meta[_MARKER_POSITION] = (start.start, start.line)
             return case
 
         def _parse_join(self, *args, **kwargs):
@@ -776,7 +786,8 @@ def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:
     return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))
 
 
-def marker_position(node: exp.Join | exp.Select) -> tuple[int, int] | None:
-    """The source `(offset, line)` where a marker for this Join or Select would
-    be written, or None for a join no marker can precede, such as a comma join."""
+def marker_position(node: exp.Join | exp.Select | exp.Case) -> tuple[int, int] | None:
+    """The source `(offset, line)` where a marker for this Join, Select, or
+    simple CASE would be written, or None for a join no marker can precede,
+    such as a comma join, and for a searched CASE."""
     return node.meta.get(_MARKER_POSITION)

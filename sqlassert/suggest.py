@@ -6,16 +6,18 @@ markers that lock in what is provable but not asserted.
 
 Marker candidates are generated mechanically from the Program IR, one
 Attachment Site at a time: every markable JOIN may be a Unique Join (or
-Exactly One), and every Select Expression's output columns may form Unique Sets or be non-null. `suggest`
-proves them and keeps only what is PROVED, in its strongest, minimal form.
-`candidates` is the generator alone, for callers that judge candidates by
-other means.
+Exactly One), every Select Expression's output columns may form Unique Sets,
+be non-null, or have a small Enumerated Domain, and every markable simple
+CASE may be exhaustive. `suggest` proves them and keeps only what is PROVED,
+in its strongest, minimal form. `candidates` is the generator alone, for
+callers that judge candidates by other means.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
+from decimal import Decimal
 from itertools import combinations
 from typing import ClassVar
 
@@ -28,13 +30,20 @@ from sqlassert.improvements import Improvement, Level, Rewrite, improvements
 from sqlassert.ir.convert import IrParser
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import (
-    ExactlyOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet,
+    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property,
+    UniqueJoin, UniqueSet,
 )
 from sqlassert.python_engine import Arena, Engine, Result
 from sqlassert.provenance import AttachmentSite
+from sqlassert.rules.domain import _domain
 from sqlassert.sql_parse import SqlParser
 
 DEFAULT_MAX_SIZE = 3
+
+# The most values an ENUM marker lists. A short closed list is a category
+# worth locking in; a longer one is mostly a long IN list restated, and its
+# marker would be noise at every site the column passes through.
+MAX_ENUM_VALUES = 10
 
 __all__ = ["Candidate", "Improvement", "Level", "Rewrite", "Suggestion", "SuggestionReport", "annotate", "candidates", "suggest"]
 
@@ -94,8 +103,10 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
     Per Select Expression: each minimal Unique Set up to `max_size` columns,
     as a Non-Null Unique Set when that also holds, plus one minimal set found
     among wider ones when none that small exists; and the non-null columns no
-    suggested Non-Null Unique Set already implies. Per JOIN: Exactly One Join,
-    else Unique Join, unless the join already carries a marker.
+    suggested Non-Null Unique Set already implies; and an Enumerated Domain of
+    up to `MAX_ENUM_VALUES` values for each column not written as a literal.
+    Per JOIN: Exactly One Join, else Unique Join, unless the join already
+    carries a marker. Per simple CASE a marker can precede: Exhaustive Case.
     Properties the SQL already asserts or declares are left out.
     """
     ast = SqlParser(dialect).parse(sql)
@@ -112,7 +123,8 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
         )
     }
     marked_joins = {item.join for item in present if isinstance(item, (UniqueJoin, ExactlyOneJoin))}
-    reachable = set(program.relations())
+    marked_cases = {item.case for item in present if isinstance(item, ExhaustiveCase)}
+    reachable = set(program.nodes())
     suggestions: list[Suggestion] = []
     with Engine().session(program, conversion.knowledge) as arena:
         found = improvements(ast, program, arena, dialect)
@@ -127,6 +139,10 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
                     # Already marked, or unreachable: lowered inside a Select that is
                     # opaque as a whole (one with HAVING, say), so nothing is known about it.
                     pass
+                case ir.SimpleCase() if relation not in marked_cases and relation in reachable and _markable(relation):
+                    suggestions.extend(_proved(arena, site, ExhaustiveCase(case=relation), (), dialect))
+                case ir.SimpleCase():
+                    pass  # Already marked, unreachable, or with a WHEN no marker allows.
                 case _:
                     suggestions.extend(_select_suggestions(arena, site, relation, max_size, marked_non_null, dialect))
     marked = {_identity(item) for item in present}
@@ -149,15 +165,21 @@ def candidates(
 ) -> Iterator[Candidate]:
     """Every candidate Property at every Attachment Site of `program`, proved or not.
 
-    Per JOIN: Unique Join. Per Select Expression: each output column
-    non-null, and each set of up to `max_size` output columns, plus the set
-    of all of them, as a Unique Set and as a Non-Null Unique Set. Only
-    columns a marker can name unambiguously take part.
+    Per JOIN: Unique Join. Per markable simple CASE: Exhaustive Case. Per
+    Select Expression: each output column non-null, and each set of up to
+    `max_size` output columns, plus the set of all of them, as a Unique Set
+    and as a Non-Null Unique Set. Only columns a marker can name
+    unambiguously take part. Enumerated Domains are not candidates: which
+    values to list is itself something only analysis finds.
     """
     for site, relation in program.attachment_sites:
         match relation:
             case ir.Join() if not site.trailing:
                 yield _candidate(site, UniqueJoin(join=relation), (), dialect)
+            case ir.SimpleCase() if _markable(relation):
+                yield _candidate(site, ExhaustiveCase(case=relation), (), dialect)
+            case ir.SimpleCase():
+                pass
             case _:
                 columns = _nameable_columns(relation)
                 for column in columns:
@@ -198,7 +220,22 @@ def _select_suggestions(
     )
     if non_null:
         suggestions.extend(_proved(arena, site, NonNullColumns(columns=non_null), columns, dialect))
+
+    for column in columns:
+        if isinstance(column.scalar_expr, ir.Constant):
+            continue  # The marker would restate the literal.
+        # Which values to list comes from the domain analysis; the marker is
+        # then proved like any other.
+        domain = _domain(column).value
+        if domain and len(domain) <= MAX_ENUM_VALUES:
+            suggestions.extend(_proved(arena, site, EnumeratedDomain(column=column, values=domain), columns, dialect))
     return suggestions
+
+
+def _markable(case: ir.SimpleCase) -> bool:
+    """A case marker requires every WHEN to be a distinct non-null literal."""
+    values = [when.value for when in case.whens if isinstance(when, ir.Constant) and when.value is not None]
+    return len(values) == len(case.whens) and len(set(values)) == len(values)
 
 
 def _proved(
@@ -241,6 +278,17 @@ def _identity(item: Property) -> tuple:
     return (type(item), tuple(getattr(item, field.name) for field in fields(item)))
 
 
+def _value_order(value: ir.LiteralValue) -> tuple:
+    """Booleans, then numbers by value, then strings."""
+    match value.type:
+        case "numeric":
+            return (1, Decimal(value.text), value.text)
+        case "string":
+            return (2, 0, value.text)
+        case _:
+            return (0, 0, value.text)
+
+
 def _candidate(site: AttachmentSite, property: Property, order: tuple[ir.OutputColumn, ...], dialect: str) -> Candidate:
     """`property` at `site`; its marker lists columns in `order`, the output order."""
     match property:
@@ -248,6 +296,12 @@ def _candidate(site: AttachmentSite, property: Property, order: tuple[ir.OutputC
             return Candidate(site, property, "/**ASSERT EXACTLY ONE**/")
         case UniqueJoin():
             return Candidate(site, property, "/**ASSERT UNIQUE**/")
+        case ExhaustiveCase():
+            return Candidate(site, property, "/**ASSERT EXHAUSTIVE**/")
+        case EnumeratedDomain(column=column, values=values):
+            name = exp.to_identifier(column.name).sql(dialect=dialect)
+            listed = ", ".join(value.sql() for value in sorted(values, key=_value_order))
+            return Candidate(site, property, f"/**ASSERT ENUM({name} IN ({listed}))**/")
         case NonNullUniqueSet(columns=columns):
             kind = "NOT NULL UNIQUE"
         case UniqueSet(columns=columns):

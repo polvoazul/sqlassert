@@ -101,7 +101,8 @@ class IrParser:
     _handled_joins: set[int] = field(default_factory=set)
     _handled_cases: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
-    _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr]] = field(default_factory=list)
+    _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr | ir.SimpleCase]] = field(default_factory=list)
+    _sited_cases: set[int] = field(default_factory=set)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
@@ -798,6 +799,9 @@ class IrParser:
             thens=tuple(lower(arm.args["true"]) for arm in arms),
             default=lower(default) if default is not None else ir.NullLiteral(origin=self._origin(case)),
         )
+        if id(case) not in self._sited_cases:
+            self._sited_cases.add(id(case))
+            self._add_attachment_site(case, f"CASE {case.this.sql(dialect=self.dialect)}", lowered, trailing=False)
         line = exhaustive_line(case)
         if line is not None and id(case) not in self._handled_cases:
             self._handled_cases.add(id(case))
@@ -884,7 +888,9 @@ class IrParser:
                 case _:
                     raise ValueError(f"Unhandled column marker kind: {kind}")
 
-    def _add_attachment_site(self, node: exp.Join | exp.Select, label: str, relation: ir.RelationExpr, *, trailing: bool) -> None:
+    def _add_attachment_site(
+        self, node: exp.Join | exp.Select | exp.Case, label: str, relation: ir.RelationExpr | ir.SimpleCase, *, trailing: bool
+    ) -> None:
         position = marker_position(node)
         if position is not None:
             offset, line = position
