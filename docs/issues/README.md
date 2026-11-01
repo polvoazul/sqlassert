@@ -19,7 +19,6 @@ Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 15 Mid and High
 
 Next, as dependencies allow:
 
-1. In progress: 23 small items (silent markers, `count` non-null, `ALTER TABLE`/unique-index constraints) and `suggest` ENUM/EXHAUSTIVE markers.
-2. Follow-ups: 30–34 (independent of each other).
-3. 15 Low level (needs a list of smells), 23 medium and large items.
-4. Skipped for now (need downloaded corpora): 11, 27 Part 2.
+1. Follow-ups: 30–34 (independent of each other).
+2. 15 Low level: triage Kossmann Table 1 first, then smells; 23 medium and large items.
+3. Skipped for now (need downloaded corpora): 11, 27 Part 2.

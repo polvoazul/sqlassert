@@ -48,7 +48,8 @@ Suggestions are ranked by how directly they improve the SQL:
     marker in it goes unchecked as well.
 - **Mid: add markers.** Lock in what is provable but not asserted, e.g.
   `/**ASSERT PRIMARY KEY(id)**/` (the candidates below).
-- **Low: other code smells.** Open.
+- **Low: other code smells.** Open. First step: triage the Kossmann survey
+  (below) to build the list.
 
 The High level depends on functional dependencies and null sources
 (issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md))).
@@ -166,7 +167,18 @@ High level ("native SQL improvements"):
 
 Still open:
 
-- [ ] Low level: other code smells.
+- [ ] Triage Kossmann et al. 2022, Table 1
+  (`papers/2022-kossmann-data-dependencies-for-query-optimization-survey.pdf`):
+  about 60 dependency-based optimizations, by dependency (UCC 17, FD 14,
+  OD 18, IND 10) and operator. Go through every entry and record, in a table
+  in this issue: the entry, its section, and one of *covered* (name the
+  sqlassert feature), *add* (as an assertion, a High-level rewrite, or a
+  Low-level smell, with its precondition as a Property), or *not applicable*
+  (why: data-dependent, cost-based, physical). Each rewrite precondition is a
+  property sqlassert can prove ([literature-notes.md](../literature-notes.md),
+  "Ideas to adopt"). Order dependencies (ORDER BY / sort elimination) are
+  untouched so far.
+- [ ] Low level: other code smells, from the *add* rows of that triage.
 - [ ] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
 
 ## Related
