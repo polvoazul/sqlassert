@@ -6,16 +6,16 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
-- [35. Check: audit FD propagation against Paulley, operator by operator](0035-audit-fd-propagation-against-paulley.md) — open (check)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
 
-- **P1:** done (#34; #23 connection warnings; #23 outer and cross joins).
+- **P1, now:** #23 R11 (every comparison rejects NULL: cheapest, most common gap the
+  #35 audit found); the oracle's dialect gap (not filed yet).
 - **P2:** done, except #15's remaining Low smells and High rewrites from the
   Kossmann triage (most need ORDER BY or select-list subqueries lowered).
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
@@ -55,3 +55,4 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [32. Infer simple CASE nullability](done/0032-infer-simple-case-nullability.md)
 - [33. INNER JOIN suggestion across join chains and CTEs](done/0033-inner-join-suggestion-across-join-chains-and-ctes.md)
 - [34. Close the soundness oracle's blind spots](done/0034-close-soundness-oracle-blind-spots.md)
+- [35. Audit FD propagation against Paulley](done/0035-audit-fd-propagation-against-paulley.md)

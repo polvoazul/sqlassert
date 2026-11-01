@@ -113,6 +113,9 @@ simplified FD-graph), Hyrise, DB2/Starburst, Oracle 8i dimensions (declared
 FDs), SAP HANA, Umbra, MonetDB. Cosette/UDP (Chu et al. 2018) is the
 equivalence verifier Liu uses.
 
-Possible text-extraction errors in Paulley, to check against the PDF:
-Thm 3 lax-equivalence bullet 3 (`∩ α(T) = ∅`, likely `≠ ∅`), and the
-definiteness condition in Dependency-closure.
+Text-extraction errors in Paulley, checked against the PDF (issue 35): both
+lose a negation slash. Thm 3 lax-equivalence bullet 3 reads `XY ∩ α(T) ≠ ∅`
+(p.97): a cross-side ON equality is a lax equivalence, as we treat it.
+Dependency-closure line 660 reads `∄ vj ... Nullability[vj] is not Definite`
+(p.177): a compound determinant fires a lax step only when every component is
+definite, as `uniqueness._closure` does.
