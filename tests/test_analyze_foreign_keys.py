@@ -317,6 +317,7 @@ def test_a_cte_can_be_referenced():
 
 def test_a_view_can_reference_itself():
     sql = """
+    CREATE TABLE plain_tree (id INTEGER, parent INTEGER);
     CREATE VIEW tree AS SELECT id, parent FROM plain_tree
     /**DECLARE UNIQUE(id)**/
     /**DECLARE FOREIGN KEY(parent) REFERENCES tree(id)**/

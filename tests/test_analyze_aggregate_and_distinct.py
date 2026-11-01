@@ -244,7 +244,7 @@ def test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_prove
             SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY user_id
         );
 
-        SELECT * FROM per_user /**ASSERT UNIQUE**/ JOIN per_user USING (user_id)
+        SELECT * FROM per_user AS a /**ASSERT UNIQUE**/ JOIN per_user AS b USING (user_id)
         """
     )
 
@@ -259,7 +259,7 @@ def test_a_positional_grouping_key_maps_to_its_selected_output():
             SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY 1
         );
 
-        SELECT * FROM per_user /**ASSERT UNIQUE**/ JOIN per_user USING (user_id)
+        SELECT * FROM per_user AS a /**ASSERT UNIQUE**/ JOIN per_user AS b USING (user_id)
         """
     )
 

@@ -39,7 +39,7 @@ def test_oracle_records_setup_call_and_teardown_per_test_and_combines_worker_rep
             analyze(SQL)
 
         def test_unsupported_database():
-            analyze("CREATE TABLE app.t (id INTEGER PRIMARY KEY); SELECT id FROM app.t /**ASSERT UNIQUE(id)**/")
+            analyze("SELECT id FROM missing /**DECLARE UNIQUE(id)**/ /**ASSERT UNIQUE(id)**/")
     """)
 
     result = oracle_pytester.runpytest_subprocess("--soundness-oracle", "-n", str(workers), "-q")

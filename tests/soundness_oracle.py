@@ -388,6 +388,11 @@ def _with_context(node: exp.Expression, query: str) -> str:
     """
     ctes: list[exp.Expression] = []
     recursive = False
+    # The node's own CTEs too: a Foreign Key may reference one of them.
+    own = node.args.get("with_") or node.args.get("with")
+    if isinstance(own, exp.With):
+        ctes = list(own.expressions)
+        recursive = bool(own.args.get("recursive"))
     child, parent = node, node.parent
     while parent is not None:
         if isinstance(parent, exp.With):
@@ -463,8 +468,13 @@ class _Database:
 
     def _create(self, statements: tuple[exp.Expression, ...]) -> None:
         """Run the DDL. A program may reference a relation declared later, which
-        DuckDB rejects, so a failed statement is retried once the others ran."""
-        pending = [sql for statement in statements if (sql := _runnable_create(statement))]
+        DuckDB rejects, so a failed statement is retried once the others ran.
+        Schemas a qualified table names are created first. Unique indexes run
+        last: DuckDB cannot ALTER a column an index depends on."""
+        for schema in sorted({table.db for statement in statements for table in statement.find_all(exp.Table) if table.db}):
+            self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {_quoted(schema)}")
+        runnable = [sql for statement in statements if (sql := _runnable_create(statement))]
+        pending = sorted(runnable, key=lambda sql: sql.startswith("CREATE UNIQUE INDEX"))
         while pending:
             failed: list[tuple[str, duckdb.Error]] = []
             for statement in pending:
