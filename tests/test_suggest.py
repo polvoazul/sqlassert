@@ -68,6 +68,7 @@ def test_non_null_columns_not_already_implied_by_a_suggested_key_are_suggested_t
 def test_a_composite_grouping_key_is_suggested_without_its_supersets():
     assert markers(SCHEMA + "SELECT user_id, ts, count(*) AS n FROM sessions GROUP BY user_id, ts") == [
         ("Root Select", "/**ASSERT UNIQUE(user_id, ts)**/"),
+        ("Root Select", "/**ASSERT NOT NULL(n)**/"),
     ]
 
 
