@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports Unique Join Assertions and Unique Set Assertions, including Non-Null Unique Sets. It is only tested with the DuckDB SQL dialect._
+_Alpha warning: Today `sqlassert` supports Unique Join Assertions, Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, and direct Foreign Keys. It is only tested with the DuckDB SQL dialect._
 
 ## Features
 
@@ -59,6 +59,30 @@ A `NOT NULL UNIQUE` assertion is proved when the columns are a Unique Set and ea
 
 `/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, and `coalesce`/`ifnull`/`nvl` with at least one non-null argument. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. It is lost on the null-extended side of a `LEFT`, `RIGHT`, or `FULL` join, and is never guessed for other computed expressions or for set operations.
 
+### Foreign Key
+
+`/**ASSERT FOREIGN KEY(col, ...) REFERENCES relation(col, ...)**/` proves that the listed output columns reference a Unique Set of a named table, view, or CTE. Columns pair by position, so `FOREIGN KEY(org, owner) REFERENCES users(org, name)` pairs `org` with `org` and `owner` with `name`; listing the pairs in another order means the same Foreign Key.
+
+```sql
+create table users (id integer primary key);
+create table orders (
+  id integer,
+  user_id integer references users(id)
+);
+
+select * from orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/;
+```
+
+A Foreign Key needs two things, and an `UNKNOWN` explanation names whichever is missing:
+
+- Referential coverage: every row whose referencing columns are all non-null has a matching referenced row. It comes from column-level `REFERENCES` and table-level `FOREIGN KEY` constraints in `CREATE TABLE` (a constraint without columns references the primary key), from enforced catalog foreign keys, and from `DECLARE FOREIGN KEY`. It holds on the table itself and on a direct `select * from table`; it is not yet carried through filters, projections, joins, or views.
+- A Unique Set on the referenced columns, proved or declared like any other.
+
+Nulls follow SQL's `MATCH SIMPLE`: a row with a null in any referencing column is exempt, so nullable referencing columns do not weaken a Foreign Key. Assert `NOT NULL` separately when every row must match.
+
+`/**DECLARE FOREIGN KEY(...) REFERENCES relation(...)**/` states the coverage as trusted evidence (`Declared ReferentialCoverage` in explanations); it never vouches for the referenced Unique Set, which is still proved separately. A marker naming a column the referenced relation does not have is reported as `unknown-referenced-column`.
+
 Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
 
 ### Declaring what you know
@@ -106,8 +130,8 @@ for assertion in report.assertions:
     print(assertion.evidence.explain())
 ```
 
-The rules are in `rules/unique_join.py`, `rules/uniqueness.py`, and
-`rules/nullability.py`; shared proof composition, declaration lookup, and
+The rules are in `rules/unique_join.py`, `rules/uniqueness.py`,
+`rules/nullability.py`, and `rules/foreign_key.py`; shared proof composition, declaration lookup, and
 per-analysis caching live in `python_engine.py`.
 
 For a test suite, keep your model/query SQL as strings or load them from files, and include (or generate) the `CREATE` statements for whatever schema the query assumes:
@@ -144,7 +168,8 @@ report = analyze_database(sql, DuckDBKnowledgeFetcher(duckdb.connect("warehouse.
 ```
 
 The fetcher reads catalog metadata only (columns, nullability, primary keys,
-unique constraints, view definitions), never table rows. `CREATE` statements in
+unique constraints, foreign keys, view definitions), never table rows. A
+catalog foreign key is used when the SQL reaches both of its tables. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
 
 ### Suggesting markers

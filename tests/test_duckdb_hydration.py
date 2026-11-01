@@ -142,3 +142,13 @@ def test_sql_declared_relations_take_precedence_over_the_catalog(connection):
     report = analyze_with(connection, "CREATE TABLE users (id INTEGER); SELECT id FROM users /**ASSERT UNIQUE(id)**/")
 
     assert [a.outcome for a in report.assertions] == [Outcome.UNKNOWN]
+
+
+def test_an_enforced_foreign_key_proves_against_the_catalog(connection):
+    connection.execute("CREATE TABLE payments (order_id INTEGER REFERENCES orders(id), org_id INTEGER, user_id INTEGER, FOREIGN KEY (org_id, user_id) REFERENCES memberships(org_id, user_id))")
+    single = "SELECT * FROM payments /**ASSERT FOREIGN KEY(order_id) REFERENCES orders(id)**/"
+    composite = "SELECT * FROM payments /**ASSERT FOREIGN KEY(user_id, org_id) REFERENCES memberships(user_id, org_id)**/"
+
+    assert analyze_with(connection, single).proved
+    assert analyze_with(connection, composite).proved
+    assert [a.outcome for a in analyze_with(connection, "SELECT * FROM payments /**ASSERT FOREIGN KEY(order_id) REFERENCES users(id)**/").assertions] == [Outcome.UNKNOWN]

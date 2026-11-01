@@ -29,7 +29,7 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.ir.convert import IrConversionResult, IrParser
-from sqlassert.properties import NonNullColumn, Property, UniqueSet
+from sqlassert.properties import NonNullColumn, Property, ReferentialCoverage, UniqueSet
 from sqlassert.provenance import Origin
 from sqlassert.sql_parse import ParsedProgram, SqlParser
 
@@ -48,11 +48,21 @@ class DatabaseColumn:
 
 
 @dataclass(frozen=True)
+class DatabaseForeignKey:
+    """An enforced foreign key: `columns` pair by position with `referenced_columns`
+    of the Relation whose canonical identity is `referenced`."""
+
+    columns: tuple[str, ...]
+    referenced: str
+    referenced_columns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class DatabaseRelationMetadata:
     """One catalog Relation, identified canonically, with its complete enforced facts.
 
-    Columns, keys, and unique sets describe base tables only; a view's are
-    derived from its definition instead.
+    Columns, keys, unique sets, and foreign keys describe base tables only; a
+    view's are derived from its definition instead.
     """
 
     catalog: str
@@ -62,6 +72,7 @@ class DatabaseRelationMetadata:
     columns: tuple[DatabaseColumn, ...] = ()
     primary_key: tuple[str, ...] = ()
     unique_sets: tuple[tuple[str, ...], ...] = ()
+    foreign_keys: tuple[DatabaseForeignKey, ...] = ()
 
     @property
     def identity(self) -> str:
@@ -95,18 +106,34 @@ class DatabaseKnowledgeFetcher(ABC):
         return _Hydration(self, ast, dialect).run()
 
     def bind(self, program: ir.Program, hydration: DatabaseHydration) -> tuple[Property, ...]:
-        """Catalog facts as Properties over ``program``'s Output Columns."""
+        """Catalog facts as Properties over ``program``'s Output Columns.
+
+        A foreign key binds only when the Program reaches its referenced Relation.
+        """
         facts: list[Property] = []
-        for relation in program.named_relations:
-            metadata = hydration.tables.get(relation.name.lower())
-            if metadata is None or relation.role is not ir.RelationRole.TABLE:
-                continue
+        tables = {
+            metadata.identity.lower(): (relation, metadata)
+            for relation in program.named_relations
+            if relation.role is ir.RelationRole.TABLE and (metadata := hydration.tables.get(relation.name.lower())) is not None
+        }
+        for relation, metadata in tables.values():
             columns = {column.name.lower(): column for column in relation.output_columns}
             non_null = {column.name.lower() for column in metadata.columns if not column.nullable}
             non_null.update(name.lower() for name in metadata.primary_key)
             facts.extend(NonNullColumn(column=columns[name]) for name in sorted(non_null) if name in columns)
             for unique_set in _unique_sets(metadata):
                 facts.append(UniqueSet(columns=frozenset(columns[name.lower()] for name in unique_set)))
+            for foreign_key in metadata.foreign_keys:
+                if foreign_key.referenced.lower() not in tables:
+                    continue
+                target, target_metadata = tables[foreign_key.referenced.lower()]
+                if _incomplete_reference(foreign_key, target_metadata):
+                    continue  # Never seen from a consistent catalog; no fact is safer than a wrong one.
+                referenced = {column.name.lower(): column for column in target.output_columns}
+                facts.append(ReferentialCoverage(
+                    columns=tuple(columns[name.lower()] for name in foreign_key.columns),
+                    referenced_columns=tuple(referenced[name.lower()] for name in foreign_key.referenced_columns),
+                ))
         return tuple(facts)
 
     @abstractmethod
@@ -138,7 +165,15 @@ def _incompleteness(metadata: DatabaseRelationMetadata) -> str | None:
     for unique_set in _unique_sets(metadata):
         if not unique_set or not {name.lower() for name in unique_set} <= names:
             return f"has a key ({', '.join(unique_set)}) over columns it does not list"
+    for foreign_key in metadata.foreign_keys:
+        if not {name.lower() for name in foreign_key.columns} <= names or len(foreign_key.columns) != len(foreign_key.referenced_columns):
+            return f"has a foreign key ({', '.join(foreign_key.columns)}) that does not pair columns it lists"
     return None
+
+
+def _incomplete_reference(foreign_key: DatabaseForeignKey, target: DatabaseRelationMetadata) -> bool:
+    names = {column.name.lower() for column in target.columns}
+    return not {name.lower() for name in foreign_key.referenced_columns} <= names
 
 
 class _Hydration:

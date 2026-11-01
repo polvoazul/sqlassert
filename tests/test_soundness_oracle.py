@@ -93,6 +93,32 @@ def test_a_false_unique_set_claim_on_the_root_select_is_refuted():
     assert len(counterexample.instance["sessions"]) == 2
 
 
+def test_a_false_foreign_key_claim_is_refuted_by_an_unmatched_row():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT user_id FROM sessions /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["users"] == []
+    assert len(counterexample.instance["sessions"]) == 1
+
+
+def test_a_foreign_key_onto_columns_that_repeat_is_refuted():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER);
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT user_id FROM sessions
+        /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+        /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+    """))
+
+    # Declared coverage holds in every instance; the duplicate target refutes it.
+    counterexample, = judgement.counterexamples
+    assert len(counterexample.instance["users"]) == 2
+
+
 def test_rows_with_null_never_violate_a_unique_set():
     sql = """
         CREATE TABLE t (id INTEGER UNIQUE);

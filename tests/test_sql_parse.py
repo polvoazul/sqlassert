@@ -5,6 +5,7 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.tokens import TokenType
 
 from sqlassert.sql_parse import (
+    ColumnMarker,
     ParsedProgram,
     SqlParser,
     SqlassertToken,
@@ -168,7 +169,7 @@ def test_a_unique_set_assertion_marker_attaches_at_every_select_expression_site(
         if markers
     ]
     assert len(found) == expected_count, label
-    assert found[0] == (("unique", ("id",), 1),), label
+    assert found[0] == (ColumnMarker("unique", ("id",), 1),), label
 
 
 def test_a_primary_key_flavored_marker_is_recognized():
@@ -178,7 +179,7 @@ def test_a_primary_key_flavored_marker_is_recognized():
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert markers == (("key", ("id",), 1),)
+    assert markers == (ColumnMarker("key", ("id",), 1),)
 
 
 def test_stacked_unique_set_assertion_markers_are_all_recognized():
@@ -188,7 +189,7 @@ def test_stacked_unique_set_assertion_markers_are_all_recognized():
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert markers == (("unique", ("a",), 1), ("key", ("a", "b"), 1))
+    assert markers == (ColumnMarker("unique", ("a",), 1), ColumnMarker("key", ("a", "b"), 1))
 
 
 UNIQUE_SET_MARKER_SHAPES = [
@@ -219,7 +220,7 @@ def test_a_declaration_marker_is_recognized_as_a_declared_kind():
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert markers == (("declared-unique", ("a",), 1), ("unique", ("a", "b"), 1))
+    assert markers == (ColumnMarker("declared-unique", ("a",), 1), ColumnMarker("unique", ("a", "b"), 1))
 
 
 def test_every_join_and_select_records_where_its_marker_would_be_written():
@@ -233,3 +234,35 @@ def test_every_join_and_select_records_where_its_marker_would_be_written():
     assert ends == ["SELECT a FROM t", "SELECT a FROM t UNION SELECT a FROM (SELECT a FROM u", sql]
     # A comma join has no JOIN keyword for a marker to precede.
     assert starts == {(sql.index("LEFT JOIN"), 1), None}
+
+
+def test_a_foreign_key_marker_records_its_referenced_relation_and_columns():
+    parser = SqlParser("duckdb")
+    program = parser.parse(
+        "SELECT a, b FROM t /**ASSERT FOREIGN KEY(a, b) REFERENCES app.u(x, y)**/ /**DECLARE FOREIGN KEY(a) REFERENCES u(x)**/"
+    )
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    assert markers == (
+        ColumnMarker("foreign-key", ("a", "b"), 1, "app.u", ("x", "y")),
+        ColumnMarker("declared-foreign-key", ("a",), 1, "u", ("x",)),
+    )
+
+
+def test_a_foreign_key_marker_does_not_disturb_ordinary_sql_around_it():
+    base = sqlglot.parse_one("SELECT a FROM t UNION SELECT b FROM s", read="duckdb").sql(dialect="duckdb")
+
+    program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT FOREIGN KEY(a) REFERENCES u(x)**/ UNION SELECT b FROM s")
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    assert program.root_select.sql(dialect="duckdb") == base
+
+
+def test_an_unrecognized_marker_lists_the_foreign_key_shape():
+    program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT FOREIGN(a)**/")
+
+    assert [d.code for d in program.diagnostics] == ["unrecognized-marker"]
+    assert "/**ASSERT FOREIGN KEY(...) REFERENCES relation(...)**/" in program.diagnostics[0].message
