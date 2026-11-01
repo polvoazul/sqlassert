@@ -12,6 +12,7 @@ import duckdb
 
 from sqlassert.discovery.fetcher import (
     DatabaseColumn,
+    DatabaseForeignKey,
     DatabaseKnowledgeFetcher,
     DatabaseMetadataError,
     DatabaseRelationKind,
@@ -35,9 +36,12 @@ WHERE list_contains($paths, [database_name, schema_name, table_name])
 ORDER BY database_name, schema_name, table_name, column_index
 """
 
+# A foreign key's referenced table is in the referencing table's own catalog
+# and schema: DuckDB rejects foreign keys across them.
 _KEYS = """
-SELECT database_name, schema_name, table_name, constraint_type, constraint_column_names FROM duckdb_constraints()
-WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE') AND list_contains($paths, [database_name, schema_name, table_name])
+SELECT database_name, schema_name, table_name, constraint_type, constraint_column_names, referenced_table, referenced_column_names
+FROM duckdb_constraints()
+WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY') AND list_contains($paths, [database_name, schema_name, table_name])
 ORDER BY database_name, schema_name, table_name, constraint_index
 """
 
@@ -85,20 +89,31 @@ class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
         columns: dict[_Path, list[DatabaseColumn]] = {}
         primary_keys: dict[_Path, tuple[str, ...]] = {}
         unique_sets: dict[_Path, list[tuple[str, ...]]] = {}
+        foreign_keys: dict[_Path, list[DatabaseForeignKey]] = {}
         if tables:
             paths = [list(path) for path in tables]
             for database, schema, table, column, nullable in self.connection.execute(_COLUMNS, {"paths": paths}).fetchall():
                 columns.setdefault((database, schema, table), []).append(DatabaseColumn(name=column, nullable=nullable))
-            for database, schema, table, constraint, members in self.connection.execute(_KEYS, {"paths": paths}).fetchall():
-                if constraint == "PRIMARY KEY":
-                    primary_keys[(database, schema, table)] = tuple(members)
-                else:
-                    unique_sets.setdefault((database, schema, table), []).append(tuple(members))
+            rows = self.connection.execute(_KEYS, {"paths": paths}).fetchall()
+            for database, schema, table, constraint, members, referenced, referenced_members in rows:
+                path = (database, schema, table)
+                match constraint:
+                    case "PRIMARY KEY":
+                        primary_keys[path] = tuple(members)
+                    case "UNIQUE":
+                        unique_sets.setdefault(path, []).append(tuple(members))
+                    case "FOREIGN KEY":
+                        foreign_keys.setdefault(path, []).append(
+                            DatabaseForeignKey(tuple(members), f"{database}.{schema}.{referenced}", tuple(referenced_members))
+                        )
+                    case _:
+                        raise DatabaseMetadataError(f"unexpected constraint type {constraint}")
 
         metadata = {
             path: DatabaseRelationMetadata(
                 catalog=path[0], schema=path[1], name=path[2], kind=kind,
                 columns=tuple(columns.get(path, ())), primary_key=primary_keys.get(path, ()), unique_sets=tuple(unique_sets.get(path, ())),
+                foreign_keys=tuple(foreign_keys.get(path, ())),
             )
             for path, kind in resolved.values()
         }
