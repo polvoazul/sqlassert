@@ -31,6 +31,26 @@ Candidates to try, generated mechanically from the Program IR:
 - Every Select Expression (Root Select, view, CTE, FROM subquery): Unique Sets
   and Non-Null Unique Sets over its output columns, and Non-Null columns.
 
+## Suggestion levels
+
+Suggestions are ranked by how directly they improve the SQL:
+
+- **High: native SQL improvements.** Changes that make the query simpler or
+  correct on its own, justified by a proof:
+  - A LEFT JOIN whose padding a later filter always removes behaves as INNER
+    (padding promotion, [`docs/functional-dependencies.md`](../functional-dependencies.md#null-sources-decided-first-cut)):
+    suggest `INNER JOIN`. This is the first concrete case, and a code smell:
+    the author wrote an outer join that cannot pad.
+  - A redundant join: exactly-one, and contributes no columns the query uses.
+  - A redundant `DISTINCT`, or a `GROUP BY` column another grouping column
+    determines.
+- **Mid: add markers.** Lock in what is provable but not asserted, e.g.
+  `/**ASSERT PRIMARY KEY(id)**/` (the candidates below).
+- **Low: other code smells.** Open.
+
+The High level depends on functional dependencies and null sources
+([issue 24](0024-functional-dependency-reasoning.md)).
+
 ## Design questions
 
 - Which column sets to report: only minimal ones (drop supersets of a reported

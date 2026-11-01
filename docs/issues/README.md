@@ -11,6 +11,7 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [19. Assert and declare direct Foreign Keys](0019-assert-and-declare-direct-foreign-keys.md) — open
 - [20. Propagate Foreign Keys through queries](0020-propagate-foreign-keys-through-queries.md) — open
 - [21. Assert simple `EXACTLY ONE` joins](0021-assert-simple-exactly-one-joins.md) — open
-- [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open- [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
-- [24. Functional-dependency reasoning](0024-functional-dependency-reasoning.md) — open (epic)
+- [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open
+- [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
+- [24. Functional-dependency reasoning](0024-functional-dependency-reasoning.md) — open (epic, planned)
 - [25. Check rule consistency invariants](0025-check-rule-consistency-invariants.md) — open

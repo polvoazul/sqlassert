@@ -140,6 +140,14 @@ _Avoid_: Propagated key
 A Unique Set whose columns are all non-null, so every row has a distinct, complete value combination.
 _Avoid_: Candidate key, nullable unique set
 
+**Functional Dependency**:
+A Property of a relation, written `X → Y` (`DETERMINES`): any two rows that agree on the columns X also agree on the columns Y, for every database the schema allows. Strict when NULL counts as agreeing with NULL; lax when it holds only on rows whose X columns are all non-null.
+_Avoid_: Correlation, derived column
+
+**Row Identity**:
+An analysis-only value that tells apart every row of one Relation Expression, duplicates included. A column set is a Unique Set when it determines the relation's Row Identity. Never appears in the IR, in SQL, or to authors.
+_Avoid_: rowid, ι, row number
+
 **Select Expression**:
 The `SELECT` query body common to a Root Select, a view or CTE definition, and a subquery, independent of how it is introduced into the program.
 _Avoid_: Select-like expression, query, statement
