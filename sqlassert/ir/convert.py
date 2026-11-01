@@ -93,7 +93,8 @@ class IrParser:
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _declarations: list[Property] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
-    _handled_column_marker_lines: set[int] = field(default_factory=set)
+    _handled_column_markers: set[int] = field(default_factory=set)
+    _handled_joins: set[int] = field(default_factory=set)
     _handled_cases: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
     _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr]] = field(default_factory=list)
@@ -459,6 +460,8 @@ class IrParser:
             _Binding(binding.qualifier, binding.name, remapped[binding.column])
             for binding in left.bindings + right.bindings
         )
+        if join_marker_kind(join) is not None:
+            self._handled_joins.add(id(join))
         match join_marker_kind(join):
             case "unique-join":
                 self._assertions.append(ir.Assertion(origin=join_origin(join, self.dialect), property=UniqueJoin(join=relation)))
@@ -726,7 +729,7 @@ class IrParser:
         by_name = {output.name.lower(): output for output in relation.output_columns}
         for marker in column_markers(select):
             kind, columns, line = marker.kind, marker.columns, marker.line
-            self._handled_column_marker_lines.add(line)
+            self._handled_column_markers.add(id(marker))
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
             unknown = [column for column in (*columns, *marker.dependent) if column.lower() not in by_name]
             if unknown and relation.is_schema_complete:
@@ -739,6 +742,16 @@ class IrParser:
                 )
                 continue
             if unknown:
+                # The column may exist in a source whose columns are unknown,
+                # so it is neither absent nor something to state a Property of.
+                self._diagnostics.append(
+                    Diagnostic(
+                        diag.UNRESOLVED_ASSERTED_COLUMN,
+                        f"the {MARKER_NOUNS[kind]} on line {line} names {', '.join(unknown)}, which cannot be resolved: "
+                        "this Select Expression reads a relation whose columns are unknown (declare it with CREATE TABLE)",
+                        origin,
+                    )
+                )
                 continue
             if kind in FOREIGN_KEY_KINDS:
                 self._marker_references.append(_MarkerReference(
@@ -873,14 +886,9 @@ class IrParser:
         )
 
     def _report_unanalyzed(self, ast: ParsedProgram) -> None:
-        analyzed = {
-            assertion.origin.line
-            for assertion in self._assertions
-            if isinstance(assertion.property, UniqueJoin | ExactlyOneJoin)
-        }
         for join in _asserted_joins(ast):
             line, kind = assertion_line(join), join_marker_kind(join)
-            if line in analyzed:
+            if id(join) in self._handled_joins:
                 continue
             assert kind is not None, "every asserted join records its marker kind"
             self._diagnostics.append(
@@ -905,7 +913,7 @@ class IrParser:
         for select in _asserted_selects(ast):
             for marker in column_markers(select):
                 kind, line = marker.kind, marker.line
-                if line in self._handled_column_marker_lines:
+                if id(marker) in self._handled_column_markers:
                     continue
                 self._diagnostics.append(
                     Diagnostic(

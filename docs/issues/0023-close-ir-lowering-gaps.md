@@ -67,9 +67,17 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
 ## Found while building issue 28
 
-- [ ] A column marker naming a column that is not visible in a relation with
+- [x] A column marker naming a column that is not visible in a relation with
   an incomplete schema is dropped silently: no assertion and no diagnostic.
   Example, with `a` and `b` undeclared:
   `SELECT * FROM a JOIN b ON a.id = b.aid /**ASSERT UNIQUE(name)**/`.
   Report it instead (a dropped marker reads to its author as a proof).
+  Done: an `unresolved-asserted-column` Diagnostic. Not an UNKNOWN assertion
+  over an invented opaque column: the column may not exist at all, and a
+  made-up output column would leak into every consumer of the relation
+  (`suggest`, relation facts); the Diagnostic also tells the author the fix
+  (declare the table). Markers are now accounted for by identity, not line,
+  so two markers on one line no longer cover for each other;
+  `tests/test_analyze_marker_accounting.py` checks every marker kind in every
+  context for an Assertion, a Declaration, or a Diagnostic on its line.
 
