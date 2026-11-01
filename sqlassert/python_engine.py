@@ -142,11 +142,12 @@ class Stratum(IntEnum):
     compute mutually recursive facts, which would need a fixpoint.
     """
 
-    COLUMN_SET = 0
     UNIQUE_JOIN = 10
     NON_NULL = 20
-    UNIQUE_SET = 30
-    FOREIGN_KEY = 40
+    FUNCTIONAL_DEPENDENCY = 30
+    CLOSURE = 40
+    UNIQUE_SET = 50
+    FOREIGN_KEY = 60
 
 
 def analysis(stratum: Stratum):
@@ -255,7 +256,7 @@ class Engine:
             _active.reset(token)
 
     def run(self, program: ir.Program, knowledge: tuple[Property, ...] = (), diagnostics: tuple[Diagnostic, ...] = ()) -> Report:
-        from sqlassert.rules.uniqueness import _unique_sets
+        from sqlassert.rules.uniqueness import minimal_keys
 
         with self.session(program, knowledge) as arena:
             assertions = []
@@ -268,8 +269,7 @@ class Engine:
                 ))
             facts = {}
             for relation in program.named_relations:
-                keys = _unique_sets(relation).value
                 facts[relation.report_name.lower()] = tuple(
-                    tuple(column.name for column in relation.output_columns if column in key) for key in keys
+                    tuple(column.name for column in key) for key in minimal_keys(relation)
                 )
             return Report(tuple(assertions), tuple(diagnostics), RelationFacts(facts))
