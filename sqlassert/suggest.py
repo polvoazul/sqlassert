@@ -4,9 +4,9 @@ Two levels of suggestion. High: Improvements, rewrites of the SQL itself
 that a proof shows leave its result unchanged (`improvements.py`). Mid:
 markers that lock in what is provable but not asserted.
 
-Marker candidates are generated mechanically from the Program IR, one Attachment
-Site at a time: every markable JOIN may be a Unique Join (or Exactly One), and every Select
-Expression's output columns may form Unique Sets or be non-null. `suggest`
+Marker candidates are generated mechanically from the Program IR, one
+Attachment Site at a time: every markable JOIN may be a Unique Join (or
+Exactly One), and every Select Expression's output columns may form Unique Sets or be non-null. `suggest`
 proves them and keeps only what is PROVED, in its strongest, minimal form.
 `candidates` is the generator alone, for callers that judge candidates by
 other means.
@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
-from typing import ClassVar
 from itertools import combinations
+from typing import ClassVar
 
 from sqlglot import exp
 
