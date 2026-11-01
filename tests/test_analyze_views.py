@@ -31,7 +31,7 @@ def test_a_view_preserving_a_unique_set_proves_a_join_in_the_root_select(users_a
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN active_users
+        /**ASSERT UNIQUE**/ JOIN active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -48,7 +48,7 @@ def test_a_view_may_reference_a_relation_declared_later_in_the_program():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN active_users
+        /**ASSERT UNIQUE**/ JOIN active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -65,7 +65,7 @@ def test_a_view_built_from_another_view_preserves_its_unique_set(users_and_sessi
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN derived
+        /**ASSERT UNIQUE**/ JOIN derived
             ON sessions.user_id = derived.id
         """
     )
@@ -81,7 +81,7 @@ def test_a_projection_alias_inside_a_view_maps_the_unique_set_to_the_outer_colum
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN renamed
+        /**ASSERT UNIQUE**/ JOIN renamed
             ON sessions.user_id = renamed.uid
         """
     )
@@ -102,7 +102,7 @@ def test_a_parenthesized_view_body_preserves_its_unique_set(users_and_sessions):
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN active_users
+        /**ASSERT UNIQUE**/ JOIN active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -121,7 +121,7 @@ def test_reusing_the_same_view_twice_gives_each_occurrence_its_own_identity(user
 
         SELECT *
         FROM active_users a
-        /**UNIQUE**/ JOIN active_users b
+        /**ASSERT UNIQUE**/ JOIN active_users b
             ON a.manager_id = b.id
         """
     )
@@ -138,7 +138,7 @@ def test_a_view_dropping_a_required_composite_key_member_is_unknown():
 
         SELECT *
         FROM orders
-        /**UNIQUE**/ JOIN partial
+        /**ASSERT UNIQUE**/ JOIN partial
             ON orders.id = partial.order_id
         """
     )
@@ -180,7 +180,7 @@ def test_a_self_referencing_view_is_a_cycle_diagnostic_and_does_not_hang(users_a
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN broken
+        /**ASSERT UNIQUE**/ JOIN broken
             ON sessions.user_id = broken.id
         """
     )
@@ -198,7 +198,7 @@ def test_a_mutual_view_cycle_is_a_cycle_diagnostic_and_does_not_hang(users_and_s
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN a_view
+        /**ASSERT UNIQUE**/ JOIN a_view
             ON sessions.user_id = a_view.id
         """
     )

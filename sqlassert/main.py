@@ -1,11 +1,10 @@
-"""Compose parsing, IR conversion, encoding, solving, and public-property reporting."""
+"""Compose parsing, IR conversion, and property analysis into a Report."""
 
 from __future__ import annotations
 
-from sqlassert.engine import Engine
-from sqlassert.facts import encode
 from sqlassert.ir.convert import IrParser
-from sqlassert.reporting import Report, Reporter
+from sqlassert.python_engine import Engine
+from sqlassert.reporting import Report
 from sqlassert.sql_parse import SqlParser
 
 DEFAULT_DIALECT = "duckdb"
@@ -22,14 +21,5 @@ def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT) -> Report:
 
     ast = sql_parser.parse(sql)
     conversion = ir_parser.parse(ast)
-    encoding = encode(conversion.program, conversion.knowledge)
-
-    reporter = Reporter(encoding)
-    engine = Engine()
-
-    engine.run(encoding, on_solution_callback=reporter.on_model)
-    return reporter.report(
-        conversion.program.assertions,
-        ast.diagnostics + conversion.diagnostics,
-        conversion.program.named_relations,
-    )
+    diagnostics = ast.diagnostics + conversion.diagnostics
+    return Engine().run(conversion.program, conversion.knowledge, diagnostics)

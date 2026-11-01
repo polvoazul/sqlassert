@@ -33,9 +33,9 @@ def test_a_join_in_each_union_all_arm_is_proved_independently(users_and_two_sour
     report = analyze(
         users_and_two_sources
         + """
-        SELECT * FROM sessions /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
         UNION ALL
-        SELECT * FROM orders /**UNIQUE**/ JOIN users ON orders.user_id = users.id
+        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON orders.user_id = users.id
         """
     )
 
@@ -54,9 +54,9 @@ def test_a_join_in_either_arm_is_proved_for_every_set_operator(users_and_two_sou
     report = analyze(
         users_and_two_sources
         + f"""
-        SELECT * FROM sessions /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
         {operator}
-        SELECT * FROM orders /**UNIQUE**/ JOIN users ON orders.user_id = users.id
+        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON orders.user_id = users.id
         """
     )
 
@@ -70,9 +70,9 @@ def test_one_arm_unproved_does_not_affect_the_other_arm_or_the_overall_result(us
     report = analyze(
         users_and_two_sources
         + """
-        SELECT * FROM sessions /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
         UNION ALL
-        SELECT * FROM orders /**UNIQUE**/ JOIN users ON orders.user_id = orders.user_id
+        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON orders.user_id = orders.user_id
         """
     )
 
@@ -89,11 +89,11 @@ def test_a_chained_three_way_union_lowers_every_arm(users_and_two_sources):
         + """
         CREATE TABLE carts (user_id INTEGER);
 
-        SELECT * FROM sessions /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
         UNION ALL
-        SELECT * FROM orders /**UNIQUE**/ JOIN users ON orders.user_id = users.id
+        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON orders.user_id = users.id
         UNION ALL
-        SELECT * FROM carts /**UNIQUE**/ JOIN users ON carts.user_id = users.id
+        SELECT * FROM carts /**ASSERT UNIQUE**/ JOIN users ON carts.user_id = users.id
         """
     )
 
@@ -120,7 +120,7 @@ def test_a_cte_whose_body_is_a_union_stays_unanalyzed(users_and_two_sources):
             UNION ALL
             SELECT user_id FROM orders
         )
-        SELECT * FROM users /**UNIQUE**/ JOIN combined ON users.id = combined.user_id
+        SELECT * FROM users /**ASSERT UNIQUE**/ JOIN combined ON users.id = combined.user_id
         """
     )
 
@@ -138,7 +138,7 @@ def test_a_join_inside_a_from_subquery_wrapping_a_union_is_still_unanalyzed(user
         + """
         SELECT *
         FROM (
-            SELECT * FROM sessions /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
+            SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
             UNION ALL
             SELECT * FROM orders JOIN users ON orders.user_id = users.id
         ) AS combined

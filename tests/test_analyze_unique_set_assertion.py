@@ -1,7 +1,7 @@
-"""Unique Set Assertions: `/**UNIQUE(...)**/` and `/**PRIMARY KEY(...)**/`
+"""Unique Set Assertions: `/**ASSERT UNIQUE(...)**/` and `/**ASSERT NOT NULL UNIQUE(...)**/`
 written on a Select Expression -- a Root Select, a view, a CTE, or a
 subquery -- asserting that the named output columns form a Unique Set or,
-for the `PRIMARY KEY` spelling, the stricter non-null Candidate Key.
+for `NOT NULL UNIQUE` (alias `PRIMARY KEY`), the stricter Non-Null Unique Set.
 
 Proof is defined purely in terms of a Relation Expression and its Output Columns:
 nothing here should behave differently depending on whether the Select
@@ -10,6 +10,8 @@ Expression is a Root Select, a view, or a CTE (see
 """
 
 from __future__ import annotations
+
+import pytest
 
 from sqlassert import Outcome, analyze
 from sqlassert.diagnostics import (
@@ -24,7 +26,7 @@ def test_a_single_column_unique_set_assertion_on_a_view_is_proved():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
-        CREATE VIEW active AS SELECT id, email FROM users WHERE id > 0 /**UNIQUE(id)**/;
+        CREATE VIEW active AS SELECT id, email FROM users WHERE id > 0 /**ASSERT UNIQUE(id)**/;
 
         SELECT * FROM active
         """
@@ -39,7 +41,7 @@ def test_a_composite_unique_set_assertion_requires_every_member():
         """
         CREATE TABLE order_items (order_id INTEGER, line_no INTEGER, PRIMARY KEY (order_id, line_no));
 
-        SELECT order_id, line_no FROM order_items /**UNIQUE(order_id, line_no)**/
+        SELECT order_id, line_no FROM order_items /**ASSERT UNIQUE(order_id, line_no)**/
         """
     )
 
@@ -51,7 +53,7 @@ def test_a_composite_unique_set_assertion_missing_a_member_is_unknown():
         """
         CREATE TABLE order_items (order_id INTEGER, line_no INTEGER, PRIMARY KEY (order_id, line_no));
 
-        SELECT order_id FROM order_items /**UNIQUE(order_id)**/
+        SELECT order_id FROM order_items /**ASSERT UNIQUE(order_id)**/
         """
     )
 
@@ -59,26 +61,32 @@ def test_a_composite_unique_set_assertion_missing_a_member_is_unknown():
     assert [a.outcome for a in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_primary_key_flavored_assertion_is_identified_as_a_candidate_key():
+NON_NULL_UNIQUE_SPELLINGS = pytest.mark.parametrize("spelling", ["NOT NULL UNIQUE", "PRIMARY KEY"])
+
+
+@NON_NULL_UNIQUE_SPELLINGS
+def test_a_non_null_unique_assertion_is_proved_under_either_spelling(spelling):
+    """`PRIMARY KEY` is a convenience alias for the canonical `NOT NULL UNIQUE`."""
     report = analyze(
-        """
+        f"""
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
 
-        SELECT id, email FROM users /**PRIMARY KEY(id)**/
+        SELECT id, email FROM users /**ASSERT {spelling}(id)**/
         """
     )
 
     assert report.proved
 
 
-def test_a_primary_key_flavored_assertion_on_a_nullable_column_is_unknown():
-    """Unique alone is not enough for the `PRIMARY KEY` spelling: it also
-    requires the column to be independently known non-null."""
+@NON_NULL_UNIQUE_SPELLINGS
+def test_a_non_null_unique_assertion_on_a_nullable_column_is_unknown(spelling):
+    """Unique alone is not enough: the column must also be independently
+    known non-null."""
     report = analyze(
-        """
+        f"""
         CREATE TABLE users (id INTEGER, email VARCHAR UNIQUE);
 
-        SELECT email FROM users /**PRIMARY KEY(email)**/
+        SELECT email FROM users /**ASSERT {spelling}(email)**/
         """
     )
 
@@ -91,7 +99,7 @@ def test_the_same_column_asserted_unique_instead_is_proved_even_when_nullable():
         """
         CREATE TABLE users (id INTEGER, email VARCHAR UNIQUE);
 
-        SELECT email FROM users /**UNIQUE(email)**/
+        SELECT email FROM users /**ASSERT UNIQUE(email)**/
         """
     )
 
@@ -103,7 +111,7 @@ def test_a_superset_of_a_smaller_proved_unique_set_is_proved_too():
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
 
-        SELECT id, name FROM users /**UNIQUE(id, name)**/
+        SELECT id, name FROM users /**ASSERT UNIQUE(id, name)**/
         """
     )
 
@@ -115,7 +123,7 @@ def test_multiple_assertions_on_one_select_expression_are_each_reported():
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE);
 
-        SELECT id, email FROM users /**UNIQUE(id)**/ /**UNIQUE(email)**/
+        SELECT id, email FROM users /**ASSERT UNIQUE(id)**/ /**ASSERT UNIQUE(email)**/
         """
     )
 
@@ -130,10 +138,10 @@ def test_a_proved_assertion_on_a_view_feeds_forward_to_a_later_statement():
     report = analyze(
         """
         CREATE TABLE raw (id INTEGER, region INTEGER);
-        CREATE VIEW dedup AS SELECT id FROM raw GROUP BY id /**UNIQUE(id)**/;
+        CREATE VIEW dedup AS SELECT id FROM raw GROUP BY id /**ASSERT UNIQUE(id)**/;
         CREATE TABLE sessions (user_id INTEGER);
 
-        SELECT * FROM sessions /**UNIQUE**/ JOIN dedup ON sessions.user_id = dedup.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN dedup ON sessions.user_id = dedup.id
         """
     )
 
@@ -152,8 +160,8 @@ def test_a_root_select_with_its_own_join_and_projection_can_be_asserted():
 
         SELECT sessions.user_id
         FROM sessions
-        /**UNIQUE**/ JOIN users ON sessions.user_id = users.id
-        /**UNIQUE(user_id)**/
+        /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        /**ASSERT UNIQUE(user_id)**/
         """
     )
 
@@ -166,7 +174,7 @@ def test_a_cte_can_carry_a_unique_set_assertion():
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
 
-        WITH active AS (SELECT id FROM users WHERE id > 0 /**UNIQUE(id)**/)
+        WITH active AS (SELECT id FROM users WHERE id > 0 /**ASSERT UNIQUE(id)**/)
         SELECT * FROM active
         """
     )
@@ -180,7 +188,7 @@ def test_a_from_subquery_can_carry_a_unique_set_assertion():
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
 
-        SELECT * FROM (SELECT id FROM users WHERE id > 0 /**UNIQUE(id)**/) AS active
+        SELECT * FROM (SELECT id FROM users WHERE id > 0 /**ASSERT UNIQUE(id)**/) AS active
         """
     )
 
@@ -199,29 +207,29 @@ def test_the_same_assertion_proves_identically_regardless_of_attachment_site():
         return [a.outcome for a in report.assertions]
 
     declaration = "CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER);"
-    root = outcomes(f"{declaration} SELECT a, b FROM t /**UNIQUE(a)**/")
-    view = outcomes(f"{declaration} CREATE VIEW v AS SELECT a, b FROM t /**UNIQUE(a)**/; SELECT * FROM v")
-    cte = outcomes(f"{declaration} WITH c AS (SELECT a, b FROM t /**UNIQUE(a)**/) SELECT * FROM c")
+    root = outcomes(f"{declaration} SELECT a, b FROM t /**ASSERT UNIQUE(a)**/")
+    view = outcomes(f"{declaration} CREATE VIEW v AS SELECT a, b FROM t /**ASSERT UNIQUE(a)**/; SELECT * FROM v")
+    cte = outcomes(f"{declaration} WITH c AS (SELECT a, b FROM t /**ASSERT UNIQUE(a)**/) SELECT * FROM c")
 
     assert root == view == cte == [Outcome.PROVED]
 
 
 def test_an_empty_column_list_is_reported_rather_than_silently_accepted():
-    report = analyze("CREATE TABLE t (a INTEGER); SELECT a FROM t /**UNIQUE()**/")
+    report = analyze("CREATE TABLE t (a INTEGER); SELECT a FROM t /**ASSERT UNIQUE()**/")
 
     assert report.assertions == ()
     assert [d.code for d in report.diagnostics] == [UNATTACHED_MARKER]
 
 
 def test_a_self_duplicating_column_list_is_reported_rather_than_silently_accepted():
-    report = analyze("CREATE TABLE t (a INTEGER); SELECT a FROM t /**UNIQUE(a, a)**/")
+    report = analyze("CREATE TABLE t (a INTEGER); SELECT a FROM t /**ASSERT UNIQUE(a, a)**/")
 
     assert report.assertions == ()
     assert [d.code for d in report.diagnostics] == [UNATTACHED_MARKER]
 
 
 def test_a_typo_in_the_keyword_is_reported_as_an_unrecognized_marker():
-    report = analyze("CREATE TABLE t (a INTEGER); SELECT a FROM t /**UNIQE(a)**/")
+    report = analyze("CREATE TABLE t (a INTEGER); SELECT a FROM t /**ASSERT UNIQE(a)**/")
 
     assert report.assertions == ()
     assert [d.code for d in report.diagnostics] == [UNRECOGNIZED_MARKER]
@@ -239,7 +247,7 @@ def test_a_marker_on_a_join_inside_a_cte_body_is_unanalyzed_not_dropped():
             SELECT users.id
             FROM users
             JOIN sessions ON sessions.user_id = users.id
-            /**UNIQUE(id)**/
+            /**ASSERT UNIQUE(id)**/
         )
         SELECT * FROM enriched
         """
@@ -253,7 +261,7 @@ def test_report_facts_includes_unique_sets_earned_through_a_proved_assertion():
     report = analyze(
         """
         CREATE TABLE raw (id INTEGER, region INTEGER);
-        CREATE VIEW dedup AS SELECT id FROM raw GROUP BY id /**UNIQUE(id)**/;
+        CREATE VIEW dedup AS SELECT id FROM raw GROUP BY id /**ASSERT UNIQUE(id)**/;
 
         SELECT * FROM dedup
         """

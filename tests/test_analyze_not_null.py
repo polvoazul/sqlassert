@@ -1,0 +1,179 @@
+"""Not-null assertions and declarations, and the Non-Null Unique Sets they complete.
+
+`/**ASSERT NOT NULL(...)**/` asks for one proof covering every listed column;
+`/**DECLARE NOT NULL(...)**/` and `/**DECLARE PRIMARY KEY(...)**/` state trusted
+facts and produce no assertion result of their own.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from sqlassert import Outcome, analyze
+from sqlassert.diagnostics import UNKNOWN_ASSERTED_COLUMN
+
+SCHEMA = """
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL, nickname VARCHAR);
+CREATE TABLE sessions (user_id INTEGER NOT NULL, ts TIMESTAMP);
+"""
+
+
+def outcomes(sql: str) -> list[Outcome]:
+    report = analyze(f"{SCHEMA} {sql}")
+    assert not report.diagnostics, report.diagnostics
+    return [assertion.outcome for assertion in report.assertions]
+
+
+PROVED_NOT_NULL = [
+    ("primary key column", "SELECT id FROM users /**ASSERT NOT NULL(id)**/"),
+    ("NOT NULL column", "SELECT email FROM users /**ASSERT NOT NULL(email)**/"),
+    ("several columns", "SELECT id, email FROM users /**ASSERT NOT NULL(id, email)**/"),
+    ("renamed column", "SELECT email AS address FROM users /**ASSERT NOT NULL(address)**/"),
+    ("filtered", "SELECT id FROM users WHERE nickname = 'x' /**ASSERT NOT NULL(id)**/"),
+    ("star", "SELECT * FROM users /**ASSERT NOT NULL(id)**/"),
+    ("string literal", "SELECT 'x' AS tag FROM users /**ASSERT NOT NULL(tag)**/"),
+    ("numeric literal", "SELECT 1 AS one FROM users /**ASSERT NOT NULL(one)**/"),
+    ("view", "CREATE VIEW v AS SELECT id FROM users; SELECT id FROM v /**ASSERT NOT NULL(id)**/"),
+    ("cte", "WITH c AS (SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+    ("subquery", "SELECT id FROM (SELECT id FROM users) AS s /**ASSERT NOT NULL(id)**/"),
+    ("group key", "SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(user_id)**/"),
+    ("inner join, both sides", "SELECT s.user_id, u.email FROM sessions s JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id, email)**/"),
+    ("left join, preserved side", "SELECT s.user_id FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
+    ("coalesce, non-null last argument", "SELECT coalesce(nickname, email) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce, non-null first argument", "SELECT coalesce(email, nickname) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce, literal fallback", "SELECT coalesce(nickname, '') AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("ifnull", "SELECT ifnull(nickname, 'anon') AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce over a null-extended column", "SELECT coalesce(u.nickname, 'anon') AS name FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(name)**/"),
+    ("right join, preserved side", "SELECT u.email FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(email)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), PROVED_NOT_NULL)
+def test_not_null_is_proved(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.PROVED], label
+
+
+UNKNOWN_NOT_NULL = [
+    ("nullable column", "SELECT nickname FROM users /**ASSERT NOT NULL(nickname)**/"),
+    ("null literal", "SELECT NULL AS nothing FROM users /**ASSERT NOT NULL(nothing)**/"),
+    ("opaque expression", "SELECT upper(email) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("coalesce of nullables", "SELECT coalesce(nickname, NULL) AS name FROM users /**ASSERT NOT NULL(name)**/"),
+    ("left join, null-extended side", "SELECT u.email FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(email)**/"),
+    ("right join, null-extended side", "SELECT s.user_id FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
+    ("full join", "SELECT s.user_id FROM sessions s FULL JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
+    ("union", "WITH c AS (SELECT id FROM users UNION ALL SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), UNKNOWN_NOT_NULL)
+def test_not_null_is_not_guessed(label: str, sql: str):
+    report = analyze(f"{SCHEMA} {sql}")
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN], label
+
+
+def test_one_assertion_covers_its_whole_column_list():
+    assert outcomes("SELECT id, nickname FROM users /**ASSERT NOT NULL(id, nickname)**/") == [Outcome.UNKNOWN]
+
+
+def test_an_unknown_assertion_names_every_column_it_could_not_prove():
+    report = analyze(
+        f"""{SCHEMA}
+        SELECT id, nickname, NULL AS nothing FROM users /**ASSERT NOT NULL(id, nickname, nothing)**/
+        """
+    )
+
+    evidence = report.assertions[0].evidence
+    assert evidence is not None
+    explanation = evidence.explain()
+    assert "nickname" in explanation
+    assert "NULL literal" in explanation
+
+
+def test_a_not_null_assertion_naming_an_unknown_column_is_reported():
+    report = analyze(f"{SCHEMA} SELECT id FROM users /**ASSERT NOT NULL(missing)**/")
+
+    assert [d.code for d in report.diagnostics] == [UNKNOWN_ASSERTED_COLUMN]
+    assert "not null assertion" in report.diagnostics[0].message
+
+
+# Declarations ----------------------------------------------------------------
+
+
+def test_a_not_null_declaration_produces_no_assertion_result():
+    report = analyze(f"{SCHEMA} SELECT nickname FROM users /**DECLARE NOT NULL(nickname)**/")
+
+    assert report.assertions == ()
+    assert report.diagnostics == ()
+
+
+def test_a_not_null_declaration_proves_downstream_and_is_labelled_declared():
+    report = analyze(
+        f"""{SCHEMA}
+        WITH c AS (SELECT nickname FROM users /**DECLARE NOT NULL(nickname)**/)
+        SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/
+        """
+    )
+
+    assert [a.outcome for a in report.assertions] == [Outcome.PROVED]
+    evidence = report.assertions[0].evidence
+    assert evidence is not None
+    assert "Declared NonNullColumn" in evidence.explain()
+
+
+def test_a_not_null_declaration_does_not_survive_null_extension():
+    assert outcomes(
+        """
+        WITH c AS (SELECT id, nickname FROM users /**DECLARE NOT NULL(nickname)**/)
+        SELECT c.nickname FROM sessions s LEFT JOIN c ON s.user_id = c.id /**ASSERT NOT NULL(nickname)**/
+        """
+    ) == [Outcome.UNKNOWN]
+
+
+# Non-Null Unique Sets --------------------------------------------------------------
+
+
+def test_a_primary_key_assertion_needs_uniqueness_and_non_nullness():
+    assert outcomes("SELECT id, email FROM users /**ASSERT PRIMARY KEY(id)**/") == [Outcome.PROVED]
+    assert outcomes("SELECT DISTINCT nickname FROM users /**ASSERT PRIMARY KEY(nickname)**/") == [Outcome.UNKNOWN]
+    assert outcomes("SELECT DISTINCT email FROM users /**ASSERT PRIMARY KEY(email)**/") == [Outcome.PROVED]
+
+
+def test_a_primary_key_survives_a_unique_join_on_its_preserved_side():
+    distinct_sessions = "(SELECT DISTINCT user_id FROM sessions) s ON s.user_id = u.id"
+    assert outcomes(
+        f"SELECT u.id FROM users u /**ASSERT UNIQUE**/ JOIN {distinct_sessions} /**ASSERT PRIMARY KEY(id)**/"
+    ) == [Outcome.PROVED, Outcome.PROVED]
+    assert outcomes(
+        f"SELECT u.id FROM users u LEFT JOIN {distinct_sessions} /**ASSERT PRIMARY KEY(id)**/"
+    ) == [Outcome.PROVED]
+
+
+PRIMARY_KEY_DECLARATION_SITES = [
+    ("root select", "SELECT nickname, email FROM users /**DECLARE PRIMARY KEY(nickname)**/ /**ASSERT PRIMARY KEY(nickname, email)**/"),
+    ("view", "CREATE VIEW v AS SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/; SELECT nickname FROM v /**ASSERT PRIMARY KEY(nickname)**/"),
+    ("cte", "WITH c AS (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/) SELECT nickname FROM c /**ASSERT PRIMARY KEY(nickname)**/"),
+    ("subquery", "SELECT nickname FROM (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/) AS s /**ASSERT PRIMARY KEY(nickname)**/"),
+]
+
+
+@pytest.mark.parametrize(("label", "sql"), PRIMARY_KEY_DECLARATION_SITES)
+def test_a_primary_key_declaration_proves_a_downstream_primary_key(label: str, sql: str):
+    assert outcomes(sql) == [Outcome.PROVED], label
+
+
+def test_a_composite_primary_key_declaration_also_declares_each_column_non_null():
+    assert outcomes(
+        """
+        WITH c AS (SELECT nickname, email FROM users /**DECLARE PRIMARY KEY(nickname, email)**/)
+        SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/ /**ASSERT UNIQUE(nickname)**/
+        """
+    ) == [Outcome.PROVED, Outcome.UNKNOWN]
+
+
+def test_a_primary_key_declaration_proves_a_unique_join():
+    assert outcomes(
+        """
+        WITH c AS (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/)
+        SELECT * FROM sessions s /**ASSERT UNIQUE**/ JOIN c ON s.ts = c.nickname
+        """
+    ) == [Outcome.PROVED]

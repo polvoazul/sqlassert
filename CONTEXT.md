@@ -38,11 +38,35 @@ _Avoid_: Assertion, Property Declaration, annotation, hint
 **Property**:
 A structural semantic statement about a relation or query construct. The same
 Property types are used in two ways: an Assertion wraps one as a query, while a
-Property Declaration lists one as accepted Knowledge.
+Property Declaration lists one as accepted Knowledge. A public Analysis
+Function evaluates a Property.
 _Avoid_: Rule, flag
 
+**Analysis Function**:
+A computation over the semantic program that returns an Analysis Result. A
+public Analysis Function evaluates a Property; an internal one derives a value
+needed by another Analysis Function.
+_Avoid_: Rule, property
+
+**Analysis Result**:
+The value computed by one Analysis Function together with the evidence for that
+value. Its evidence is represented directly by its reason, subjects, premises,
+and members rather than by a separate evidence object.
+_Avoid_: Proof, property
+
+**Result Value**:
+The computed value inside an Analysis Result. It can be a Boolean property
+answer or a derived value used only during analysis.
+_Avoid_: Property, proof
+
+**Evidence**:
+The reasons and prior Analysis Results that justify an Analysis Result's value.
+A Proof is Evidence for a Boolean Result Value that is true.
+_Avoid_: Result Value, assertion
+
 **Proof**:
-Evidence establishing that a property follows from known facts and inference rules.
+A true Boolean Analysis Result whose Evidence establishes that a Property
+follows from known facts and inference rules.
 _Avoid_: Successful check, guess
 
 **Unknown**:

@@ -39,7 +39,7 @@ def test_unsupported_join_kinds_stay_unknown_even_against_a_primary_key(
     report = analyze(
         f"""
         {USERS_AND_SESSIONS}
-        SELECT * FROM sessions /**UNIQUE**/ {join_and_predicate}
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ {join_and_predicate}
         """
     )
 
@@ -55,7 +55,7 @@ def test_supported_join_kinds_are_proved_against_the_same_primary_key(join: str)
     report = analyze(
         f"""
         {USERS_AND_SESSIONS}
-        SELECT * FROM sessions /**UNIQUE**/ {join} users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT UNIQUE**/ {join} users ON sessions.user_id = users.id
         """
     )
 

@@ -1,12 +1,12 @@
 """Framework-independent relational intermediate representation.
 
 The IR is an immutable semantic object graph. Nodes refer directly to other
-nodes; identifiers are assigned only when the graph is encoded for Clingo.
+nodes and carry no identifiers.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import TYPE_CHECKING, dataclass_transform
 
@@ -22,10 +22,18 @@ INNER = "inner"
 class NodeMeta(type):
     """Turn every Node subclass into the same kind of semantic value."""
 
+    _subclasses: list
+
     def __new__(metaclass, name, bases, namespace, *, abstract: bool = False):
         node_type = super().__new__(metaclass, name, bases, namespace)
         node_type = dataclass(frozen=True, eq=False, kw_only=True)(node_type)
         node_type.__ir_abstract__ = abstract
+        node_type._subclasses = []
+        if not abstract:
+            for base in node_type.__mro__[1:]:
+                match base:
+                    case NodeMeta():
+                        base._subclasses.append(node_type)
         return node_type
 
     def __call__(cls, *args, **kwargs):
@@ -49,7 +57,17 @@ class OpaqueExpression(ScalarExpr):
 
 
 class Constant(ScalarExpr):
-    """A literal whose concrete value is irrelevant to current proofs."""
+    """A non-null literal whose concrete value is irrelevant to current proofs."""
+
+
+class NullLiteral(ScalarExpr):
+    """The NULL literal, kept apart from Constant so it is never taken as non-null."""
+
+
+class Coalesce(ScalarExpr):
+    """The first non-null argument: `coalesce`, `ifnull`, and `nvl`."""
+
+    arguments: tuple[ScalarExpr, ...]
 
 
 class AnyAggregate(ScalarExpr):
@@ -74,6 +92,12 @@ class OutputColumn(Node):
 
     name: str
     scalar_expr: ScalarExpr
+
+    def get_relation(self, program: Program) -> RelationExpr:
+        """The one relation in ``program`` whose output includes this column."""
+        relation = program.column_to_parent_relation_index.get(self)
+        assert relation is not None, f"output column {self.name} has no parent relation in this program"
+        return relation
 
 
 class RelationExpr(Node, abstract=True):
@@ -168,6 +192,53 @@ class Program:
     root: RelationExpr | None = None # The root of the query tree, which is the entry point for the engine to start reasoning
     assertions: tuple[Assertion, ...] = () # The properties that the engine should attempt to prove
     declarations: tuple[Property, ...] = () # The properties that the engine should assume to be true
+    column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Every stage mints its own output columns, so each column has exactly one parent relation.
+        index: dict[OutputColumn, RelationExpr] = {}
+        for relation in self.relations():
+            for column in relation.output_columns:
+                parent = index.setdefault(column, relation)
+                if parent is not relation:
+                    raise ValueError(
+                        f"output column {column.name} belongs to both {type(parent).__name__} and {type(relation).__name__}"
+                    )
+        object.__setattr__(self, "column_to_parent_relation_index", index)
+
+    def relations(self) -> tuple[RelationExpr, ...]:
+        """Every relation reachable from the program, each once."""
+        nodes: dict[Node, None] = {}
+
+        def visit(node: Node) -> None:
+            if node in nodes:
+                return
+            nodes[node] = None
+            for child in children(node):
+                visit(child)
+
+        for node in (*self.named_relations, *self.assertions):
+            visit(node)
+        if self.root is not None:
+            visit(self.root)
+        relations = []
+        for node in nodes:
+            match node:
+                case RelationExpr():
+                    relations.append(node)
+                case ScalarExpr() | OutputColumn() | Assertion():
+                    pass
+                case _:
+                    raise TypeError(f"Unhandled IR node: {type(node).__name__}")
+        return tuple(relations)
+
+    def relation_of(self, columns: frozenset[OutputColumn]) -> RelationExpr | None:
+        """The parent relation shared by every column, or None when they span several or none."""
+        parents = {self.column_to_parent_relation_index.get(column) for column in columns}
+        if len(parents) != 1 or None in parents:
+            return None
+        parent, = parents
+        return parent
 
 
 def children(node: Node) -> tuple[Node, ...]:

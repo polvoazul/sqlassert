@@ -15,9 +15,9 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.properties import CandidateKey, NonNullColumn, Property, UniqueJoin, UniqueSet
+from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin, SQL
-from sqlassert.sql_parse import ParsedProgram, assertion_line, join_origin, unique_set_assertions
+from sqlassert.sql_parse import MARKER_NOUNS, ParsedProgram, assertion_line, join_origin, column_markers
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,9 @@ class IrParser:
     _resolving: set[_Symbol] = field(default_factory=set)
     _knowledge: list[Property] = field(default_factory=list)
     _assertions: list[ir.Assertion] = field(default_factory=list)
+    _declarations: list[Property] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
-    _handled_unique_set_lines: set[int] = field(default_factory=set)
+    _handled_column_marker_lines: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
@@ -82,7 +83,7 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions)), tuple(self._knowledge), tuple(self._diagnostics))
+        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations)), tuple(self._knowledge), tuple(self._diagnostics))
 
     # Declaration and symbol discovery ---------------------------------------
 
@@ -170,7 +171,7 @@ class IrParser:
                     self._require(source, identifier.name)
 
         if len(sources) == 1 and _star_only(query):
-            for _, columns, _ in unique_set_assertions(query):
+            for _, columns, _ in column_markers(query):
                 for column in columns:
                     self._require(sources[0], column)
 
@@ -255,7 +256,7 @@ class IrParser:
                 lowered = self._lower_join(lowered, join)
 
         relation = self._lower_select_tail(lowered, select)
-        self._register_unique_set_assertions(relation, select)
+        self._register_column_markers(relation, select)
         return relation
 
     def _lower_source(self, source: exp.Expression) -> _Lowered:
@@ -270,10 +271,12 @@ class IrParser:
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source))
 
         body = _unwrap_query(source) if isinstance(source, exp.Subquery) else None
-        if isinstance(source, exp.Subquery) and source.alias and isinstance(body, exp.Select):
+        if isinstance(source, exp.Subquery) and isinstance(body, exp.Select):
             relation = self._lower_select(body, allow_joins=False)
             if relation is not None:
-                return self._alias(relation, source.alias, self._origin(source))
+                # DuckDB allows an unaliased FROM subquery; nothing can qualify
+                # a column by its name, so a placeholder serves.
+                return self._alias(relation, source.alias or "subquery", self._origin(source))
 
         opaque = self._opaque_relation(source, self._source_required.get(id(source), set()))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
@@ -400,11 +403,12 @@ class IrParser:
             return ()
         conjuncts = list(predicate.flatten()) if isinstance(predicate, exp.And) else [predicate]
         bindings = left.bindings + right.bindings
+        complete = left.relation.is_schema_complete and right.relation.is_schema_complete
         return tuple(
             ir.Equality(
                 origin=self._origin(conjunct),
-                left=self._lower_expression(conjunct.this, bindings),
-                right=self._lower_expression(conjunct.expression, bindings),
+                left=self._lower_expression(conjunct.this, bindings, schema_complete=complete),
+                right=self._lower_expression(conjunct.expression, bindings, schema_complete=complete),
             )
             for conjunct in conjuncts
             if isinstance(conjunct, exp.EQ)
@@ -443,7 +447,11 @@ class IrParser:
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
-                scalar_expr=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, lowered.bindings),
+                scalar_expr=self._lower_expression(
+                    item.this if isinstance(item, exp.Alias) else item,
+                    lowered.bindings,
+                    schema_complete=lowered.relation.is_schema_complete,
+                ),
             )
             for item in items
         )
@@ -462,7 +470,7 @@ class IrParser:
                 return None
             grouped_items.add(id(item))
 
-        output_columns = self._aggregate_output_columns(select.expressions, lowered.bindings, grouped_items)
+        output_columns = self._aggregate_output_columns(select.expressions, lowered, grouped_items)
         grouping_outputs: list[ir.OutputColumn] = []
         for group_expression in group.expressions:
             item = _matching_grouping_output(group_expression, select.expressions)
@@ -479,7 +487,7 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
         return ir.Distinct(
-            origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered.bindings),
+            origin=self._origin(select), output_columns=self._selected_output_columns(select.expressions, lowered),
             is_schema_complete=True, input=lowered.relation,
         )
 
@@ -495,7 +503,7 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, self._origin(select.args["where"]))
 
-        output_columns = self._selected_output_columns(select.expressions, lowered.bindings)
+        output_columns = self._selected_output_columns(select.expressions, lowered)
         partition_outputs: list[ir.OutputColumn] = []
         for partition in partitions:
             item = _matching_output(partition, select.expressions)
@@ -504,45 +512,61 @@ class IrParser:
             partition_outputs.append(output_columns[select.expressions.index(item)])
         order = window.args.get("order")
         ordering = tuple(
-            self._lower_expression(ordered.this, lowered.bindings) for ordered in (order.expressions if order else ())
+            self._lower_expression(ordered.this, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
+            for ordered in (order.expressions if order else ())
         )
         return ir.QualifyByPartition(
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             partition_outputs=tuple(partition_outputs), ordering=ordering,
         )
 
-    def _selected_output_columns(self, items: list[exp.Expression], bindings: tuple[_Binding, ...]) -> tuple[ir.OutputColumn, ...]:
+    def _selected_output_columns(self, items: list[exp.Expression], lowered: _Lowered) -> tuple[ir.OutputColumn, ...]:
         return tuple(
             ir.OutputColumn(
                 origin=self._origin(item),
                 name=item.alias_or_name,
-                scalar_expr=self._lower_expression(item.this if isinstance(item, exp.Alias) else item, bindings),
+                scalar_expr=self._lower_expression(
+                    item.this if isinstance(item, exp.Alias) else item,
+                    lowered.bindings,
+                    schema_complete=lowered.relation.is_schema_complete,
+                ),
             )
             for item in items
         )
 
-    def _aggregate_output_columns(self, items: list[exp.Expression], bindings: tuple[_Binding, ...], grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
+    def _aggregate_output_columns(self, items: list[exp.Expression], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
         output_columns: list[ir.OutputColumn] = []
         for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
-            lowered = self._lower_expression(expression, bindings)
+            lowered = self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered)
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 
-    def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...]) -> ir.ScalarExpr:
+    def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool = False) -> ir.ScalarExpr:
+        """An unqualified column resolves by name across several sources only
+        when every source's schema is complete: otherwise the one visible match
+        might be shadowed by a column of a source whose columns are unknown."""
         origin = self._origin(expression)
         if isinstance(expression, exp.Column):
             if expression.table:
                 matches = [binding for binding in bindings if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower()]
-            elif len({binding.qualifier for binding in bindings}) == 1:
+            elif schema_complete or len({binding.qualifier for binding in bindings}) == 1:
                 matches = [binding for binding in bindings if binding.name == expression.name.lower()]
             else:
                 matches = []
             if len(matches) == 1:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)
-        if isinstance(expression, exp.Literal):
+        if isinstance(expression, exp.Coalesce):
+            arguments = (expression.this, *expression.expressions)
+            return ir.Coalesce(
+                origin=origin,
+                arguments=tuple(self._lower_expression(argument, bindings, schema_complete=schema_complete) for argument in arguments),
+            )
+        if isinstance(expression, exp.Null):
+            return ir.NullLiteral(origin=origin)
+        if isinstance(expression, (exp.Literal, exp.Boolean)):
             return ir.Constant(origin=origin)
         return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
 
@@ -557,31 +581,42 @@ class IrParser:
 
     # Assertions and diagnostics --------------------------------------------
 
-    def _register_unique_set_assertions(self, relation: ir.RelationExpr, select: exp.Select) -> None:
+    def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Select) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
-        for kind, columns, line in unique_set_assertions(select):
-            self._handled_unique_set_lines.add(line)
+        for kind, columns, line in column_markers(select):
+            self._handled_column_marker_lines.add(line)
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
             unknown = [column for column in columns if column.lower() not in by_name]
             if unknown and relation.is_schema_complete:
                 self._diagnostics.append(
                     Diagnostic(
                         diag.UNKNOWN_ASSERTED_COLUMN,
-                        f"the unique set assertion on line {line} names {', '.join(unknown)}, which is not among this Select Expression's own output columns",
+                        f"the {MARKER_NOUNS[kind]} on line {line} names {', '.join(unknown)}, which is not among this Select Expression's own output columns",
                         origin,
                     )
                 )
                 continue
             if unknown:
                 continue
-            self._assertions.append(
-                ir.Assertion(
-                    origin=origin,
-                    property=(CandidateKey if kind == "key" else UniqueSet)(
-                        columns=frozenset(by_name[column.lower()] for column in columns)
-                    ),
-                )
-            )
+            members = frozenset(by_name[column.lower()] for column in columns)
+            match kind:
+                case "unique":
+                    self._assertions.append(ir.Assertion(origin=origin, property=UniqueSet(columns=members)))
+                case "key":
+                    self._assertions.append(ir.Assertion(origin=origin, property=NonNullUniqueSet(columns=members)))
+                case "not-null":
+                    self._assertions.append(ir.Assertion(origin=origin, property=NonNullColumns(columns=members)))
+                case "declared-unique":
+                    self._declarations.append(UniqueSet(columns=members))
+                case "declared-key":
+                    # Non-nullness is declared per column too, so it outlives
+                    # projections that drop part of a composite key.
+                    self._declarations.append(NonNullUniqueSet(columns=members))
+                    self._declarations.extend(NonNullColumn(column=column) for column in members)
+                case "declared-not-null":
+                    self._declarations.extend(NonNullColumn(column=column) for column in members)
+                case _:
+                    raise ValueError(f"Unhandled column marker kind: {kind}")
 
     def _report_cycle(self, symbol: _Symbol, table: exp.Table) -> None:
         if symbol in self._reported_cycles:
@@ -613,13 +648,13 @@ class IrParser:
                 )
             )
         for select in _asserted_selects(ast):
-            for _, _, line in unique_set_assertions(select):
-                if line in self._handled_unique_set_lines:
+            for kind, _, line in column_markers(select):
+                if line in self._handled_column_marker_lines:
                     continue
                 self._diagnostics.append(
                     Diagnostic(
                         diag.UNANALYZED_ASSERTION,
-                        f"the unique set assertion on line {line} is in a part of the program this analysis does not model",
+                        f"the {MARKER_NOUNS[kind]} on line {line} is in a part of the program this analysis does not model",
                         Origin(SQL, select.sql(dialect=self.dialect), line),
                     )
                 )
@@ -683,8 +718,9 @@ def _asserted_selects(ast: ParsedProgram) -> list[exp.Select]:
     statements = (*ast.create_statements, ast.root_select)
     return [
         select for statement in statements if statement is not None
-        for select in statement.find_all(exp.Select) if unique_set_assertions(select)
+        for select in statement.find_all(exp.Select) if column_markers(select)
     ]
+
 
 
 def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] | None:

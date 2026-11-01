@@ -35,7 +35,7 @@ def test_a_cte_preserving_a_unique_set_proves_a_join_in_the_root_select(users_an
         WITH active_users AS (SELECT id FROM users WHERE id > 0)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN active_users
+        /**ASSERT UNIQUE**/ JOIN active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -50,7 +50,7 @@ def test_a_primary_keys_uniqueness_survives_a_where_filter_inside_a_cte(users_an
         WITH active_users AS (SELECT * FROM users WHERE id > 0)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN active_users
+        /**ASSERT UNIQUE**/ JOIN active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -65,7 +65,7 @@ def test_a_primary_keys_uniqueness_survives_a_projection_inside_a_cte(users_and_
         WITH renamed AS (SELECT id AS uid FROM users)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN renamed
+        /**ASSERT UNIQUE**/ JOIN renamed
             ON sessions.user_id = renamed.uid
         """
     )
@@ -80,7 +80,7 @@ def test_a_from_subquery_over_a_cte_preserves_its_unique_set(users_and_sessions)
         WITH active_users AS (SELECT id FROM users)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN (SELECT * FROM active_users) AS u
+        /**ASSERT UNIQUE**/ JOIN (SELECT * FROM active_users) AS u
             ON sessions.user_id = u.id
         """
     )
@@ -96,7 +96,7 @@ def test_a_cte_built_from_another_cte_preserves_its_unique_set(users_and_session
              derived AS (SELECT id FROM base)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN derived
+        /**ASSERT UNIQUE**/ JOIN derived
             ON sessions.user_id = derived.id
         """
     )
@@ -111,7 +111,7 @@ def test_a_cte_containing_a_from_subquery_preserves_its_unique_set(users_and_ses
         WITH wrapped AS (SELECT * FROM (SELECT id FROM users) AS u)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN wrapped
+        /**ASSERT UNIQUE**/ JOIN wrapped
             ON sessions.user_id = wrapped.id
         """
     )
@@ -126,7 +126,7 @@ def test_a_projection_alias_inside_a_cte_maps_the_unique_set_to_the_outer_column
         WITH renamed AS (SELECT id AS uid FROM users)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN renamed
+        /**ASSERT UNIQUE**/ JOIN renamed
             ON sessions.user_id = renamed.uid
         """
     )
@@ -145,7 +145,7 @@ def test_a_parenthesized_cte_body_preserves_its_unique_set(users_and_sessions):
         WITH active_users AS ((SELECT id FROM users WHERE id > 0))
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN active_users
+        /**ASSERT UNIQUE**/ JOIN active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -163,7 +163,7 @@ def test_a_doubly_parenthesized_from_subquery_preserves_its_unique_set(users_and
         + """
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN ((SELECT id FROM users WHERE id > 0)) AS active_users
+        /**ASSERT UNIQUE**/ JOIN ((SELECT id FROM users WHERE id > 0)) AS active_users
             ON sessions.user_id = active_users.id
         """
     )
@@ -180,7 +180,7 @@ def test_a_cte_dropping_a_required_composite_key_member_is_unknown():
         WITH partial AS (SELECT order_id FROM order_items)
         SELECT *
         FROM orders
-        /**UNIQUE**/ JOIN partial
+        /**ASSERT UNIQUE**/ JOIN partial
             ON orders.id = partial.order_id
         """
     )
@@ -195,7 +195,7 @@ def test_a_scalar_subquery_in_a_cte_projection_is_unsupported_and_never_guessed(
         WITH computed AS (SELECT (SELECT 1) AS id FROM users)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN computed
+        /**ASSERT UNIQUE**/ JOIN computed
             ON sessions.user_id = computed.id
         """
     )
@@ -218,7 +218,7 @@ def test_a_correlated_subquery_in_a_cte_filter_does_not_block_the_proof(users_an
         )
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN filtered
+        /**ASSERT UNIQUE**/ JOIN filtered
             ON sessions.user_id = filtered.id
         """
     )
@@ -236,7 +236,7 @@ def test_a_correlated_subquery_projected_as_a_key_member_is_unsupported_and_neve
         )
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN computed
+        /**ASSERT UNIQUE**/ JOIN computed
             ON sessions.user_id = computed.id
         """
     )
@@ -251,7 +251,7 @@ def test_a_join_inside_a_cte_body_is_not_modeled_and_reports_a_diagnostic(users_
         WITH enriched AS (
             SELECT users.id
             FROM users
-            /**UNIQUE**/ JOIN sessions ON sessions.user_id = users.id
+            /**ASSERT UNIQUE**/ JOIN sessions ON sessions.user_id = users.id
         )
         SELECT * FROM enriched
         """
@@ -268,9 +268,25 @@ def test_a_self_referencing_cte_without_recursive_does_not_hang_and_is_unknown(u
         WITH broken AS (SELECT id FROM broken)
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN broken
+        /**ASSERT UNIQUE**/ JOIN broken
             ON sessions.user_id = broken.id
         """
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+def test_an_unaliased_from_subquery_preserves_its_unique_set():
+    """DuckDB allows a FROM subquery without an alias; it is lowered like an
+    aliased one rather than treated as opaque, so the key on `users.id`
+    survives."""
+    report = analyze(
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+
+        SELECT id FROM (SELECT id, name FROM users) /**ASSERT UNIQUE(id)**/
+        """
+    )
+
+    assert not report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
