@@ -285,3 +285,28 @@ def test_values_of_different_types_spelled_alike_are_not_duplicates():
     report = analyze(f"{SCHEMA} SELECT status FROM orders /**ASSERT ENUM(status IN (1, '1', TRUE, 'TRUE', 1.0))**/")
 
     assert report.diagnostics == ()
+
+
+# Set operations (issue 31) ---------------------------------------------------
+
+SET_OPERATIONS = [
+    ("union of literals", "WITH u AS (SELECT 'new' AS s FROM orders UNION SELECT 'paid' FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new', 'paid'))**/", Outcome.PROVED),
+    ("union with a declared source", DECLARED + ", u AS (SELECT status FROM o UNION ALL SELECT 'void' FROM orders) SELECT status FROM u /**ASSERT ENUM(status IN ('new', 'paid', 'void'))**/", Outcome.PROVED),
+    ("union missing a value", "WITH u AS (SELECT 'new' AS s FROM orders UNION SELECT 'paid' FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new'))**/", Outcome.UNKNOWN),
+    ("union with an unbounded input", "WITH u AS (SELECT 'new' AS s FROM orders UNION ALL SELECT status FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new'))**/", Outcome.UNKNOWN),
+    ("union of mixed types", "WITH u AS (SELECT 1 AS s FROM orders UNION SELECT 'a' FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN (1, 'a'))**/", Outcome.UNKNOWN),
+    ("union by name", "WITH u AS (SELECT 'new' AS s FROM orders UNION BY NAME SELECT 'paid' AS s FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new', 'paid'))**/", Outcome.UNKNOWN),
+    ("intersect bounded by the right", "WITH u AS (SELECT status FROM orders INTERSECT SELECT 'paid' FROM orders) SELECT status FROM u /**ASSERT ENUM(status IN ('paid'))**/", Outcome.PROVED),
+    ("intersect under NOCASE", "WITH u AS (SELECT name FROM people INTERSECT SELECT 'ann' FROM people) SELECT name FROM u /**ASSERT ENUM(name IN ('ann'))**/", Outcome.UNKNOWN),
+    ("intersect of numbers", "WITH u AS (SELECT qty FROM items INTERSECT SELECT 2 FROM items) SELECT qty FROM u /**ASSERT ENUM(qty IN (2))**/", Outcome.PROVED),
+    ("except bounded by the left", "WITH u AS (SELECT 'new' AS s FROM orders EXCEPT SELECT status FROM orders) SELECT s FROM u /**ASSERT ENUM(s IN ('new'))**/", Outcome.PROVED),
+    ("except not bounded by the right", "WITH u AS (SELECT status FROM orders EXCEPT SELECT 'new' FROM orders) SELECT status FROM u /**ASSERT ENUM(status IN ('new'))**/", Outcome.UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(("label", "sql", "outcome"), SET_OPERATIONS)
+def test_a_domain_flows_through_set_operations(label: str, sql: str, outcome: Outcome):
+    report = analyze(SCHEMA + sql)
+
+    assert not report.diagnostics, report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [outcome], label

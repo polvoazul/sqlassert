@@ -76,8 +76,7 @@ def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple
         case ir.OpaqueRelation():
             return {ORGANIC: unknown("Nullability of an opaque relation's columns is not known", relation, column)}, []
         case ir.SetOperation():
-            # Outputs refer to the left input only; the right one is not tracked.
-            return {ORGANIC: unknown("Set operations do not preserve non-null columns", relation, column)}, []
+            return _set_operation_sources(relation, column)
         case ir.Join():
             return _join_sources(relation, column)
         case ir.Filter():
@@ -150,6 +149,45 @@ def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, lis
     if left in _padded_sides(join):
         sources[Padding(join)] = unknown(f"{column.name} is padded by the {join.kind.upper()} JOIN", join, column)
     return sources, premises + removal
+
+
+def _set_operation_sources(relation: ir.SetOperation, column: ir.OutputColumn) -> tuple[_Sources, list[Result]]:
+    """Paulley §3.2.5-3.2.6: a UNION row comes from either input, an INTERSECT
+    row equals a row of both, an EXCEPT row is a left input row. An input's
+    padding is not this relation's, so any remaining source is organic."""
+    arms = relation.arms(column)
+    if arms is None:
+        if relation.operator != "except":
+            return {ORGANIC: unknown("The set operation's inputs are not paired by position", relation, column)}, []
+        arms = (_left_input(column), None)
+    left, right = (_null_sources(arm) if arm is not None else None for arm in arms)
+    assert left is not None
+    match relation.operator:
+        case "union":
+            assert right is not None
+            if not left.value and not right.value:
+                return {}, [Result(True, "Non-null in both inputs of the UNION", (relation, column), [left, right])]
+            return {ORGANIC: Result(False, f"{column.name} may be NULL in an input of the UNION", (relation, column), [left, right], kind="unknown")}, []
+        case "intersect":
+            assert right is not None
+            for arm in (left, right):
+                if not arm.value:
+                    return {}, [Result(True, "Non-null in one input of the INTERSECT, which every row equals", (relation, column), [arm])]
+            return {ORGANIC: Result(False, f"{column.name} may be NULL in both inputs of the INTERSECT", (relation, column), [left, right], kind="unknown")}, []
+        case "except":
+            if not left.value:
+                return {}, [Result(True, "Non-null in the left input of the EXCEPT", (relation, column), [left])]
+            return {ORGANIC: Result(False, f"{column.name} may be NULL in the left input of the EXCEPT", (relation, column), [left], kind="unknown")}, []
+        case _:
+            raise TypeError(f"Unhandled set operator: {relation.operator}")
+
+
+def _left_input(column: ir.OutputColumn) -> ir.OutputColumn:
+    match column.scalar_expr:
+        case ir.ColumnRef(column=source):
+            return source
+        case _:
+            raise TypeError(f"Set operation column {column.name} is not a pass-through")
 
 
 def _filter_sources(relation: ir.Filter, column: ir.OutputColumn) -> tuple[_Sources, list[Result]]:

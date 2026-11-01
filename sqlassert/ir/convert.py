@@ -417,6 +417,7 @@ class IrParser:
             relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=query.key, left=left, right=right, distinct=bool(query.args.get("distinct")),
+                by_name=bool(query.args.get("by_name")),
             )
             return self._lower_limit(relation, query)
         if not isinstance(query, exp.Select):
@@ -804,7 +805,13 @@ class IrParser:
             expression = item.this if isinstance(item, exp.Alias) else item
             lowered = self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
-                lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered)
+                # Grouped by nothing (no grouped items), the one row exists even
+                # over no input rows, so a bare column, where a dialect allows
+                # one, may be NULL.
+                lowered = (
+                    ir.AnyAggregate(origin=self._origin(expression), input=lowered) if grouped_items
+                    else ir.OpaqueExpression(origin=self._origin(expression), description=expression.sql(dialect=self.dialect))
+                )
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 

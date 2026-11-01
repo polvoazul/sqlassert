@@ -21,9 +21,15 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
   Searched `CASE`, `CAST`, and other function calls are opaque, so no
   injectivity (`id + 0`, lossless casts).
-- [ ] `SetOperation` output columns refer to the left arm only; the right arm's
+- [x] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:
-  `SetOperation.distinct`, issue 24.)
+  `SetOperation.distinct`, issue 24.) Done: `SetOperation.arms(column)` pairs
+  each output column with both inputs' columns by position (None for
+  `UNION BY NAME` or inputs of different width), used by nullability
+  (Paulley §3.2.5-3.2.6: UNION needs both inputs non-null, INTERSECT either,
+  EXCEPT the left), Enumerated Domains (issue 31) and Foreign Keys. Not done:
+  FDs of the right input through INTERSECT (sound only under identity
+  comparison, like the INTERSECT domain rule).
 - [x] Unique-join analysis models only `inner` and `left`; `right`, `full`,
   `semi`, `anti`, `cross`, and `LATERAL`/`UNNEST` sources are not modelled.
   Done for `right`, `full` and `cross` (Paulley §3.2.3, §3.2.10): Unique and
