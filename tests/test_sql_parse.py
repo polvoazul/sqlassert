@@ -13,6 +13,7 @@ from sqlassert.sql_parse import (
     _unresolved_markers,
     sqlassert_dialect,
     column_markers,
+    exhaustive_line,
     marker_position,
 )
 
@@ -295,3 +296,30 @@ def test_an_unrecognized_marker_lists_the_enum_shape():
     program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT ENUMS(a)**/")
 
     assert "/**ASSERT ENUM(column IN ('value', ...))**/" in program.diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    "plain",
+    [
+        "SELECT CASE s WHEN 'a' THEN 1 END AS n FROM t",
+        "SELECT CASE s WHEN 'a' THEN 1 ELSE 2 END + 1 AS n FROM t WHERE x = 1",
+        "SELECT * FROM t WHERE CASE s WHEN 1 THEN TRUE END",
+        "SELECT coalesce(CASE s WHEN TRUE THEN 'y' END, 'n') FROM t",
+    ],
+)
+def test_a_case_marker_records_its_line_and_leaves_the_case_alone(plain: str):
+    sql = plain.replace("CASE", "\n/**ASSERT EXHAUSTIVE**/ CASE", 1)
+    base = sqlglot.parse_one(plain, read="duckdb").sql(dialect="duckdb")
+
+    program = SqlParser("duckdb").parse(sql)
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    assert program.root_select.sql(dialect="duckdb") == base
+    case, = program.root_select.find_all(exp.Case)
+    assert exhaustive_line(case) == 2
+
+
+def test_an_unrecognized_marker_lists_the_case_marker():
+    diagnostic, = SqlParser("duckdb").parse("SELECT /**ASSERT EXHAUSTIV**/ 1").diagnostics
+    assert "/**ASSERT EXHAUSTIVE**/" in diagnostic.message

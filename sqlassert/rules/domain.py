@@ -20,6 +20,12 @@ therefore keeps every value that may equal one on each other side
 (`_may_coincide`), which only ever keeps more than the true intersection.
 Distinct strings are distinct values only where the column is text compared
 by identity (`_binary_text`).
+
+A simple CASE takes one of its THEN values, or its ELSE value unless ELSE is
+unreachable: the CASE is exhaustive and its operand non-null. Exhaustiveness
+covers by identity too: an arm covers a domain member only when it is that
+literal, so the operand compared with the arm is the very comparison that
+puts its value in the domain.
 """
 
 from __future__ import annotations
@@ -29,8 +35,9 @@ from fractions import Fraction
 
 from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
-from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena
+from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
 from sqlassert.rules.equality import _equal_columns
+from sqlassert.rules.nullability import non_null_column
 
 # A finite set of possible non-null values, or None when any value is possible.
 type Domain = frozenset[ir.LiteralValue] | None
@@ -48,6 +55,50 @@ def enumerated_domain(column: ir.OutputColumn, values: frozenset[ir.LiteralValue
             (column,), [domain], kind="unknown",
         )
     return Result(True, "Every possible value is listed", (column,), [domain])
+
+
+@analysis(Stratum.DOMAIN)
+def exhaustive_case(case: ir.SimpleCase) -> Result[bool]:
+    operand = _operand_name(case.operand)
+    domain = _expression_domain(case.operand)
+    if domain.value is None:
+        return Result(False, f"No finite domain is known for {operand}", (case,), [domain], kind="unknown")
+    missing = domain.value - _listed(case)
+    if missing:
+        return Result(False, f"{operand} may be {_render(missing)}, which no WHEN arm lists", (case,), [domain], kind="unknown")
+    return Result(True, f"Every possible value of {operand} has a WHEN arm", (case,), [domain])
+
+
+def _listed(case: ir.SimpleCase) -> frozenset[ir.LiteralValue]:
+    """The literals a WHEN arm is exactly."""
+    listed: set[ir.LiteralValue] = set()
+    for when in case.whens:
+        match when:
+            case ir.Constant(value=ir.LiteralValue() as value):
+                listed.add(value)
+            case _:
+                pass  # Another arm covers no member by identity.
+    return frozenset(listed)
+
+
+def _operand_name(operand: ir.ScalarExpr) -> str:
+    match operand:
+        case ir.ColumnRef(column=column):
+            return column.name
+        case _:
+            return "the CASE operand"
+
+
+def _else_unreachable(case: ir.SimpleCase) -> Result[bool]:
+    """No row reaches ELSE: every non-null operand value has an arm, and the operand is non-null."""
+    match case.operand:
+        case ir.ColumnRef(column=column):
+            present = non_null_column(column)
+        case ir.Constant(value=ir.LiteralValue()):
+            present = Result(True, "A non-null literal", (case.operand,))
+        case _:
+            present = unknown("Nullability of the CASE operand is not inferred", case.operand)
+    return exhaustive_case(case) & present
 
 
 @analysis(Stratum.DOMAIN)
@@ -112,6 +163,16 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
         case ir.AnyAggregate(input=value):
             # Groups are never empty, so the value comes from some input row.
             return _expression_domain(value)
+        case ir.SimpleCase(thens=thens, default=default):
+            arms = [_expression_domain(then) for then in thens]
+            unreachable = _else_unreachable(expression)
+            if not unreachable.value:
+                arms.append(_expression_domain(default))
+            if any(arm.value is None for arm in arms):
+                return Result(None, "A CASE arm is not enumerated", (expression,), arms)
+            value = frozenset().union(*(arm.value for arm in arms if arm.value is not None))
+            premises = [*arms, unreachable] if unreachable.value else arms
+            return Result(value, "A CASE takes one of its arms' values", (expression,), premises)
         case ir.Constant() | ir.OpaqueExpression() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull():
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:

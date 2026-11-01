@@ -100,6 +100,19 @@ class Coalesce(ScalarExpr):
     arguments: tuple[ScalarExpr, ...]
 
 
+class SimpleCase(ScalarExpr):
+    """`CASE operand WHEN whens[i] THEN thens[i] ... ELSE default END`.
+
+    Each arm compares `operand = whens[i]`; a NULL operand matches none. A
+    missing ELSE is lowered as a NULL literal `default`.
+    """
+
+    operand: ScalarExpr
+    whens: tuple[ScalarExpr, ...]
+    thens: tuple[ScalarExpr, ...]
+    default: ScalarExpr
+
+
 class AnyAggregate(ScalarExpr):
     """An arbitrary value selected from the input rows of an aggregate group."""
 

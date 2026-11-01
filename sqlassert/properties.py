@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlassert.ir.model import Join, LiteralValue, NodeMeta, OutputColumn
+from sqlassert.ir.model import Join, LiteralValue, NodeMeta, OutputColumn, SimpleCase
 
 
 class Property(metaclass=NodeMeta, abstract=True):
@@ -45,6 +45,17 @@ class EnumeratedDomain(Property):
 
     column: OutputColumn
     values: frozenset[LiteralValue]
+
+
+class ExhaustiveCase(Property):
+    """Every member of `case`'s operand's Enumerated Domain has a WHEN arm
+    that is exactly that literal, so no non-null operand value reaches ELSE.
+
+    ELSE never substitutes for an arm, and a NULL operand, which matches no
+    arm, is left to `NOT NULL`.
+    """
+
+    case: SimpleCase
 
 
 class UniqueJoin(Property):

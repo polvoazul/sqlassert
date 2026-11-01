@@ -128,6 +128,8 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             return {ORGANIC: unknown(f"Nullability of {description} is not known", expression)}, []
         case ir.Equality() | ir.IsNull() | ir.IsNotNull():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []
+        case ir.SimpleCase():
+            return {ORGANIC: unknown("Nullability of a CASE is not inferred", expression)}, []
         case _:
             raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
 
