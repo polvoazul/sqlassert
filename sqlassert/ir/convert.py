@@ -31,6 +31,7 @@ class IrConversionResult:
     program: ir.Program
     knowledge: tuple[Property, ...]
     diagnostics: tuple[Diagnostic, ...] = ()
+    warnings: tuple[Diagnostic, ...] = ()
 
 
 @dataclass(eq=False)
@@ -97,6 +98,7 @@ class IrParser:
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _declarations: list[Property] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
+    _warnings: list[Diagnostic] = field(default_factory=list)
     _handled_column_markers: set[int] = field(default_factory=set)
     _handled_joins: set[int] = field(default_factory=set)
     _handled_cases: set[int] = field(default_factory=set)
@@ -135,7 +137,23 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites)), tuple(self._knowledge), tuple(self._diagnostics))
+        warnings = [*self._undeclared_table_warnings(), *self._warnings]
+        return IrConversionResult(
+            ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites)),
+            tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
+        )
+
+    def _undeclared_table_warnings(self) -> list[Diagnostic]:
+        return [
+            Diagnostic(
+                diag.UNDECLARED_TABLE,
+                f"table {symbol.name} has no CREATE TABLE in the program, so its keys, nullability and column types are unknown: "
+                "declare it with CREATE TABLE, or analyze with a database connection (analyze_database)",
+                symbol.origin,
+            )
+            for symbol in self._symbols
+            if symbol.role is ir.RelationRole.TABLE and symbol.statement is None
+        ]
 
     # Declaration and symbol discovery ---------------------------------------
 
@@ -796,6 +814,14 @@ class IrParser:
                 matches = [binding for binding in bindings if binding.name == expression.name.lower()]
             else:
                 matches = []
+                sources = ", ".join(dict.fromkeys(binding.qualifier for binding in bindings))
+                self._warnings.append(Diagnostic(
+                    diag.AMBIGUOUS_COLUMN,
+                    f"column {expression.name} is unqualified and more than one source may own it ({sources}), "
+                    "since some have no declared columns: qualify it, declare those tables with CREATE TABLE, "
+                    "or analyze with a database connection (analyze_database)",
+                    origin,
+                ))
             if len(matches) == 1:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)
         if isinstance(expression, exp.Coalesce):
