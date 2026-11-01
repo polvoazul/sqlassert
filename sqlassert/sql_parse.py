@@ -112,6 +112,11 @@ MARKER_NOUNS = {
 # Where resolved column markers are recorded on its Select node.
 _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 
+# The source offset at which a marker for this Join or Select would be written:
+# a join marker right before the join's first keyword, a column marker right
+# after the Select's last token. `suggest` pastes markers there.
+_MARKER_OFFSET = "sqlassert.marker_offset"
+
 _COLUMN_MARKER_OPEN_TOKENS = {
     MARKERS[open_]: kind for open_, kind in _COLUMN_MARKER_OPENS.items()
 }
@@ -182,7 +187,12 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     class _Parser(parent.Parser):  # ty: ignore[unresolved-attribute]
         def _parse_join(self, *args, **kwargs):
             if not self._match(SqlassertToken.SQLASSERT_UNIQUE):
-                return super()._parse_join(*args, **kwargs)
+                start = self._curr
+                join = super()._parse_join(*args, **kwargs)
+                # A comma join has no JOIN keyword a marker could precede.
+                if join is not None and start is not None and start.token_type is not TokenType.COMMA:
+                    join.meta[_MARKER_OFFSET] = start.start
+                return join
 
             line = self._prev.line
             unattached = UnattachedMarker(
@@ -260,6 +270,16 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             # a no-op if nothing follows, since `_parse_set_operations` only
             # advances the cursor on an actual match.
             return self._parse_set_operations(result) or result
+
+        def _parse_set_operations(self, this, *args, **kwargs):
+            """Record where a Select ends: the first time set operations are
+            tried after it, before any trailing marker is consumed. This is
+            also the only point that sees the left member of a set operation
+            as a Select of its own.
+            """
+            if isinstance(this, exp.Select) and _MARKER_OFFSET not in this.meta and self._prev is not None:
+                this.meta[_MARKER_OFFSET] = self._prev.end + 1
+            return super()._parse_set_operations(this, *args, **kwargs)
 
     return type(
         f"SqlAssert{parent.__name__}",
@@ -466,3 +486,9 @@ def column_markers(select: exp.Select) -> tuple[tuple[str, tuple[str, ...], int]
     -- `kind` is a value of `_COLUMN_MARKER_OPENS`; those in `DECLARED_KINDS`
     are Property Declarations, the rest Assertions."""
     return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))
+
+
+def marker_offset(node: exp.Join | exp.Select) -> int | None:
+    """Where in the source a marker for this Join or Select would be written,
+    or None for a join no marker can precede, such as a comma join."""
+    return node.meta.get(_MARKER_OFFSET)
