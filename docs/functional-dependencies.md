@@ -294,14 +294,14 @@ through only with definite determinants.
 | L13 | ON equality within T: strict equivalence | Thm 3 strict eq 4, p.97 | missing | partly: the FDs hold (L5), but an ON equality within the padded side does not merge an Equality Group (`equality._strict_conjuncts` gives an outer join none), so `ON u.x = u.z AND u.z = 3` does not bound x's domain. Filed in issue 23 |  |
 | L14 | Cross-side ON equality: lax equivalence only | Thm 3 lax eq 3, p.97 | missing | the cross equality is rightly not an Equality Group, but domains could cross a lax equivalence (NULL is outside every domain): after `LEFT JOIN u ON u.z = t.a WHERE t.a = 5`, z is 5 or NULL. Filed in issue 23 with E4 |  |
 | L15 | Null constraints among the null-supplying side's definite attributes; a later null-intolerant predicate makes them all definite | Def 38, Thm 3 null, p.95 | implemented | Null Sources: `Padding(join)` is shared by every column the join pads, so one null-rejecting conjunct removes it from all (`nullability._rejected`) | `test_paulley_audit.py` L15, L15- |
-| F1 | Full join: input strict FD survives when η(p, X) or a strict equivalence | Thm 4 strict 1, p.100 | pending | | |
-| F2 | Full join: cross-side ON FD αR(p) → Y with η(p, Y) and η(p, αS(p)) | Lemma 10 case 3, Thm 4 strict 2, p.100 | pending | | |
-| F3 | Full join: ι(Q) ↔ ι(R), ι(S) | Thm 4 strict 3, p.100 | pending | | |
-| F4 | Full join keeps both sides' lax FDs; cross-side ON FDs lax | Thm 4 lax, p.101 | pending | | |
-| F5 | Full join: ON conditions within one side give nothing | Lemma 10 cases 1–2, p.99 | pending | | |
-| F6 | Full join: equivalences of inputs kept; cross-side ON equality lax | Thm 4 eq, p.101 | pending | | |
-| F7 | Full join: a key of the result needs η for each input key | §3.2.10.1, p.99 | pending | | |
-| F8 | Full join: null constraints within each side | Thm 4 null, p.101 | pending | | |
+| F1 | Full join: input strict FD survives when η(p, X) or a strict equivalence | Thm 4 strict 1, p.100 | different | `uniqueness._join_side` delegations on both sides, each valid only when a reached column is NULL only on that side's padded rows (η); a full join has no match status to fall back on (`_match_status` is None) | `test_paulley_audit.py` F1, F1-, F1-left |
+| F2 | Full join: cross-side ON FD αR(p) → Y with η(p, Y) and η(p, αS(p)) | Lemma 10 case 3, Thm 4 strict 2, p.100 | missing | a full join's ON gives no dependencies (`uniqueness._join_dependencies`: `case _: pass`). Lemma 10 case 3: `ON u.z = t.a` gives `a → z` (and lax `z → a`, F4), since a non-null a is a left row whose matches it fixes. Filed in issue 23 |  |
+| F3 | Full join: ι(Q) ↔ ι(R), ι(S) | Thm 4 strict 3, p.100 | implemented | `uniqueness._join_dependencies` (`(ι(left), ι(right)) → ι`) | `test_paulley_audit.py` F3, F3- |
+| F4 | Full join keeps both sides' lax FDs; cross-side ON FDs lax | Thm 4 lax, p.101 | missing | partly: each side's lax FDs hold (`uniqueness._join_side` delegations), the cross-side ON FDs do not (F2). Filed in issue 23 with F2 | `test_paulley_audit.py` F1 |
+| F5 | Full join: ON conditions within one side give nothing | Lemma 10 cases 1–2, p.99 | implemented | nothing is derived from a full join's ON | `test_paulley_audit.py` F5- |
+| F6 | Full join: equivalences of inputs kept; cross-side ON equality lax | Thm 4 eq, p.101 | implemented | `uniqueness._join_side` delegations (an equivalence makes its dependent NULL with its determinant, Cor 2); no cross-side equivalence | `test_paulley_audit.py` F6 |
+| F7 | Full join: a key of the result needs η for each input key | §3.2.10.1, p.99 | implemented | `uniqueness._join_dependencies` keys the result by both Row Identities; reaching each side's identity through a key needs η via the delegation | `test_paulley_audit.py` F3 |
+| F8 | Full join: null constraints within each side | Thm 4 null, p.101 | implemented | Null Sources: a full join pads both sides (`nullability._padded_sides`), each removed by a null-rejecting conjunct on a column it pads | `test_paulley_audit.py` F8, F8- |
 
 ## Opportunities
 

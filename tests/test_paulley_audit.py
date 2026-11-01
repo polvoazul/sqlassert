@@ -97,6 +97,16 @@ CASES = {
     "L11-": ("SELECT t.b FROM t LEFT JOIN u ON u.z = t.a AND t.b = 1 /**ASSERT ENUM(b IN (1))**/", UNKNOWN),
     "L15": ("SELECT u.y FROM t LEFT JOIN u ON u.z = t.a WHERE u.k IS NOT NULL /**ASSERT NOT NULL(y)**/", PROVED),
     "L15-": ("SELECT u.y FROM t LEFT JOIN u ON u.z = t.a /**ASSERT NOT NULL(y)**/", UNKNOWN),
+    # Full outer join (§3.2.10).
+    "F1": ("SELECT t.id, t.a, u.k FROM t FULL JOIN u ON u.k = t.a /**ASSERT DETERMINES(id -> a)**/", PROVED),
+    "F1-": ("SELECT t.b, r.q FROM t FULL JOIN (SELECT * FROM v WHERE q = 1) AS r ON r.w = t.a /**ASSERT DETERMINES(b -> q)**/", UNKNOWN),
+    "F1-left": ("SELECT s.b, u.k FROM (SELECT * FROM t WHERE b = 1) AS s FULL JOIN u ON u.k = s.a /**ASSERT DETERMINES(k -> b)**/", UNKNOWN),
+    "F3": ("SELECT t.id, u.k FROM t FULL JOIN u ON u.k = t.a /**ASSERT UNIQUE(id, k)**/", PROVED),
+    "F3-": ("SELECT t.id, u.k FROM t FULL JOIN u ON u.k = t.a /**ASSERT UNIQUE(id)**/", UNKNOWN),
+    "F5-": ("SELECT t.b, u.k FROM t FULL JOIN u ON u.k = t.a AND t.b = 1 /**ASSERT ENUM(b IN (1))**/", UNKNOWN),
+    "F6": ("SELECT t.b, r.w, r.q FROM t FULL JOIN (SELECT * FROM v WHERE q = w) AS r ON r.w = t.a /**ASSERT DETERMINES(w -> q)**/", PROVED),
+    "F8": ("SELECT t.d FROM t FULL JOIN u ON u.k = t.a WHERE t.id IS NOT NULL /**ASSERT NOT NULL(d)**/", PROVED),
+    "F8-": ("SELECT t.d FROM t FULL JOIN u ON u.k = t.a /**ASSERT NOT NULL(d)**/", UNKNOWN),
 }
 
 
