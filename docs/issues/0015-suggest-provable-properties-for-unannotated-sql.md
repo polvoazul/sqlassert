@@ -49,7 +49,7 @@ Suggestions are ranked by how directly they improve the SQL:
 - **Low: other code smells.** Open.
 
 The High level depends on functional dependencies and null sources
-([issue 24](0024-functional-dependency-reasoning.md)).
+(issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md))).
 
 ## Design decisions (Mid level, built)
 
@@ -112,7 +112,7 @@ Still open:
 
 - [ ] High level: `INNER JOIN` for a LEFT JOIN that cannot pad, redundant
   joins, redundant `DISTINCT` / determined `GROUP BY` columns. Needs
-  [issue 24](0024-functional-dependency-reasoning.md).
+  issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md)).
 - [ ] Low level: other code smells.
 - [ ] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
 
