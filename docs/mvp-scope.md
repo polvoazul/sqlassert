@@ -11,12 +11,12 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - Grouping keys and aggregate expressions.
 - `INNER` and `LEFT` Unique Join Assertions.
 - `ON` predicates composed from simple equalities joined by `AND`, plus `USING`.
-- Candidate Keys and nullable Unique Sets supplied by DDL or IR-linked Knowledge.
-- Unique Set Assertions (`/**ASSERT UNIQUE(...)**/` and `/**ASSERT PRIMARY KEY(...)**/`) written on any Select Expression -- a Root Select, a view, a CTE, or a subquery -- proved against Unique Sets already derivable for that Relation Expression's output columns, and fed forward as Knowledge-equivalent facts for later statements.
+- Non-Null Unique Sets and nullable Unique Sets supplied by DDL or IR-linked Knowledge.
+- Unique Set Assertions (`/**ASSERT UNIQUE(...)**/` and `/**ASSERT NOT NULL UNIQUE(...)**/`, alias `PRIMARY KEY`) written on any Select Expression -- a Root Select, a view, a CTE, or a subquery -- proved against Unique Sets already derivable for that Relation Expression's output columns, and fed forward as Knowledge-equivalent facts for later statements.
 - A proven-unique join's own output earns every Unique Set of its left-hand input, so uniqueness composes through a join exactly as it does through Filter and Project.
 - Uniqueness propagated through grouping, `DISTINCT`, projection, filtering, joining, and recognized `row_number() = 1` partition qualification.
-- Not-null Assertions (`/**ASSERT NOT NULL(...)**/`) at the same attachment sites, proved from `NOT NULL`/`PRIMARY KEY` constraints, declarations, non-null literals, and `coalesce` with a non-null argument, followed through pass-through columns and lost on the null-extended side of an outer join. `/**ASSERT PRIMARY KEY(...)**/` is proved as a Unique Set whose every column is non-null.
-- Property Declarations (`/**DECLARE UNIQUE(...)**/`, `/**DECLARE NOT NULL(...)**/`, `/**DECLARE PRIMARY KEY(...)**/`) at the same attachment sites, trusted without proof and producing no assertion result.
+- Not-null Assertions (`/**ASSERT NOT NULL(...)**/`) at the same attachment sites, proved from `NOT NULL`/`PRIMARY KEY` constraints, declarations, non-null literals, and `coalesce` with a non-null argument, followed through pass-through columns and lost on the null-extended side of an outer join. `/**ASSERT NOT NULL UNIQUE(...)**/` is proved as a Unique Set whose every column is non-null.
+- Property Declarations (`/**DECLARE UNIQUE(...)**/`, `/**DECLARE NOT NULL(...)**/`, `/**DECLARE NOT NULL UNIQUE(...)**/`) at the same attachment sites, trusted without proof and producing no assertion result.
 - `PROVED` and `UNKNOWN` outcomes.
 - Deterministic Python analysis with `Result` evidence.
 
@@ -36,4 +36,4 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 
 ## Null Semantics
 
-A Unique Set guarantees that fully non-null value combinations do not repeat. A Candidate Key is a Unique Set whose columns are all non-null. Nullable Unique Sets are sufficient for ordinary equality-join uniqueness because null values do not match; null-safe equality is outside the MVP.
+A Unique Set guarantees that fully non-null value combinations do not repeat. A Non-Null Unique Set is a Unique Set whose columns are all non-null. Nullable Unique Sets are sufficient for ordinary equality-join uniqueness because null values do not match; null-safe equality is outside the MVP.

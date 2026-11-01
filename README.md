@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports Unique Join Assertions and Unique Set Assertions, including non-null Candidate Keys. It is only tested with the DuckDB SQL dialect._
+_Alpha warning: Today `sqlassert` supports Unique Join Assertions and Unique Set Assertions, including Non-Null Unique Sets. It is only tested with the DuckDB SQL dialect._
 
 ## Features
 
@@ -28,9 +28,9 @@ from sessions
 
 The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `sqlassert` reads the query separately and validates that the RHS is provably unique for the join keys.
 
-### Unique Set and Candidate Key
+### Unique Set and Non-Null Unique Set
 
-A Select Expression can assert that specific output columns form a Unique Set. Use `UNIQUE` when the columns may be null, or `PRIMARY KEY` when every column must also be non-null:
+A Select Expression can assert that specific output columns form a Unique Set. Use `UNIQUE` when the columns may be null, or `NOT NULL UNIQUE` when every column must also be non-null:
 
 ```sql
 create table users (
@@ -42,16 +42,18 @@ create view active_users as
 select id, email
 from users
 where id > 0
-/**ASSERT PRIMARY KEY(id)**/;
+/**ASSERT NOT NULL UNIQUE(id)**/;
 
 select * from active_users;
 ```
 
-The trailing marker applies to the relation produced by that Select Expression. `/**ASSERT PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**ASSERT UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
+The trailing marker applies to the relation produced by that Select Expression. `/**ASSERT NOT NULL UNIQUE(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**ASSERT UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
 
 Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subquery. A proved assertion on a named relation is also available to later statements in the same SQL Program.
 
-A `PRIMARY KEY` assertion is proved when the columns are a Unique Set and each one is non-null.
+A `NOT NULL UNIQUE` assertion is proved when the columns are a Unique Set and each one is non-null.
+
+`PRIMARY KEY` is accepted as a convenience alias for `NOT NULL UNIQUE` (`/**ASSERT PRIMARY KEY(id)**/`, `/**DECLARE PRIMARY KEY(id)**/`). Unlike SQL's `PRIMARY KEY`, it does not mean one key per relation: a relation may have several Non-Null Unique Sets, and nothing checks that only one is marked.
 
 ### Not Null
 
@@ -72,7 +74,7 @@ select * from orders
 /**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
 ```
 
-A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, and `DECLARE PRIMARY KEY` -- attached wherever its `ASSERT` form can be. `DECLARE PRIMARY KEY(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
+A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, and `DECLARE NOT NULL UNIQUE` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
 
 ## Usage
 
@@ -104,9 +106,9 @@ for assertion in report.assertions:
     print(assertion.evidence.explain())
 ```
 
-The rules are in `rules/unique_join.py` and `rules/uniqueness.py`; shared
-proof composition, declaration lookup, and per-analysis caching live in
-`python_engine.py`. Candidate-key derivation is not implemented yet.
+The rules are in `rules/unique_join.py`, `rules/uniqueness.py`, and
+`rules/nullability.py`; shared proof composition, declaration lookup, and
+per-analysis caching live in `python_engine.py`.
 
 For a test suite, keep your model/query SQL as strings or load them from files, and include (or generate) the `CREATE` statements for whatever schema the query assumes:
 

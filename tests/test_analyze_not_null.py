@@ -1,4 +1,4 @@
-"""Not-null assertions and declarations, and the Candidate Keys they complete.
+"""Not-null assertions and declarations, and the Non-Null Unique Sets they complete.
 
 `/**ASSERT NOT NULL(...)**/` asks for one proof covering every listed column;
 `/**DECLARE NOT NULL(...)**/` and `/**DECLARE PRIMARY KEY(...)**/` state trusted
@@ -129,7 +129,7 @@ def test_a_not_null_declaration_does_not_survive_null_extension():
     ) == [Outcome.UNKNOWN]
 
 
-# Candidate Keys --------------------------------------------------------------
+# Non-Null Unique Sets --------------------------------------------------------------
 
 
 def test_a_primary_key_assertion_needs_uniqueness_and_non_nullness():

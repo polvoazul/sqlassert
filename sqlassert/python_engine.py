@@ -160,28 +160,6 @@ class Arena:
         self.accepted: dict[tuple, tuple[Result[bool], ...]] = {}
         self.program = program
         self.knowledge = (*knowledge, *program.declarations)
-        nodes: dict[ir.Node, None] = {}
-
-        def visit(node: ir.Node) -> None:
-            if node in nodes:
-                return
-            nodes[node] = None
-            for child in ir.children(node):
-                visit(child)
-
-        for node in (*program.named_relations, *program.assertions):
-            visit(node)
-        if program.root is not None:
-            visit(program.root)
-        self.relations = []
-        for node in nodes:
-            match node:
-                case ir.RelationExpr():
-                    self.relations.append(node)
-                case ir.ScalarExpr() | ir.OutputColumn() | ir.Assertion():
-                    pass
-                case _:
-                    raise TypeError(f"Unhandled IR node: {type(node).__name__}")
         # Schema Knowledge is accepted; Property Declarations are the author's trusted claims.
         sources = [("Accepted", item) for item in knowledge] + [("Declared", item) for item in program.declarations]
         for label, item in sources:
@@ -200,9 +178,6 @@ class Arena:
                 arguments = tuple(sorted((field.name, getattr(item, field.name)) for field in fields(cls)))
                 key = (snake(cls.__name__), arguments)
                 self.accepted[key] = (*self.accepted.get(key, ()), evidence)
-
-    def relations_for(self, columns: frozenset[ir.OutputColumn]) -> tuple[ir.RelationExpr, ...]:
-        return tuple(relation for relation in self.relations if columns and columns <= set(relation.output_columns))
 
     def prove(self, property: Property) -> Result[bool]:
         values = {field.name: getattr(property, field.name) for field in fields(property)}

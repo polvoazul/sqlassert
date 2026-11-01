@@ -95,7 +95,7 @@ def test_a_nullable_unique_set_proves_ordinary_equality_uniqueness():
     assert report.proved
 
 
-def test_a_candidate_key_also_proves_ordinary_equality_uniqueness():
+def test_a_non_null_unique_set_also_proves_ordinary_equality_uniqueness():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);

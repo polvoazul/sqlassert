@@ -15,7 +15,7 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.properties import CandidateKey, NonNullColumn, NonNullColumns, Property, UniqueJoin, UniqueSet
+from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
 from sqlassert.provenance import Origin, SQL
 from sqlassert.sql_parse import MARKER_NOUNS, ParsedProgram, assertion_line, join_origin, column_markers
 
@@ -603,7 +603,7 @@ class IrParser:
                 case "unique":
                     self._assertions.append(ir.Assertion(origin=origin, property=UniqueSet(columns=members)))
                 case "key":
-                    self._assertions.append(ir.Assertion(origin=origin, property=CandidateKey(columns=members)))
+                    self._assertions.append(ir.Assertion(origin=origin, property=NonNullUniqueSet(columns=members)))
                 case "not-null":
                     self._assertions.append(ir.Assertion(origin=origin, property=NonNullColumns(columns=members)))
                 case "declared-unique":
@@ -611,7 +611,7 @@ class IrParser:
                 case "declared-key":
                     # Non-nullness is declared per column too, so it outlives
                     # projections that drop part of a composite key.
-                    self._declarations.append(CandidateKey(columns=members))
+                    self._declarations.append(NonNullUniqueSet(columns=members))
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
                 case "declared-not-null":
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
