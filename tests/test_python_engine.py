@@ -171,7 +171,7 @@ def test_join_proof_retains_schema_and_equality_sources_and_reuses_cached_claims
         assert set(columns.members) == columns.value.columns
         nodes = tuple(walk(proof))
         assert any(node.kind == "accepted" for node in nodes)
-        assert any(join.equalities[0] in node.subjects for node in nodes)
+        assert any(join.conjuncts[0] in node.subjects for node in nodes)
         text = proof.explain()
         assert "PROVED: unique_join" in text
         assert "line" in text
@@ -207,7 +207,7 @@ def test_two_covering_keys_retain_both_justifications():
 
 
 def test_unique_set_and_non_null_declarations_use_the_same_decorator():
-    conversion = convert()
+    conversion = convert("CREATE TABLE events(user_id INTEGER); SELECT user_id FROM events")
     column = conversion.program.root.output_columns[0]
     columns = frozenset((column,))
     program = replace(conversion.program, declarations=(UniqueSet(columns=columns), NonNullColumn(column=column)))

@@ -172,6 +172,26 @@ def test_a_false_exactly_one_join_claim_is_refuted_by_a_repeated_match():
     assert len(counterexample.instance["users"]) == 2
 
 
+def test_a_false_dependency_claim_is_refuted_by_two_dependent_values():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+        SELECT zip, city FROM addresses /**ASSERT DETERMINES(zip -> city)**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert len(counterexample.instance["addresses"]) == 2
+
+
+def test_a_null_determinant_never_violates_a_dependency():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+        SELECT zip, city FROM addresses WHERE zip IS NULL /**ASSERT DETERMINES(zip -> city)**/
+    """))
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+
+
 def test_rows_with_null_never_violate_a_unique_set():
     sql = """
         CREATE TABLE t (id INTEGER UNIQUE);

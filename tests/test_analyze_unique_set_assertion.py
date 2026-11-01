@@ -268,3 +268,25 @@ def test_report_facts_includes_unique_sets_earned_through_a_proved_assertion():
     )
 
     assert report.facts.is_unique("dedup", ["id"])
+
+
+def test_assertions_cannot_prove_themselves_or_each_other():
+    report = analyze(
+        """
+        CREATE TABLE t (id INTEGER, name VARCHAR);
+        SELECT id, name FROM t /**ASSERT UNIQUE(id)**/ /**ASSERT UNIQUE(id, name)**/
+        """
+    )
+
+    assert [a.outcome for a in report.assertions] == [Outcome.UNKNOWN, Outcome.UNKNOWN]
+
+
+def test_a_subset_of_a_known_composite_unique_set_is_not_proved_unique():
+    report = analyze(
+        """
+        CREATE TABLE t (id INTEGER, name VARCHAR, region VARCHAR, UNIQUE (id, region));
+        SELECT id, name FROM t /**ASSERT UNIQUE(id, name)**/
+        """
+    )
+
+    assert [a.outcome for a in report.assertions] == [Outcome.UNKNOWN]

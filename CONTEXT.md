@@ -141,7 +141,7 @@ A set of relation columns whose fully non-null value combinations cannot repeat.
 _Avoid_: Candidate key
 
 **Derived Unique Set**:
-A Unique Set established for one Relation Expression from a Unique Set of an upstream Relation Expression.
+A Unique Set established for one Relation Expression by functional dependencies rather than stated directly: its columns determine the relation's Row Identity, possibly through Unique Sets and dependencies of upstream Relation Expressions.
 _Avoid_: Propagated key
 
 **Non-Null Unique Set**:
@@ -167,6 +167,10 @@ _Avoid_: Reference, relationship, join key
 **Functional Dependency**:
 A Property of a relation, written `X → Y` (`DETERMINES`): any two rows that agree on the columns X also agree on the columns Y, for every database the schema allows. Strict when NULL counts as agreeing with NULL; lax when it holds only on rows whose X columns are all non-null.
 _Avoid_: Correlation, derived column
+
+**Null Source**:
+A reason an output column may be NULL: organically (a nullable source column, an opaque expression, a NULL literal) or because an outer join padded its row. A column is non-null when it has no Null Source; a null-rejecting condition on a padded column proves its join matched and removes that padding from every column it padded.
+_Avoid_: Nullable flag, null-extension
 
 **Row Identity**:
 An analysis-only value that tells apart every row of one Relation Expression, duplicates included. A column set is a Unique Set when it determines the relation's Row Identity. Never appears in the IR, in SQL, or to authors.

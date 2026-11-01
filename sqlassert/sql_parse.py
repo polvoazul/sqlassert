@@ -55,6 +55,8 @@ class SqlassertToken(enum.Enum):
     SQLASSERT_DECLARED_NOT_NULL_OPEN = enum.auto()
     SQLASSERT_FOREIGN_KEY_OPEN = enum.auto()
     SQLASSERT_DECLARED_FOREIGN_KEY_OPEN = enum.auto()
+    SQLASSERT_DETERMINES_OPEN = enum.auto()
+    SQLASSERT_DECLARED_DETERMINES_OPEN = enum.auto()
     SQLASSERT_MARKER_CLOSE = enum.auto()
 
 
@@ -72,7 +74,8 @@ class SqlassertToken(enum.Enum):
 # identifier-list machinery once the open token is matched
 # (`_Parser._parse_select_query` below). A Foreign Key marker continues its
 # column list with `REFERENCES relation(col, ...)`, pairing columns by position:
-# `/**ASSERT FOREIGN KEY(a, b) REFERENCES t(x, y)**/`.
+# `/**ASSERT FOREIGN KEY(a, b) REFERENCES t(x, y)**/`. A Functional Dependency
+# marker splits its list with `->`: `/**ASSERT DETERMINES(a, b -> c)**/`.
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
     "/**ASSERT EXACTLY ONE**/": SqlassertToken.SQLASSERT_EXACTLY_ONE,
@@ -88,6 +91,8 @@ MARKERS = {
     "/**DECLARE NOT NULL(": SqlassertToken.SQLASSERT_DECLARED_NOT_NULL_OPEN,
     "/**ASSERT FOREIGN KEY(": SqlassertToken.SQLASSERT_FOREIGN_KEY_OPEN,
     "/**DECLARE FOREIGN KEY(": SqlassertToken.SQLASSERT_DECLARED_FOREIGN_KEY_OPEN,
+    "/**ASSERT DETERMINES(": SqlassertToken.SQLASSERT_DETERMINES_OPEN,
+    "/**DECLARE DETERMINES(": SqlassertToken.SQLASSERT_DECLARED_DETERMINES_OPEN,
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
@@ -104,7 +109,8 @@ JOIN_MARKER_NOUNS = {"unique-join": "unique join", "exactly-one-join": "exactly 
 # The open literals of a column marker, and the kind each one states --
 # "unique" is a nullable-tolerant Unique Set, "key" the stricter
 # Non-Null Unique Set, "not-null" non-nullness of every listed column, and
-# "foreign-key" a Foreign Key from the listed columns. A "declared-" kind states
+# "foreign-key" a Foreign Key from the listed columns, "determines" a Functional
+# Dependency from the columns before `->` to those after. A "declared-" kind states
 # the same Property as a trusted declaration.
 _COLUMN_MARKER_OPENS = {
     "/**ASSERT UNIQUE(": "unique",
@@ -117,13 +123,20 @@ _COLUMN_MARKER_OPENS = {
     "/**DECLARE NOT NULL(": "declared-not-null",
     "/**ASSERT FOREIGN KEY(": "foreign-key",
     "/**DECLARE FOREIGN KEY(": "declared-foreign-key",
+    "/**ASSERT DETERMINES(": "determines",
+    "/**DECLARE DETERMINES(": "declared-determines",
 }
 
 # Column marker kinds that are Property Declarations rather than Assertions.
-DECLARED_KINDS = frozenset({"declared-unique", "declared-key", "declared-not-null", "declared-foreign-key"})
+DECLARED_KINDS = frozenset({
+    "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines",
+})
 
 # Column marker kinds followed by `REFERENCES relation(col, ...)`.
 FOREIGN_KEY_KINDS = frozenset({"foreign-key", "declared-foreign-key"})
+
+# Column marker kinds whose list is `determinant -> dependent`.
+DETERMINES_KINDS = frozenset({"determines", "declared-determines"})
 
 # How diagnostics name each column marker kind.
 MARKER_NOUNS = {
@@ -135,6 +148,8 @@ MARKER_NOUNS = {
     "declared-not-null": "not null declaration",
     "foreign-key": "foreign key assertion",
     "declared-foreign-key": "foreign key declaration",
+    "determines": "functional dependency assertion",
+    "declared-determines": "functional dependency declaration",
 }
 
 # Where resolved column markers are recorded on its Select node.
@@ -154,7 +169,9 @@ class ColumnMarker(NamedTuple):
     """One column marker as written: `kind` is a value of `_COLUMN_MARKER_OPENS`.
 
     A Foreign Key marker also names the referenced relation, as written, and
-    its referenced columns, paired with `columns` by position.
+    its referenced columns, paired with `columns` by position. A Functional
+    Dependency marker's `columns` are its determinant and `dependent` the
+    columns after `->`.
     """
 
     kind: str
@@ -162,6 +179,7 @@ class ColumnMarker(NamedTuple):
     line: int
     referenced_relation: str | None = None
     referenced_columns: tuple[str, ...] = ()
+    dependent: tuple[str, ...] = ()
 
 
 class UnattachedMarker(ParseError):
@@ -278,7 +296,11 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 line = self._curr.line
                 self._advance()
 
-                names = self._parse_marker_columns(kind, line)
+                dependent: tuple[str, ...] = ()
+                if kind in DETERMINES_KINDS:
+                    names, dependent = self._parse_marker_dependency(kind, line)
+                else:
+                    names = self._parse_marker_columns(kind, line)
                 referenced_relation, referenced_columns = None, ()
                 if kind in FOREIGN_KEY_KINDS:
                     referenced_relation, referenced_columns = self._parse_marker_reference(kind, line, len(names))
@@ -287,7 +309,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                         f"the {MARKER_NOUNS[kind]} on line {line} is not closed with **/", line, self._prev.text
                     )
 
-                found.append(ColumnMarker(kind, names, line, referenced_relation, referenced_columns))
+                found.append(ColumnMarker(kind, names, line, referenced_relation, referenced_columns, dependent))
 
             if found:
                 result.meta[_COLUMN_MARKERS_AT] = found
@@ -331,6 +353,24 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                     self._prev.text,
                 )
             return names
+
+        def _parse_marker_dependency(self, kind: str, line: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+            """`determinant -> dependent`, each a column list, through the closing parenthesis."""
+            determinant = tuple(column.name for column in self._parse_csv(self._parse_id_var))
+            if not determinant or not self._match(TokenType.ARROW):
+                raise UnattachedMarker(
+                    f"the {MARKER_NOUNS[kind]} on line {line} must list columns, then ->, then the columns they determine",
+                    line,
+                    self._prev.text,
+                )
+            dependent = self._parse_marker_columns(kind, line)
+            if len({name.lower() for name in determinant}) != len(determinant):
+                raise UnattachedMarker(
+                    f"the {MARKER_NOUNS[kind]} on line {line} names the same column more than once",
+                    line,
+                    self._prev.text,
+                )
+            return determinant, dependent
 
         def _parse_marker_reference(self, kind: str, line: int, count: int) -> tuple[str, tuple[str, ...]]:
             """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
@@ -504,7 +544,8 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
 def _marker_shape(open_: str, kind: str) -> str:
     """The whole user-facing shape of a column marker opening with `open_`."""
     reference = " REFERENCES relation(...)" if kind in FOREIGN_KEY_KINDS else ""
-    return f"{open_}...){reference}**/"
+    columns = "... -> ..." if kind in DETERMINES_KINDS else "..."
+    return f"{open_}{columns}){reference}**/"
 
 
 def _bare_marker_hint(text: str) -> str:

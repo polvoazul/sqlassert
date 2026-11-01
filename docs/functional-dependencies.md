@@ -1,7 +1,7 @@
 # Functional Dependencies
 
-Task notes for adding functional-dependency (FD) reasoning to the engine.
-Theory first; implementation comes after the theory notes settle.
+Functional-dependency (FD) reasoning in the engine: the theory, then how the
+rules implement it (Representation).
 
 Main source: Paulley, *Exploiting Functional Dependence in Query Optimization*
 ([PDF](../papers/2000-paulley-exploiting-functional-dependence-in-query-optimization.pdf)).
@@ -213,50 +213,32 @@ FD survives. The new columns:
 Ordered roughly by payoff over cost.
 
 - [ ] **Null-equal strict key property** — what `DISTINCT`, `GROUP BY`, and
-  `UNION` produce over nullable columns; needed by GROUP BY elimination and
-  set-operation rules.
-- [ ] **GROUP BY elimination** — no FDs needed: `_preserving_input` lets an
-  Aggregate preserve input unique sets when its grouping columns cover a
-  strict key of the input (a Non-Null Unique Set, or a `DISTINCT` / `GROUP BY`
-  output).
-- [ ] **Equalities and constants as FDs** — each strict equality predicate
-  emits the FD pair `a ↔ b`; `a = literal` emits `∅ → a`. Closure then proves
-  two cases that are UNKNOWN today:
-  - Columns that determine each other are interchangeable in a key. With
-    `orders` keyed on `(user_id, order_no)`, the ON clause gives
-    `o.user_id ↔ u.id`, so this proves:
-    ```sql
-    select u.id, o.order_no
-    from orders o join users u on o.user_id = u.id
-    /**ASSERT UNIQUE(id, order_no)**/
-    ```
-  - A constant column drops out of a key. With `items` keyed on
-    `(tenant_id, id)`, this proves:
-    ```sql
-    select id from items where tenant_id = 5
-    /**ASSERT UNIQUE(id)**/
-    ```
-  Needs `Filter` to carry its predicate (see [issue 23](issues/0023-close-ir-lowering-gaps.md)).
-  Strict equalities only (inner-join ON, `WHERE`): lax ones are not transitive
-  (Paulley eq9b), and an outer join's ON equality does not hold on padded rows.
-- [ ] **General FDs and closure-based coverage** — `_fds(relation)` beside
-  `_unique_sets(relation)`, and `_coverage` checks `closure(S) ⊇ key` instead
-  of `S ⊇ key`.
+  `UNION` produce over nullable columns. The closure already computes it
+  (`definite = ∅`); it needs a name and a marker.
+- [x] **GROUP BY elimination** — falls out of closure: an Aggregate's
+  AnyAggregate column carries its input's dependencies when the grouping
+  columns strictly determine it, and two groups agreeing on a key of the input
+  are one group.
+- [x] **Equalities and constants as FDs** — `WHERE` and inner-join `ON`
+  equalities give `a ↔ b`, `a = literal` and `a IS NULL` give `∅ → a`:
+  `select id from items where tenant_id = 5` is unique on `id`, and
+  `u.id` stands in for `o.user_id` under `on o.user_id = u.id`.
+- [x] **General FDs and closure-based coverage** — see Representation below.
 - [ ] **Deterministic expressions** — `inputs → f(inputs)`, with a small
   denylist of impure functions (`random`, `uuid`, `nextval`).
 - [ ] **Injective expressions** — a curated allowlist (lossless casts,
   `x ± constant`); everything else non-injective.
-- [ ] **Strict/lax FDs in the left-join rules** above, including η.
-- [ ] **Set-operation rules** above (INTERSECT, EXCEPT, UNION, tagged
-  UNION ALL).
+- [x] **Strict/lax FDs in the left-join rules** above, including η.
+- [x] **Set-operation rules** — UNION / INTERSECT / EXCEPT without `ALL` key
+  all their columns; INTERSECT and EXCEPT keep the left input's dependencies.
+  Not yet: tagged `UNION ALL`, and the right arm's columns.
 - [ ] **Window functions** — lower windows into the IR (today only
   `QUALIFY row_number() … = 1` is recognized), inherit input keys and FDs, and
   add the `row_number` key and partition-constant aggregate FDs above.
 
-## Representation design (draft)
+## Representation
 
-Combines the proposal from discussion with what the literature adds
-(`literature-notes.md`). Not final; decisions marked **Decide**.
+The code is `sqlassert/rules/uniqueness.py` and `sqlassert/rules/nullability.py`.
 
 ### Vocabulary in the rules
 
@@ -266,121 +248,121 @@ class RowIdentity:          # Paulley's ι: one per relation, never in the IR
     relation: ir.RelationExpr
 
 @dataclass(frozen=True)
-class FunctionalDependency:
-    determinant: frozenset[ir.OutputColumn]          # empty = constant
+class Dependency:
+    determinant: frozenset[ir.OutputColumn | RowIdentity]   # empty = constant
     dependent: ir.OutputColumn | RowIdentity
-    strict: bool                                     # False = lax
+    strict: bool                                            # False = lax
 
-@analysis
-def _functional_dependencies(relation) -> Result[dict[FunctionalDependency, Result[bool]]]: ...
+@analysis(Stratum.FUNCTIONAL_DEPENDENCY)
+def _functional_dependencies(relation) -> Result[dict[Dependency, Result[bool]]]: ...
 
-@analysis
-def _closure(relation, columns, *, strict: bool) -> Result[ColumnSet]: ...
+@analysis(Stratum.CLOSURE)
+def _closure(relation, columns, definite) -> Result[Closure]: ...
 ```
 
+(`FunctionalDependency` is the user-facing Property; the internal value is
+`Dependency`.)
+
 - **One mechanism for uniqueness.** Keys are FDs to `RowIdentity`;
-  equalities are FD pairs; constants are FDs from `∅`. Queries have tens of
-  columns, so the counter-based closure (Paulley's FD-graph BFS) is cheap.
-  Union-find arrives later for value facts only (see Kept outside the FD
-  closure); it never decides uniqueness.
-- **Why not union-find for uniqueness, given it comes later anyway.** It
-  covers equalities and constants only; injective expressions, `GROUP BY`
-  FDs, multi-column determinants, and lax FDs need closure regardless, which
-  would leave two mechanisms deciding one property. A union-find also forgets
-  which equality merged two columns, while `explain()` needs that chain.
-  Both mechanisms read one shared list of extracted equality facts, so the
-  predicate logic is written once.
-- **Three key kinds fall out of two FD strengths** plus the existing
-  nullability rule:
-  - Unique Set (lax key): `closure(S, strict=False)` reaches `RowIdentity`.
-  - Null-equal strict key (new property): `closure(S, strict=True)` reaches it.
-  - Non-Null Unique Set: strict key and `non_null_columns(S)`.
-- **Lax steps need non-null middles.** In lax mode the closure only steps
-  through a lax FD whose determinant columns are proved non-null; a lax FD
-  with a proved non-null determinant counts as strict (Paulley fd4b, fd6).
-- **Evidence for free.** `_closure` returns a `ColumnSet` whose `members`
-  hold one `Result` per reached column, citing the FD that fired and its
-  determinant's members. `_coverage` and `unique_join` already consume
-  `members` this way, so `explain()` shows chains without new plumbing.
-- **Hide, don't delete.** A relation's FD set may mention its inputs' columns
-  (reachable through `ColumnRef`), so projecting a column away never needs a
-  closure recomputation (Paulley §3.2.2).
+  equalities are FD pairs; constants are FDs from `∅`. A column set is a
+  Unique Set when its closure reaches the relation's Row Identity, and a join
+  is a Unique Join when the right columns the ON condition binds reach the
+  right input's. Union-find arrives later for value facts only (issue 26); it
+  never decides uniqueness, because it covers equalities and constants only
+  and forgets which equality merged two columns, which `explain()` needs.
+- **Strict and lax in one closure.** `_closure(relation, columns, definite)`
+  considers the pairs of rows on which every `definite` attribute is non-null.
+  A Unique Set and a `DETERMINES` assertion pass `definite = columns` (lax: a
+  NULL exempts a row); `definite = ∅` is the strict, null-equal closure, used
+  for what an Aggregate's groups share. Strict dependencies always fire; a lax
+  one fires only when every determinant column is definite: requested, or
+  proved non-null in the relation (Paulley fd4b, fd6, fd7b).
+- **Delegation instead of copying ("hide, don't delete").** A relation's
+  `_functional_dependencies` holds only what it introduces itself, over its own
+  output columns and Row Identity (a join also names its inputs' identities).
+  `_closure` maps the attributes it has reached into each input through
+  pass-through columns, takes the input's closure there, and maps what that
+  reaches back. Columns a projection drops still take part, transitively, with
+  no recomputation. This deviates from the draft, which copied input
+  dependencies up as hidden columns: copying breaks on self joins (two Aliases
+  of one Named Relation would share its columns and identity) and on outer
+  joins (a hidden padded-side column has no value on a padded row); delegation
+  avoids both because every closure is about one relation's rows. How rows map
+  onto input rows decides when delegating is sound:
+  - Alias, Named Relation, Filter, Project, QUALIFY: one output row is one
+    input row; `RowIdentity(out) ↔ RowIdentity(in)`.
+  - Join: each side separately. A side the join pads is compared as input rows
+    only when the two rows cannot be one matched and one padded: some reached
+    column of that side is NULL only by padding (η), is requested non-null, or
+    the side's identity is reached; or the preserved side's ON columns are
+    reached, which fixes whether both rows matched.
+  - Aggregate, Distinct, INTERSECT / EXCEPT: an output row stands for input
+    rows sharing its pass-through values. Two output rows agreeing on some of
+    them have representatives agreeing on them, so what those determine in the
+    input carries back to pass-through outputs, to an AnyAggregate column whose
+    source is constant per group, and to the output's Row Identity (one input
+    row belongs to one output row).
+- **Evidence.** `_closure` returns a `Closure` whose `members` hold one
+  `Result` per reached attribute, citing the dependency or input closure that
+  reached it; when several reach it, their evidence is combined, so two
+  covering keys both appear in `explain()`. An UNKNOWN names, for each known
+  key down through the inputs the closure looked into, its missing columns.
 
-### Row identities replace special cases
+### Where dependencies come from
 
-- Project, Filter, Window: `RowIdentity(out) ↔ RowIdentity(in)`.
-- Join: `{RowIdentity(L), RowIdentity(R)} → RowIdentity(out)`. A Unique Join
-  adds `RowIdentity(L) → RowIdentity(R)`, so left keys reach the output's
-  identity by transitivity. This subsumes `_preserving_input`'s join case.
-- Aggregate, Distinct, `UNION`: a fresh `RowIdentity`, determined by the
-  grouping / all output columns (strict).
-- **Single-row relations**: `∅ → RowIdentity(r)` (an aggregate without
-  `GROUP BY`, or a `WHERE` that pins a key to constants). Joined with
-  anything, the other side's identity determines everything (Paulley p.254).
-  Also the precondition for "scalar subquery is single-valued".
+- Knowledge and declarations: a Unique Set is a lax `columns → RowIdentity`;
+  a declared `DETERMINES` is lax `determinant → each dependent`.
+- Literal outputs: `∅ → c`.
+- `WHERE` and inner-join `ON`: `a = b` both ways, `a = literal` and
+  `a IS NULL` from `∅`.
+- Join: `{RowIdentity(L), RowIdentity(R)} → RowIdentity(out)`; a Unique Join
+  adds `RowIdentity(L) → RowIdentity(out)` and `RowIdentity(L) →
+  RowIdentity(R)`. An Exactly One Join needs nothing more: its
+  `RowIdentity(out) ↔ RowIdentity(L)` is this plus "an identity determines
+  every column".
+- Outer join ON (Paulley Lemma 9): equalities within the padded side stay
+  strict; the preserved side's ON columns determine every padded column the
+  condition binds to them or to a literal (`{t.x, t.y, t.z} → s.d` in Example
+  20); a cross-side equality is lax from the padded side. With an
+  unrecognized conjunct, only the preserved row's identity fixes the match.
+- GROUP BY, DISTINCT, QUALIFY, and distinct set operations: their key columns
+  → `RowIdentity` (strict, NULLs grouped together).
+- A Row Identity determines every column of its relation.
 
-### Inputs the IR must provide first
+### Null sources
 
-- `Filter` carries recognized conjuncts: `col = col`, `col = constant`,
-  `IS NOT NULL`, `IS NULL`; everything else opaque.
-- Join ON conjuncts beyond top-level `=`, enough to evaluate η.
-- Outer joins expose which right-side columns are NOT NULL in the right input
-  (for η and the padding `matched` idea).
-
-### Null sources (decided, first cut)
-
-Replaces the boolean non-null analysis outright (no compatibility layer, see
-`AGENTS.md`). `null_sources(column)` returns the set of reasons the column can
-be NULL:
+`_null_sources(column)` returns the set of reasons a column can be NULL:
 
 - `Organic`: the value itself may be NULL (nullable source column, opaque
   expression, NULL literal). Per column.
-- `Padding(J)`: outer join J pads the column. The unit is one join's padded
-  column set, not the whole row: a row can be matched by one join and padded
-  by another. Nested outer joins accumulate tags:
-  `o LEFT JOIN (u LEFT JOIN p)` gives the `p` columns `{Padding(J1), Padding(J2)}`.
+- `Padding(J)`: outer join J pads the column. Tagged with the Aliases it was
+  seen through, so two occurrences of one relation never share a padding.
 
 Non-null means the set is empty, so `NonNullColumn` keeps its meaning.
 
-Rules:
+- **Padding promotion.** A null-rejecting `WHERE` or inner-join `ON` conjunct
+  (`IS NOT NULL`, `= ...`) on a column carrying `Padding(J)` proves J matched,
+  and removes `Padding(J)` from every column carrying it.
+- **Organic removal** is per column: the same conjunct removes `Organic` from
+  the column it constrains only.
+- **The ON condition** acts on the padded side's rows before padding: a
+  padded-side column it rejects loses `Organic`, leaving only `Padding(J)`.
+  That is η: padding is the column's only NULL source.
+- A proved Exactly One LEFT join pads nothing.
+- An Aggregate's non-grouping columns turn padding into `Organic`: the row a
+  group's value came from is not tied to the rows the join padded.
 
-- **Padding promotion** (the `matched` idea). A column carrying `Padding(J)`
-  is NULL on every row J pads. So a null-rejecting conjunct on it
-  (`IS NOT NULL`, `= constant`, `= col`) proves J matched on the surviving
-  rows, and removes `Padding(J)` from **every** column carrying it. When no
-  column carries `Padding(J)` any more, the LEFT JOIN behaves as INNER.
-- **Organic removal** is per column: the same conjunct also removes
-  `Organic` from the column it constrains, and only from that column.
-  One conjunct can do both: `WHERE u.email IS NOT NULL` with `u.email`
-  nullable removes `Organic` from `u.email` and `Padding(J)` everywhere.
-- **The ON condition** acts on the right input's rows before padding: a
-  right-side column rejected by it (`r.y` in `ON l.x = r.y`) loses `Organic`
-  in the join output, leaving only `Padding(J)`.
-- **η and lax-to-strict** reduce to one question: is padding the only NULL
-  source of the determinant column, and has it been removed? A right-side FD
-  stays strict when some determinant column has no `Organic` source; it
-  becomes fully non-null once its padding is removed too.
-
-Motivation: explanations name the source, e.g. "`u.email` may be NULL:
-nullable in `users`, and padded by the LEFT JOIN on line 3".
+Explanations name each source: "nickname is nullable in users", "nickname is
+padded by the LEFT JOIN".
 
 ### Kept outside the FD closure
 
-- **Value equality.** `a = b` is stronger than the FD pair `a ↔ b`: an
-  injective `a = f(b)` gives both FDs with different values. Equality
-  predicates always emit their FD pair (enough for uniqueness). Facts about
-  values (a constant's value, ENUM domains, inclusion dependencies) need the
-  equality itself: equality groups, a union-find over **strict** equalities
-  only, planned in [issue 26](issues/0026-equality-groups.md).
-  Non-nullness from `a = b` is neither: the predicate rejects NULL on both
-  sides, so the Filter rule emits non-null facts for both columns directly.
+- **Value equality.** `a = b` is stronger than the FD pair `a ↔ b`. Facts
+  about values (a constant's value, ENUM domains, inclusion dependencies) need
+  the equality itself: equality groups, planned in
+  [issue 26](issues/0026-equality-groups.md).
 - **Inclusion dependencies / foreign keys**: a relation between two relations,
-  not a column fact. A separate property feeding exactly-one joins; an
-  exactly-one join then adds `RowIdentity(out) ↔ RowIdentity(L)`.
-- **Null sources** live in `nullability.py` (rewritten as above); FD rules
-  consume them, and null-rejecting `Filter` conjuncts feed them. Nullability
-  reads only the raw predicate facts, never FDs or closure, so it stays below
-  them (see Strata).
+  not a column fact (Referential Coverage, Foreign Key).
 
 ### Strata
 
@@ -388,28 +370,19 @@ The memoized engine cannot compute mutually recursive facts. The IR's
 relations form a DAG, so a cycle can only happen between facts about the
 **same** relation. Facts about one relation are therefore ordered: an analysis
 about R may use any fact about R's inputs, but facts about R only at its own or
-a lower stratum. `Stratum` in `python_engine.py` encodes it, and `@analysis`
-asserts it on every call.
+a lower stratum. `Stratum` in `python_engine.py` encodes it, its docstring is
+the canonical statement, and `@analysis` asserts it on every call:
 
-When the planned strata are implemented, each new level is added to `Stratum`
-in `python_engine.py`, whose docstring is the canonical, in-code statement of
-this order as the engine's way to avoid cycles. If a cycle still happens, the
-arena's cycle check raises an error that says it is an internal sqlassert bug,
-not a problem with the user's SQL.
+1. Unique join, exactly-one join.
+2. Non-null (null sources; exactly-one left joins pad nothing).
+3. Functional dependencies (η uses null sources; joins use Unique Joins).
+4. Closure, and `DETERMINES` assertions.
+5. Unique sets.
+6. Foreign keys.
 
-Planned order (existing strata in bold):
-
-1. **Column sets** (value helpers).
-2. Raw predicate facts (equalities, constants, null-rejecting conjuncts).
-3. Equality groups.
-4. **Unique join**, exactly-one join.
-5. **Non-null** (exactly-one left joins make right columns non-null).
-6. FDs.
-7. Closure and **unique sets** / keys.
-8. Domains (ENUM).
-
-Checked against every planned feature, none needs a fact from a higher stratum
-about the same relation. Two exceptions to plan for, and one non-issue:
+Predicate extraction needs no stratum: it is a plain helper over the IR's
+conjuncts. Equality groups and domains (ENUM) slot in below dependencies and
+above unique sets respectively when they arrive. Two exceptions to plan for:
 
 - **Correlated subqueries** make the inner relation depend on the outer one
   and vice versa, a cycle across relations. Lower them as a dependent join
@@ -417,65 +390,43 @@ about the same relation. Two exceptions to plan for, and one non-issue:
   ([issue 23](issues/0023-close-ir-lowering-gaps.md)).
 - **Recursive CTEs** are a genuine fixpoint. They stay opaque; supporting them
   needs bespoke fixpoint machinery, not strata.
-- Self joins are fine: each side is its own `Alias` relation over one shared
-  `NamedRelation`, and facts about the shared relation are computed once.
 
-### New user-facing possibilities
+Self joins are fine: each side is its own `Alias`, and closure delegation is
+about one relation's rows at a time.
 
-- **`DETERMINES` markers** (decided): Functional Dependency becomes a
-  Property with both marker forms, like every other column marker.
-  `/**ASSERT DETERMINES(zip -> city)**/` asks for a proof;
-  `/**DECLARE DETERMINES(zip -> city)**/` supplies a business-logic FD no
-  schema states, as Oracle dimensions did. Multi-column sides use the existing
-  column-list syntax: `DETERMINES(a, b -> c)`.
+### User-facing
+
+- **`DETERMINES` markers**: `/**ASSERT DETERMINES(a, b -> c)**/` asks for a
+  proof; `/**DECLARE DETERMINES(zip -> city)**/` supplies a business-logic FD
+  no schema states, as Oracle dimensions did. The Property is **lax**, like a
+  Unique Set: rows with a NULL determinant are exempt, and dependents compare
+  NULL as equal to NULL. A strict (null-equal) form would need its own name
+  and marker.
+- **`RelationFacts` reports minimal keys only.** `suggest` already reports
+  minimal sets, and a superset of a reported key is unique anyway
+  (`is_unique` answers for it). Keys are enumerated smallest first up to three
+  columns; when none is that small, one minimal key found by shrinking all the
+  columns is reported, so a relation whose only keys are wider than three
+  columns lists one of them.
 - **Assertions from optimizer preconditions** (literature-notes.md): redundant
   `DISTINCT`, redundant `GROUP BY` columns, join elimination, single-valued
   scalar subquery. Each is one closure query.
-
-### Migration
-
-Decided: **replace, no compatibility layer** (see `AGENTS.md`). FDs and
-Row Identities replace `_unique_sets`, `_preserving_input`, and
-`_pass_through_columns` outright; nothing old runs beside the new code.
-
-- **Contract kept**: the Property Markers and the Properties they introduce
-  (`UniqueSet`, `NonNullUniqueSet`, `NonNullColumn(s)`, `UniqueJoin`) keep
-  their syntax and meaning. Every existing `analyze()` test is part of the
-  contract and must end green, outcomes unchanged except UNKNOWNs that become
-  PROVED.
-- **Tests first (red)**: add Paulley's examples before touching the rules:
-  counterexamples as `UNKNOWN` tests, worked examples as `PROVED` tests
-  (literature-notes.md, Testing and guarantees). They fail where the current
-  rules are weaker.
-- **Then green**: rewrite the rules on FDs until the whole suite passes; the
-  plan in [issue 24](issues/0024-functional-dependency-reasoning.md) orders
-  the steps.
+- Someday/maybe: **optimization hints** from proved dependencies (Lindner et
+  al., [`references.md`](references.md)): report a redundant `GROUP BY` column
+  when another grouping column determines it, and a join whose right side is
+  unique and contributes no output columns ("join only filters", a semi-join
+  candidate).
 
 ## Open questions
 
-- Representation design: see the draft above; its **Decide** points are open.
-- Representation: equivalence classes + constants only, or general FD sets
-  from the start? Unary FDs (`a → b`) fit an N×N boolean matrix whose
-  transitive closure (Warshall, or repeated squaring of `I + A`) is the
-  closure; multi-column left sides (`ab → c`) are hyperedges and need the
-  counter-based closure algorithm (Horn-clause propagation) instead.
-- **Keys as FDs to a row id** (Paulley Def 27, §3.1.2): give each relation a
-  virtual column ι and write a key K as `K → ι`. Uniqueness becomes "does
-  `closure(S)` reach ι?", one test instead of key sets plus FDs. Joins give
-  `ι(L) ∪ ι(R) → ι(out)` (Claim 19); a Unique Join is `ι(L) → ι(out)`; an
-  input with at most one row lets the other side's ι determine everything
-  (p.254).
-- **FD-graph** (Paulley, after Ausiello–D'Atri–Saccà): a hypergraph with
-  compound vertices for multi-column left sides; closure is BFS with counters,
-  O(V²) (§3.6.1, Lemma 29); constants seed it; the lax variant steps only
-  through non-null columns. Shipped in Sybase SQL Anywhere.
-- **Hide, don't delete**: Paulley marks projected-away columns instead of
-  removing them, so transitive FDs survive without recomputing closure
-  (§3.2.2). Our IR already keeps each stage's input reachable.
-- Evidence: how an FD-based proof appears in `Result.explain()`.
-- NULL conventions written down once and shared by uniqueness and FD rules.
-- Whether these terms (Functional Dependency, Closure, strict/lax) enter
-  `CONTEXT.md`.
+- Single-row relations: an aggregate without `GROUP BY` is lowered as a
+  Project today, so it gets no `∅ → RowIdentity`; a `WHERE` that pins a key to
+  constants already does.
+- Lax steps through equalities: a column equal to a definite column is
+  definite on the compared rows, which closure does not use yet.
+- `IS NOT DISTINCT FROM`, ranges, `LIKE`, and `OR` are kept as opaque
+  conjuncts: they never bind a column, and ranges and `LIKE` do not yet reject
+  NULL either.
 
 ## References
 

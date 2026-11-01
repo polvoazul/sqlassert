@@ -30,7 +30,8 @@ def test_a_provable_join_is_suggested_as_a_unique_join():
 
 def test_an_unprovable_join_is_not_suggested():
     report = suggest(SCHEMA + "SELECT * FROM users JOIN sessions ON sessions.user_id = users.id")
-    assert [s.marker for s in report.suggestions] == ["/**ASSERT NOT NULL(id, name)**/"]
+    # The inner join's ON equality rejects a NULL user_id.
+    assert [s.marker for s in report.suggestions] == ["/**ASSERT NOT NULL(id, name, user_id)**/"]
 
 
 def test_only_the_strongest_form_of_each_minimal_unique_set_is_suggested():
