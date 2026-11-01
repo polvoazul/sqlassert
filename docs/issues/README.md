@@ -24,5 +24,5 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 3. Lanes, one at a time in `sqlassert/rules/`:
    - Values: 26 → 16 → 17 → 18
    - Foreign Keys: 19 → 21; 19 + 26 → 20; 20 + 21 → 22
-4. Independent, in parallel at any time: 11, 15 (marker suggestions;
+4. Independent, in parallel at any time: 11, 15 (marker suggestions done;
    rewrite suggestions wait for 24). 25 is re-scoped after 24.
