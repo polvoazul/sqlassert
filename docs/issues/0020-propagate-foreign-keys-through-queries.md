@@ -13,7 +13,7 @@ for output columns structurally restricted to matching target rows.
 
 ## Blocked by
 
- [#19](0019-assert-and-declare-direct-foreign-keys.md) (Task 7) — Assert and declare direct Foreign Keys; [#26](0026-equality-groups.md) — Equality groups (an inner equality join establishes a Foreign Key only through value equality).
+ [#19](0019-assert-and-declare-direct-foreign-keys.md) (Task 7) — Assert and declare direct Foreign Keys; #26 (done; see [functional-dependencies.md](../functional-dependencies.md#equality-groups)) — Equality groups (an inner equality join establishes a Foreign Key only through value equality; `_equal_columns` gives it).
 
 ## Acceptance criteria
 
