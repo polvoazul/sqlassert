@@ -3,7 +3,6 @@
 Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues (polvoazul/sqlassert) on 2026-11-01; 16–25 from `TODO.md` and the README Ideas list. 26 and 27 were split out of 16 and 11.
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
-- [14. Hydrate analysis from database catalogs with recursive view expansion](0014-hydrate-analysis-from-database-catalogs-with-recursive-view.md) — open
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
 - [16. Assert and declare string `ENUM` domains](0016-assert-and-declare-string-enum-domains.md) — open
 - [17. Complete typed `ENUM` support](0017-complete-typed-enum-support.md) — open
@@ -25,5 +24,5 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 3. Lanes, one at a time in `sqlassert/rules/`:
    - Values: 26 → 16 → 17 → 18
    - Foreign Keys: 19 → 21; 19 + 26 → 20; 20 + 21 → 22
-4. Independent, in parallel at any time: 11, 14, 15 (marker suggestions;
+4. Independent, in parallel at any time: 11, 15 (marker suggestions;
    rewrite suggestions wait for 24). 25 is re-scoped after 24.
