@@ -119,6 +119,59 @@ def test_a_foreign_key_onto_columns_that_repeat_is_refuted():
     assert len(counterexample.instance["users"]) == 2
 
 
+def test_a_true_exactly_one_join_proof_has_no_counterexample():
+    sql = """
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE orders (user_id INTEGER NOT NULL REFERENCES users(id));
+        SELECT * FROM orders /**ASSERT EXACTLY ONE**/ LEFT JOIN users ON orders.user_id = users.id
+    """
+    report = analyze(sql)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+    judgement = judged(sql, report)
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+    assert judgement.skipped == ()
+
+
+def test_a_false_exactly_one_join_claim_is_refuted_by_an_unmatched_left_row():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE orders (user_id INTEGER NOT NULL);
+        SELECT * FROM orders /**ASSERT EXACTLY ONE**/ LEFT JOIN users ON orders.user_id = users.id
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["users"] == []
+    assert len(counterexample.instance["orders"]) == 1
+
+
+def test_a_false_exactly_one_join_claim_is_refuted_by_a_null_left_value():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE orders (user_id INTEGER REFERENCES users(id));
+        SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id = users.id
+    """))
+
+    counterexample, = judgement.counterexamples
+    assert counterexample.instance["orders"] == [(None,)]
+
+
+def test_a_false_exactly_one_join_claim_is_refuted_by_a_repeated_match():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE users (id INTEGER);
+        CREATE TABLE orders (user_id INTEGER NOT NULL);
+        CREATE VIEW o AS SELECT user_id FROM orders /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/;
+        SELECT * FROM o /**ASSERT EXACTLY ONE**/ JOIN users ON o.user_id = users.id
+    """))
+
+    # Declared coverage matches every left row, so only a second match refutes the claim.
+    counterexample, = judgement.counterexamples
+    assert len(counterexample.instance["orders"]) == 1
+    assert len(counterexample.instance["users"]) == 2
+
+
 def test_rows_with_null_never_violate_a_unique_set():
     sql = """
         CREATE TABLE t (id INTEGER UNIQUE);

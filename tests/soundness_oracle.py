@@ -32,7 +32,7 @@ from sqlglot import exp
 
 import sqlassert
 import sqlassert.main
-from sqlassert import NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
+from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
 from sqlassert.properties import ForeignKey
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
@@ -172,12 +172,12 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
     """A query that returns rows exactly when `property` is violated."""
     statements = [statement for statement in (*parsed.create_statements, parsed.root_select) if statement is not None]
     match property:
-        case UniqueJoin(join=_):
+        case UniqueJoin(join=_) | ExactlyOneJoin(join=_):
             join, = (
                 join for statement in statements for join in statement.find_all(exp.Join)
                 if assertion_line(join) is not None and join_origin(join, dialect) == origin
             )
-            return _unique_join_violation(join)
+            return _join_violation(join, exactly_one=isinstance(property, ExactlyOneJoin))
         case ForeignKey(columns=asserted) | UniqueSet(columns=asserted) | NonNullColumns(columns=asserted):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower() for column in asserted}
@@ -245,11 +245,13 @@ def _quoted(name: str) -> str:
     return exp.to_identifier(name, quoted=True).sql(dialect="duckdb")
 
 
-def _unique_join_violation(join: exp.Join) -> str:
+def _join_violation(join: exp.Join, *, exactly_one: bool) -> str:
     """Rows of the join's left input against rows of the join made LEFT.
 
     As a LEFT join every left row contributes max(1, matches) rows, so the
-    counts differ exactly when some left row matches more than once.
+    counts differ exactly when some left row matches more than once. For
+    exactly one match, the right input also carries a flag that is null
+    exactly on the row a left row with no match is null-extended with.
     """
     select = join.parent
     assert isinstance(select, exp.Select), "an asserted join is one of a Select's joins"
@@ -267,15 +269,26 @@ def _unique_join_violation(join: exp.Join) -> str:
     as_left.set("kind", None)
     if not (as_left.args.get("on") or as_left.args.get("using") or as_left.args.get("method")):
         as_left.set("on", exp.true())
+    if exactly_one:
+        # The flagged right input keeps its name, so the predicate still reads its columns.
+        right = as_left.this
+        flagged = exp.select("*", f"1 AS {_MATCHED}").from_(right.copy()).subquery(exp.to_identifier(right.alias_or_name))
+        as_left.set("this", flagged)
     left = from_joins([earlier.copy() for earlier in joins[:position]])
     joined = from_joins([*(earlier.copy() for earlier in joins[:position]), as_left])
-    query = (
-        f"SELECT * FROM (SELECT (SELECT count(*) FROM ({left})) AS left_rows, "
-        f"(SELECT count(*) FROM ({joined})) AS joined_rows) WHERE joined_rows > left_rows"
-    )
+    counts = f"(SELECT count(*) FROM ({left})) AS left_rows, (SELECT count(*) FROM ({joined})) AS joined_rows"
+    violated = "joined_rows > left_rows"
+    if exactly_one:
+        counts += f", (SELECT count(*) FROM ({joined}) WHERE {_MATCHED} IS NULL) AS unmatched_rows"
+        violated += " OR unmatched_rows > 0"
+    query = f"SELECT * FROM (SELECT {counts}) WHERE {violated}"
     # From the join, so the Select's own WITH is in scope: the queries above
     # are new Selects that do not carry it.
     return _with_context(join, query)
+
+
+# The flag column an exactly-one check adds to the right input of its join.
+_MATCHED = '"__sqlassert_matched"'
 
 
 def _with_context(node: exp.Expression, query: str) -> str:
