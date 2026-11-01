@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     report = suggest(sql, dialect=arguments.dialect, max_size=arguments.max_size)
     for diagnostic in report.diagnostics:
         print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
+    for warning in report.warnings:
+        print(f"warning: {warning.code}: {warning.message}", file=sys.stderr)
     # Improvements (High) first, then markers (Mid).
     items = (*report.improvements, *report.suggestions)
     rows = [

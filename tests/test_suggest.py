@@ -290,3 +290,11 @@ def test_the_cli_reports_diagnostics_and_fails(tmp_path, capsys):
 
     assert main(["suggest", str(path)]) == 1
     assert "sql-parse-failed" in capsys.readouterr().err
+
+
+def test_the_cli_prints_connection_warnings_without_failing(tmp_path, capsys):
+    path = tmp_path / "query.sql"
+    path.write_text("SELECT id FROM accounts")
+
+    assert main(["suggest", str(path)]) == 0
+    assert "warning: undeclared-table: table accounts" in capsys.readouterr().err

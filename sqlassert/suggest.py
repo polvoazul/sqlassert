@@ -76,6 +76,7 @@ class SuggestionReport:
     suggestions: tuple[Suggestion, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     improvements: tuple[Improvement, ...] = ()
+    warnings: tuple[Diagnostic, ...] = ()
 
     def annotated(self, chosen: Iterable[Suggestion] | None = None) -> str:
         """The SQL with the chosen suggestions' markers pasted in (all by default)."""
@@ -113,7 +114,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
     conversion = IrParser(dialect).parse(ast)
     program, diagnostics = conversion.program, ast.diagnostics + conversion.diagnostics
     if any(diagnostic.code in _BLOCKING for diagnostic in diagnostics):
-        return SuggestionReport(sql, (), diagnostics)
+        return SuggestionReport(sql, (), diagnostics, warnings=conversion.warnings)
     present = (*program.declarations, *(assertion.property for assertion in program.assertions))
     marked_non_null = {
         column
@@ -152,7 +153,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
             key=lambda suggestion: suggestion.site.offset,
         )
     )
-    return SuggestionReport(sql, kept, diagnostics, tuple(found))
+    return SuggestionReport(sql, kept, diagnostics, tuple(found), conversion.warnings)
 
 
 # A parse failure leaves nothing to suggest on; duplicate declarations make

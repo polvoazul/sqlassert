@@ -52,7 +52,7 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   plain index is accepted silently: it states nothing. Still open:
   `ADD COLUMN`; a unique expression index over deterministic expressions does
   imply its columns are unique, which is not used.
-- [ ] Tables without a `CREATE` in the program have an incomplete schema, so an
+- [x] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Today this is silently UNKNOWN. Per
   [ADR 0005](../adr/0005-analyze-sql-without-a-connection.md):
@@ -69,6 +69,14 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
     analyzed normally.
   - Tests: the same SQL warns offline and proves with an in-memory DuckDB
     catalog; adding the connection never turns PROVED into UNKNOWN.
+  Done: `Report.warnings` (and `SuggestionReport.warnings`, printed by the
+  CLI as `warning: ...` without failing) carries `undeclared-table`, once per
+  table, and `ambiguous-column`, once per column and candidate sources. Unknown
+  column types need no warning of their own: a column whose type a catalog
+  could supply belongs to an undeclared table, which already warns. With a
+  connection, hydration already declares each catalog table's columns, so the
+  column resolves; catalog column *types* are not passed yet (issue 30).
+  Tests: `tests/test_connection_warnings.py`.
 - [x] No functional dependencies (`X → Y`). Done in issue 24, except
   deterministic and injective expressions (still opaque). Keys, equality predicates,
   deterministic expressions, and `GROUP BY` all create them; without them,

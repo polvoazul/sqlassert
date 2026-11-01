@@ -65,10 +65,13 @@ class Report:
     assertions: tuple[AssertionReport, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     facts: RelationFacts = field(default_factory=RelationFacts)
+    warnings: tuple[Diagnostic, ...] = ()
 
     @property
     def proved(self) -> bool:
-        """Every assertion proved, and nothing about the program was unsupported."""
+        """Every assertion proved, and nothing about the program was unsupported.
+
+        Warnings do not count: they explain UNKNOWN outcomes, never cause them."""
         return not self.diagnostics and all(
             assertion.outcome is Outcome.PROVED for assertion in self.assertions
         )

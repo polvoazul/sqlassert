@@ -275,7 +275,10 @@ class Engine:
         finally:
             _active.reset(token)
 
-    def run(self, program: ir.Program, knowledge: tuple[Property, ...] = (), diagnostics: tuple[Diagnostic, ...] = ()) -> Report:
+    def run(
+        self, program: ir.Program, knowledge: tuple[Property, ...] = (), diagnostics: tuple[Diagnostic, ...] = (),
+        warnings: tuple[Diagnostic, ...] = (),
+    ) -> Report:
         from sqlassert.rules.uniqueness import minimal_keys
 
         with self.session(program, knowledge) as arena:
@@ -292,4 +295,4 @@ class Engine:
                 facts[relation.report_name.lower()] = tuple(
                     tuple(column.name for column in key) for key in minimal_keys(relation)
                 )
-            return Report(tuple(assertions), tuple(diagnostics), RelationFacts(facts))
+            return Report(tuple(assertions), tuple(diagnostics), RelationFacts(facts), tuple(warnings))
