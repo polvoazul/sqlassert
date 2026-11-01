@@ -9,11 +9,9 @@ from __future__ import annotations
 
 from collections import Counter
 
-import duckdb
 import pytest
-from hypothesis import assume
 
-from soundness_oracle import _Database
+from soundness_oracle import SearchResult, _Database
 from sqlassert import suggest
 from sqlassert.__main__ import main
 from sqlassert.sql_parse import SqlParser
@@ -354,53 +352,36 @@ EQUIVALENT = [
 ]
 
 
-# Tables in the order their rows can be inserted: referenced before referencing.
-_LOAD_ORDER = ("users", "sessions", "orders")
-
-
-def differing_instance(original: str, rewritten: str) -> tuple[dict | None, int]:
-    """An instance on which the two programs' results differ as multisets, and
-    how many instances were compared."""
+def differing_instance(original: str, rewritten: str) -> SearchResult:
+    """Search for an instance on which the two programs differ as multisets."""
     database = _Database(SqlParser("duckdb").parse(original))
     queries = []
     for sql in (original, rewritten):
         root = SqlParser("duckdb").parse(sql).root_select
         assert root is not None
         queries.append(root.sql(dialect="duckdb"))
-    compared = 0
 
-    def differs(instance) -> bool:
-        nonlocal compared
-        try:
-            for name in reversed(_LOAD_ORDER):
-                database.connection.execute(f"DELETE FROM {name}")
-            for name in _LOAD_ORDER:
-                for row in instance[name]:
-                    database.connection.execute(f"INSERT INTO {name} VALUES ({', '.join('?' for _ in row)})", row)
-            before, after = (Counter(database.connection.execute(query).fetchall()) for query in queries)
-        except duckdb.Error:
-            assume(False)  # A Foreign Key the generator does not respect.
-            raise
-        compared += 1
+    def differs(_) -> bool:
+        before, after = (Counter(database.connection.execute(query).fetchall()) for query in queries)
         return before != after
 
-    return database.search(differs, max_examples=400), compared
+    return database.search(differs, max_examples=400)
 
 
 @pytest.mark.parametrize(("original", "rewritten", "rewrite"), EQUIVALENT)
 def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: Rewrite):
     assert rewrite in rewrites(original)
 
-    instance, compared = differing_instance(original, rewritten)
-
-    assert instance is None
-    assert compared >= 100
+    search = differing_instance(original, rewritten)
+    assert search.status == "no-counterexample", search
+    assert search.valid >= 100
 
 
 def test_the_equivalence_check_finds_a_rewrite_that_changes_the_result():
     # Guards the test above: dropping a join that may multiply rows is caught.
-    instance, _ = differing_instance(
+    search = differing_instance(
         SCHEMA + "SELECT u.name FROM users u LEFT JOIN sessions s ON s.user_id = u.id",
         SCHEMA + "SELECT u.name FROM users u",
     )
-    assert instance is not None
+    assert search.status == "counterexample"
+    assert search.instance is not None
