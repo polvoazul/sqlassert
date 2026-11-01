@@ -225,23 +225,23 @@ through only with definite determinants.
 
 | ID | Paulley rule | Where | Status | Our code | Test |
 |---|---|---|---|---|---|
-| A1 | Reflexivity: Y ⊆ X ⇒ X → Y | fd1, Lemma 1, p.38 | pending | | |
-| A2 | Strict augmentation: X → Y ⇒ XW → YZ (Z ⊆ W) | fd2a, p.38 | pending | | |
-| A3 | Lax augmentation | fd2b, p.38 | pending | | |
-| A4 | Strict union: X → Y, X → Z ⇒ X → YZ | fd3a, p.38 | pending | | |
-| A5 | Lax union | fd3b, p.38 | pending | | |
-| A6 | Strict decomposition | fd4a, p.38 | pending | | |
-| A7 | Lax decomposition only with Y definite | fd4b, Lemma 3, p.39 | pending | | |
-| A8 | Weakening: strict ⇒ lax | fd5, p.38 | pending | | |
-| A9 | Strengthening: lax ⇒ strict when XY definite | fd6, p.38 | pending | | |
-| A10 | Strict transitivity | fd7a, p.38 | pending | | |
-| A11 | Lax transitivity only through a definite middle | fd7b, Lemma 2, p.38 | pending | | |
-| E1 | Strict equivalence: identity, commutativity, transitivity | eq1–eq3, Claim 14, p.69 | pending | | |
-| E2 | Strict equivalence implies FDs both ways | eq4, p.69 | pending | | |
-| E3 | Lax equivalence: commutativity; strict ⇒ lax | eq5–eq6, Lemma 4, p.69 | pending | | |
-| E4 | Lax equivalence strengthened when both definite | eq7, p.69 | pending | | |
-| E5 | Lax equivalence implies lax FDs both ways | eq8, p.69 | pending | | |
-| E6 | Lax equivalence transitive: strict∘lax, or lax∘lax through a definite middle | eq9a/b, Lemma 5, p.70 | pending | | |
+| A1 | Reflexivity: Y ⊆ X ⇒ X → Y | fd1, Lemma 1, p.38 | implemented | `uniqueness._closure` (single-column dependents, Def 31) | `test_paulley_audit.py` A1 |
+| A2 | Strict augmentation: X → Y ⇒ XW → YZ (Z ⊆ W) | fd2a, p.38 | implemented | `uniqueness._closure` (single-column dependents, Def 31) | `test_paulley_audit.py` A2 |
+| A3 | Lax augmentation | fd2b, p.38 | implemented | `uniqueness._closure`; a lax step needs a definite determinant | `test_paulley_audit.py` A3 |
+| A4 | Strict union: X → Y, X → Z ⇒ X → YZ | fd3a, p.38 | implemented | `uniqueness._closure` (single-column dependents, Def 31) | `test_paulley_audit.py` A4 |
+| A5 | Lax union | fd3b, p.38 | implemented | `uniqueness._closure`; a lax step needs a definite determinant | `test_paulley_audit.py` A5 |
+| A6 | Strict decomposition | fd4a, p.38 | implemented | `uniqueness._closure` (single-column dependents, Def 31) | `test_paulley_audit.py` A6 |
+| A7 | Lax decomposition only with Y definite | fd4b, Lemma 3, p.39 | different | a lax `Dependency` fires only from a definite determinant (`_closure.fire`), and every lax FD we derive is lax in the determinant only, its dependent equal: unique keys onto the Row Identity, declared DETERMINES, a padded column onto the preserved one. Stronger than Paulley's lax FD and still sound, so decomposition needs no definite dependent | `test_paulley_audit.py` A7 |
+| A8 | Weakening: strict ⇒ lax | fd5, p.38 | implemented | `uniqueness._closure` (single-column dependents, Def 31) | `test_paulley_audit.py` A8 |
+| A9 | Strengthening: lax ⇒ strict when XY definite | fd6, p.38 | implemented | `uniqueness._closure`; a lax step needs a definite determinant | `test_paulley_audit.py` A9 |
+| A10 | Strict transitivity | fd7a, p.38 | implemented | `uniqueness._closure` (single-column dependents, Def 31) | `test_paulley_audit.py` A10 |
+| A11 | Lax transitivity only through a definite middle | fd7b, Lemma 2, p.38 | implemented | `uniqueness._closure`: a lax step fires only from definite attributes | `test_paulley_audit.py` A11, A11- |
+| E1 | Strict equivalence: identity, commutativity, transitivity | eq1–eq3, Claim 14, p.69 | implemented | `equality._equality_groups` (union-find), `uniqueness._equality_dependencies` | `test_paulley_audit.py` E1 |
+| E2 | Strict equivalence implies FDs both ways | eq4, p.69 | implemented | `uniqueness._equality_dependencies` (both directions) | `test_paulley_audit.py` E2 |
+| E3 | Lax equivalence: commutativity; strict ⇒ lax | eq5–eq6, Lemma 4, p.69 | different | no lax equivalence object: an outer join's cross equality gives the lax FD padded → preserved and a strict FD from the match status (`uniqueness._outer_on_dependencies`); equality groups hold strict equivalences only | `test_paulley_audit.py` E5 |
+| E4 | Lax equivalence strengthened when both definite | eq7, p.69 | missing | equality groups never strengthen: `WHERE r.z IS NOT NULL` after `LEFT JOIN r ON r.z = l.a` does not put z and a in one group, so domains and Foreign Key stand-ins do not cross (the closure does, via A9). Filed in issue 23 |  |
+| E5 | Lax equivalence implies lax FDs both ways | eq8, p.69 | implemented | `uniqueness._outer_on_dependencies` (lax padded → preserved) | `test_paulley_audit.py` E5 |
+| E6 | Lax equivalence transitive: strict∘lax, or lax∘lax through a definite middle | eq9a/b, Lemma 5, p.70 | implemented | `uniqueness._closure` (strict after lax; lax after lax only through a definite middle) | `test_paulley_audit.py` E6, E6- |
 | S1 | PRIMARY KEY and unique index: strict key K → ι | Claim 16, p.73 | pending | | |
 | S2 | UNIQUE constraint: lax key U ↦ ι | Claim 16, p.73 | pending | | |
 | S3 | Equality to a constant: ∅ → A | §3.1.3, p.68 | pending | | |
