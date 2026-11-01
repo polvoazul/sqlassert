@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports Unique Join Assertions and Unique Set Assertions, including non-null Candidate Keys. It is only tested with the DuckDB SQL dialect._
+_Alpha warning: Today `sqlassert` supports Unique Join Assertions and Unique Set Assertions, including Non-Null Unique Sets. It is only tested with the DuckDB SQL dialect._
 
 ## Features
 
@@ -22,15 +22,15 @@ Joins often accidentally multiply rows. A query may look correct against todayâ€
 ```sql
 select *
 from sessions
-/**UNIQUE**/ join users
+/**ASSERT UNIQUE**/ join users
   on sessions.user_id = users.id;
 ```
 
 The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `sqlassert` reads the query separately and validates that the RHS is provably unique for the join keys.
 
-### Unique Set and Candidate Key
+### Unique Set and Non-Null Unique Set
 
-A Select Expression can assert that specific output columns form a Unique Set. Use `UNIQUE` when the columns may be null, or `PRIMARY KEY` when every column must also be non-null:
+A Select Expression can assert that specific output columns form a Unique Set. Use `UNIQUE` when the columns may be null, or `NOT NULL UNIQUE` when every column must also be non-null:
 
 ```sql
 create table users (
@@ -42,14 +42,39 @@ create view active_users as
 select id, email
 from users
 where id > 0
-/**PRIMARY KEY(id)**/;
+/**ASSERT NOT NULL UNIQUE(id)**/;
 
 select * from active_users;
 ```
 
-The trailing marker applies to the relation produced by that Select Expression. `/**PRIMARY KEY(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
+The trailing marker applies to the relation produced by that Select Expression. `/**ASSERT NOT NULL UNIQUE(id)**/` asserts that `(id)` is a specific non-null Unique Set of `active_users`; `/**ASSERT UNIQUE(email)**/` would assert nullable-tolerant uniqueness instead. The assertion is proved from the SQL Program, not trusted as a declaration. If it cannot be proved, its outcome is `UNKNOWN`.
 
 Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subquery. A proved assertion on a named relation is also available to later statements in the same SQL Program.
+
+A `NOT NULL UNIQUE` assertion is proved when the columns are a Unique Set and each one is non-null.
+
+`PRIMARY KEY` is accepted as a convenience alias for `NOT NULL UNIQUE` (`/**ASSERT PRIMARY KEY(id)**/`, `/**DECLARE PRIMARY KEY(id)**/`). Unlike SQL's `PRIMARY KEY`, it does not mean one key per relation: a relation may have several Non-Null Unique Sets, and nothing checks that only one is marked.
+
+### Not Null
+
+`/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, and `coalesce`/`ifnull`/`nvl` with at least one non-null argument. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. It is lost on the null-extended side of a `LEFT`, `RIGHT`, or `FULL` join, and is never guessed for other computed expressions or for set operations.
+
+Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
+
+### Declaring what you know
+
+When you know a fact the SQL cannot show -- say, an upstream job guarantees one row per `user_id` -- state it with `DECLARE` instead of `ASSERT`:
+
+```sql
+with latest as (
+  select user_id, max(ts) as ts from events group by all
+  /**DECLARE UNIQUE(user_id)**/
+)
+select * from orders
+/**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
+```
+
+A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, and `DECLARE NOT NULL UNIQUE` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
 
 ## Usage
 
@@ -64,7 +89,7 @@ create table sessions (user_id integer);
 
 select *
 from sessions
-/**UNIQUE**/ join users
+/**ASSERT UNIQUE**/ join users
   on sessions.user_id = users.id
 """
 
@@ -72,6 +97,18 @@ report = analyze(program)
 
 assert report.proved, report.diagnostics
 ```
+
+The default Python engine evaluates the rules directly on the IR:
+
+```python
+report = analyze(program)
+for assertion in report.assertions:
+    print(assertion.evidence.explain())
+```
+
+The rules are in `rules/unique_join.py`, `rules/uniqueness.py`, and
+`rules/nullability.py`; shared proof composition, declaration lookup, and
+per-analysis caching live in `python_engine.py`.
 
 For a test suite, keep your model/query SQL as strings or load them from files, and include (or generate) the `CREATE` statements for whatever schema the query assumes:
 
@@ -102,12 +139,12 @@ tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
 
 ### Unique Join Syntax
 
-Place `/**UNIQUE**/` immediately before the join that should be uniqueness-checked:
+Place `/**ASSERT UNIQUE**/` immediately before the join that should be uniqueness-checked:
 
 ```sql
 select *
 from lhs
-/**UNIQUE**/ left join rhs
+/**ASSERT UNIQUE**/ left join rhs
   on lhs.rhs_id = rhs.id;
 ```
 
@@ -116,7 +153,7 @@ from lhs
 ```sql
 select *
 from users
-/**UNIQUE**/ join user_profiles
+/**ASSERT UNIQUE**/ join user_profiles
   using (id);
 ```
 
@@ -126,7 +163,7 @@ The marker applies to the next join after the comment.
 
 `sqlassert` does **not** validate by querying actual table data. It will not run `count(*)`, search for duplicates, or sample rows.
 
-Instead, it proves uniqueness using information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, the assertion outcome is `UNKNOWN` and `report.proved` is false. Proof explanations are planned in `TODO.md`.
+Instead, it proves uniqueness using information available from the SQL Program and IR-linked Knowledge. If uniqueness cannot be proven, the assertion outcome is `UNKNOWN` and `report.proved` is false. Python assertion results retain structural evidence and expose it through `assertion.evidence.explain()`.
 
 Supported uniqueness proofs today:
 
@@ -144,7 +181,7 @@ Examples:
 -- Proved by primary key.
 select *
 from sessions
-/**UNIQUE**/ join users
+/**ASSERT UNIQUE**/ join users
   on sessions.user_id = users.id;
 ```
 
@@ -152,7 +189,7 @@ from sessions
 -- Proved by composite primary key plus RHS-only filter.
 select *
 from sessions
-/**UNIQUE**/ join orders
+/**ASSERT UNIQUE**/ join orders
   on sessions.user_id = orders.user_id
  and orders.order_id = 1;
 ```
@@ -166,7 +203,7 @@ with latest_session as (
 )
 select *
 from users
-/**UNIQUE**/ join latest_session
+/**ASSERT UNIQUE**/ join latest_session
   on users.id = latest_session.user_id;
 ```
 
@@ -179,16 +216,12 @@ with sessions_ranked as (
 )
 select *
 from users
-/**UNIQUE**/ join sessions_ranked
+/**ASSERT UNIQUE**/ join sessions_ranked
   on users.id = sessions_ranked.user_id;
 ```
 
 More compile-time SQL checks can be added under the same model: explicit syntax, fast validation, and clear reasons when a proof is missing.
 
-## Ideas / Todo
+## Roadmap
 
-- Exhaustive case statements that match all items of an enum / union data type.
-- A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all of its output columns, the same way `SELECT DISTINCT` does -- not modeled yet. Derive that property from the leftmost arm's output columns and lower set-operation bodies when they appear inside a view, CTE, or subquery.
-- Column lineage, column unique status, column nullable status
-- Functional-dependency reasoning (`X â†’ Y`): represent and derive when equal values of one column set guarantee equal values of another, including dependencies created by keys, deterministic expressions, and aggregation.
-- General window modeling: eventually represent window expressions and their filtering as separate `Window` and `Filter` operations, with the proof engine deriving uniqueness from recognized shapes. Until then, keep `QUALIFY row_number() over (partition by ...) = 1` as the explicit supported special case.
+Open work is tracked as one file per issue in [`docs/issues/`](docs/issues/README.md).

@@ -10,7 +10,7 @@ from sqlassert.sql_parse import (
     SqlassertToken,
     _unresolved_markers,
     sqlassert_dialect,
-    unique_set_assertions,
+    column_markers,
 )
 
 
@@ -102,7 +102,7 @@ def test_parsing_registers_no_dialect_beyond_the_one_it_needs():
     before = set(Dialect.classes)
     parser = SqlParser("duckdb")
 
-    parser.parse("SELECT * FROM a /**UNIQUE**/ JOIN b ON a.x = b.x")
+    parser.parse("SELECT * FROM a /**ASSERT UNIQUE**/ JOIN b ON a.x = b.x")
     parser.parse("SELEC * FROM")  # the failure path re-tokenizes
 
     assert set(Dialect.classes) - before <= {"sqlassertduckdb"}
@@ -117,7 +117,7 @@ def test_a_marker_the_dialect_did_not_recognize_is_reported():
     produce it without breaking SQLGlot — and without this guard the program
     would report as proved.
     """
-    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**UNIQUE**/ JOIN u ON s.id = u.id"
+    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT UNIQUE**/ JOIN u ON s.id = u.id"
     unrecognized = [statement for statement in sqlglot.parse(sql, read="duckdb") if statement]
 
     diagnostics = _unresolved_markers(sql, unrecognized)
@@ -129,23 +129,23 @@ def test_a_marker_the_dialect_did_not_recognize_is_reported():
 
 
 def test_recognized_markers_leave_the_reconciliation_quiet():
-    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**UNIQUE**/ JOIN u ON s.id = u.id"
+    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT UNIQUE**/ JOIN u ON s.id = u.id"
     parser = SqlParser("duckdb")
     statements = [statement for statement in sqlglot.parse(sql, read=parser.dialect_class) if statement]
 
     assert _unresolved_markers(sql, statements) == []
 
 
-# Unique Set Assertion markers -- `/**UNIQUE(...)**/` and
-# `/**PRIMARY KEY(...)**/` -- attach at the one production shared by a Root
+# Unique Set Assertion markers -- `/**ASSERT UNIQUE(...)**/` and
+# `/**ASSERT PRIMARY KEY(...)**/` -- attach at the one production shared by a Root
 # Select, a CTE, a view body, and a subquery, trailing right before whatever
 # closes that Select Expression.
 
 UNIQUE_SET_ATTACHMENT_SITES = [
-    ("root select", "SELECT id FROM t /**UNIQUE(id)**/", 1),
-    ("view body", "CREATE VIEW v AS SELECT id FROM t /**UNIQUE(id)**/", 1),
-    ("cte body", "WITH c AS (SELECT id FROM t /**UNIQUE(id)**/) SELECT * FROM c", 1),
-    ("subquery body", "SELECT * FROM (SELECT id FROM t /**UNIQUE(id)**/) AS s", 1),
+    ("root select", "SELECT id FROM t /**ASSERT UNIQUE(id)**/", 1),
+    ("view body", "CREATE VIEW v AS SELECT id FROM t /**ASSERT UNIQUE(id)**/", 1),
+    ("cte body", "WITH c AS (SELECT id FROM t /**ASSERT UNIQUE(id)**/) SELECT * FROM c", 1),
+    ("subquery body", "SELECT * FROM (SELECT id FROM t /**ASSERT UNIQUE(id)**/) AS s", 1),
 ]
 
 
@@ -163,7 +163,7 @@ def test_a_unique_set_assertion_marker_attaches_at_every_select_expression_site(
         for statement in statements
         if statement is not None
         for select in statement.find_all(exp.Select)
-        for markers in [unique_set_assertions(select)]
+        for markers in [column_markers(select)]
         if markers
     ]
     assert len(found) == expected_count, label
@@ -172,29 +172,29 @@ def test_a_unique_set_assertion_marker_attaches_at_every_select_expression_site(
 
 def test_a_primary_key_flavored_marker_is_recognized():
     parser = SqlParser("duckdb")
-    program = parser.parse("SELECT id FROM t /**PRIMARY KEY(id)**/")
+    program = parser.parse("SELECT id FROM t /**ASSERT PRIMARY KEY(id)**/")
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = unique_set_assertions(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (("key", ("id",), 1),)
 
 
 def test_stacked_unique_set_assertion_markers_are_all_recognized():
     parser = SqlParser("duckdb")
-    program = parser.parse("SELECT a, b FROM t /**UNIQUE(a)**/ /**PRIMARY KEY(a, b)**/")
+    program = parser.parse("SELECT a, b FROM t /**ASSERT UNIQUE(a)**/ /**ASSERT PRIMARY KEY(a, b)**/")
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = unique_set_assertions(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (("unique", ("a",), 1), ("key", ("a", "b"), 1))
 
 
 UNIQUE_SET_MARKER_SHAPES = [
-    "/**UNIQUE(id)**/",
-    "/**UNIQUE(id, name)**/",
-    "/**PRIMARY KEY(id)**/",
-    "/**PRIMARY KEY(id, name)**/",
+    "/**ASSERT UNIQUE(id)**/",
+    "/**ASSERT UNIQUE(id, name)**/",
+    "/**ASSERT PRIMARY KEY(id)**/",
+    "/**ASSERT PRIMARY KEY(id, name)**/",
 ]
 
 
@@ -209,3 +209,13 @@ def test_a_unique_set_assertion_marker_does_not_disturb_ordinary_sql_around_it(m
     assert program.diagnostics == ()
     assert program.root_select is not None
     assert program.root_select.sql(dialect="duckdb") == base
+
+
+def test_a_declaration_marker_is_recognized_as_a_declared_kind():
+    parser = SqlParser("duckdb")
+    program = parser.parse("SELECT a, b FROM t /**DECLARE UNIQUE(a)**/ /**ASSERT UNIQUE(a, b)**/")
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    assert markers == (("declared-unique", ("a",), 1), ("unique", ("a", "b"), 1))

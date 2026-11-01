@@ -35,7 +35,7 @@ def test_a_qualify_by_partition_subquery_joined_on_its_full_partition_key_is_pro
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customers.id = latest_order.customer_id
         """
     )
@@ -56,7 +56,7 @@ def test_a_qualify_by_partition_subquery_joined_on_its_full_composite_partition_
         )
         SELECT *
         FROM customer_regions
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customer_regions.customer_id = latest_order.customer_id
             AND customer_regions.region = latest_order.region
         """
@@ -78,7 +78,7 @@ def test_joining_on_part_of_a_composite_partition_key_is_unknown():
         )
         SELECT *
         FROM customer_regions
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customer_regions.customer_id = latest_order.customer_id
         """
     )
@@ -97,7 +97,7 @@ def test_an_aliased_partition_key_maps_the_unique_set_to_the_outer_column(orders
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customers.id = latest_order.cid
         """
     )
@@ -116,7 +116,7 @@ def test_a_partition_key_absent_from_the_select_list_is_unsupported_and_unknown(
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customers.id = latest_order.order_id
         """
     )
@@ -135,7 +135,7 @@ def test_a_qualification_that_can_retain_more_than_one_row_per_partition_is_unkn
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN top_two_orders
+        /**ASSERT UNIQUE**/ JOIN top_two_orders
             ON customers.id = top_two_orders.customer_id
         """
     )
@@ -154,7 +154,7 @@ def test_rank_instead_of_row_number_is_unsupported_and_unknown(orders_and_custom
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customers.id = latest_order.customer_id
         """
     )
@@ -173,7 +173,7 @@ def test_a_qualify_predicate_with_no_window_function_is_unsupported_and_unknown(
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN big_orders
+        /**ASSERT UNIQUE**/ JOIN big_orders
             ON customers.id = big_orders.customer_id
         """
     )
@@ -192,7 +192,7 @@ def test_row_number_with_no_partition_by_is_unsupported_and_unknown(orders_and_c
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN first_order
+        /**ASSERT UNIQUE**/ JOIN first_order
             ON customers.id = first_order.customer_id
         """
     )
@@ -212,7 +212,7 @@ def test_a_where_clause_before_qualify_does_not_block_the_proof(orders_and_custo
         )
         SELECT *
         FROM customers
-        /**UNIQUE**/ JOIN latest_order
+        /**ASSERT UNIQUE**/ JOIN latest_order
             ON customers.id = latest_order.customer_id
         """
     )

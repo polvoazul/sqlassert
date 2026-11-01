@@ -1,8 +1,8 @@
 """Guards for the boundaries ADR 0002 draws.
 
-Like the rule-policy test, this is a small structural guard rather than a
-complete import analysis: it catches the boundary crossings that would let
-SQLGlot nodes into the IR or Clingo symbols out of the engine.
+This is a small structural guard rather than a complete import analysis: it
+catches the boundary crossings that would let SQLGlot nodes into the IR or
+property reasoning.
 """
 
 from __future__ import annotations
@@ -13,21 +13,19 @@ import pytest
 
 
 PACKAGE = Path(__file__).parents[1] / "sqlassert"
-RULES = PACKAGE / "rules"
 
 FORBIDDEN_IMPORTS = {
     # The IR and its inputs are plain immutable values.
-    "ir/model.py": ("sqlglot", "clingo"),
-    "properties.py": ("sqlglot", "clingo"),
-    "provenance.py": ("sqlglot", "clingo"),
-    "diagnostics.py": ("sqlglot", "clingo"),
-    "naming.py": ("sqlglot", "clingo"),
-    # SQL analysis never sees the solver.
-    "sql_parse.py": ("clingo",),
-    "ir/convert.py": ("clingo",),
+    "ir/model.py": ("sqlglot",),
+    "properties.py": ("sqlglot",),
+    "provenance.py": ("sqlglot",),
+    "diagnostics.py": ("sqlglot",),
     # Property reasoning and reporting never see the parser.
-    "facts.py": ("sqlglot",),
-    "engine.py": ("sqlglot",),
+    "python_engine.py": ("sqlglot",),
+    "rules/column_set.py": ("sqlglot",),
+    "rules/nullability.py": ("sqlglot",),
+    "rules/unique_join.py": ("sqlglot",),
+    "rules/uniqueness.py": ("sqlglot",),
     "reporting.py": ("sqlglot",),
 }
 
@@ -42,9 +40,3 @@ def test_module_does_not_cross_its_boundary(module: str, forbidden: tuple[str, .
     }
     assert not imported & set(forbidden), f"{module} imports across its boundary: {sorted(imported & set(forbidden))}"
 
-
-def test_shared_uniqueness_rules_do_not_depend_on_unique_join_rules():
-    source = (RULES / "uniqueness.lp").read_text()
-
-    assert "pub__unique_join" not in source
-    assert "ir__join" not in source

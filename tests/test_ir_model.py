@@ -88,3 +88,38 @@ def test_every_node_subclass_is_a_dataclass_without_repeating_the_decorator():
         set(node_type.__annotations__) <= set(node_type.__dataclass_fields__)
         for node_type in found
     )
+
+
+def _opaque_column(name: str) -> ir.OutputColumn:
+    return ir.OutputColumn(
+        origin=_origin(name), name=name, scalar_expr=ir.OpaqueExpression(origin=_origin(name), description=name)
+    )
+
+
+def test_program_indexes_each_output_column_to_its_parent_relation():
+    users_id = _opaque_column("users.id")
+    users = ir.NamedRelation(
+        origin=_origin("users"), output_columns=(users_id,), name="users", role=ir.RelationRole.TABLE
+    )
+    alias_id = ir.OutputColumn(
+        origin=_origin("u.id"), name="id", scalar_expr=ir.ColumnRef(origin=_origin("u.id"), column=users_id)
+    )
+    alias = ir.Alias(origin=_origin("users AS u"), output_columns=(alias_id,), source=users, name="u")
+    program = ir.Program(named_relations=(users,), root=alias)
+
+    assert users_id.get_relation(program) is users
+    assert alias_id.get_relation(program) is alias
+    assert program.relation_of(frozenset({alias_id})) is alias
+    assert program.relation_of(frozenset({users_id, alias_id})) is None
+    assert program.relation_of(frozenset()) is None
+    assert program.relation_of(frozenset({_opaque_column("orphan")})) is None
+
+
+def test_program_rejects_an_output_column_shared_by_two_relations():
+    shared = _opaque_column("shared")
+    left = ir.OpaqueRelation(origin=_origin("left"), output_columns=(shared,), description="left")
+    right = ir.OpaqueRelation(origin=_origin("right"), output_columns=(shared,), description="right")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=left, right=right)
+
+    with pytest.raises(ValueError, match="belongs to both"):
+        ir.Program(root=join)

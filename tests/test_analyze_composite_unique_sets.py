@@ -18,7 +18,7 @@ def test_fully_covering_a_composite_unique_set_in_an_inner_join_is_proved():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id AND sessions.user_region = users.region
         """
     )
@@ -35,7 +35,7 @@ def test_covering_only_part_of_a_composite_unique_set_is_unknown():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -53,7 +53,7 @@ def test_a_right_side_key_member_equated_to_a_constant_completes_a_composite_uni
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id AND users.region = 1
         """
     )
@@ -69,7 +69,7 @@ def test_a_range_predicate_does_not_cover_a_key_member_and_stays_unknown():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id AND users.region > 1
         """
     )
@@ -87,7 +87,7 @@ def test_a_nullable_unique_set_proves_ordinary_equality_uniqueness():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_email = users.email
         """
     )
@@ -95,7 +95,7 @@ def test_a_nullable_unique_set_proves_ordinary_equality_uniqueness():
     assert report.proved
 
 
-def test_a_candidate_key_also_proves_ordinary_equality_uniqueness():
+def test_a_non_null_unique_set_also_proves_ordinary_equality_uniqueness():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
@@ -103,7 +103,7 @@ def test_a_candidate_key_also_proves_ordinary_equality_uniqueness():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -118,7 +118,7 @@ def test_composite_keys_support_unique_joins_with_or_without_nullable_members():
         CREATE TABLE sessions (user_id INTEGER, user_region INTEGER);
 
         SELECT * FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id AND sessions.user_region = users.region
         """
     )
@@ -131,7 +131,7 @@ def test_composite_keys_support_unique_joins_with_or_without_nullable_members():
         CREATE TABLE sessions (user_id INTEGER, user_region INTEGER);
 
         SELECT * FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id AND sessions.user_region = users.region
         """
     )
@@ -146,7 +146,7 @@ def test_using_participates_in_the_same_key_coverage_reasoning_as_on():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             USING (id)
         """
     )
@@ -162,7 +162,7 @@ def test_left_joins_participate_in_the_same_key_coverage_reasoning_as_inner():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ LEFT JOIN users
+        /**ASSERT UNIQUE**/ LEFT JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -178,7 +178,7 @@ def test_a_left_join_without_a_matching_unique_set_is_unknown():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ LEFT JOIN users
+        /**ASSERT UNIQUE**/ LEFT JOIN users
             ON sessions.user_id = users.id
         """
     )
@@ -195,7 +195,7 @@ def test_null_safe_equality_does_not_cover_a_key_member_and_stays_unknown():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id IS NOT DISTINCT FROM users.id
         """
     )
@@ -212,7 +212,7 @@ def test_an_or_predicate_does_not_cover_a_key_member_and_stays_unknown():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id OR sessions.user_id = users.other_id
         """
     )
@@ -228,7 +228,7 @@ def test_using_against_an_ambiguous_left_side_stays_unknown_rather_than_guessing
         CREATE TABLE b (id INTEGER);
         CREATE TABLE c (id INTEGER PRIMARY KEY);
 
-        SELECT * FROM a JOIN b USING (id) /**UNIQUE**/ JOIN c USING (id)
+        SELECT * FROM a JOIN b USING (id) /**ASSERT UNIQUE**/ JOIN c USING (id)
         """
     )
 
@@ -244,7 +244,7 @@ def test_a_table_level_unique_constraint_does_not_imply_non_null():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id AND sessions.user_region = users.region
         """
     )

@@ -31,7 +31,7 @@ def test_create_index_is_reported_and_dropped_not_silently_ignored():
 
         SELECT *
         FROM sessions
-        /**UNIQUE**/ JOIN users
+        /**ASSERT UNIQUE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )
