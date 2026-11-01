@@ -140,6 +140,22 @@ _Avoid_: Propagated key
 A Unique Set whose columns are all non-null, so every row has a distinct, complete value combination.
 _Avoid_: Candidate key, nullable unique set
 
+**Referential Coverage**:
+A Property between ordered referencing columns of one relation and equally
+many ordered referenced columns of another, paired by position: every row whose
+referencing columns are all non-null has a referenced row equal to it on the
+paired columns. A row with any null referencing component is exempt (SQL
+`MATCH SIMPLE`). Knowledge -- a `REFERENCES` constraint, a catalog foreign key,
+or a Foreign Key Property Declaration -- supplies Referential Coverage only.
+_Avoid_: Inclusion dependency, reference check
+
+**Foreign Key**:
+Referential Coverage onto a Unique Set of the referenced Named Relation. Each
+referencing row with no null component therefore matches exactly one referenced
+row. The Unique Set must be proved or declared on its own; declaring a Foreign
+Key never vouches for it.
+_Avoid_: Reference, relationship, join key
+
 **Functional Dependency**:
 A Property of a relation, written `X → Y` (`DETERMINES`): any two rows that agree on the columns X also agree on the columns Y, for every database the schema allows. Strict when NULL counts as agreeing with NULL; lax when it holds only on rows whose X columns are all non-null.
 _Avoid_: Correlation, derived column

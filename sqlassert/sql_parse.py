@@ -12,6 +12,7 @@ text. SQLGlot objects stop at this boundary; only the IR parser reads them.
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import NamedTuple
 import enum
 import re
 
@@ -50,6 +51,8 @@ class SqlassertToken(enum.Enum):
     SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_NOT_NULL_OPEN = enum.auto()
     SQLASSERT_DECLARED_NOT_NULL_OPEN = enum.auto()
+    SQLASSERT_FOREIGN_KEY_OPEN = enum.auto()
+    SQLASSERT_DECLARED_FOREIGN_KEY_OPEN = enum.auto()
     SQLASSERT_MARKER_CLOSE = enum.auto()
 
 
@@ -65,7 +68,9 @@ class SqlassertToken(enum.Enum):
 # fixed `KEYWORDS` literal: only its open and close are fixed text; the column
 # list between them is ordinary SQL, parsed with the parser's own
 # identifier-list machinery once the open token is matched
-# (`_Parser._parse_select_query` below).
+# (`_Parser._parse_select_query` below). A Foreign Key marker continues its
+# column list with `REFERENCES relation(col, ...)`, pairing columns by position:
+# `/**ASSERT FOREIGN KEY(a, b) REFERENCES t(x, y)**/`.
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
     "/**ASSERT UNIQUE(": SqlassertToken.SQLASSERT_UNIQUE_SET_OPEN,
@@ -78,13 +83,16 @@ MARKERS = {
     "/**DECLARE NOT NULL UNIQUE(": SqlassertToken.SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN,
     "/**DECLARE PRIMARY KEY(": SqlassertToken.SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN,
     "/**DECLARE NOT NULL(": SqlassertToken.SQLASSERT_DECLARED_NOT_NULL_OPEN,
+    "/**ASSERT FOREIGN KEY(": SqlassertToken.SQLASSERT_FOREIGN_KEY_OPEN,
+    "/**DECLARE FOREIGN KEY(": SqlassertToken.SQLASSERT_DECLARED_FOREIGN_KEY_OPEN,
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
 # The open literals of a column marker, and the kind each one states --
 # "unique" is a nullable-tolerant Unique Set, "key" the stricter
-# Non-Null Unique Set, and "not-null" non-nullness of every listed column. A
-# "declared-" kind states the same Property as a trusted declaration.
+# Non-Null Unique Set, "not-null" non-nullness of every listed column, and
+# "foreign-key" a Foreign Key from the listed columns. A "declared-" kind states
+# the same Property as a trusted declaration.
 _COLUMN_MARKER_OPENS = {
     "/**ASSERT UNIQUE(": "unique",
     "/**ASSERT NOT NULL UNIQUE(": "key",
@@ -94,10 +102,15 @@ _COLUMN_MARKER_OPENS = {
     "/**DECLARE NOT NULL UNIQUE(": "declared-key",
     "/**DECLARE PRIMARY KEY(": "declared-key",
     "/**DECLARE NOT NULL(": "declared-not-null",
+    "/**ASSERT FOREIGN KEY(": "foreign-key",
+    "/**DECLARE FOREIGN KEY(": "declared-foreign-key",
 }
 
 # Column marker kinds that are Property Declarations rather than Assertions.
-DECLARED_KINDS = frozenset({"declared-unique", "declared-key", "declared-not-null"})
+DECLARED_KINDS = frozenset({"declared-unique", "declared-key", "declared-not-null", "declared-foreign-key"})
+
+# Column marker kinds followed by `REFERENCES relation(col, ...)`.
+FOREIGN_KEY_KINDS = frozenset({"foreign-key", "declared-foreign-key"})
 
 # How diagnostics name each column marker kind.
 MARKER_NOUNS = {
@@ -107,6 +120,8 @@ MARKER_NOUNS = {
     "declared-unique": "unique set declaration",
     "declared-key": "not null unique declaration",
     "declared-not-null": "not null declaration",
+    "foreign-key": "foreign key assertion",
+    "declared-foreign-key": "foreign key declaration",
 }
 
 # Where resolved column markers are recorded on its Select node.
@@ -115,6 +130,20 @@ _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 _COLUMN_MARKER_OPEN_TOKENS = {
     MARKERS[open_]: kind for open_, kind in _COLUMN_MARKER_OPENS.items()
 }
+
+
+class ColumnMarker(NamedTuple):
+    """One column marker as written: `kind` is a value of `_COLUMN_MARKER_OPENS`.
+
+    A Foreign Key marker also names the referenced relation, as written, and
+    its referenced columns, paired with `columns` by position.
+    """
+
+    kind: str
+    columns: tuple[str, ...]
+    line: int
+    referenced_relation: str | None = None
+    referenced_columns: tuple[str, ...] = ()
 
 
 class UnattachedMarker(ParseError):
@@ -217,36 +246,22 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             if not isinstance(result, exp.Select):
                 return result
 
-            found: list[tuple[str, tuple[str, ...], int]] = []
+            found: list[ColumnMarker] = []
             while self._curr is not None and self._curr.token_type in _COLUMN_MARKER_OPEN_TOKENS:
                 kind = _COLUMN_MARKER_OPEN_TOKENS[self._curr.token_type]
                 line = self._curr.line
                 self._advance()
 
-                columns = self._parse_csv(self._parse_id_var)
-                if not columns:
-                    raise UnattachedMarker(
-                        f"the {MARKER_NOUNS[kind]} on line {line} names no columns", line, self._prev.text
-                    )
-                names = tuple(column.name for column in columns)
-                if len({name.lower() for name in names}) != len(names):
-                    raise UnattachedMarker(
-                        f"the {MARKER_NOUNS[kind]} on line {line} names the same column more than once",
-                        line,
-                        self._prev.text,
-                    )
-                if not self._match(TokenType.R_PAREN):
-                    raise UnattachedMarker(
-                        f"the {MARKER_NOUNS[kind]} on line {line} is missing its closing parenthesis",
-                        line,
-                        self._prev.text,
-                    )
+                names = self._parse_marker_columns(kind, line)
+                referenced_relation, referenced_columns = None, ()
+                if kind in FOREIGN_KEY_KINDS:
+                    referenced_relation, referenced_columns = self._parse_marker_reference(kind, line, len(names))
                 if not self._match(SqlassertToken.SQLASSERT_MARKER_CLOSE):
                     raise UnattachedMarker(
                         f"the {MARKER_NOUNS[kind]} on line {line} is not closed with **/", line, self._prev.text
                     )
 
-                found.append((kind, names, line))
+                found.append(ColumnMarker(kind, names, line, referenced_relation, referenced_columns))
 
             if found:
                 result.meta[_COLUMN_MARKERS_AT] = found
@@ -260,6 +275,51 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             # a no-op if nothing follows, since `_parse_set_operations` only
             # advances the cursor on an actual match.
             return self._parse_set_operations(result) or result
+
+        def _parse_marker_columns(self, kind: str, line: int) -> tuple[str, ...]:
+            """A marker's column list after its opening parenthesis, through the closing one."""
+            columns = self._parse_csv(self._parse_id_var)
+            if not columns:
+                raise UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {line} names no columns", line, self._prev.text)
+            names = tuple(column.name for column in columns)
+            if len({name.lower() for name in names}) != len(names):
+                raise UnattachedMarker(
+                    f"the {MARKER_NOUNS[kind]} on line {line} names the same column more than once",
+                    line,
+                    self._prev.text,
+                )
+            if not self._match(TokenType.R_PAREN):
+                raise UnattachedMarker(
+                    f"the {MARKER_NOUNS[kind]} on line {line} is missing its closing parenthesis",
+                    line,
+                    self._prev.text,
+                )
+            return names
+
+        def _parse_marker_reference(self, kind: str, line: int, count: int) -> tuple[str, tuple[str, ...]]:
+            """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
+            missing = UnattachedMarker(
+                f"the {MARKER_NOUNS[kind]} on line {line} must continue with REFERENCES relation(column, ...)",
+                line,
+                self._prev.text,
+            )
+            if not self._match(TokenType.REFERENCES):
+                raise missing
+            parts = [self._parse_id_var(any_token=False)]
+            while parts[-1] is not None and self._match(TokenType.DOT):
+                parts.append(self._parse_id_var(any_token=False))
+            if None in parts or not self._match(TokenType.L_PAREN):
+                raise missing
+            relation = ".".join(part.name for part in parts if part is not None)
+            columns = self._parse_marker_columns(kind, line)
+            if len(columns) != count:
+                raise UnattachedMarker(
+                    f"the {MARKER_NOUNS[kind]} on line {line} pairs {count} column(s) with {len(columns)} "
+                    f"referenced column(s) of {relation}",
+                    line,
+                    self._prev.text,
+                )
+            return relation, columns
 
     return type(
         f"SqlAssert{parent.__name__}",
@@ -391,7 +451,7 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
     # full open-to-close form.
     recognized = ", ".join(
         sorted(literal for literal, token in MARKERS.items() if token is SqlassertToken.SQLASSERT_UNIQUE)
-        + sorted(f"{open_}...)**/" for open_ in _COLUMN_MARKER_OPENS)
+        + sorted(_marker_shape(open_, kind) for open_, kind in _COLUMN_MARKER_OPENS.items())
     )
     return [
         Diagnostic(
@@ -403,6 +463,12 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
         for match in _MARKER_SHAPED.finditer(sql)
         if not _is_recognized_marker(match.group(0))
     ]
+
+
+def _marker_shape(open_: str, kind: str) -> str:
+    """The whole user-facing shape of a column marker opening with `open_`."""
+    reference = " REFERENCES relation(...)" if kind in FOREIGN_KEY_KINDS else ""
+    return f"{open_}...){reference}**/"
 
 
 def _bare_marker_hint(text: str) -> str:
@@ -461,8 +527,7 @@ def join_origin(join: exp.Join, dialect: str) -> Origin:
     return Origin(SQL, join.sql(dialect=dialect), assertion_line(join))
 
 
-def column_markers(select: exp.Select) -> tuple[tuple[str, tuple[str, ...], int], ...]:
-    """Every column marker written on `select`, as `(kind, columns, line)`
-    -- `kind` is a value of `_COLUMN_MARKER_OPENS`; those in `DECLARED_KINDS`
-    are Property Declarations, the rest Assertions."""
+def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:
+    """Every column marker written on `select` -- those whose kind is in
+    `DECLARED_KINDS` are Property Declarations, the rest Assertions."""
     return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))

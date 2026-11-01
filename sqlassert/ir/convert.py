@@ -15,9 +15,13 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
+from sqlassert.properties import (
+    ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin, UniqueSet,
+)
 from sqlassert.provenance import Origin, SQL
-from sqlassert.sql_parse import MARKER_NOUNS, ParsedProgram, assertion_line, join_origin, column_markers
+from sqlassert.sql_parse import (
+    FOREIGN_KEY_KINDS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers, join_origin,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,28 @@ class _Binding:
 
 
 @dataclass(frozen=True)
+class _MarkerReference:
+    """A Foreign Key marker whose referencing columns are lowered, awaiting its referenced relation."""
+
+    marker: ColumnMarker
+    origin: Origin
+    columns: tuple[ir.OutputColumn, ...]
+    target: _Symbol
+    position: int
+
+
+@dataclass(frozen=True)
+class _ConstraintReference:
+    """A `REFERENCES` constraint of a declared table onto a relation the program reaches."""
+
+    table: _Symbol
+    columns: tuple[str, ...]
+    target: _Symbol
+    target_columns: tuple[str, ...] | None
+    origin: Origin
+
+
+@dataclass(frozen=True)
 class _Lowered:
     relation: ir.RelationExpr
     bindings: tuple[_Binding, ...]
@@ -67,6 +93,10 @@ class IrParser:
     _diagnostics: list[Diagnostic] = field(default_factory=list)
     _handled_column_marker_lines: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
+    _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
+    _marker_references: list[_MarkerReference] = field(default_factory=list)
+    _constraint_references: list[_ConstraintReference] = field(default_factory=list)
+
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
             if isinstance(statement, exp.Create):
@@ -77,9 +107,14 @@ class IrParser:
                 self._discover_query(symbol.body, {})
         if ast.root_select is not None:
             self._discover_query(ast.root_select, {})
+        self._discover_constraint_references()
         self._propagate_required_columns()
 
         root = self._lower_query(ast.root_select, root=True) if ast.root_select is not None else None
+        # Referenced relations are linked last: a marker on a view may name
+        # the view itself, or one that reads it.
+        self._link_constraint_references()
+        self._link_marker_references()
         self._report_unanalyzed(ast)
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
@@ -171,9 +206,16 @@ class IrParser:
                     self._require(source, identifier.name)
 
         if len(sources) == 1 and _star_only(query):
-            for _, columns, _ in column_markers(query):
-                for column in columns:
+            for marker in column_markers(query):
+                for column in marker.columns:
                     self._require(sources[0], column)
+
+        for marker in column_markers(query):
+            if marker.referenced_relation is not None:
+                origin = Origin(SQL, marker.referenced_relation, marker.line)
+                target = self._symbol_for_name(marker.referenced_relation, scope, origin)
+                self._marker_targets[id(marker)] = target
+                self._require_undeclared(target, marker.referenced_columns)
 
         if with_clause is not None:
             for cte in with_clause.expressions:
@@ -182,16 +224,39 @@ class IrParser:
                     self._discover_query(body, scope)
 
     def _symbol_for_table(self, table: exp.Table, scope: dict[str, _Symbol]) -> _Symbol:
-        name = _qualified_name(table)
+        return self._symbol_for_name(_qualified_name(table), scope, Origin(SQL, table.sql(dialect=self.dialect)))
+
+    def _symbol_for_name(self, name: str, scope: dict[str, _Symbol], origin: Origin) -> _Symbol:
         key = name.lower()
         if key in scope:
             return scope[key]
         symbol = self._global_symbols.get(key)
         if symbol is None:
-            symbol = _Symbol(name=name, role=ir.RelationRole.TABLE, origin=Origin(SQL, table.sql(dialect=self.dialect)))
+            symbol = _Symbol(name=name, role=ir.RelationRole.TABLE, origin=origin)
             self._global_symbols[key] = symbol
             self._symbols.append(symbol)
         return symbol
+
+    def _require_undeclared(self, symbol: _Symbol, columns: Iterable[str]) -> None:
+        """Referenced columns become columns of an undeclared table only: a
+        declared relation's schema is never widened by a reference to it."""
+        if symbol.role is ir.RelationRole.TABLE and symbol.statement is None:
+            symbol.required_columns.update(columns)
+
+    def _discover_constraint_references(self) -> None:
+        """`REFERENCES` constraints onto relations the program reaches; one onto
+        a relation outside the program can never be used, so it is not linked."""
+        for symbol in tuple(self._symbols):
+            if symbol.role is not ir.RelationRole.TABLE or symbol.statement is None:
+                continue
+            for columns, table, target_columns, node in _references(symbol.statement):
+                target = self._global_symbols.get(_qualified_name(table).lower())
+                if target is None or target.role is not ir.RelationRole.TABLE:
+                    continue
+                self._require_undeclared(target, target_columns or ())
+                self._constraint_references.append(
+                    _ConstraintReference(symbol, columns, target, target_columns, self._origin(node))
+                )
 
     def _require(self, source: exp.Expression, column: str) -> None:
         self._source_required.setdefault(id(source), set()).add(column)
@@ -583,7 +648,8 @@ class IrParser:
 
     def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Select) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
-        for kind, columns, line in column_markers(select):
+        for marker in column_markers(select):
+            kind, columns, line = marker.kind, marker.columns, marker.line
             self._handled_column_marker_lines.add(line)
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
             unknown = [column for column in columns if column.lower() not in by_name]
@@ -597,6 +663,12 @@ class IrParser:
                 )
                 continue
             if unknown:
+                continue
+            if kind in FOREIGN_KEY_KINDS:
+                self._marker_references.append(_MarkerReference(
+                    marker, origin, tuple(by_name[column.lower()] for column in columns),
+                    self._marker_targets[id(marker)], len(self._assertions),
+                ))
                 continue
             members = frozenset(by_name[column.lower()] for column in columns)
             match kind:
@@ -617,6 +689,80 @@ class IrParser:
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
                 case _:
                     raise ValueError(f"Unhandled column marker kind: {kind}")
+
+    def _link_marker_references(self) -> None:
+        """Lower each Foreign Key marker's referenced relation, then state the
+        marker's Property; assertions keep the place their marker was written."""
+        placed: list[tuple[int, ir.Assertion]] = []
+        while self._marker_references:
+            pending = self._marker_references.pop(0)
+            target = self._resolve_symbol(pending.target)
+            marker = pending.marker
+            referenced = self._columns_named(target, marker.referenced_columns)
+            if referenced is None:
+                self._diagnostics.append(Diagnostic(
+                    diag.UNKNOWN_REFERENCED_COLUMN,
+                    f"the {MARKER_NOUNS[marker.kind]} on line {marker.line} references "
+                    f"{target.name}({', '.join(marker.referenced_columns)}), but {target.name} has no column "
+                    f"{', '.join(_missing(target, marker.referenced_columns))}",
+                    pending.origin,
+                ))
+                continue
+            match marker.kind:
+                case "foreign-key":
+                    placed.append((pending.position, ir.Assertion(
+                        origin=pending.origin, property=ForeignKey(columns=pending.columns, referenced_columns=referenced),
+                    )))
+                case "declared-foreign-key":
+                    self._declarations.append(ReferentialCoverage(columns=pending.columns, referenced_columns=referenced))
+                case _:
+                    raise ValueError(f"Unhandled foreign key marker kind: {marker.kind}")
+        # Descending, so earlier positions stay valid; ties keep written order.
+        for position, assertion in reversed(placed):
+            self._assertions.insert(position, assertion)
+
+    def _link_constraint_references(self) -> None:
+        for reference in self._constraint_references:
+            table = self._resolve_symbol(reference.table)
+            target = self._resolve_symbol(reference.target)
+            target_names = reference.target_columns
+            if target_names is None:
+                if reference.target.statement is None:
+                    continue  # An undeclared table's primary key is unknown.
+                target_names = _primary_key(reference.target.statement)
+                if target_names is None:
+                    self._diagnostics.append(Diagnostic(
+                        diag.UNKNOWN_REFERENCED_COLUMN,
+                        f"a foreign key of {table.name} references {target.name} without columns, "
+                        f"and {target.name} declares no primary key",
+                        reference.origin,
+                    ))
+                    continue
+            columns = self._columns_named(table, reference.columns)
+            if columns is None or len(reference.columns) != len(target_names):
+                self._diagnostics.append(Diagnostic(
+                    diag.INVALID_FOREIGN_KEY_CONSTRAINT,
+                    f"a foreign key of {table.name} must pair columns of its own with equally many columns of "
+                    f"{target.name}: ({', '.join(reference.columns)}) references ({', '.join(target_names)})",
+                    reference.origin,
+                ))
+                continue
+            referenced = self._columns_named(target, target_names)
+            if referenced is None:
+                self._diagnostics.append(Diagnostic(
+                    diag.UNKNOWN_REFERENCED_COLUMN,
+                    f"a foreign key of {table.name} references {target.name}({', '.join(target_names)}), "
+                    f"but {target.name} has no column {', '.join(_missing(target, target_names))}",
+                    reference.origin,
+                ))
+                continue
+            self._knowledge.append(ReferentialCoverage(columns=columns, referenced_columns=referenced))
+
+    def _columns_named(self, relation: ir.RelationExpr, names: Iterable[str]) -> tuple[ir.OutputColumn, ...] | None:
+        by_name = {column.name.lower(): column for column in relation.output_columns}
+        columns = [by_name.get(name.lower()) for name in names]
+        found = tuple(column for column in columns if column is not None)
+        return found if len(found) == len(columns) else None
 
     def _report_cycle(self, symbol: _Symbol, table: exp.Table) -> None:
         if symbol in self._reported_cycles:
@@ -648,7 +794,8 @@ class IrParser:
                 )
             )
         for select in _asserted_selects(ast):
-            for kind, _, line in column_markers(select):
+            for marker in column_markers(select):
+                kind, line = marker.kind, marker.line
                 if line in self._handled_column_marker_lines:
                     continue
                 self._diagnostics.append(
@@ -729,6 +876,46 @@ def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] |
     if isinstance(constraint, exp.UniqueColumnConstraint) and isinstance(constraint.this, exp.Schema):
         return tuple(identifier.name for identifier in constraint.this.expressions)
     return None
+
+
+def _references(statement: exp.Create) -> list[tuple[tuple[str, ...], exp.Table, tuple[str, ...] | None, exp.Expression]]:
+    """Every `REFERENCES` constraint of a table, column-level and table-level,
+    as `(columns, referenced table, referenced columns, node)`. Referenced
+    columns are None when omitted, meaning the referenced primary key."""
+    found = []
+    for definition in statement.this.find_all(exp.ColumnDef):
+        for constraint in definition.constraints:
+            reference = constraint.args.get("kind")
+            if isinstance(reference, exp.Reference):
+                found.append(((definition.name,), *_reference_target(reference), definition))
+    for foreign_key in statement.this.find_all(exp.ForeignKey):
+        reference = foreign_key.args.get("reference")
+        if isinstance(reference, exp.Reference):
+            columns = tuple(identifier.name for identifier in foreign_key.expressions)
+            found.append((columns, *_reference_target(reference), foreign_key))
+    return found
+
+
+def _reference_target(reference: exp.Reference) -> tuple[exp.Table, tuple[str, ...] | None]:
+    target = reference.this
+    if isinstance(target, exp.Schema):
+        return target.this, tuple(identifier.name for identifier in target.expressions)
+    return target, None
+
+
+def _primary_key(statement: exp.Create) -> tuple[str, ...] | None:
+    for definition in statement.this.find_all(exp.ColumnDef):
+        if any(isinstance(constraint.args.get("kind"), exp.PrimaryKeyColumnConstraint) for constraint in definition.constraints):
+            return (definition.name,)
+    for constraint in statement.this.expressions:
+        if isinstance(constraint, exp.PrimaryKey):
+            return tuple(identifier.name for identifier in constraint.expressions)
+    return None
+
+
+def _missing(relation: ir.RelationExpr, names: Iterable[str]) -> list[str]:
+    known = {column.name.lower() for column in relation.output_columns}
+    return [name for name in names if name.lower() not in known]
 
 
 _SUPPORTED_CREATE_KINDS = {"TABLE", "VIEW"}
