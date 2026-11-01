@@ -381,6 +381,34 @@ with its line.
   such conjuncts directly), and the ON of a proved Exactly One LEFT join,
   which pads nothing.
 
+### Referential Coverage through queries
+
+`sqlassert/rules/foreign_key.py`. `referential_coverage(X, Y)` walks two
+directions, never mixing them:
+
+- **Referenced side, upward.** Coverage onto an input carries over to a
+  relation that keeps every input row's values: Alias, Named Relation body,
+  Project, DISTINCT, grouping keys, the preserved side of an outer join, either
+  branch of a UNION. `_targets(Y)` lists Y and every such upstream column list,
+  paired by position. A narrowing relation (Filter, QUALIFY, inner join,
+  INTERSECT, EXCEPT) stops it: the rows the referencing values match may be
+  the dropped ones.
+- **Referencing side, downward.** X holds on a relation when each output row
+  takes X from one row of one covered input: Alias, Named Relation body,
+  Filter, Project, DISTINCT, QUALIFY, grouping keys, and either side of any
+  join -- a padded side is NULL in every column, which `MATCH SIMPLE` exempts.
+  A UNION needs both branches covered, INTERSECT either, EXCEPT the left.
+- **Equality.** Each column of X may stand in for any column of its
+  [equality group](#equality-groups): where it is non-null, they are equal. So
+  `e JOIN u ON e.user_id = u.id` covers `e.user_id` onto `u.id`, then onto
+  `users.id` -- including onto a narrowed `u`, which coverage of `users` alone
+  never reaches.
+- At each step, coverage holds when known coverage pairs X with a target in
+  any order, or X is a target. Anything else -- a computed or aggregated
+  column, columns from both sides of a join -- stops propagation, and the
+  explanation names where; at a base table it names the missing Foreign Key
+  and any narrowed target.
+
 ### Kept outside the FD closure
 
 - **Value equality.** `a = b` is stronger than the FD pair `a ↔ b`. Facts
