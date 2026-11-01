@@ -33,7 +33,6 @@ import sqlassert
 import sqlassert.main
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
 from sqlassert.properties import EnumeratedDomain, ExhaustiveCase, ForeignKey, FunctionalDependency
-from sqlassert import ir
 from sqlassert.ir import LiteralValue
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
@@ -148,12 +147,11 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
         return Judgement()
 
     parsed = SqlParser(dialect).parse(sql)
-    program = IrParser(dialect).parse(parsed).program
-    properties = [assertion.property for assertion in program.assertions]
+    properties = [assertion.property for assertion in IrParser(dialect).parse(parsed).program.assertions]
     assert len(properties) == len(report.assertions), "re-parsing the program produced different assertions"
 
     try:
-        database = _Database(parsed, _undeclared_tables(program))
+        database = _Database(parsed)
         declarations = [_violation_query(select, marker) for select, marker in _declared(parsed)]
         for query in declarations:
             database.connection.execute(query)
@@ -183,20 +181,6 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
             witness = database.connection.execute(check).fetchall()
             counterexamples.append(Counterexample(assertion.assertion_id, assertion.origin, check, search.instance, witness))
     return Judgement(checked, tuple(counterexamples), tuple(skipped), tuple(searches))
-
-
-def _undeclared_tables(program: ir.Program) -> tuple[exp.Expression, ...]:
-    """A table for each one the program reads without a complete `CREATE`: the
-    columns it reads, as INTEGER (analysis assumes nothing about their types).
-    A declared table keeps its own `CREATE`."""
-    tables = []
-    for relation in program.named_relations:
-        if relation.role is not ir.RelationRole.TABLE or relation.is_schema_complete:
-            continue
-        names = [column.name for column in relation.output_columns] or ["__sqlassert_row"]
-        columns = ", ".join(f"{_quoted(name)} INTEGER" for name in names)
-        tables.append(sqlglot.parse_one(f"CREATE TABLE IF NOT EXISTS {exp.to_table(relation.name).sql(dialect='duckdb')} ({columns})", dialect="duckdb"))
-    return tuple(tables)
 
 
 def _first_line(error: Exception) -> str:
@@ -441,9 +425,9 @@ class _Table:
 class _Database:
     """One in-memory DuckDB holding the program's DDL, refilled per example."""
 
-    def __init__(self, parsed: ParsedProgram, undeclared: tuple[exp.Expression, ...] = ()) -> None:
+    def __init__(self, parsed: ParsedProgram) -> None:
         self.connection = duckdb.connect(config={"threads": 1})
-        self._create((*parsed.create_statements, *undeclared))
+        self._create(parsed.create_statements)
         numbers, strings = _literals(parsed)
         self.tables = tuple(self._tables(numbers, strings))
         self.foreign_keys = tuple(self._foreign_key_checks(parsed.create_statements))
@@ -484,13 +468,8 @@ class _Database:
 
     def _create(self, statements: tuple[exp.Expression, ...]) -> None:
         """Run the DDL. A program may reference a relation declared later, which
-        DuckDB rejects, so a failed statement is retried once the others ran.
-        Schemas a qualified table names are created first. Unique indexes run
-        last: DuckDB cannot ALTER a column an index depends on."""
-        for schema in sorted({table.db for statement in statements for table in statement.find_all(exp.Table) if table.db}):
-            self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {_quoted(schema)}")
-        runnable = [sql for statement in statements if (sql := _runnable_create(statement))]
-        pending = sorted(runnable, key=lambda sql: sql.startswith("CREATE UNIQUE INDEX"))
+        DuckDB rejects, so a failed statement is retried once the others ran."""
+        pending = [sql for statement in statements if (sql := _runnable_create(statement))]
         while pending:
             failed: list[tuple[str, duckdb.Error]] = []
             for statement in pending:
