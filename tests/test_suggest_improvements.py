@@ -266,6 +266,36 @@ def test_the_cli_lists_improvements_before_markers(tmp_path, capsys):
 
 # (original, rewritten, the improvement that justifies the rewrite)
 EQUIVALENT = [
+    # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
+        Rewrite.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
+        Rewrite.INNER_JOIN,
+    ),
+    # A WHERE EXISTS is a semi join, whose ON rejects NULL like a later inner join's.
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
+        Rewrite.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
+        Rewrite.INNER_JOIN,
+    ),
     (
         SCHEMA + "SELECT id, name, count(*) AS n FROM users GROUP BY 1, 2",
         SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users GROUP BY 1",
@@ -385,3 +415,11 @@ def test_the_equivalence_check_finds_a_rewrite_that_changes_the_result():
     )
     assert search.status == "counterexample"
     assert search.instance is not None
+
+
+def test_a_later_left_join_on_a_column_that_is_not_padded_does_not_chain():
+    sql = SCHEMA + (
+        "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.total = s.ts WHERE o.total = 1"
+    )
+    assert [label for rewrite, label, _ in improvements(sql) if rewrite is Rewrite.INNER_JOIN] == ["LEFT JOIN orders AS o"]
