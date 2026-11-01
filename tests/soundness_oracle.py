@@ -12,16 +12,15 @@ Run it over every program the test suite analyzes::
 
     python -m pytest --soundness-oracle
 
-With the option, `conftest.py` records every `analyze()` call the suite makes,
-and the marked oracle test runs last to judge them. Without it the oracle test
-is skipped.
+With the option, `conftest.py` records each test's `analyze()` calls and judges
+them after its fixtures finish. Pytest distributes whole tests across CPUs.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import duckdb
 import sqlglot
@@ -67,7 +66,6 @@ class RecordedProgram:
     sql: str
     dialect: str
     report: Report
-    test_id: str
 
 
 _recorded: dict[tuple[str, str], RecordedProgram] = {}
@@ -83,22 +81,37 @@ def record_analyze_calls() -> None:
 
     def recording(sql: str, *, dialect: str = sqlassert.main.DEFAULT_DIALECT) -> Report:
         report = original(sql, dialect=dialect)
-        test_id = os.environ.get("PYTEST_CURRENT_TEST", "?").rsplit(" ", 1)[0]
-        _recorded.setdefault((sql, dialect), RecordedProgram(sql, dialect, report, test_id))
+        _recorded.setdefault((sql, dialect), RecordedProgram(sql, dialect, report))
         return report
 
     setattr(sqlassert, "analyze", recording)
     setattr(sqlassert.main, "analyze", recording)
 
 
-def recorded_programs() -> tuple[RecordedProgram, ...]:
-    return tuple(_recorded.values())
+def take_recorded_programs() -> tuple[RecordedProgram, ...]:
+    programs = tuple(_recorded.values())
+    _recorded.clear()
+    return programs
 
 
 # Judging ----------------------------------------------------------------
 
 
 Instance = dict[str, list[tuple]]
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """Search outcome and predicate evaluations, including shrinking attempts."""
+
+    status: Literal["counterexample", "no-counterexample", "insufficient-data"]
+    instance: Instance | None
+    attempted: int
+    valid: int
+
+    @property
+    def rejected(self) -> int:
+        return self.attempted - self.valid
 
 
 @dataclass(frozen=True)
@@ -124,6 +137,7 @@ class Judgement:
     checked: int = 0
     counterexamples: tuple[Counterexample, ...] = ()
     skipped: tuple[str, ...] = ()
+    searches: tuple[tuple[str, SearchResult], ...] = ()
 
 
 def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: int = MAX_EXAMPLES) -> Judgement:
@@ -147,6 +161,7 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
     checked = 0
     counterexamples: list[Counterexample] = []
     skipped: list[str] = []
+    searches: list[tuple[str, SearchResult]] = []
     for index in proved:
         assertion = report.assertions[index]
         check = _check(parsed, properties[index], assertion.origin, dialect)
@@ -155,13 +170,17 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
         except duckdb.Error as error:
             skipped.append(f"{assertion.assertion_id} cannot run on DuckDB: {_first_line(error)}")
             continue
+        search = database.search(lambda _: database.violated(declarations, check), max_examples)
+        searches.append((assertion.assertion_id, search))
+        if search.status == "insufficient-data":
+            skipped.append(f"{assertion.assertion_id}: insufficient valid data ({search.valid} valid, {search.rejected} rejected)")
+            continue
         checked += 1
-        instance = database.search(lambda rows: database.violated(rows, declarations, check), max_examples)
-        if instance is not None:
-            database.load(instance)
+        if search.instance is not None:
+            database.load(search.instance)
             witness = database.connection.execute(check).fetchall()
-            counterexamples.append(Counterexample(assertion.assertion_id, assertion.origin, check, instance, witness))
-    return Judgement(checked, tuple(counterexamples), tuple(skipped))
+            counterexamples.append(Counterexample(assertion.assertion_id, assertion.origin, check, search.instance, witness))
+    return Judgement(checked, tuple(counterexamples), tuple(skipped), tuple(searches))
 
 
 def _first_line(error: Exception) -> str:
@@ -402,15 +421,50 @@ class _Database:
     """One in-memory DuckDB holding the program's DDL, refilled per example."""
 
     def __init__(self, parsed: ParsedProgram) -> None:
-        self.connection = duckdb.connect()
+        self.connection = duckdb.connect(config={"threads": 1})
         self._create(parsed.create_statements)
         numbers, strings = _literals(parsed)
         self.tables = tuple(self._tables(numbers, strings))
+        self.foreign_keys = tuple(self._foreign_key_checks(parsed.create_statements))
+        for check in self.foreign_keys:
+            self.connection.execute(check)
+
+    def _foreign_key_checks(self, statements: tuple[exp.Expression, ...]) -> list[str]:
+        """DDL Foreign Keys checked as coverage queries after the whole instance is loaded."""
+        checks = []
+        for statement in statements:
+            for reference in statement.find_all(exp.Reference):
+                source = statement.this.this if isinstance(statement.this, exp.Schema) else statement.this
+                match reference.parent:
+                    case exp.ForeignKey(expressions=columns):
+                        names = tuple(column.name for column in columns)
+                    case exp.ColumnConstraint(parent=exp.ColumnDef() as column):
+                        names = (column.name,)
+                    case _:
+                        raise TypeError(f"Unhandled REFERENCES parent: {type(reference.parent).__name__}")
+                target = reference.this
+                if isinstance(target, exp.Schema):
+                    referenced = tuple(column.name for column in target.expressions)
+                    target = target.this
+                else:
+                    row = self.connection.execute(
+                        "SELECT constraint_column_names FROM duckdb_constraints() "
+                        "WHERE schema_name = ? AND table_name = ? AND constraint_type = 'PRIMARY KEY'",
+                        [target.db or "main", target.name],
+                    ).fetchone()
+                    if row is None:
+                        raise duckdb.CatalogException(f"REFERENCES {target.sql()} names no columns and its target has no primary key")
+                    referenced = tuple(row[0])
+                if len(names) != len(referenced):
+                    raise duckdb.CatalogException("A Foreign Key must pair equally many referencing and referenced columns")
+                marker = ColumnMarker("coverage", names, 0, target.sql(dialect="duckdb"), referenced)
+                checks.append(_violation_query(exp.select("*").from_(source.copy()), marker))
+        return checks
 
     def _create(self, statements: tuple[exp.Expression, ...]) -> None:
         """Run the DDL. A program may reference a relation declared later, which
         DuckDB rejects, so a failed statement is retried once the others ran."""
-        pending = [_runnable_create(statement) for statement in statements]
+        pending = [sql for statement in statements if (sql := _runnable_create(statement))]
         while pending:
             failed: list[tuple[str, duckdb.Error]] = []
             for statement in pending:
@@ -450,31 +504,44 @@ class _Database:
             ))
         return tables
 
-    def search(self, violated: Callable[[Instance], bool], max_examples: int) -> Instance | None:
-        """The smallest instance Hypothesis finds that satisfies `violated`."""
+    def search(self, violated: Callable[[Instance], bool], max_examples: int) -> SearchResult:
+        """Search valid loaded instances, distinguishing exhaustion from insufficient data."""
         strategy = st.fixed_dictionaries({
             table.name: st.lists(st.tuples(*(st.sampled_from(domain) for domain in table.domains)), max_size=MAX_ROWS)
             .map(lambda rows, table=table: _respecting_keys(rows, table.keys))
             for table in self.tables
         })
+        attempted = valid = 0
+
+        def checked(instance: Instance) -> bool:
+            nonlocal attempted, valid
+            attempted += 1
+            try:
+                self.load(instance)
+                for check in self.foreign_keys:
+                    assume(not self.connection.execute(check).fetchall())
+                result = violated(instance)
+            except duckdb.Error:
+                # Other DDL constraints or query casts may reject this data.
+                assume(False)
+                raise
+            valid += 1
+            return result
+
         try:
-            return find(strategy, violated, settings=settings(
+            instance = find(strategy, checked, settings=settings(
                 max_examples=max_examples, database=None, deadline=None, suppress_health_check=list(HealthCheck),
             ))
-        except (NoSuchExample, Unsatisfiable):
-            return None
+        except NoSuchExample:
+            return SearchResult("no-counterexample", None, attempted, valid)
+        except Unsatisfiable:
+            return SearchResult("insufficient-data", None, attempted, valid)
+        return SearchResult("counterexample", instance, attempted, valid)
 
-    def violated(self, instance: Instance, declarations: list[str], check: str) -> bool:
-        try:
-            self.load(instance)
-            for declaration in declarations:
-                assume(not self.connection.execute(declaration).fetchall())
-            return bool(self.connection.execute(check).fetchall())
-        except duckdb.Error:
-            # A constraint the generator does not model, such as CHECK, or a
-            # value the query cannot cast: the program rejects this data.
-            assume(False)
-            raise
+    def violated(self, declarations: list[str], check: str) -> bool:
+        for declaration in declarations:
+            assume(not self.connection.execute(declaration).fetchall())
+        return bool(self.connection.execute(check).fetchall())
 
     def load(self, instance: Instance) -> None:
         for table in self.tables:
@@ -488,7 +555,17 @@ class _Database:
 def _runnable_create(statement: exp.Expression) -> str:
     """The statement as DuckDB runs it. A table created from a query becomes a
     view, so its contents follow from generated data instead of being generated.
-    DuckDB cannot ALTER TABLE ... ADD UNIQUE, so that becomes a unique index."""
+    DuckDB cannot ALTER TABLE ... ADD UNIQUE, so that becomes a unique index.
+    Foreign Keys are removed here and checked after loading the complete instance."""
+    statement = statement.transform(lambda node: None if (
+        isinstance(node, exp.ForeignKey)
+        or isinstance(node, exp.ColumnConstraint) and isinstance(node.args.get("kind"), exp.Reference)
+    ) else node)
+    for constraint in reversed(list(statement.find_all(exp.Constraint, exp.AddConstraint))):
+        if not constraint.expressions:
+            constraint.pop()
+    if isinstance(statement, exp.Alter) and not statement.args.get("actions"):
+        return ""
     if isinstance(statement, exp.Create) and (statement.kind or "").upper() == "TABLE" and statement.expression:
         statement = statement.copy()
         statement.set("kind", "VIEW")

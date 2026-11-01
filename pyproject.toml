@@ -24,6 +24,7 @@ test = [
   "duckdb>=1.1",
   "hypothesis",
   "pytest",
+  "pytest-xdist",
 ]
 dev = [
   "ty",
@@ -33,6 +34,7 @@ dev = [
 include = ["sqlassert*"]
 
 [tool.pytest.ini_options]
+addopts = "-n auto"
 testpaths = ["tests"]
 
 [tool.ty.src]

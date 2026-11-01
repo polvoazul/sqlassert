@@ -1,18 +1,15 @@
-"""The soundness oracle: its own behaviour, and the opt-in run over the suite.
-
-`test_no_proved_assertion_in_the_suite_has_a_counterexample` judges every
-`PROVED` assertion that any test produced in the same run; see
-`soundness_oracle` for how to run it.
-"""
+"""The soundness oracle judges true and deliberately false claims against DuckDB."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 
 import pytest
+from hypothesis import assume
 
-from soundness_oracle import KNOWN_UNSOUND, Judgement, judge, recorded_programs
+from soundness_oracle import Judgement, SearchResult, _Database, judge
 from sqlassert import Outcome, Report, analyze
+from sqlassert.sql_parse import SqlParser
 
 # Few examples: these programs are tiny, and the counterexamples they need
 # are found almost at once.
@@ -459,28 +456,118 @@ def test_unknown_assertions_are_not_judged():
     assert judgement.counterexamples == ()
 
 
-@pytest.mark.soundness_oracle
-def test_no_proved_assertion_in_the_suite_has_a_counterexample(soundness_oracle_summary: list[str]):
-    programs = recorded_programs()
-    assert programs, "no analyze() call was recorded; run the whole suite with --soundness-oracle"
+@pytest.mark.parametrize("constraint", [
+    "user_id INTEGER REFERENCES users(id)",
+    "user_id INTEGER REFERENCES users",
+    "user_id INTEGER, FOREIGN KEY(user_id) REFERENCES users(id)",
+    "user_id INTEGER, CONSTRAINT fk FOREIGN KEY(user_id) REFERENCES users(id)",
+])
+def test_complete_fk_instances_can_be_reloaded_in_any_table_order(constraint: str):
+    database = _Database(SqlParser("duckdb").parse(f"""
+        CREATE TABLE orders ({constraint});
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        SELECT user_id FROM orders
+    """))
+    for value in (1, 2):
+        database.load({"orders": [(value,)], "users": [(value,)]})
+        assert all(database.connection.execute(check).fetchall() == [] for check in database.foreign_keys)
 
-    checked = 0
-    skipped: list[str] = []
-    found: list[str] = []
-    expected: list[str] = []
-    for program in programs:
-        judgement = judge(program.sql, program.report, dialect=program.dialect)
-        checked += judgement.checked
-        skipped.extend(f"{program.test_id}: {reason}" for reason in judgement.skipped)
-        for counterexample in judgement.counterexamples:
-            known = KNOWN_UNSOUND.get((program.test_id, counterexample.assertion_id))
-            target = expected if known else found
-            target.append(f"{program.test_id} ({known or 'new finding'})\n{counterexample.explain()}")
 
-    soundness_oracle_summary.append(
-        f"{len(programs)} programs, {checked} PROVED assertions judged, "
-        f"{len(found)} counterexamples, {len(expected)} known findings, {len(skipped)} skipped"
-    )
-    soundness_oracle_summary.extend(f"skipped {reason}" for reason in skipped)
-    soundness_oracle_summary.extend(f"known finding {finding}" for finding in expected)
-    assert not found, "PROVED assertions with counterexamples:\n\n" + "\n\n".join(found)
+def test_fk_checks_reject_orphans_after_loading_the_whole_instance():
+    database = _Database(SqlParser("duckdb").parse("""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE orders (user_id INTEGER REFERENCES users(id));
+        SELECT user_id FROM orders
+    """))
+
+    def orphan(instance) -> bool:
+        # The callback runs only after validation, including FK coverage.
+        assert not database.connection.execute(database.foreign_keys[0]).fetchall()
+        return bool(instance["orders"]) and not instance["users"] and all(row[0] is not None for row in instance["orders"])
+
+    search = database.search(orphan, max_examples=EXAMPLES)
+    assert search.status == "no-counterexample"
+    assert search.valid > 0
+    assert search.rejected > 0
+
+
+def test_composite_fk_checks_exempt_a_tuple_with_any_null_component():
+    database = _Database(SqlParser("duckdb").parse("""
+        CREATE TABLE users (org INTEGER, id INTEGER, PRIMARY KEY(org, id));
+        CREATE TABLE orders (org INTEGER, user_id INTEGER, FOREIGN KEY(org, user_id) REFERENCES users(org, id));
+        SELECT * FROM orders
+    """))
+    database.load({"orders": [(None, 1), (1, None)], "users": []})
+    assert database.connection.execute(database.foreign_keys[0]).fetchall() == []
+    database.load({"orders": [(1, 2)], "users": []})
+    assert database.connection.execute(database.foreign_keys[0]).fetchall() == [(1, 2)]
+
+
+def test_cyclic_fks_are_validated_without_database_enforcement():
+    database = _Database(SqlParser("duckdb").parse("""
+        CREATE TABLE a (id INTEGER PRIMARY KEY, b INTEGER REFERENCES b(id));
+        CREATE TABLE b (id INTEGER PRIMARY KEY, a INTEGER REFERENCES a(id));
+        SELECT * FROM a
+    """))
+    database.load({"a": [(1, 2)], "b": [(2, 1)]})
+    assert all(database.connection.execute(check).fetchall() == [] for check in database.foreign_keys)
+
+
+def test_foreign_keys_added_by_alter_table_are_validated_by_queries():
+    database = _Database(SqlParser("duckdb").parse("""
+        CREATE TABLE orders (user_id INTEGER);
+        CREATE TABLE users (id INTEGER);
+        ALTER TABLE users ADD PRIMARY KEY(id);
+        ALTER TABLE orders ADD CONSTRAINT fk FOREIGN KEY(user_id) REFERENCES users;
+        SELECT * FROM orders
+    """))
+    database.load({"orders": [(1,)], "users": []})
+    assert database.connection.execute(database.foreign_keys[0]).fetchall() == [(1,)]
+    database.load({"orders": [(1,)], "users": [(1,)]})
+    assert database.connection.execute(database.foreign_keys[0]).fetchall() == []
+
+
+def test_search_reports_completed_sampling_without_a_counterexample():
+    database = _Database(SqlParser("duckdb").parse("CREATE TABLE t (id INTEGER); SELECT * FROM t"))
+    search = database.search(lambda _: False, max_examples=EXAMPLES)
+    assert search.status == "no-counterexample"
+    assert search.instance is None
+    assert search.attempted == search.valid > 0
+    assert search.rejected == 0
+
+
+def test_search_reports_insufficient_data_when_all_samples_are_rejected():
+    database = _Database(SqlParser("duckdb").parse("CREATE TABLE t (id INTEGER); SELECT * FROM t"))
+
+    def rejected(_) -> bool:
+        assume(False)
+        return False
+
+    search = database.search(rejected, max_examples=EXAMPLES)
+    assert search.status == "insufficient-data"
+    assert search.instance is None
+    assert search.valid == 0
+    assert search.rejected == search.attempted > 0
+
+
+def test_judgement_exposes_search_counts_per_assertion():
+    sql = """
+        CREATE TABLE t (id INTEGER PRIMARY KEY);
+        SELECT id FROM t /**ASSERT UNIQUE(id)**/
+    """
+    judgement = judged(sql, analyze(sql))
+    assertion_id, search = judgement.searches[0]
+    assert assertion_id == "assert_1"
+    assert search.status == "no-counterexample"
+    assert search.valid > 0
+
+
+def test_an_insufficient_search_is_reported_as_skipped(monkeypatch):
+    monkeypatch.setattr(_Database, "search", lambda *args: SearchResult("insufficient-data", None, 10, 0))
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE t (id INTEGER);
+        SELECT id FROM t /**ASSERT UNIQUE(id)**/
+    """))
+    assert judgement.checked == 0
+    assert "insufficient valid data" in judgement.skipped[0]
+    assert judgement.searches[0][1].rejected == 10
