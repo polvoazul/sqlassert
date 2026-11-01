@@ -14,9 +14,12 @@ Members are typed literals, and covering is by identity: a value is covered
 only by an identical literal, so numeric 1 never covers string '1', nor 1.0.
 Intersecting is not by identity, because a column is compared with a literal
 after implicit casts, so two distinct literals can both equal its value: a
-FLOAT equals 0.1 and 0.100000001, a VARCHAR '1.4' equals 1 and 1.4. A meet
+FLOAT equals 0.1 and 0.100000001, a VARCHAR '1.4' equals 1 and 1.4, an
+INTEGER '01' and '1', and a case-insensitive VARCHAR 'a' and 'A'. A meet
 therefore keeps every value that may equal one on each other side
 (`_may_coincide`), which only ever keeps more than the true intersection.
+Distinct strings are distinct values only where the column is text compared
+by identity (`_binary_text`).
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ def _domain(column: ir.OutputColumn) -> Result[Domain]:
     known = [own for own in owns if own.value is not None]
     if not known:
         return Result(None, f"No finite domain is known for {column.name}", (column,), owns)
-    value = _meet([own.value for own in known if own.value is not None])
+    value = _meet([own.value for own in known if own.value is not None], _binary_text(column))
     premises = [group, *known] if len(members) > 1 else known
     return Result(value, f"{column.name} is one of {_render(value)}", (column,), premises)
 
@@ -159,18 +162,38 @@ def _intersection(column: ir.OutputColumn, sources: list[Result[Domain]]) -> Res
         return Result(None, f"No finite domain is known for {column.name}", (column,), sources)
     if len(known) == 1:
         return known[0]
-    value = _meet([source.value for source in known if source.value is not None])
+    value = _meet([source.value for source in known if source.value is not None], _binary_text(column))
     return Result(value, f"{column.name} is one of {_render(value)}", (column,), known)
 
 
-def _meet(domains: list[frozenset[ir.LiteralValue]]) -> frozenset[ir.LiteralValue]:
+def _meet(domains: list[frozenset[ir.LiteralValue]], binary_text: bool) -> frozenset[ir.LiteralValue]:
     """The first domain's values that may equal a value of every other one.
 
     A column's value equals some member of each domain, so the member of the
     first it equals may coincide with one of every other and is kept.
     """
     first, *others = domains
-    return frozenset(value for value in first if all(any(_may_coincide(value, other) for other in domain) for domain in others))
+    return frozenset(value for value in first if all(any(_may_coincide(value, other, binary_text) for other in domain) for domain in others))
+
+
+def _binary_text(column: ir.OutputColumn) -> bool:
+    """Whether `column` and every column equated with it, here or upstream,
+    are text compared by identity, so carry one string value.
+
+    A text column equated through an INTEGER one is compared as an integer:
+    '01' and '1' are then equal. A set operation's type may widen its left
+    input's, so its columns are not followed.
+    """
+    relation = column.get_relation(current_arena().program)
+    for member in _equal_columns(column).value:
+        match member.scalar_expr:
+            case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+                if not _binary_text(source):
+                    return False
+            case _:
+                if not member.binary_text:
+                    return False
+    return True
 
 
 # A FLOAT keeps 24 significant bits: two numbers rounding to one FLOAT differ
@@ -180,18 +203,21 @@ _FLOAT_RELATIVE = Fraction(1, 2**22)
 _FLOAT_ABSOLUTE = Fraction(1, 2**148)
 
 
-def _may_coincide(first: ir.LiteralValue, second: ir.LiteralValue) -> bool:
+def _may_coincide(first: ir.LiteralValue, second: ir.LiteralValue, binary_text: bool) -> bool:
     """Whether some column value may equal both literals.
 
     Literals of different types may: SQL casts one side, so '1' and 1 both
-    equal INTEGER 1. Distinct booleans never do. Distinct strings are taken
-    never to: a string is assumed compared as text. Distinct numbers may when
-    one value rounds to both.
+    equal INTEGER 1. Distinct booleans never do. Distinct strings may unless
+    the column is text compared by identity: an INTEGER equals '01' and '1',
+    a case-insensitive one 'a' and 'A'. Distinct numbers may when one value
+    rounds to both.
     """
     if first == second or first.type != second.type:
         return True
     match first.type:
-        case "string" | "boolean":
+        case "string":
+            return not binary_text
+        case "boolean":
             return False
         case "numeric":
             return _numbers_may_coincide(first.text, second.text)
