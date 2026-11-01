@@ -212,6 +212,97 @@ FD survives. The new columns:
   (adding rows changes existing outputs); the two-row oracle argument does not
   cover them.
 
+## Paulley audit (issue 35)
+
+Every rule of Paulley 2000 §2.5.2 and §3.1–3.2, checked against
+`sqlassert/rules/`. Rows are audited in order and committed in batches, so
+the first `pending` row is where a paused audit resumes. Status:
+**implemented** (the code, and a test that exercises it), **different** (we
+deliberately do otherwise; why), **missing** (filed where), or **n/a** (not
+an SQL construct we analyze). ι is a relation's Row Identity
+(`RowIdentity`), η(p, X) is Def 37, a lax FD is one our closure steps
+through only with definite determinants.
+
+| ID | Paulley rule | Where | Status | Our code | Test |
+|---|---|---|---|---|---|
+| A1 | Reflexivity: Y ⊆ X ⇒ X → Y | fd1, Lemma 1, p.38 | pending | | |
+| A2 | Strict augmentation: X → Y ⇒ XW → YZ (Z ⊆ W) | fd2a, p.38 | pending | | |
+| A3 | Lax augmentation | fd2b, p.38 | pending | | |
+| A4 | Strict union: X → Y, X → Z ⇒ X → YZ | fd3a, p.38 | pending | | |
+| A5 | Lax union | fd3b, p.38 | pending | | |
+| A6 | Strict decomposition | fd4a, p.38 | pending | | |
+| A7 | Lax decomposition only with Y definite | fd4b, Lemma 3, p.39 | pending | | |
+| A8 | Weakening: strict ⇒ lax | fd5, p.38 | pending | | |
+| A9 | Strengthening: lax ⇒ strict when XY definite | fd6, p.38 | pending | | |
+| A10 | Strict transitivity | fd7a, p.38 | pending | | |
+| A11 | Lax transitivity only through a definite middle | fd7b, Lemma 2, p.38 | pending | | |
+| E1 | Strict equivalence: identity, commutativity, transitivity | eq1–eq3, Claim 14, p.69 | pending | | |
+| E2 | Strict equivalence implies FDs both ways | eq4, p.69 | pending | | |
+| E3 | Lax equivalence: commutativity; strict ⇒ lax | eq5–eq6, Lemma 4, p.69 | pending | | |
+| E4 | Lax equivalence strengthened when both definite | eq7, p.69 | pending | | |
+| E5 | Lax equivalence implies lax FDs both ways | eq8, p.69 | pending | | |
+| E6 | Lax equivalence transitive: strict∘lax, or lax∘lax through a definite middle | eq9a/b, Lemma 5, p.70 | pending | | |
+| S1 | PRIMARY KEY and unique index: strict key K → ι | Claim 16, p.73 | pending | | |
+| S2 | UNIQUE constraint: lax key U ↦ ι | Claim 16, p.73 | pending | | |
+| S3 | Equality to a constant: ∅ → A | §3.1.3, p.68 | pending | | |
+| S4 | Scalar function: X → λ(X), result possibly NULL | §3.1.4, p.71 | pending | | |
+| S5 | CHECK constraints: equalities over non-null columns strict, else lax | §3.2.1, p.73 | pending | | |
+| P1 | Projection keeps input FDs, transitively through dropped columns | Claim 17, p.74 | pending | | |
+| P2 | Projection: X → λ(X) and ι → λ(X) | Claim 17, p.74 | pending | | |
+| P3 | Distinct projection: selected attributes → ι | Claim 18, p.75 | pending | | |
+| C1 | Cartesian product keeps both inputs' FDs and equivalences | Claim 19, p.75 | pending | | |
+| C2 | Cartesian product: ι(S) ∪ ι(T) ↔ ι | Claim 19, p.76 | pending | | |
+| C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | pending | | |
+| R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | pending | | |
+| R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | pending | | |
+| R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | pending | | |
+| R4 | Function in WHERE: X → λ(X) | Claim 20, p.78 | pending | | |
+| R5 | False-interpreted Type 1/2 equality: strict equivalence, FDs both ways | Claim 20, p.79 | pending | | |
+| R6 | True-interpreted equality (correlation inside a subquery): lax equivalence and FDs | Claim 20, p.79 | pending | | |
+| R7 | IS NOT NULL: attribute definite | §3.2.4, p.77 | pending | | |
+| R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | pending | | |
+| R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | pending | | |
+| R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | pending | | |
+| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | pending | | |
+| R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | pending | | |
+| R13 | Disjunctions give nothing | §3.2.4, p.77 | pending | | |
+| I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | pending | | |
+| I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | pending | | |
+| I3 | Intersection strengthens lax FDs and equivalences made definite | Claim 21, p.81 | pending | | |
+| I4 | Intersection: corresponding attributes strictly equivalent | Claim 21, p.81 | pending | | |
+| I5 | Intersection: ι(S) ↔ ι(T) | Claim 21, p.81 | pending | | |
+| U1 | UNION ALL keeps no input FDs | §3.2.6, p.81 | pending | | |
+| U2 | UNION ALL keeps strict equivalences (and constants) holding in both inputs | §3.2.6, Example 15, p.82 | pending | | |
+| U3 | Distinct UNION: all attributes form a superkey | §3.2.6, p.82 | pending | | |
+| D1 | Difference keeps every FD, equivalence and superkey of the left input | §3.2.7, p.82 | pending | | |
+| G1 | Partition keeps input FDs and equivalences | Claim 22, p.83 | pending | | |
+| G2 | Grouping function: X → λ(X) | Claim 22, p.83 | pending | | |
+| G3 | Grouping attributes → ι; no grouping attributes: one row | Claim 22, p.83 | pending | | |
+| G4 | Aggregate is determined by its group: ι → f | Claim 23, p.84 | pending | | |
+| L1 | Left join keeps the preserved side's strict FDs | Thm 3 strict 1, p.96 | pending | | |
+| L2 | Null-supplying strict FD X → Y survives when η(p, X) | Lemma 7, Thm 3 strict 2, p.87 | pending | | |
+| L3 | …or when X = Y is a strict equivalence in the null-supplying input | Corollary 2, p.88 | pending | | |
+| L4 | Null-supplying lax FD becomes strict when η holds for every attribute in it | Lemma 8, p.89 | pending | | |
+| L5 | ON equality within the null-supplying side: strict when η(p, X) | Lemma 9 case 2, Thm 3 strict 3, p.93 | pending | | |
+| L6 | All preserved attributes of p determine a null-supplying attribute p binds, when η(p, Y) | Lemma 9 case 3, Thm 3 strict 4, p.93 | pending | | |
+| L7 | Left join: ι(Q) ↔ ι(S), ι(T) | Thm 3 strict 5, p.96 | pending | | |
+| L8 | Left join keeps both sides' lax FDs | Thm 3 lax 1–2, p.96 | pending | | |
+| L9 | Null-supplying strict FD without η degrades to lax | Thm 3 lax 3, p.96 | pending | | |
+| L10 | Other ON-derived FDs touching the null-supplying side are lax | Lemma 9 case 4, Thm 3 lax 4, p.93 | pending | | |
+| L11 | ON conditions only on the preserved side give nothing | Lemma 9 case 1, p.93 | pending | | |
+| L12 | Lax equivalence in T strengthened when η holds for both | Thm 3 strict eq 3, p.97 | pending | | |
+| L13 | ON equality within T: strict equivalence | Thm 3 strict eq 4, p.97 | pending | | |
+| L14 | Cross-side ON equality: lax equivalence only | Thm 3 lax eq 3, p.97 | pending | | |
+| L15 | Null constraints among the null-supplying side's definite attributes; a later null-intolerant predicate makes them all definite | Def 38, Thm 3 null, p.95 | pending | | |
+| F1 | Full join: input strict FD survives when η(p, X) or a strict equivalence | Thm 4 strict 1, p.100 | pending | | |
+| F2 | Full join: cross-side ON FD αR(p) → Y with η(p, Y) and η(p, αS(p)) | Lemma 10 case 3, Thm 4 strict 2, p.100 | pending | | |
+| F3 | Full join: ι(Q) ↔ ι(R), ι(S) | Thm 4 strict 3, p.100 | pending | | |
+| F4 | Full join keeps both sides' lax FDs; cross-side ON FDs lax | Thm 4 lax, p.101 | pending | | |
+| F5 | Full join: ON conditions within one side give nothing | Lemma 10 cases 1–2, p.99 | pending | | |
+| F6 | Full join: equivalences of inputs kept; cross-side ON equality lax | Thm 4 eq, p.101 | pending | | |
+| F7 | Full join: a key of the result needs η for each input key | §3.2.10.1, p.99 | pending | | |
+| F8 | Full join: null constraints within each side | Thm 4 null, p.101 | pending | | |
+
 ## Opportunities
 
 Ordered roughly by payoff over cost.
