@@ -22,7 +22,7 @@ from sqlassert.properties import (
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
     FOREIGN_KEY_KINDS, JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
-    join_marker_kind, join_origin, marker_position,
+    join_marker_kind, join_origin, literal_value, marker_position,
 )
 
 
@@ -667,8 +667,9 @@ class IrParser:
             )
         if isinstance(expression, exp.Null):
             return ir.NullLiteral(origin=origin)
-        if isinstance(expression, (exp.Literal, exp.Boolean)):
-            return ir.Constant(origin=origin, value=_literal_value(expression))
+        value = literal_value(expression)
+        if value is not None or isinstance(expression, exp.Literal):
+            return ir.Constant(origin=origin, value=value)
         return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
 
     def _opaque_relation(self, source: exp.Expression, names=()) -> ir.OpaqueRelation:
@@ -731,7 +732,7 @@ class IrParser:
                     self._declarations.append(FunctionalDependency(determinant=members, dependent=dependent))
                 case "enum" | "declared-enum":
                     column, = members
-                    values = frozenset(_marker_value(value) for value in marker.values)
+                    values = frozenset(marker.values)
                     domain = EnumeratedDomain(column=column, values=values)
                     if kind == "enum":
                         self._assertions.append(ir.Assertion(origin=origin, property=domain))
@@ -904,21 +905,6 @@ def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) ->
         ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
         for column in inputs
     )
-
-
-def _literal_value(literal: exp.Literal | exp.Boolean) -> ir.LiteralValue | None:
-    """The value of a literal whose type is modelled: only strings, for now."""
-    if isinstance(literal, exp.Literal) and literal.is_string:
-        return ir.LiteralValue(type="string", text=literal.this)
-    return None
-
-
-def _marker_value(literal: exp.Expression) -> ir.LiteralValue:
-    """A domain member; the marker grammar admits only modelled literals."""
-    assert isinstance(literal, exp.Literal | exp.Boolean), "an ENUM marker lists literals only"
-    value = _literal_value(literal)
-    assert value is not None, "an ENUM marker lists only literals whose type is modelled"
-    return value
 
 
 def _source_line(node: exp.Expression) -> int | None:
