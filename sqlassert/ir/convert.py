@@ -469,7 +469,7 @@ class IrParser:
         if using:
             return tuple(
                 ir.Equality(
-                    origin=self._origin(identifier),
+                    origin=self._origin(identifier, _source_line(identifier)),
                     left=self._lower_expression(exp.column(identifier.name), left.bindings),
                     right=self._lower_expression(exp.column(identifier.name), right.bindings),
                 )
@@ -488,7 +488,7 @@ class IrParser:
         recognized; anything else is lowered as an ordinary scalar expression."""
         lowered: list[ir.ScalarExpr] = []
         for conjunct in _conjuncts(predicate):
-            origin = self._origin(conjunct)
+            origin = self._origin(conjunct, _source_line(conjunct))
             match conjunct:
                 case exp.EQ():
                     lowered.append(ir.Equality(
@@ -890,6 +890,12 @@ def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) ->
         ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
         for column in inputs
     )
+
+
+def _source_line(node: exp.Expression) -> int | None:
+    """The first source line of `node`, from the positions SQLGlot keeps on its tokens."""
+    lines = [descendant.meta["line"] for descendant in node.walk() if "line" in descendant.meta]
+    return min(lines, default=None)
 
 
 def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:

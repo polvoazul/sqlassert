@@ -77,8 +77,9 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   evaluator. Declarations supply accepted results without executing the public
   evaluator body. The arena rejects nested analysis sessions.
 - `reporting.py` defines the durable Report values.
-- `rules/` contains the analysis functions. `nullability.py` computes each
-  column's Null Sources; `uniqueness.py` holds functional dependencies, their
+- `rules/` contains the analysis functions. `equality.py` computes each
+  relation's Equality Groups; `nullability.py` computes each column's Null
+  Sources; `uniqueness.py` holds functional dependencies, their
   closure, and the Unique Set and Functional Dependency evaluators built on it;
   `unique_join.py`, `foreign_key.py`, and `exactly_one.py` build on those. The
   design and its soundness arguments are in `docs/functional-dependencies.md`.

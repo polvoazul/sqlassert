@@ -15,12 +15,14 @@ external Knowledge and can prove compatible downstream domain assertions.
 
 A domain crosses an equality: with `WHERE a = b` (or an inner-join
 `ON a = b`), `b`'s domain is `a`'s, intersected with its own. Read this from
-equality groups ([issue 26](0026-equality-groups.md)).
+equality groups (`_equal_columns`; see
+[functional-dependencies.md](../functional-dependencies.md#equality-groups)).
 
 ## Blocked by
 
 - Task 2 (done) — Declare trusted Unique Sets.
-- [issue 26](0026-equality-groups.md) — Equality groups.
+- Issue 26 (done) — Equality groups; see
+  [functional-dependencies.md](../functional-dependencies.md#equality-groups).
 
 ## Acceptance criteria
 

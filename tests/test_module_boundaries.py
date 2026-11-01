@@ -23,6 +23,7 @@ FORBIDDEN_IMPORTS = {
     # Property reasoning and reporting never see the parser.
     "python_engine.py": ("sqlglot",),
     "rules/column_set.py": ("sqlglot",),
+    "rules/equality.py": ("sqlglot",),
     "rules/exactly_one.py": ("sqlglot",),
     "rules/foreign_key.py": ("sqlglot",),
     "rules/nullability.py": ("sqlglot",),
