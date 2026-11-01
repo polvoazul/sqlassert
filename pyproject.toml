@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "case-conversion>=3.0.2",
-  "sqlglot>=28",
+  "sqlglot>=28,<31",
 ]
 
 [project.optional-dependencies]

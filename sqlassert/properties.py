@@ -23,7 +23,7 @@ class UniqueSet(Property):
     columns: frozenset[OutputColumn]
 
 
-class CandidateKey(UniqueSet):
+class NonNullUniqueSet(UniqueSet):
     """A Unique Set whose columns are all non-null."""
 
 

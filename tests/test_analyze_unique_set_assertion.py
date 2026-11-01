@@ -1,7 +1,7 @@
-"""Unique Set Assertions: `/**ASSERT UNIQUE(...)**/` and `/**ASSERT PRIMARY KEY(...)**/`
+"""Unique Set Assertions: `/**ASSERT UNIQUE(...)**/` and `/**ASSERT NOT NULL UNIQUE(...)**/`
 written on a Select Expression -- a Root Select, a view, a CTE, or a
 subquery -- asserting that the named output columns form a Unique Set or,
-for the `PRIMARY KEY` spelling, the stricter non-null Candidate Key.
+for `NOT NULL UNIQUE` (alias `PRIMARY KEY`), the stricter Non-Null Unique Set.
 
 Proof is defined purely in terms of a Relation Expression and its Output Columns:
 nothing here should behave differently depending on whether the Select
@@ -10,6 +10,8 @@ Expression is a Root Select, a view, or a CTE (see
 """
 
 from __future__ import annotations
+
+import pytest
 
 from sqlassert import Outcome, analyze
 from sqlassert.diagnostics import (
@@ -59,26 +61,32 @@ def test_a_composite_unique_set_assertion_missing_a_member_is_unknown():
     assert [a.outcome for a in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_primary_key_flavored_assertion_is_identified_as_a_candidate_key():
+NON_NULL_UNIQUE_SPELLINGS = pytest.mark.parametrize("spelling", ["NOT NULL UNIQUE", "PRIMARY KEY"])
+
+
+@NON_NULL_UNIQUE_SPELLINGS
+def test_a_non_null_unique_assertion_is_proved_under_either_spelling(spelling):
+    """`PRIMARY KEY` is a convenience alias for the canonical `NOT NULL UNIQUE`."""
     report = analyze(
-        """
+        f"""
         CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
 
-        SELECT id, email FROM users /**ASSERT PRIMARY KEY(id)**/
+        SELECT id, email FROM users /**ASSERT {spelling}(id)**/
         """
     )
 
     assert report.proved
 
 
-def test_a_primary_key_flavored_assertion_on_a_nullable_column_is_unknown():
-    """Unique alone is not enough for the `PRIMARY KEY` spelling: it also
-    requires the column to be independently known non-null."""
+@NON_NULL_UNIQUE_SPELLINGS
+def test_a_non_null_unique_assertion_on_a_nullable_column_is_unknown(spelling):
+    """Unique alone is not enough: the column must also be independently
+    known non-null."""
     report = analyze(
-        """
+        f"""
         CREATE TABLE users (id INTEGER, email VARCHAR UNIQUE);
 
-        SELECT email FROM users /**ASSERT PRIMARY KEY(email)**/
+        SELECT email FROM users /**ASSERT {spelling}(email)**/
         """
     )
 

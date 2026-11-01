@@ -7,20 +7,17 @@ from sqlassert.python_engine import Result, all_of, analysis, any_of, current_ar
 
 @analysis
 def non_null_columns(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
-    relations = current_arena().relations_for(columns)
-    if not relations:
+    relation = current_arena().program.relation_of(columns)
+    if relation is None:
         return unknown("Non-null columns must belong to one relation", *columns)
     # Every column is evaluated, so an unknown names each one that failed.
-    ordered = [column for column in relations[0].output_columns if column in columns]
+    ordered = [column for column in relation.output_columns if column in columns]
     return all_of(non_null_column(column) for column in ordered)
 
 
 @analysis
 def non_null_column(column: ir.OutputColumn) -> Result[bool]:
-    relations = current_arena().relations_for(frozenset((column,)))
-    if not relations:
-        return unknown("Column belongs to no relation", column)
-    return any_of(_non_null_output(relation, column) for relation in relations)
+    return _non_null_output(column.get_relation(current_arena().program), column)
 
 
 @analysis

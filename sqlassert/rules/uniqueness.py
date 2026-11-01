@@ -8,14 +8,14 @@ from sqlassert.rules.column_set import ColumnSet, _column_set
 
 @analysis
 def unique_set(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
-    relations = current_arena().relations_for(columns)
-    if not relations:
+    relation = current_arena().program.relation_of(columns)
+    if relation is None:
         return unknown("A unique set must have columns belonging to one relation", *columns)
-    return any_of(_covers_unique_set(_column_set(relation, columns)) for relation in relations)
+    return _covers_unique_set(_column_set(relation, columns))
 
 
 @analysis
-def candidate_key(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
+def non_null_unique_set(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
     from sqlassert.rules.nullability import non_null_columns
 
     return unique_set(columns) & non_null_columns(columns)

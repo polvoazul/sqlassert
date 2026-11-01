@@ -45,9 +45,9 @@ class SqlassertToken(enum.Enum):
 
     SQLASSERT_UNIQUE = enum.auto()
     SQLASSERT_UNIQUE_SET_OPEN = enum.auto()
-    SQLASSERT_CANDIDATE_KEY_OPEN = enum.auto()
+    SQLASSERT_NON_NULL_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_DECLARED_UNIQUE_SET_OPEN = enum.auto()
-    SQLASSERT_DECLARED_CANDIDATE_KEY_OPEN = enum.auto()
+    SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_NOT_NULL_OPEN = enum.auto()
     SQLASSERT_DECLARED_NOT_NULL_OPEN = enum.auto()
     SQLASSERT_MARKER_CLOSE = enum.auto()
@@ -60,7 +60,7 @@ class SqlassertToken(enum.Enum):
 #
 # `ASSERT` asks for a proof; `DECLARE` states a trusted Property Declaration.
 # A column marker -- `/**ASSERT UNIQUE(col, ...)**/`, `/**ASSERT NOT NULL(...)**/`,
-# `/**DECLARE PRIMARY KEY(...)**/`, and the rest of `_COLUMN_MARKER_OPENS` --
+# `/**DECLARE NOT NULL UNIQUE(...)**/`, and the rest of `_COLUMN_MARKER_OPENS` --
 # carries a variable column list, so unlike the join marker it cannot be one
 # fixed `KEYWORDS` literal: only its open and close are fixed text; the column
 # list between them is ordinary SQL, parsed with the parser's own
@@ -69,23 +69,29 @@ class SqlassertToken(enum.Enum):
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
     "/**ASSERT UNIQUE(": SqlassertToken.SQLASSERT_UNIQUE_SET_OPEN,
-    "/**ASSERT PRIMARY KEY(": SqlassertToken.SQLASSERT_CANDIDATE_KEY_OPEN,
+    "/**ASSERT NOT NULL UNIQUE(": SqlassertToken.SQLASSERT_NON_NULL_UNIQUE_SET_OPEN,
+    # `PRIMARY KEY` is a convenience alias for `NOT NULL UNIQUE`: it does not
+    # mean one key per relation, and a relation may carry several.
+    "/**ASSERT PRIMARY KEY(": SqlassertToken.SQLASSERT_NON_NULL_UNIQUE_SET_OPEN,
     "/**ASSERT NOT NULL(": SqlassertToken.SQLASSERT_NOT_NULL_OPEN,
     "/**DECLARE UNIQUE(": SqlassertToken.SQLASSERT_DECLARED_UNIQUE_SET_OPEN,
-    "/**DECLARE PRIMARY KEY(": SqlassertToken.SQLASSERT_DECLARED_CANDIDATE_KEY_OPEN,
+    "/**DECLARE NOT NULL UNIQUE(": SqlassertToken.SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN,
+    "/**DECLARE PRIMARY KEY(": SqlassertToken.SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN,
     "/**DECLARE NOT NULL(": SqlassertToken.SQLASSERT_DECLARED_NOT_NULL_OPEN,
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
 # The open literals of a column marker, and the kind each one states --
-# "unique" is a nullable-tolerant Unique Set, "key" the stricter, non-null
-# Candidate Key, and "not-null" non-nullness of every listed column. A
+# "unique" is a nullable-tolerant Unique Set, "key" the stricter
+# Non-Null Unique Set, and "not-null" non-nullness of every listed column. A
 # "declared-" kind states the same Property as a trusted declaration.
 _COLUMN_MARKER_OPENS = {
     "/**ASSERT UNIQUE(": "unique",
+    "/**ASSERT NOT NULL UNIQUE(": "key",
     "/**ASSERT PRIMARY KEY(": "key",
     "/**ASSERT NOT NULL(": "not-null",
     "/**DECLARE UNIQUE(": "declared-unique",
+    "/**DECLARE NOT NULL UNIQUE(": "declared-key",
     "/**DECLARE PRIMARY KEY(": "declared-key",
     "/**DECLARE NOT NULL(": "declared-not-null",
 }
@@ -96,10 +102,10 @@ DECLARED_KINDS = frozenset({"declared-unique", "declared-key", "declared-not-nul
 # How diagnostics name each column marker kind.
 MARKER_NOUNS = {
     "unique": "unique set assertion",
-    "key": "primary key assertion",
+    "key": "not null unique assertion",
     "not-null": "not null assertion",
     "declared-unique": "unique set declaration",
-    "declared-key": "primary key declaration",
+    "declared-key": "not null unique declaration",
     "declared-not-null": "not null declaration",
 }
 

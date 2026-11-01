@@ -3,7 +3,7 @@
 ## Task 1 — Replace bare markers with explicit `ASSERT`
 
 **What to build:** Explicit `ASSERT` becomes the only assertion syntax. Unique
-Join Assertions, Unique Set Assertions, and Candidate Key assertions retain
+Join Assertions, Unique Set Assertions, and Non-Null Unique Set assertions retain
 their current behavior and reporting, while old bare markers are rejected.
 
 For instance:
@@ -18,13 +18,13 @@ FROM t1
 **Status:** done
 
 - [x] Explicit `ASSERT` syntax works for Unique Join Assertions, Unique Set
-  Assertions, and Candidate Key assertions at every currently supported
+  Assertions, and Non-Null Unique Set assertions at every currently supported
   attachment site.
 - [x] Every repository-owned assertion marker in tests, examples, and
   documentation is migrated to explicit `ASSERT` syntax.
 - [x] Explicit assertions retain the existing proof outcomes, downstream
   facts, diagnostics, and explanations.
-- [x] Bare Unique Join, Unique Set, and Candidate Key markers are removed from
+- [x] Bare Unique Join, Unique Set, and Non-Null Unique Set markers are removed from
   the accepted grammar and produce clear unrecognized-marker diagnostics.
 - [x] Marker-shaped (/** **/) that do not comply with syntax are diagnosed
   rather than ignored.
@@ -78,9 +78,9 @@ respects expression and join null semantics.
 - [x] Unknown columns and unsupported attachment sites produce diagnostics.
 - [x] An unknown assertion identifies every column whose non-nullness could not
   be proved.
-- [x] Proved and declared non-nullness is available to downstream Candidate Key
+- [x] Proved and declared non-nullness is available to downstream Non-Null Unique Set
   and Foreign Key reasoning.
-- [x] Candidate Key inference: `ASSERT PRIMARY KEY` proves when the columns are
+- [x] Non-Null Unique Set inference: `ASSERT PRIMARY KEY` proves when the columns are
   a Unique Set and every column is non-null.
 - [x] `DECLARE PRIMARY KEY` works on Root Selects, views, CTEs, and FROM
   subqueries, contributing both uniqueness and independent non-nullness for
@@ -285,6 +285,36 @@ superset generalization, and unique joins.
 - [ ] Test annotation production and Python consumption together, including
   chained derivations and multiple possible justifications.
 
+## IR Limitations
+
+What lowering ([`ir/convert.py`](sqlassert/ir/convert.py)) loses today. Each item
+caps what the rules can prove, however good the rules get. Feature-level gaps
+live in [`docs/mvp-scope.md`](docs/mvp-scope.md#limitations-and-future-features).
+
+- [ ] `Filter` carries no predicate. `WHERE k = 5` cannot pin `k` (so `(k, id)`
+  cannot reduce to `(id)`), and `WHERE x IS NOT NULL` cannot establish non-null `x`.
+- [ ] Join predicates keep only top-level `=` conjuncts. `OR`, ranges,
+  `IS NOT DISTINCT FROM`, and equalities over expressions are dropped.
+- [ ] Scalar expressions are column, literal, `NULL`, or opaque. `CASE`,
+  `COALESCE`, `CAST`, and function calls are opaque, so no injectivity
+  (`id + 0`, lossless casts) and no non-nullness (`coalesce(x, 0)`, `count(*)`).
+- [ ] `SetOperation` output columns refer to the left arm only; the right arm's
+  columns are not tracked and `ALL` vs distinct is not distinguished.
+- [ ] Unique-join analysis models only `inner` and `left`; `right`, `full`,
+  `semi`, `anti`, `cross`, and `LATERAL`/`UNNEST` sources are not modelled.
+- [ ] Windows: only `QUALIFY row_number() over (partition by ...) = 1` is
+  recognized; other window functions are opaque.
+- [ ] Recursive CTEs and views become `RecursiveRelation` (opaque).
+- [ ] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
+  constraints, and other DDL are ignored.
+- [ ] Tables without a `CREATE` in the program have an incomplete schema, so an
+  unqualified column cannot be resolved when several sources are in scope.
+  Needs catalog input to `IrParser`, not just knowledge for the engine.
+- [ ] No functional dependencies (`X → Y`). Keys, equality predicates,
+  deterministic expressions, and `GROUP BY` all create them; without them,
+  uniqueness only flows through columns that pass through unchanged. Theory
+  and planned opportunities: [`docs/functional-dependencies.md`](docs/functional-dependencies.md).
+
 ## Later Ideas
 
 - [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
@@ -297,3 +327,10 @@ superset generalization, and unique joins.
   set. Cover accepted and inferred Unique Sets, sets of interest, and join
   coverage inputs. Consider running these checks across all engine tests;
   decide the checking mechanism and empty-set semantics before implementing.
+
+- [ ] Someday/maybe: optimization hints from proved dependencies. The facts that
+  prove properties also justify rewrites (see
+  [`docs/references.md`](docs/references.md), Lindner et al.): report a
+  redundant `GROUP BY` column when another grouping column determines it, and a
+  join whose RHS is unique and contributes no output columns ("join only
+  filters", a semi-join candidate). Needs functional dependencies first.
