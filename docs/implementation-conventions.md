@@ -35,6 +35,14 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   literal or starts with one of the parameterized opens and ends with the
   close -- and `_unrecognized_markers`'s user-facing list of recognized
   markers is built from whole shapes, not `MARKERS`'s own fragment keys.
+  A Foreign Key marker (`/**ASSERT FOREIGN KEY(a, b) REFERENCES t(x, y)**/`)
+  is a column marker whose column list continues with `REFERENCES` and a
+  referenced relation's column list, paired by position; the parser records
+  both on its `ColumnMarker`. The IR parser links the referenced relation only
+  after lowering everything else, because a view's marker may name the view
+  itself. `DECLARE FOREIGN KEY` and `REFERENCES` constraints become
+  `ReferentialCoverage` Knowledge, never `ForeignKey`: an accepted Property
+  skips its evaluator, and the referenced Unique Set must still be proved.
   Consumed at the one grammar production common to a Root Select, a CTE
   definition, a view body, and a subquery (`_parse_select_query`), so a
   marker means the same thing regardless of which of these it sits on.

@@ -31,3 +31,20 @@ class UniqueJoin(Property):
     """A join that cannot multiply rows from its left input."""
 
     join: Join
+
+
+class ReferentialCoverage(Property):
+    """Every row whose referencing columns are all non-null has a row of the
+    referenced relation equal to it on the paired referenced columns.
+
+    Columns pair by position. A row with a null referencing component is exempt
+    (`MATCH SIMPLE`). This is the part of a Foreign Key that Knowledge supplies:
+    `REFERENCES` constraints, catalog foreign keys, and declarations.
+    """
+
+    columns: tuple[OutputColumn, ...]
+    referenced_columns: tuple[OutputColumn, ...]
+
+
+class ForeignKey(ReferentialCoverage):
+    """Referential Coverage onto a Unique Set of the referenced relation."""
