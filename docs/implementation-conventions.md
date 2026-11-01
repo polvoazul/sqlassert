@@ -67,11 +67,12 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `reporting.py` defines the durable Report values.
 - `rules/` contains the analysis functions.
 - `suggest.py` composes the same stages as `main.py` to list provable
-  Properties as markers. The IR keeps no SQLGlot nodes, so it pairs each JOIN
-  and Select with its IR node by subclassing `IrParser` at the two points
-  where markers attach, and reads the marker offset `sql_parse.py` records on
-  every Join and Select. It proves candidates through `Arena.prove` only, never
-  through internal analysis functions. `__main__.py` is the CLI over it.
+  Properties as markers. `sql_parse.py` records on every Join and Select the
+  source position where its marker would be written; `IrParser` turns each
+  into a plain-valued `AttachmentSite` (`provenance.py`) paired with the IR
+  Join or Select relation in `Program.attachment_sites`. `suggest` proves
+  candidates at those sites through `Arena.prove` only, never through
+  internal analysis functions. `__main__.py` is the CLI over it.
 - `discovery/duckdb` is a future adapter that binds database metadata to IR
   nodes and produces Properties accepted as knowledge; it is not part of the MVP engine. See
   [#14](https://github.com/polvoazul/sqlassert/issues/14).

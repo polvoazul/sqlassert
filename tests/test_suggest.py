@@ -6,7 +6,9 @@ import pytest
 
 from sqlassert import NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest
 from sqlassert.__main__ import main
-from sqlassert.suggest import annotate, candidates, lower_with_sites
+from sqlassert.ir.convert import IrParser
+from sqlassert.sql_parse import SqlParser
+from sqlassert.suggest import annotate, candidates
 
 SCHEMA = """
 CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE, name VARCHAR NOT NULL, nick VARCHAR);
@@ -161,7 +163,8 @@ def test_every_suggested_marker_pasted_into_the_sql_is_proved(sql: str):
 
 @pytest.mark.parametrize("sql", ROUND_TRIP_PROGRAMS)
 def test_every_candidate_marker_pasted_into_the_sql_becomes_its_own_assertion(sql: str):
-    found = list(candidates(lower_with_sites(sql), max_size=2))
+    program = IrParser("duckdb").parse(SqlParser("duckdb").parse(sql)).program
+    found = list(candidates(program, max_size=2))
 
     report = analyze(annotate(sql, found))
 

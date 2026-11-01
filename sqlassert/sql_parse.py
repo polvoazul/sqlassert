@@ -112,10 +112,10 @@ MARKER_NOUNS = {
 # Where resolved column markers are recorded on its Select node.
 _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 
-# The source offset at which a marker for this Join or Select would be written:
+# The source offset and line at which a marker for this Join or Select would be written:
 # a join marker right before the join's first keyword, a column marker right
 # after the Select's last token. `suggest` pastes markers there.
-_MARKER_OFFSET = "sqlassert.marker_offset"
+_MARKER_POSITION = "sqlassert.marker_position"
 
 _COLUMN_MARKER_OPEN_TOKENS = {
     MARKERS[open_]: kind for open_, kind in _COLUMN_MARKER_OPENS.items()
@@ -191,7 +191,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 join = super()._parse_join(*args, **kwargs)
                 # A comma join has no JOIN keyword a marker could precede.
                 if join is not None and start is not None and start.token_type is not TokenType.COMMA:
-                    join.meta[_MARKER_OFFSET] = start.start
+                    join.meta[_MARKER_POSITION] = (start.start, start.line)
                 return join
 
             line = self._prev.line
@@ -277,8 +277,8 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             also the only point that sees the left member of a set operation
             as a Select of its own.
             """
-            if isinstance(this, exp.Select) and _MARKER_OFFSET not in this.meta and self._prev is not None:
-                this.meta[_MARKER_OFFSET] = self._prev.end + 1
+            if isinstance(this, exp.Select) and _MARKER_POSITION not in this.meta and self._prev is not None:
+                this.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
             return super()._parse_set_operations(this, *args, **kwargs)
 
     return type(
@@ -488,7 +488,7 @@ def column_markers(select: exp.Select) -> tuple[tuple[str, tuple[str, ...], int]
     return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))
 
 
-def marker_offset(node: exp.Join | exp.Select) -> int | None:
-    """Where in the source a marker for this Join or Select would be written,
-    or None for a join no marker can precede, such as a comma join."""
-    return node.meta.get(_MARKER_OFFSET)
+def marker_position(node: exp.Join | exp.Select) -> tuple[int, int] | None:
+    """The source `(offset, line)` where a marker for this Join or Select would
+    be written, or None for a join no marker can precede, such as a comma join."""
+    return node.meta.get(_MARKER_POSITION)

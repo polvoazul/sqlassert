@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import TYPE_CHECKING, dataclass_transform
 
-from sqlassert.provenance import Origin
+from sqlassert.provenance import AttachmentSite, Origin
 
 if TYPE_CHECKING:
     from sqlassert.properties import Property
@@ -192,6 +192,8 @@ class Program:
     root: RelationExpr | None = None # The root of the query tree, which is the entry point for the engine to start reasoning
     assertions: tuple[Assertion, ...] = () # The properties that the engine should attempt to prove
     declarations: tuple[Property, ...] = () # The properties that the engine should assume to be true
+    # Every JOIN and Select Expression a marker can attach to, with the Join or the relation the Select produces.
+    attachment_sites: tuple[tuple[AttachmentSite, RelationExpr], ...] = ()
     column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

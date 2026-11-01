@@ -11,7 +11,7 @@ from sqlassert.sql_parse import (
     _unresolved_markers,
     sqlassert_dialect,
     column_markers,
-    marker_offset,
+    marker_position,
 )
 
 
@@ -227,9 +227,9 @@ def test_every_join_and_select_records_where_its_marker_would_be_written():
     root = SqlParser("duckdb").parse(sql).root_select
     assert root is not None
 
-    ends = sorted(sql[: marker_offset(select)] for select in root.find_all(exp.Select))
-    starts = {marker_offset(join) for join in root.find_all(exp.Join)}
+    ends = sorted(sql[: position[0]] for select in root.find_all(exp.Select) if (position := marker_position(select)))
+    starts = {marker_position(join) for join in root.find_all(exp.Join)}
 
     assert ends == ["SELECT a FROM t", "SELECT a FROM t UNION SELECT a FROM (SELECT a FROM u", sql]
     # A comma join has no JOIN keyword for a marker to precede.
-    assert starts == {sql.index("LEFT JOIN"), None}
+    assert starts == {(sql.index("LEFT JOIN"), 1), None}

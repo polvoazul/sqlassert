@@ -89,7 +89,11 @@ The High level depends on functional dependencies and null sources
   `analyze` would prove none of them.
 - **Columns a marker cannot name** (unnamed, or a name repeated in the
   output, as in `SELECT a.id, b.id`) take no part in candidates.
-- **Shared generator.** `candidates(lower_with_sites(sql), max_size=...)`
+- **Sites live on the IR.** Normal lowering records every site in
+  `Program.attachment_sites`: a plain-valued `AttachmentSite` (label, line,
+  offset, trailing) paired with the IR Join or Select relation. No SQLGlot
+  node enters the IR, and `suggest` needs no hook into `IrParser`.
+- **Shared generator.** `candidates(program, dialect=..., max_size=...)`
   yields every candidate, proved or not, with its marker; `annotate(sql,
   items)` pastes any of them. Issue 27 Part 2 reuses both.
 

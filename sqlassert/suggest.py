@@ -19,29 +19,14 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.ir.convert import IrParser, _Lowered
+from sqlassert.ir.convert import IrParser
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
 from sqlassert.python_engine import Arena, Engine, Result
-from sqlassert.sql_parse import SqlParser, marker_offset
+from sqlassert.provenance import AttachmentSite
+from sqlassert.sql_parse import SqlParser
 
 DEFAULT_MAX_SIZE = 3
-
-
-@dataclass(frozen=True)
-class AttachmentSite:
-    """Where a marker for one JOIN or Select Expression is written.
-
-    `offset` indexes the SQL text: a join marker is inserted there, before the
-    join's first keyword; a column marker is appended there, after the Select
-    Expression's last token. Anonymous Select Expressions share a label, and
-    are told apart by `line`.
-    """
-
-    label: str
-    line: int
-    offset: int
-    trailing: bool
 
 
 @dataclass(frozen=True)
@@ -61,18 +46,6 @@ class Suggestion:
     property: Property
     marker: str
     evidence: Result[bool]
-
-
-@dataclass(frozen=True)
-class SitedProgram:
-    """A Program IR, plus the IR node behind every Attachment Site."""
-
-    program: ir.Program
-    knowledge: tuple[Property, ...]
-    diagnostics: tuple[Diagnostic, ...]
-    joins: tuple[tuple[AttachmentSite, ir.Join], ...]
-    selects: tuple[tuple[AttachmentSite, ir.RelationExpr], ...]
-    dialect: str
 
 
 @dataclass(frozen=True)
@@ -109,10 +82,12 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
     suggested Non-Null Unique Set already implies. Per JOIN: Unique Join.
     Properties the SQL already asserts or declares are left out.
     """
-    sited = lower_with_sites(sql, dialect=dialect)
-    if any(diagnostic.code in _BLOCKING for diagnostic in sited.diagnostics):
-        return SuggestionReport(sql, (), sited.diagnostics)
-    present = (*sited.program.declarations, *(assertion.property for assertion in sited.program.assertions))
+    ast = SqlParser(dialect).parse(sql)
+    conversion = IrParser(dialect).parse(ast)
+    program, diagnostics = conversion.program, ast.diagnostics + conversion.diagnostics
+    if any(diagnostic.code in _BLOCKING for diagnostic in diagnostics):
+        return SuggestionReport(sql, (), diagnostics)
+    present = (*program.declarations, *(assertion.property for assertion in program.assertions))
     marked_non_null = {
         column
         for item in present
@@ -121,11 +96,13 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
         )
     }
     suggestions: list[Suggestion] = []
-    with Engine().session(sited.program, sited.knowledge) as arena:
-        for site, join in sited.joins:
-            suggestions.extend(_proved(arena, site, UniqueJoin(join=join), (), sited.dialect))
-        for site, relation in sited.selects:
-            suggestions.extend(_select_suggestions(arena, site, relation, max_size, marked_non_null, sited.dialect))
+    with Engine().session(program, conversion.knowledge) as arena:
+        for site, relation in program.attachment_sites:
+            match relation:
+                case ir.Join() if not site.trailing:
+                    suggestions.extend(_proved(arena, site, UniqueJoin(join=relation), (), dialect))
+                case _:
+                    suggestions.extend(_select_suggestions(arena, site, relation, max_size, marked_non_null, dialect))
     marked = {_identity(item) for item in present}
     kept = tuple(
         sorted(
@@ -133,7 +110,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
             key=lambda suggestion: suggestion.site.offset,
         )
     )
-    return SuggestionReport(sql, kept, sited.diagnostics)
+    return SuggestionReport(sql, kept, diagnostics)
 
 
 # A parse failure leaves nothing to suggest on; duplicate declarations make
@@ -141,44 +118,27 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
 _BLOCKING = {diag.SQL_PARSE_FAILED, diag.UNATTACHED_MARKER, diag.DUPLICATE_DECLARATION}
 
 
-def lower_with_sites(sql: str, *, dialect: str = DEFAULT_DIALECT) -> SitedProgram:
-    """Parse and lower `sql` as `analyze` does, recording each Attachment Site."""
-    ast = SqlParser(dialect).parse(sql)
-    parser = _SiteRecordingIrParser(dialect)
-    conversion = parser.parse(ast)
-    joins = tuple(
-        (site, relation) for node, relation in parser.joins
-        if (site := _site(sql, node, _join_label(node, dialect), trailing=False)) is not None
-    )
-    selects = tuple(
-        (site, relation) for node, relation in parser.selects
-        if (site := _site(sql, node, _select_label(node), trailing=True)) is not None
-    )
-    return SitedProgram(
-        conversion.program, conversion.knowledge, ast.diagnostics + conversion.diagnostics,
-        tuple(sorted(joins, key=lambda pair: pair[0].offset)),
-        tuple(sorted(selects, key=lambda pair: pair[0].offset)),
-        dialect,
-    )
-
-
-def candidates(sited: SitedProgram, *, max_size: int = DEFAULT_MAX_SIZE) -> Iterator[Candidate]:
-    """Every candidate Property at every Attachment Site, proved or not.
+def candidates(
+    program: ir.Program, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE
+) -> Iterator[Candidate]:
+    """Every candidate Property at every Attachment Site of `program`, proved or not.
 
     Per JOIN: Unique Join. Per Select Expression: each output column
     non-null, and each set of up to `max_size` output columns, plus the set
     of all of them, as a Unique Set and as a Non-Null Unique Set. Only
     columns a marker can name unambiguously take part.
     """
-    for site, join in sited.joins:
-        yield _candidate(site, UniqueJoin(join=join), (), sited.dialect)
-    for site, relation in sited.selects:
-        columns = _nameable_columns(relation)
-        for column in columns:
-            yield _candidate(site, NonNullColumns(columns=frozenset((column,))), columns, sited.dialect)
-        for members in _column_sets(columns, max_size):
-            yield _candidate(site, UniqueSet(columns=frozenset(members)), columns, sited.dialect)
-            yield _candidate(site, NonNullUniqueSet(columns=frozenset(members)), columns, sited.dialect)
+    for site, relation in program.attachment_sites:
+        match relation:
+            case ir.Join() if not site.trailing:
+                yield _candidate(site, UniqueJoin(join=relation), (), dialect)
+            case _:
+                columns = _nameable_columns(relation)
+                for column in columns:
+                    yield _candidate(site, NonNullColumns(columns=frozenset((column,))), columns, dialect)
+                for members in _column_sets(columns, max_size):
+                    yield _candidate(site, UniqueSet(columns=frozenset(members)), columns, dialect)
+                    yield _candidate(site, NonNullUniqueSet(columns=frozenset(members)), columns, dialect)
 
 
 def _select_suggestions(
@@ -270,59 +230,3 @@ def _candidate(site: AttachmentSite, property: Property, order: tuple[ir.OutputC
             raise TypeError(f"No marker asserts {type(property).__name__}")
     names = ", ".join(exp.to_identifier(column.name).sql(dialect=dialect) for column in order if column in columns)
     return Candidate(site, property, f"/**ASSERT {kind}({names})**/")
-
-
-class _SiteRecordingIrParser(IrParser):
-    """An IrParser that remembers which IR node each JOIN and Select became.
-
-    The IR carries no SQLGlot nodes by design, so the pairing is captured
-    while lowering, at the two points where column and join markers attach.
-    """
-
-    def __init__(self, dialect: str) -> None:
-        super().__init__(dialect)
-        self.joins: list[tuple[exp.Join, ir.Join]] = []
-        self.selects: list[tuple[exp.Select, ir.RelationExpr]] = []
-
-    def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
-        lowered = super()._lower_join(left, join)
-        assert isinstance(lowered.relation, ir.Join)
-        self.joins.append((join, lowered.relation))
-        return lowered
-
-    def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Select) -> None:
-        self.selects.append((select, relation))
-        super()._register_column_markers(relation, select)
-
-
-def _site(sql: str, node: exp.Join | exp.Select, label: str, *, trailing: bool) -> AttachmentSite | None:
-    offset = marker_offset(node)
-    if offset is None:
-        return None
-    return AttachmentSite(label, sql.count("\n", 0, offset) + 1, offset, trailing)
-
-
-def _join_label(join: exp.Join, dialect: str) -> str:
-    keywords = " ".join(part for part in (join.side, join.kind, "JOIN") if part)
-    source = join.this
-    if isinstance(source, exp.Subquery):
-        return f"{keywords} subquery {source.alias}".rstrip()
-    return f"{keywords} {source.sql(dialect=dialect)}"
-
-
-def _select_label(select: exp.Select) -> str:
-    node = select.parent
-    while node is not None:
-        match node:
-            case exp.CTE():
-                return f"CTE {node.alias}"
-            case exp.Create():
-                table = node.this.this if isinstance(node.this, exp.Schema) else node.this
-                return f"view {table.name}"
-            case exp.Subquery() if node.alias:
-                return f"subquery {node.alias}"
-            case exp.Subquery():
-                return "subquery"
-            case _:
-                node = node.parent
-    return "Root Select"
