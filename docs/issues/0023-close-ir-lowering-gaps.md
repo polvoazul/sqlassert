@@ -23,7 +23,14 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 - [ ] Windows: only `QUALIFY row_number() over (partition by ...) = 1` is
   recognized; other window functions are opaque. Planned rules:
   [`docs/functional-dependencies.md`](../functional-dependencies.md#window-functions).
-- [ ] Recursive CTEs and views become `RecursiveRelation` (opaque).
+- [ ] Recursive CTEs and views become `RecursiveRelation` (opaque). Caveat:
+  a recursive relation is a genuine fixpoint, which the memoized engine and its
+  strata cannot compute; supporting it needs bespoke fixpoint machinery.
+- [ ] Correlated subqueries (`EXISTS (… WHERE i.x = o.y)`) are not lowered.
+  When they are, lower them as a dependent join (apply) over the outer input,
+  so the IR stays a DAG; a subquery that refers to its outer relation directly
+  would create a cycle across relations that the strata cannot order
+  ([Strata](../functional-dependencies.md#strata)).
 - [ ] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
   constraints, and other DDL are ignored.
 - [ ] Tables without a `CREATE` in the program have an incomplete schema, so an

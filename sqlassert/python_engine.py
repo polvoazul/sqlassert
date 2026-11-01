@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
+from enum import IntEnum
 from functools import wraps
 from inspect import signature
 
@@ -117,7 +118,10 @@ def cache(function):
         if key in arena.cache:
             return arena.cache[key]
         if key in arena.evaluating:
-            raise RuntimeError(f"cyclic property dependency: {cached.__name__}")
+            raise RuntimeError(
+                f"cyclic property dependency: {cached.__name__}. This is an internal sqlassert bug, "
+                "not a problem with the analyzed SQL: an analysis broke the Stratum order"
+            )
         arena.evaluating.add(key)
         try:
             result = function(*args, **kwargs)
@@ -129,22 +133,71 @@ def cache(function):
     return cached
 
 
-def analysis(function):
+class Stratum(IntEnum):
+    """The order in which facts about one relation may use each other.
+
+    An analysis about relation R may use any fact about R's inputs, but facts
+    about R itself only at its own or a lower stratum. The IR's relations form a
+    DAG, so this keeps the whole call graph acyclic: the memoized engine cannot
+    compute mutually recursive facts, which would need a fixpoint.
+    """
+
+    COLUMN_SET = 0
+    UNIQUE_JOIN = 10
+    NON_NULL = 20
+    UNIQUE_SET = 30
+
+
+def analysis(stratum: Stratum):
     """Cache and name an analysis function; public ones match Property names and fields."""
-    parameters = signature(function)
 
-    @cache
-    @wraps(function)
-    def evaluate(*args, **kwargs):
-        bound = parameters.bind(*args, **kwargs)
-        bound.apply_defaults()
-        arguments = tuple(sorted(bound.arguments.items()))
-        accepted = current_arena().accepted.get((function.__name__, arguments), ())
-        result = any_of(accepted) if accepted else function(*args, **kwargs)
-        return Result(result.value, function.__name__, tuple(bound.arguments.values()), [result], "claim", result.members)
+    def decorate(function):
+        parameters = signature(function)
 
-    analysis_functions.append(evaluate)
-    return evaluate
+        @cache
+        @wraps(function)
+        def evaluate(*args, **kwargs):
+            bound = parameters.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arena = current_arena()
+            relation = _subject_relation(arena.program, bound.arguments.values())
+            if relation is not None:
+                for active, active_stratum, name in arena.active:
+                    assert active is not relation or stratum <= active_stratum, (
+                        f"{function.__name__} ({stratum.name}) called from {name} ({active_stratum.name}) "
+                        "about the same relation: a fact may only use facts at its own or a lower stratum"
+                    )
+            arena.active.append((relation, stratum, function.__name__))
+            try:
+                arguments = tuple(sorted(bound.arguments.items()))
+                accepted = arena.accepted.get((function.__name__, arguments), ())
+                result = any_of(accepted) if accepted else function(*args, **kwargs)
+            finally:
+                arena.active.pop()
+            return Result(result.value, function.__name__, tuple(bound.arguments.values()), [result], "claim", result.members)
+
+        evaluate.stratum = stratum
+        analysis_functions.append(evaluate)
+        return evaluate
+
+    return decorate
+
+
+def _subject_relation(program: ir.Program, arguments: Iterable[object]) -> ir.RelationExpr | None:
+    """The relation an analysis call is about: its first argument that names one."""
+    for argument in arguments:
+        match argument:
+            case ir.RelationExpr():
+                return argument
+            case ir.OutputColumn():
+                return program.column_to_parent_relation_index.get(argument)
+            case frozenset():
+                return program.relation_of(argument)
+            case Result(value=value) if isinstance(getattr(value, "relation", None), ir.RelationExpr):
+                return value.relation
+            case _:
+                pass  # Scalar expressions and plain values are not about one relation.
+    return None
 
 
 def current_arena() -> Arena:
@@ -157,6 +210,7 @@ class Arena:
     def __init__(self, program: ir.Program, knowledge: tuple[Property, ...]):
         self.cache: dict[tuple, object] = {}
         self.evaluating: set[tuple] = set()
+        self.active: list[tuple[ir.RelationExpr | None, Stratum, str]] = []
         self.accepted: dict[tuple, tuple[Result[bool], ...]] = {}
         self.program = program
         self.knowledge = (*knowledge, *program.declarations)

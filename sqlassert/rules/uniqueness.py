@@ -2,11 +2,11 @@
 
 from sqlassert import ir
 from sqlassert.properties import NonNullColumns, UniqueJoin, UniqueSet
-from sqlassert.python_engine import Result, all_of, analysis, any_of, current_arena, unknown
+from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import ColumnSet, _column_set
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def unique_set(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
     relation = current_arena().program.relation_of(columns)
     if relation is None:
@@ -14,14 +14,14 @@ def unique_set(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
     return _covers_unique_set(_column_set(relation, columns))
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def non_null_unique_set(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
     from sqlassert.rules.nullability import non_null_columns
 
     return unique_set(columns) & non_null_columns(columns)
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def _unique_sets(relation: ir.RelationExpr) -> Result[dict[frozenset[ir.OutputColumn], Result[bool]]]:
     keys = {}
     arena = current_arena()
@@ -68,7 +68,7 @@ def _unique_sets(relation: ir.RelationExpr) -> Result[dict[frozenset[ir.OutputCo
     return Result(keys, "Known unique sets", (relation,), list(keys.values()))
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def _preserving_input(relation: ir.RelationExpr) -> Result[ir.RelationExpr | None]:
     match relation:
         case ir.Alias(source=source):
@@ -88,7 +88,7 @@ def _preserving_input(relation: ir.RelationExpr) -> Result[ir.RelationExpr | Non
             raise TypeError(f"Unhandled relation: {type(relation).__name__}")
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def _pass_through_columns(relation: ir.RelationExpr, columns: frozenset[ir.OutputColumn]):
     targets = []
     for column in columns:
@@ -108,12 +108,12 @@ def _pass_through_columns(relation: ir.RelationExpr, columns: frozenset[ir.Outpu
     return Result(frozenset(targets), "Each key column passes through exactly once", (relation, *targets))
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def _covers_unique_set(cols: Result[ColumnSet]) -> Result[bool]:
     return _coverage(cols, _unique_sets(cols.value.relation))
 
 
-@analysis
+@analysis(Stratum.UNIQUE_SET)
 def _coverage(cols: Result[ColumnSet], keys: Result[dict[frozenset[ir.OutputColumn], Result[bool]]]) -> Result[bool]:
     alternatives = []
     for key, evidence in keys.value.items():

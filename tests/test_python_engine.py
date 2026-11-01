@@ -5,7 +5,7 @@ import pytest
 from sqlassert import analyze, ir, python_engine
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import NonNullColumn, Property, UniqueJoin, UniqueSet
-from sqlassert.python_engine import Engine, Result, all_of, analysis, any_of, cache, current_arena, unknown
+from sqlassert.python_engine import Engine, Result, Stratum, all_of, analysis, any_of, cache, current_arena, unknown
 from sqlassert.rules.unique_join import _multiplicity_columns_rhs, unique_join
 from sqlassert.rules.nullability import non_null_column
 from sqlassert.rules.uniqueness import unique_set
@@ -93,6 +93,26 @@ def test_cycles_fail_explicitly_and_failed_evaluations_do_not_poison_cache():
             assert not arena.cache
 
 
+def test_an_analysis_may_not_use_a_higher_stratum_fact_about_the_same_relation(monkeypatch):
+    monkeypatch.setattr(python_engine, "analysis_functions", python_engine.analysis_functions.copy())
+    conversion = convert()
+    join = conversion.program.assertions[0].property.join
+
+    @analysis(Stratum.UNIQUE_SET)
+    def _high(relation):
+        return Result(True, "high", (relation,))
+
+    @analysis(Stratum.NON_NULL)
+    def _low(relation, target):
+        return _high(target)
+
+    with Engine().session(conversion.program):
+        assert _low(join, join.right).value  # Higher stratum about an input relation.
+        with pytest.raises(AssertionError, match="own or a lower stratum"):
+            _low(join, join)
+        assert _high(join).value  # The failed call left no stale frame behind.
+
+
 def test_any_analysis_function_accepts_declarations_without_a_rule_branch(monkeypatch):
     monkeypatch.setattr(Property, "_subclasses", Property._subclasses.copy())
     monkeypatch.setattr(python_engine, "analysis_functions", python_engine.analysis_functions.copy())
@@ -101,7 +121,7 @@ def test_any_analysis_function_accepts_declarations_without_a_rule_branch(monkey
 
     calls = []
 
-    @analysis
+    @analysis(Stratum.NON_NULL)
     def example_property(column):
         calls.append(column)
         return unknown("No derivation", column)
