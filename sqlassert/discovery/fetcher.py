@@ -43,8 +43,16 @@ class DatabaseRelationKind(Enum):
 
 @dataclass(frozen=True)
 class DatabaseColumn:
+    """One catalog column. `data_type` is its SQL type as the database writes
+    it (in the fetcher's `type_dialect`), or None when unknown; `collation` is
+    the collation its comparisons use, None for the database's binary default.
+    A fetcher that cannot tell a column's collation leaves `data_type` None,
+    so no comparison is assumed to be by identity."""
+
     name: str
     nullable: bool
+    data_type: str | None = None
+    collation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +109,9 @@ class DatabaseHydration:
 
 class DatabaseKnowledgeFetcher(ABC):
     """Generic catalog discovery; subclasses own one database's catalog boundary."""
+
+    # The SQL dialect the database writes column types in.
+    type_dialect: str | None = None
 
     def hydrate(self, ast: ParsedProgram, *, dialect: str) -> DatabaseHydration:
         return _Hydration(self, ast, dialect).run()
@@ -247,7 +258,7 @@ class _Hydration:
             return None
         target = _table(name)
         if metadata.kind is DatabaseRelationKind.TABLE:
-            columns = [exp.ColumnDef(this=exp.to_identifier(column.name)) for column in metadata.columns]
+            columns = [self._column_definition(column) for column in metadata.columns]
             return exp.Create(kind="TABLE", this=exp.Schema(this=target, expressions=columns))
         view = self._view(metadata)
         if view is None:
@@ -258,6 +269,23 @@ class _Hydration:
         else:
             declaration.set("this", target)
         return declaration
+
+    def _column_definition(self, column: DatabaseColumn) -> exp.ColumnDef:
+        """The column with its catalog type and collation, so the Program
+        compares and enumerates it as the database does; untyped if the type
+        does not parse."""
+        definition = exp.ColumnDef(this=exp.to_identifier(column.name))
+        if column.data_type is None:
+            return definition
+        try:
+            kind = exp.DataType.build(column.data_type, dialect=self.fetcher.type_dialect)
+        except SqlglotError:
+            return definition
+        definition.set("kind", kind)
+        if column.collation is not None:
+            collate = exp.CollateColumnConstraint(this=exp.to_identifier(column.collation))
+            definition.append("constraints", exp.ColumnConstraint(kind=collate))
+        return definition
 
     def _view(self, metadata: DatabaseRelationMetadata) -> exp.Create | None:
         """The view's definition with every Relation it reads named by canonical identity, memoized."""

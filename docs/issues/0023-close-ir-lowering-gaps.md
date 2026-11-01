@@ -105,7 +105,7 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   column types need no warning of their own: a column whose type a catalog
   could supply belongs to an undeclared table, which already warns. With a
   connection, hydration already declares each catalog table's columns, so the
-  column resolves; catalog column *types* are not passed yet (issue 30).
+  column resolves; catalog column types and collations are passed too (issue 30).
   Tests: `tests/test_connection_warnings.py`.
 - [x] No functional dependencies (`X → Y`). Done in issue 24, except
   deterministic and injective expressions (still opaque). Keys, equality predicates,
