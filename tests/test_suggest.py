@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sqlassert import NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest
+from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest
 from sqlassert.__main__ import main
 from sqlassert.ir.convert import IrParser
 from sqlassert.sql_parse import SqlParser
@@ -26,6 +26,23 @@ def test_a_provable_join_is_suggested_as_a_unique_join():
     join, = (s for s in report.suggestions if isinstance(s.property, UniqueJoin))
     assert (join.site.label, join.site.line, join.marker) == ("LEFT JOIN users", 5, "/**ASSERT UNIQUE**/")
     assert join.evidence.value
+
+
+def test_a_join_that_matches_exactly_one_row_is_suggested_in_that_stronger_form():
+    sql = SCHEMA + """
+    CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id));
+    SELECT orders.id, users.name FROM orders JOIN users ON users.id = orders.user_id
+    """
+    join, = (s for s in suggest(sql).suggestions if s.site.label == "JOIN users")
+    assert (type(join.property), join.marker) == (ExactlyOneJoin, "/**ASSERT EXACTLY ONE**/")
+
+
+def test_a_join_already_marked_is_not_suggested_again():
+    sql = SCHEMA + """
+    CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id));
+    SELECT orders.id, users.name FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id
+    """
+    assert "JOIN users" not in [s.site.label for s in suggest(sql).suggestions]
 
 
 def test_an_unprovable_join_is_not_suggested():
@@ -89,7 +106,13 @@ def test_each_member_of_a_set_operation_is_its_own_site():
 
 def test_columns_a_marker_cannot_name_unambiguously_are_left_out():
     sql = SCHEMA + "SELECT users.id, other.id FROM users JOIN users AS other ON other.id = users.id"
-    assert [m for _, m in markers(sql)] == ["/**ASSERT UNIQUE**/"]
+    # A self join on the key matches exactly one row.
+    assert [m for _, m in markers(sql)] == ["/**ASSERT EXACTLY ONE**/"]
+
+
+def test_a_join_inside_a_select_lowered_as_opaque_is_not_suggested():
+    sql = SCHEMA + "SELECT s.user_id FROM sessions s LEFT JOIN users u ON u.id = s.user_id GROUP BY s.user_id HAVING max(u.name) = 'a'"
+    assert not any(isinstance(s.property, UniqueJoin) for s in suggest(sql).suggestions)
 
 
 def test_a_quoted_column_name_is_quoted_in_its_marker():
@@ -141,6 +164,10 @@ ROUND_TRIP_PROGRAMS = [
     """,
     SCHEMA + "SELECT id FROM users UNION SELECT DISTINCT user_id FROM sessions ORDER BY 1",
     SCHEMA + 'SELECT DISTINCT name AS "full name", nick FROM users',
+    SCHEMA + """
+    CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id));
+    SELECT orders.id, users.name FROM orders JOIN users ON users.id = orders.user_id
+    """,
     """
     CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER, PRIMARY KEY (a, b));
     SELECT a, b, c, d, max(e) AS m FROM t GROUP BY a, b, c, d
@@ -181,7 +208,7 @@ def test_the_cli_prints_one_line_per_suggestion(tmp_path, capsys):
     assert main(["suggest", str(path)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["line", "5", "JOIN", "users", "Unique", "Join", "/**ASSERT", "UNIQUE**/"]
+    assert lines[0].split() == ["mid", "line", "5", "JOIN", "users", "Unique", "Join", "/**ASSERT", "UNIQUE**/"]
     assert len(lines) == len(suggest(path.read_text()).suggestions)
 
 
