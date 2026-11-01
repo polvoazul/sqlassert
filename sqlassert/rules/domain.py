@@ -218,7 +218,7 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
     match relation:
         case ir.Filter(conjuncts=conjuncts):
             clause = "WHERE"
-        case ir.Join(kind="inner" | "cross", conjuncts=conjuncts):
+        case ir.Join(kind="inner" | "cross" | "semi", conjuncts=conjuncts):
             clause = "ON"
         case ir.Join(kind="left", right=padded, conjuncts=conjuncts) | ir.Join(kind="right", left=padded, conjuncts=conjuncts) if source in padded.output_columns:
             clause = "ON"

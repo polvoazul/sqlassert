@@ -142,8 +142,6 @@ def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, lis
             pass
         case _:
             raise TypeError(f"Join column {column.name} is not a pass-through")
-    if join.kind in {"semi", "anti"}:
-        return {ORGANIC: unknown(f"Nullability through a {join.kind} join is not modelled", join, column)}, []
     sources, removal = _rejected(_on_rejected(join), source, sources, "The ON condition rejects NULL on matched rows")
     left = source in join.left.output_columns
     if left in _padded_sides(join):
@@ -246,11 +244,13 @@ def _on_rejected(join: ir.Join) -> dict[ir.OutputColumn, ir.ScalarExpr]:
     """Input columns non-null on every matched row of `join`, on its padded side.
 
     An inner join drops rows failing ON on both sides; an outer join keeps them
-    padded, so ON only constrains the side it pads.
+    padded, so ON only constrains the side it pads. A semi join keeps the left
+    rows some right row matches, an anti join those none does: ON constrains
+    only the semi join's.
     """
     rejected = _null_rejected(join.conjuncts)
     match join.kind:
-        case "inner":
+        case "inner" | "semi":
             return rejected
         case "left":
             return {column: c for column, c in rejected.items() if column in join.right.output_columns}

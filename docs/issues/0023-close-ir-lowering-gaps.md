@@ -42,19 +42,31 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   row. A scalar aggregate (no `GROUP BY`) now lowers to an `Aggregate` grouped
   by nothing, so its one row gives the empty Unique Set. `POSITIONAL JOIN` was
   lowered as an inner join, which proved `NOT NULL` on columns it pads: it is
-  now a full join on an opaque row-position condition. Still open (P4):
-  `semi`, `anti`, `LATERAL`/`UNNEST`.
+  now a full join on an opaque row-position condition. `semi` and `anti`
+  joins are modelled as filters of their left input (see correlated
+  subqueries below). Still open (P4): `LATERAL`/`UNNEST`.
 - [ ] Windows: only `QUALIFY row_number() over (partition by ...) = 1` is
   recognized; other window functions are opaque. Planned rules:
   [`docs/functional-dependencies.md`](../functional-dependencies.md#window-functions).
 - [ ] Recursive CTEs and views become `RecursiveRelation` (opaque). Caveat:
   a recursive relation is a genuine fixpoint, which the memoized engine and its
   strata cannot compute; supporting it needs bespoke fixpoint machinery.
-- [ ] Correlated subqueries (`EXISTS (… WHERE i.x = o.y)`) are not lowered.
+- [x] Correlated subqueries (`EXISTS (… WHERE i.x = o.y)`) are not lowered.
   When they are, lower them as a dependent join (apply) over the outer input,
   so the IR stays a DAG; a subquery that refers to its outer relation directly
   would create a cycle across relations that the strata cannot order
   ([Strata](../functional-dependencies.md#strata)).
+  Done (Paulley §4.4.2): a top-level WHERE conjunct `EXISTS (SELECT … FROM r
+  [JOIN …] WHERE p)` is a semi join of the outer input with r on `p` (lowered
+  with the outer and inner bindings together), `NOT EXISTS` an anti join, and
+  `x IN (SELECT a …)` a semi join on `x = a`. A semi or anti join outputs
+  only its left columns and keeps whole left rows; a semi join's ON holds on
+  each kept row (non-null, Equality Groups, domains, and Referential Coverage
+  onto the right columns ON equates). The explicit `SEMI`/`ANTI JOIN` syntax
+  lowers the same way (`RIGHT SEMI`/`RIGHT ANTI` with inputs swapped). Not
+  lowered: `NOT IN` (NULL semantics), tuple `IN`, an EXISTS body with
+  `GROUP BY`, `HAVING`, `DISTINCT`, `LIMIT` or `WITH`, subqueries in the
+  select list, and `ANY`/`ALL` comparisons.
 - [x] Only `CREATE TABLE` and `CREATE VIEW` are lowered; indexes, `ALTER TABLE`
   constraints, and other DDL are ignored. Done: `ALTER TABLE ... ADD PRIMARY
   KEY / UNIQUE / FOREIGN KEY` (named or not), `ALTER COLUMN ... SET NOT NULL`,
