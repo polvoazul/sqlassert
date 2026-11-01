@@ -80,6 +80,23 @@ CASES = {
     "G3": ("SELECT a, b, count(*) AS n FROM t GROUP BY a, b /**ASSERT UNIQUE(a, b)**/", PROVED),
     "G3e": ("SELECT count(*) AS n, max(a) AS m FROM t /**ASSERT UNIQUE(m)**/", PROVED),
     "G4": ("SELECT a, count(*) AS n, sum(b) AS s FROM t GROUP BY a /**ASSERT DETERMINES(a -> n, s)**/", PROVED),
+    # Left outer join (§3.2.9).
+    "L1": ("SELECT t.id, t.a, u.z FROM t LEFT JOIN u ON u.z = t.a /**ASSERT DETERMINES(id -> a)**/", PROVED),
+    "L2": ("SELECT t.a, u.k, u.y FROM t LEFT JOIN u ON u.k = t.a /**ASSERT DETERMINES(a -> y)**/", PROVED),
+    "L3": ("SELECT t.b, r.w, r.q FROM t LEFT JOIN (SELECT * FROM v WHERE q = w) AS r ON r.w = t.a /**ASSERT DETERMINES(w -> q)**/", PROVED),
+    "L4": ("SELECT t.a, u.x, u.k FROM t LEFT JOIN u ON u.x = t.a /**ASSERT DETERMINES(x -> k)**/", PROVED),
+    "L5": ("SELECT u.x, u.z FROM t LEFT JOIN u ON u.z = t.a AND u.x = u.z /**ASSERT DETERMINES(x -> z)**/", PROVED),
+    "L6": ("SELECT t.a, u.x FROM t LEFT JOIN u ON u.z = t.a AND u.x = 5 /**ASSERT DETERMINES(a -> x)**/", PROVED),
+    "L6-": ("SELECT t.b, u.x FROM t LEFT JOIN u ON u.z = t.a AND u.x = 5 /**ASSERT DETERMINES(b -> x)**/", UNKNOWN),
+    "L7": ("SELECT t.id, u.k FROM t LEFT JOIN u ON u.z = t.a /**ASSERT UNIQUE(id, k)**/", PROVED),
+    "L7-": ("SELECT t.id, u.k FROM t LEFT JOIN u ON u.z = t.a /**ASSERT UNIQUE(id)**/", UNKNOWN),
+    "L8": ("SELECT t.a, u.x, u.k FROM t LEFT JOIN u ON u.z = t.a /**ASSERT DETERMINES(x -> k)**/", PROVED),
+    # A strict constant of the padded side (q = 1) is NULL on padded rows.
+    "L9-": ("SELECT t.b, r.q FROM t LEFT JOIN (SELECT * FROM v WHERE q = 1) AS r ON r.w = t.a /**ASSERT DETERMINES(b -> q)**/", UNKNOWN),
+    "L10-": ("SELECT t.a, u.z FROM t LEFT JOIN u ON u.z = t.a /**ASSERT NOT NULL(z)**/", UNKNOWN),
+    "L11-": ("SELECT t.b FROM t LEFT JOIN u ON u.z = t.a AND t.b = 1 /**ASSERT ENUM(b IN (1))**/", UNKNOWN),
+    "L15": ("SELECT u.y FROM t LEFT JOIN u ON u.z = t.a WHERE u.k IS NOT NULL /**ASSERT NOT NULL(y)**/", PROVED),
+    "L15-": ("SELECT u.y FROM t LEFT JOIN u ON u.z = t.a /**ASSERT NOT NULL(y)**/", UNKNOWN),
 }
 
 

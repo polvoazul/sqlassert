@@ -279,21 +279,21 @@ through only with definite determinants.
 | G2 | Grouping function: X → λ(X) | Claim 22, p.83 | implemented | `uniqueness._computed` for computed grouping items | `test_paulley_audit.py` G2 |
 | G3 | Grouping attributes → ι; no grouping attributes: one row | Claim 22, p.83 | implemented | `uniqueness._functional_dependencies` (Aggregate: grouping outputs → ι; a scalar aggregate has none, so ∅ → ι) | `test_paulley_audit.py` G3, G3e |
 | G4 | Aggregate is determined by its group: ι → f | Claim 23, p.84 | implemented | ι → every column (`_row_attributes`); our extension: MIN/MAX/ANY_VALUE of a determined column pass it through (`AnyAggregate`) | `test_paulley_audit.py` G4 |
-| L1 | Left join keeps the preserved side's strict FDs | Thm 3 strict 1, p.96 | pending | | |
-| L2 | Null-supplying strict FD X → Y survives when η(p, X) | Lemma 7, Thm 3 strict 2, p.87 | pending | | |
-| L3 | …or when X = Y is a strict equivalence in the null-supplying input | Corollary 2, p.88 | pending | | |
-| L4 | Null-supplying lax FD becomes strict when η holds for every attribute in it | Lemma 8, p.89 | pending | | |
-| L5 | ON equality within the null-supplying side: strict when η(p, X) | Lemma 9 case 2, Thm 3 strict 3, p.93 | pending | | |
-| L6 | All preserved attributes of p determine a null-supplying attribute p binds, when η(p, Y) | Lemma 9 case 3, Thm 3 strict 4, p.93 | pending | | |
-| L7 | Left join: ι(Q) ↔ ι(S), ι(T) | Thm 3 strict 5, p.96 | pending | | |
-| L8 | Left join keeps both sides' lax FDs | Thm 3 lax 1–2, p.96 | pending | | |
-| L9 | Null-supplying strict FD without η degrades to lax | Thm 3 lax 3, p.96 | pending | | |
-| L10 | Other ON-derived FDs touching the null-supplying side are lax | Lemma 9 case 4, Thm 3 lax 4, p.93 | pending | | |
-| L11 | ON conditions only on the preserved side give nothing | Lemma 9 case 1, p.93 | pending | | |
-| L12 | Lax equivalence in T strengthened when η holds for both | Thm 3 strict eq 3, p.97 | pending | | |
-| L13 | ON equality within T: strict equivalence | Thm 3 strict eq 4, p.97 | pending | | |
-| L14 | Cross-side ON equality: lax equivalence only | Thm 3 lax eq 3, p.97 | pending | | |
-| L15 | Null constraints among the null-supplying side's definite attributes; a later null-intolerant predicate makes them all definite | Def 38, Thm 3 null, p.95 | pending | | |
+| L1 | Left join keeps the preserved side's strict FDs | Thm 3 strict 1, p.96 | implemented | `uniqueness._join_side` delegation onto the preserved side (always valid) | `test_paulley_audit.py` L1 |
+| L2 | Null-supplying strict FD X → Y survives when η(p, X) | Lemma 7, Thm 3 strict 2, p.87 | different | `uniqueness._join_side` delegation: instead of η per dependency, the closure on the padded side is valid when some reached column is NULL only on padded rows (η) or the preserved side's match status is reached (`_match_status`); covers Lemma 7 and more | `test_paulley_audit.py` L2 |
+| L3 | …or when X = Y is a strict equivalence in the null-supplying input | Corollary 2, p.88 | implemented | `uniqueness._join_side` delegation: a reached column whose only Null Source is the padding (Cor 2's equivalence makes the dependent NULL with it) | `test_paulley_audit.py` L3 |
+| L4 | Null-supplying lax FD becomes strict when η holds for every attribute in it | Lemma 8, p.89 | implemented | `uniqueness._join_side` delegation plus lax steps from definite determinants (A9) | `test_paulley_audit.py` L4 |
+| L5 | ON equality within the null-supplying side: strict when η(p, X) | Lemma 9 case 2, Thm 3 strict 3, p.93 | implemented | `uniqueness._outer_on_dependencies` (padded-side equalities strict) | `test_paulley_audit.py` L5 |
+| L6 | All preserved attributes of p determine a null-supplying attribute p binds, when η(p, Y) | Lemma 9 case 3, Thm 3 strict 4, p.93 | implemented | `uniqueness._outer_on_dependencies` (`_match_status` → padded column bound by ON) | `test_paulley_audit.py` L6, L6- |
+| L7 | Left join: ι(Q) ↔ ι(S), ι(T) | Thm 3 strict 5, p.96 | implemented | `uniqueness._join_dependencies` (`(ι(left), ι(right)) → ι`) | `test_paulley_audit.py` L7, L7- |
+| L8 | Left join keeps both sides' lax FDs | Thm 3 lax 1–2, p.96 | implemented | `uniqueness._join_side` delegations | `test_paulley_audit.py` L8 |
+| L9 | Null-supplying strict FD without η degrades to lax | Thm 3 lax 3, p.96 | implemented | `uniqueness._join_side` delegation: the padded side's closure is refused when nothing reached tells padded rows apart | `test_paulley_audit.py` L9- |
+| L10 | Other ON-derived FDs touching the null-supplying side are lax | Lemma 9 case 4, Thm 3 lax 4, p.93 | implemented | `uniqueness._outer_on_dependencies` (cross equality only lax from the padded side); `nullability._padded_sides` | `test_paulley_audit.py` L10- |
+| L11 | ON conditions only on the preserved side give nothing | Lemma 9 case 1, p.93 | implemented | `uniqueness._outer_on_dependencies` reads only conjuncts binding a padded column; `nullability._on_rejected` keeps the padded side's columns only | `test_paulley_audit.py` L11- |
+| L12 | Lax equivalence in T strengthened when η holds for both | Thm 3 strict eq 3, p.97 | n/a | no lax equivalence objects (E3) |  |
+| L13 | ON equality within T: strict equivalence | Thm 3 strict eq 4, p.97 | missing | partly: the FDs hold (L5), but an ON equality within the padded side does not merge an Equality Group (`equality._strict_conjuncts` gives an outer join none), so `ON u.x = u.z AND u.z = 3` does not bound x's domain. Filed in issue 23 |  |
+| L14 | Cross-side ON equality: lax equivalence only | Thm 3 lax eq 3, p.97 | missing | the cross equality is rightly not an Equality Group, but domains could cross a lax equivalence (NULL is outside every domain): after `LEFT JOIN u ON u.z = t.a WHERE t.a = 5`, z is 5 or NULL. Filed in issue 23 with E4 |  |
+| L15 | Null constraints among the null-supplying side's definite attributes; a later null-intolerant predicate makes them all definite | Def 38, Thm 3 null, p.95 | implemented | Null Sources: `Padding(join)` is shared by every column the join pads, so one null-rejecting conjunct removes it from all (`nullability._rejected`) | `test_paulley_audit.py` L15, L15- |
 | F1 | Full join: input strict FD survives when η(p, X) or a strict equivalence | Thm 4 strict 1, p.100 | pending | | |
 | F2 | Full join: cross-side ON FD αR(p) → Y with η(p, Y) and η(p, αS(p)) | Lemma 10 case 3, Thm 4 strict 2, p.100 | pending | | |
 | F3 | Full join: ι(Q) ↔ ι(R), ι(S) | Thm 4 strict 3, p.100 | pending | | |
