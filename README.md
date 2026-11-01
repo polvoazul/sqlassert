@@ -280,9 +280,9 @@ Supported uniqueness proofs today:
 - RHS `GROUP BY` subqueries, when the join covers the grouping keys.
 - RHS `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
 - RHS `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
-- Simple projection views and subqueries that preserve one of the proofs above.
+- Views, CTEs, and subqueries that preserve one of the proofs above, including through their own joins.
 
-Views can inherit uniqueness when they are simple projections over a source relation with a supported proof. Filters preserve uniqueness; computed expressions, joins inside views, unions, and arbitrary subquery semantics are not guessed.
+A view, CTE, or FROM subquery is lowered like the Root Select, joins and markers included, so its facts flow to every query that reads it. A marker in a CTE or view that nothing reads is reported as unanalyzed. Computed expressions and arbitrary subquery semantics are not guessed.
 
 Examples:
 
