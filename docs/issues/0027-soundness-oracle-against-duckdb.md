@@ -38,6 +38,47 @@ Done: `tests/soundness_oracle.py`, run with `python -m pytest --soundness-oracle
 analyzes, and the marked oracle test runs last to judge each `PROVED`
 assertion. Part 2 and the z3 alternative remain open.
 
+DDL Foreign Keys are removed from the oracle's physical tables and checked
+with coverage queries after the complete generated instance is loaded. This
+allows arbitrary loading/deletion order, forward references, and cycles while
+still rejecting rows that violate the declared Foreign Keys (`MATCH SIMPLE`).
+Other constraints remain enforced by DuckDB.
+
+Each search returns its outcome (`counterexample`, `no-counterexample`, or
+`insufficient-data`), its counterexample instance when found, and attempted,
+valid, and rejected predicate evaluation counts (including shrinking).
+`Judgement.searches` associates those results with assertion IDs. An
+insufficient-data result is reported as skipped, not counted as judged.
+
+The final oracle test judges programs in a process pool (up to eight workers,
+bounded by available CPUs), preserving corpus order in its report. Each program
+has its own in-memory DuckDB with one execution thread; assertions within a
+program remain serial. Workers use `spawn` so they do not inherit DuckDB state
+from the test process.
+
+Compare serial, thread-pool, and process-pool execution with
+`python scripts/benchmark_soundness_oracle.py --workers 8 --repeats 3`.
+The benchmark records the suite once, fixes each search's random seed, and
+requires identical judgements (including search counts and counterexamples).
+Timings include pool startup/shutdown and exclude collecting the corpus.
+
+Measured on 2026-11-01 on macOS arm64 with 16 available CPUs, Python 3.13.7,
+DuckDB 1.5.2, and Hypothesis 6.170.14. Each mode ran once over the same frozen
+680-program corpus, with 200 examples per assertion and up to three rows per
+table:
+
+| Mode | DuckDB threads per database | Wall time |
+|---|---|---|
+| Original serial | Default | 296.7 s |
+| Serial | 1 | 239.1 s |
+| Thread pool, 8 workers | 1 | 226.1 s |
+| Process pool, 8 workers | 1 | 51.0 s |
+
+All four runs produced exactly identical judgements: 467 assertions judged,
+seven skipped, no counterexamples, 91,981 valid samples, and 32,652 rejected
+samples. Processes were 5.8 times faster than the original runner, 4.7 times
+faster than serial with one DuckDB thread, and 4.4 times faster than threads.
+
 - [x] Collect `(sql, report)` pairs from the existing tests (fixture or
   conftest hook around `analyze`) without rewriting the tests.
 - [x] Generate table contents from the parsed DDL: values from a tiny domain
@@ -103,8 +144,8 @@ judge them with the oracle.
 2024, Table 2 and §7.4 (e.g. TPC-H Q10's seven grouping columns reduce to
 `c_custkey`). Links in [literature-notes.md](../literature-notes.md).
 
-- [ ] Candidate generator for joins, output-column subsets, and non-null
-  columns over a parsed program. Shared with
+- [x] Candidate generator for joins, output-column subsets, and non-null
+  columns over a parsed program: `sqlassert.suggest.candidates`, shared with
   [issue 15](0015-suggest-provable-properties-for-unannotated-sql.md).
 - [ ] Missed-proof report (UNKNOWN but probably true), grouped by cause, as a
   completeness metric to track across engine changes (e.g. FD support).
