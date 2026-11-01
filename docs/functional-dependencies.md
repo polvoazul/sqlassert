@@ -65,6 +65,23 @@ more robust thing to propagate.
   `a → b`. Surjectivity is irrelevant; "pure + injective" is the useful class.
 - Grouping: the grouping columns determine every output column.
 
+### Inclusion dependencies
+
+`R[X] ⊆ S[Y]`: every X value of R appears as a Y value of S. A foreign key is
+an inclusion dependency whose right side is a key. Theory behind TODO.md
+Tasks 7–10 (Foreign Keys, `EXACTLY ONE`):
+
+- Unique Join = at most one match (right key). Inclusion dependency = at least
+  one. Together: exactly one; the join neither drops nor duplicates left rows.
+- `o LEFT JOIN u ON o.user_id = u.id` with FK `orders[user_id] ⊆ users[id]`:
+  when `o.user_id` is non-null the row is matched, so `u.id = o.user_id` and
+  every NOT NULL column of `u` is non-null (nullable `u` columns can still be
+  NULL organically). When `o.user_id` is NULL the row is padded: SQL foreign
+  keys (`MATCH SIMPLE`) never require NULLs to match.
+- With `o.user_id` NOT NULL as well, the LEFT JOIN behaves as an INNER JOIN.
+- Caveat: many warehouses do not enforce foreign keys; the same trust question
+  as unenforced keys.
+
 ## Propagation through operators
 
 | Operator | Output FDs |
