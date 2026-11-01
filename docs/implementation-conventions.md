@@ -93,7 +93,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   separate node: it is the same subset boundary. Input facts follow retained
   rows; incoming Referential Coverage stops at this boundary.
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
-  into that model.
+  into that model. Schema statements are read in program order:
+  `ALTER TABLE` and `CREATE UNIQUE INDEX` append table-level constraints, shaped
+  like `CREATE TABLE`'s own, to the table an earlier `CREATE TABLE` declared,
+  so one `_table_constraints` view feeds Unique Sets, primary keys, and
+  `REFERENCES` alike.
 - Table columns carry a plain `comparison_type` when their declared type has
   value equality without collation. Equality Groups merge only known matching
   types, followed through pass-through columns; unknown and mixed types do not
@@ -139,12 +143,14 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   extra. `analyze_database(sql, fetcher, *, dialect=...)` in `main.py`
   composes it; `analyze` stays pure.
 - `suggest.py` composes the same stages as `main.py` to list provable
-  Properties as markers. `sql_parse.py` records on every Join and Select the
-  source position where its marker would be written; `IrParser` turns each
-  into a plain-valued `AttachmentSite` (`provenance.py`) paired with the IR
-  Join or Select relation in `Program.attachment_sites`. `suggest` proves
-  candidates at those sites through `Arena.prove` only, never through
-  internal analysis functions. `__main__.py` is the CLI over it.
+  Properties as markers. `sql_parse.py` records on every Join, Select, and
+  simple CASE the source position where its marker would be written;
+  `IrParser` turns each into a plain-valued `AttachmentSite` (`provenance.py`)
+  paired with the IR Join, Select relation, or `SimpleCase` in
+  `Program.attachment_sites`. `suggest` proves candidates at those sites
+  through `Arena.prove` only. The one internal it reads is a column's
+  Enumerated Domain (`rules.domain._domain`), to know which values an ENUM
+  candidate lists before proving it. `__main__.py` is the CLI over it.
 - `improvements.py` holds `suggest`'s High level: result-preserving rewrites
   (Improvements). None of their facts is a Property, so it reads rule
   internals in the same arena -- null sources and null-rejected conjuncts

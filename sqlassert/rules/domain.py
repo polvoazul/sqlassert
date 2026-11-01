@@ -173,7 +173,7 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(arm.value for arm in arms if arm.value is not None))
             premises = [*arms, unreachable] if unreachable.value else arms
             return Result(value, "A CASE takes one of its arms' values", (expression,), premises)
-        case ir.Constant() | ir.OpaqueExpression() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull():
+        case ir.Constant() | ir.OpaqueExpression() | ir.Count() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull():
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:
             raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")

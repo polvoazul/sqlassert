@@ -41,6 +41,10 @@ class _Symbol:
     body: exp.Query | None = None
     statement: exp.Create | None = None
     required_columns: set[str] = field(default_factory=set)
+    # Table-level constraints added after CREATE TABLE (ALTER TABLE, CREATE
+    # UNIQUE INDEX), shaped like the CREATE TABLE's own, and columns set NOT NULL.
+    constraints: list[exp.Expression] = field(default_factory=list)
+    not_null: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -93,18 +97,27 @@ class IrParser:
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _declarations: list[Property] = field(default_factory=list)
     _diagnostics: list[Diagnostic] = field(default_factory=list)
-    _handled_column_marker_lines: set[int] = field(default_factory=set)
+    _handled_column_markers: set[int] = field(default_factory=set)
+    _handled_joins: set[int] = field(default_factory=set)
     _handled_cases: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
-    _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr]] = field(default_factory=list)
+    _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr | ir.SimpleCase]] = field(default_factory=list)
+    _sited_cases: set[int] = field(default_factory=set)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
 
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
-            if isinstance(statement, exp.Create):
-                self._declare(statement)
+            match statement:
+                case exp.Create(kind="INDEX"):
+                    self._declare_index(statement)
+                case exp.Create():
+                    self._declare(statement)
+                case exp.Alter():
+                    self._alter(statement)
+                case _:
+                    raise TypeError(f"Unhandled schema statement: {type(statement).__name__}")
 
         for symbol in tuple(self._symbols):
             if symbol.role is ir.RelationRole.VIEW and symbol.body is not None:
@@ -132,7 +145,7 @@ class IrParser:
             self._diagnostics.append(
                 Diagnostic(
                     diag.UNSUPPORTED_CREATE_STATEMENT,
-                    f"create statement kind {kind or '<unknown>'} is not supported; only TABLE and VIEW are analyzed: {statement.sql(dialect=self.dialect)}",
+                    f"create statement kind {kind or '<unknown>'} is not supported; only TABLE, VIEW, and INDEX are analyzed: {statement.sql(dialect=self.dialect)}",
                 )
             )
             return
@@ -153,6 +166,84 @@ class IrParser:
         symbol = _Symbol(name=name, role=role, origin=origin, body=query, statement=statement)
         self._global_symbols[key] = symbol
         self._symbols.append(symbol)
+
+    def _declare_index(self, statement: exp.Create) -> None:
+        """A unique index over plain columns is a Unique Set, like UNIQUE; any
+        other index states nothing about the data."""
+        index = statement.this
+        table = index.args.get("table") if isinstance(index, exp.Index) else None
+        if not isinstance(table, exp.Table):
+            self._unsupported_create(statement, "an index without a table")
+            return
+        symbol = self._created_before(table, statement)
+        if symbol is None or not statement.args.get("unique"):
+            return
+        params = index.args.get("params")
+        columns = params.args.get("columns") or () if isinstance(params, exp.IndexParameters) else ()
+        plain = [
+            column.this for column in columns
+            if isinstance(column, exp.Ordered) and isinstance(column.this, exp.Column) and not column.this.table
+        ]
+        if not columns or len(plain) != len(columns) or params.args.get("where") is not None:
+            # Uniqueness of expressions, or of only some rows, is not a Unique Set.
+            self._unsupported_create(statement, "a unique index that is partial or over expressions")
+            return
+        schema = exp.Schema(expressions=[exp.to_identifier(column.name) for column in plain])
+        symbol.constraints.append(exp.UniqueColumnConstraint(this=schema))
+
+    def _alter(self, statement: exp.Alter) -> None:
+        """ALTER TABLE adding PRIMARY KEY, UNIQUE, or FOREIGN KEY constraints, or
+        setting columns NOT NULL. Any other action could invalidate what is
+        known of the table, so a statement with one states nothing."""
+        actions = statement.args.get("actions") or ()
+        added: list[exp.Expression] = []
+        not_null: list[str] = []
+        for action in actions:
+            match action:
+                case exp.AddConstraint():
+                    added.extend(_unwrap_constraints(action.expressions))
+                case exp.AlterColumn() if action.args.get("allow_null") is False and {
+                    key for key, value in action.args.items() if value is not None and value is not False
+                } == {"this"}:
+                    not_null.append(action.name)
+                case _:
+                    added.append(action)
+        if not actions or not all(_is_added_constraint(constraint) for constraint in added):
+            self._diagnostics.append(Diagnostic(
+                diag.UNSUPPORTED_STATEMENT,
+                f"only ALTER TABLE adding PRIMARY KEY, UNIQUE, or FOREIGN KEY constraints, or setting NOT NULL, "
+                f"is analyzed: {statement.sql(dialect=self.dialect)}",
+                self._origin(statement),
+            ))
+            return
+        table = statement.this
+        symbol = self._created_before(table, statement) if isinstance(table, exp.Table) else None
+        if symbol is None:
+            return
+        symbol.constraints.extend(added)
+        symbol.not_null.update(not_null)
+
+    def _created_before(self, table: exp.Table, statement: exp.Expression) -> _Symbol | None:
+        """The table `statement` amends, which a CREATE TABLE earlier in the
+        program must declare; otherwise the statement is diagnosed."""
+        name = _qualified_name(table)
+        symbol = self._global_symbols.get(name.lower())
+        if symbol is None or symbol.role is not ir.RelationRole.TABLE or symbol.statement is None:
+            self._diagnostics.append(Diagnostic(
+                diag.CONSTRAINT_WITHOUT_TABLE,
+                f"{name} is not a table created earlier in the program, so this statement's constraints are ignored: "
+                f"{statement.sql(dialect=self.dialect)}",
+                self._origin(statement),
+            ))
+            return None
+        return symbol
+
+    def _unsupported_create(self, statement: exp.Create, what: str) -> None:
+        self._diagnostics.append(Diagnostic(
+            diag.UNSUPPORTED_CREATE_STATEMENT,
+            f"{what} is not analyzed: {statement.sql(dialect=self.dialect)}",
+            self._origin(statement),
+        ))
 
     def _discover_query(self, query: exp.Query, inherited_scope: dict[str, _Symbol]) -> None:
         if id(query) in self._query_scopes:
@@ -253,7 +344,7 @@ class IrParser:
         for symbol in tuple(self._symbols):
             if symbol.role is not ir.RelationRole.TABLE or symbol.statement is None:
                 continue
-            for columns, table, target_columns, node in _references(symbol.statement):
+            for columns, table, target_columns, node in _references(symbol):
                 target = self._global_symbols.get(_qualified_name(table).lower())
                 if target is None or target.role is not ir.RelationRole.TABLE:
                     continue
@@ -377,7 +468,7 @@ class IrParser:
                 origin=symbol.origin, output_columns=output_columns, is_schema_complete=complete, name=symbol.name, role=symbol.role
             )
             self._named_relations[symbol] = named
-            self._knowledge.extend(self._table_knowledge(named, symbol.statement))
+            self._knowledge.extend(self._table_knowledge(named, symbol))
             return named
 
         self._resolving.add(symbol)
@@ -406,7 +497,7 @@ class IrParser:
         )
         self._named_relations[symbol] = named
         if symbol.role is ir.RelationRole.TABLE:
-            self._knowledge.extend(self._table_knowledge(named, symbol.statement))
+            self._knowledge.extend(self._table_knowledge(named, symbol))
         return named
 
     def _table_output_columns(self, symbol: _Symbol) -> tuple[tuple[ir.OutputColumn, ...], bool]:
@@ -490,6 +581,8 @@ class IrParser:
             _Binding(binding.qualifier, binding.name, remapped[binding.column])
             for binding in left.bindings + right.bindings
         )
+        if join_marker_kind(join) is not None:
+            self._handled_joins.add(id(join))
         match join_marker_kind(join):
             case "unique-join":
                 self._assertions.append(ir.Assertion(origin=join_origin(join, self.dialect), property=UniqueJoin(join=relation)))
@@ -713,6 +806,8 @@ class IrParser:
             )
         if isinstance(expression, exp.Null):
             return ir.NullLiteral(origin=origin)
+        if isinstance(expression, exp.Count):
+            return ir.Count(origin=origin, description=expression.sql(dialect=self.dialect))
         if isinstance(expression, exp.Case) and expression.this is not None:
             return self._lower_case(expression, bindings, schema_complete=schema_complete)
         value = literal_value(expression)
@@ -735,6 +830,9 @@ class IrParser:
             thens=tuple(lower(arm.args["true"]) for arm in arms),
             default=lower(default) if default is not None else ir.NullLiteral(origin=self._origin(case)),
         )
+        if id(case) not in self._sited_cases:
+            self._sited_cases.add(id(case))
+            self._add_attachment_site(case, f"CASE {case.this.sql(dialect=self.dialect)}", lowered, trailing=False)
         line = exhaustive_line(case)
         if line is not None and id(case) not in self._handled_cases:
             self._handled_cases.add(id(case))
@@ -757,7 +855,7 @@ class IrParser:
         by_name = {output.name.lower(): output for output in relation.output_columns}
         for marker in column_markers(select):
             kind, columns, line = marker.kind, marker.columns, marker.line
-            self._handled_column_marker_lines.add(line)
+            self._handled_column_markers.add(id(marker))
             origin = Origin(SQL, select.sql(dialect=self.dialect), line)
             unknown = [column for column in (*columns, *marker.dependent) if column.lower() not in by_name]
             if unknown and relation.is_schema_complete:
@@ -770,6 +868,16 @@ class IrParser:
                 )
                 continue
             if unknown:
+                # The column may exist in a source whose columns are unknown,
+                # so it is neither absent nor something to state a Property of.
+                self._diagnostics.append(
+                    Diagnostic(
+                        diag.UNRESOLVED_ASSERTED_COLUMN,
+                        f"the {MARKER_NOUNS[kind]} on line {line} names {', '.join(unknown)}, which cannot be resolved: "
+                        "this Select Expression reads a relation whose columns are unknown (declare it with CREATE TABLE)",
+                        origin,
+                    )
+                )
                 continue
             if kind in FOREIGN_KEY_KINDS:
                 self._marker_references.append(_MarkerReference(
@@ -811,7 +919,9 @@ class IrParser:
                 case _:
                     raise ValueError(f"Unhandled column marker kind: {kind}")
 
-    def _add_attachment_site(self, node: exp.Join | exp.Select, label: str, relation: ir.RelationExpr, *, trailing: bool) -> None:
+    def _add_attachment_site(
+        self, node: exp.Join | exp.Select | exp.Case, label: str, relation: ir.RelationExpr | ir.SimpleCase, *, trailing: bool
+    ) -> None:
         position = marker_position(node)
         if position is not None:
             offset, line = position
@@ -856,7 +966,7 @@ class IrParser:
             if target_names is None:
                 if reference.target.statement is None:
                     continue  # An undeclared table's primary key is unknown.
-                target_names = _primary_key(reference.target.statement)
+                target_names = _primary_key(reference.target)
                 if target_names is None:
                     self._diagnostics.append(Diagnostic(
                         diag.UNKNOWN_REFERENCED_COLUMN,
@@ -904,14 +1014,9 @@ class IrParser:
         )
 
     def _report_unanalyzed(self, ast: ParsedProgram) -> None:
-        analyzed = {
-            assertion.origin.line
-            for assertion in self._assertions
-            if isinstance(assertion.property, UniqueJoin | ExactlyOneJoin)
-        }
         for join in _asserted_joins(ast):
             line, kind = assertion_line(join), join_marker_kind(join)
-            if line in analyzed:
+            if id(join) in self._handled_joins:
                 continue
             assert kind is not None, "every asserted join records its marker kind"
             self._diagnostics.append(
@@ -936,7 +1041,7 @@ class IrParser:
         for select in _asserted_selects(ast):
             for marker in column_markers(select):
                 kind, line = marker.kind, marker.line
-                if line in self._handled_column_marker_lines:
+                if id(marker) in self._handled_column_markers:
                     continue
                 self._diagnostics.append(
                     Diagnostic(
@@ -946,13 +1051,14 @@ class IrParser:
                     )
                 )
 
-    def _table_knowledge(self, relation: ir.NamedRelation, statement: exp.Create | None) -> tuple[Property, ...]:
+    def _table_knowledge(self, relation: ir.NamedRelation, symbol: _Symbol) -> tuple[Property, ...]:
+        statement = symbol.statement
         if statement is None:
             return ()
         columns = {column.name.lower(): column for column in relation.output_columns}
         facts: list[Property] = []
         unique_sets: list[tuple[str, ...]] = []
-        non_null: set[str] = set()
+        non_null = {column.lower() for column in symbol.not_null}
         for definition in statement.this.find_all(exp.ColumnDef):
             kinds = [type(constraint.args.get("kind")) for constraint in definition.constraints]
             primary_key = exp.PrimaryKeyColumnConstraint in kinds
@@ -962,7 +1068,7 @@ class IrParser:
                 non_null.add(definition.name.lower())
             if primary_key or unique:
                 unique_sets.append((definition.name,))
-        for constraint in statement.this.expressions:
+        for constraint in _table_constraints(symbol):
             constrained = _table_level_unique_columns(constraint)
             if constrained is None:
                 continue
@@ -1041,17 +1147,41 @@ def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] |
     return None
 
 
-def _references(statement: exp.Create) -> list[tuple[tuple[str, ...], exp.Table, tuple[str, ...] | None, exp.Expression]]:
+def _table_constraints(symbol: _Symbol) -> list[exp.Expression]:
+    """A declared table's table-level constraints, named or not: its CREATE
+    TABLE's, then those added later."""
+    assert symbol.statement is not None
+    schema = symbol.statement.this
+    own = _unwrap_constraints(schema.expressions) if isinstance(schema, exp.Schema) else []
+    return own + symbol.constraints
+
+
+def _unwrap_constraints(constraints: Iterable[exp.Expression]) -> list[exp.Expression]:
+    """`CONSTRAINT name ...` is the constraints it names."""
+    return [
+        inner for constraint in constraints
+        for inner in (constraint.expressions if isinstance(constraint, exp.Constraint) else (constraint,))
+    ]
+
+
+def _is_added_constraint(constraint: exp.Expression) -> bool:
+    return isinstance(constraint, exp.PrimaryKey | exp.ForeignKey) or _table_level_unique_columns(constraint) is not None
+
+
+def _references(symbol: _Symbol) -> list[tuple[tuple[str, ...], exp.Table, tuple[str, ...] | None, exp.Expression]]:
     """Every `REFERENCES` constraint of a table, column-level and table-level,
     as `(columns, referenced table, referenced columns, node)`. Referenced
     columns are None when omitted, meaning the referenced primary key."""
     found = []
-    for definition in statement.this.find_all(exp.ColumnDef):
+    assert symbol.statement is not None
+    for definition in symbol.statement.this.find_all(exp.ColumnDef):
         for constraint in definition.constraints:
             reference = constraint.args.get("kind")
             if isinstance(reference, exp.Reference):
                 found.append(((definition.name,), *_reference_target(reference), definition))
-    for foreign_key in statement.this.find_all(exp.ForeignKey):
+    for foreign_key in _table_constraints(symbol):
+        if not isinstance(foreign_key, exp.ForeignKey):
+            continue
         reference = foreign_key.args.get("reference")
         if isinstance(reference, exp.Reference):
             columns = tuple(identifier.name for identifier in foreign_key.expressions)
@@ -1066,11 +1196,12 @@ def _reference_target(reference: exp.Reference) -> tuple[exp.Table, tuple[str, .
     return target, None
 
 
-def _primary_key(statement: exp.Create) -> tuple[str, ...] | None:
-    for definition in statement.this.find_all(exp.ColumnDef):
+def _primary_key(symbol: _Symbol) -> tuple[str, ...] | None:
+    assert symbol.statement is not None
+    for definition in symbol.statement.this.find_all(exp.ColumnDef):
         if any(isinstance(constraint.args.get("kind"), exp.PrimaryKeyColumnConstraint) for constraint in definition.constraints):
             return (definition.name,)
-    for constraint in statement.this.expressions:
+    for constraint in _table_constraints(symbol):
         if isinstance(constraint, exp.PrimaryKey):
             return tuple(identifier.name for identifier in constraint.expressions)
     return None
