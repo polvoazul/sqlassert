@@ -20,7 +20,11 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 - [ ] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
   `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
   Searched `CASE`, `CAST`, and other function calls are opaque, so no
-  injectivity (`id + 0`, lossless casts).
+  injectivity (`id + 0`, lossless casts). Function FDs done (Paulley §3.1.4):
+  an opaque expression built only from built-in functions and operators over
+  resolved columns records them as `inputs`, and closure reaches it from them
+  when each compares by identity. Still open: injectivity (P4), and searched
+  `CASE`, `coalesce` and simple `CASE` as FD sources.
 - [x] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:
   `SetOperation.distinct`, issue 24.) Done: `SetOperation.arms(column)` pairs

@@ -360,3 +360,34 @@ def test_a_malformed_dependency_marker_is_reported(marker: str):
 def test_a_dependency_marker_naming_an_unknown_column_is_reported():
     report = analyze("CREATE TABLE addresses (zip VARCHAR, city VARCHAR); SELECT zip FROM addresses /**ASSERT DETERMINES(zip -> city)**/")
     assert [diagnostic.code for diagnostic in report.diagnostics] == ["unknown-asserted-column"]
+
+
+# Scalar functions (Paulley §3.1.4) ------------------------------------------
+
+FUNCTIONS = """
+CREATE TABLE f (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, s VARCHAR, n VARCHAR COLLATE NOCASE, d DOUBLE);
+"""
+
+FUNCTION_CASES = [
+    # X -> f(X): grouping by a and a function of it groups by a alone.
+    ("arithmetic", "SELECT a, a + 1 AS k, count(*) AS c FROM f GROUP BY a, a + 1 /**ASSERT UNIQUE(a)**/", Outcome.PROVED),
+    ("two arguments", "SELECT a, b, a * b AS k, count(*) AS c FROM f GROUP BY a, b, a * b /**ASSERT UNIQUE(a, b)**/", Outcome.PROVED),
+    ("built-in function", "SELECT s, upper(s) AS k, count(*) AS c FROM f GROUP BY s, upper(s) /**ASSERT UNIQUE(s)**/", Outcome.PROVED),
+    ("cast", "SELECT a, CAST(a AS VARCHAR) AS k, count(*) AS c FROM f GROUP BY a, CAST(a AS VARCHAR) /**ASSERT UNIQUE(a)**/", Outcome.PROVED),
+    ("distinct", "SELECT DISTINCT a, a * 2 AS k FROM f /**ASSERT UNIQUE(a)**/", Outcome.PROVED),
+    ("asserted dependency", "SELECT a, b, a + b AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
+    ("through a CTE", "WITH g AS (SELECT a, b, a + b AS k FROM f) SELECT a, b, k FROM g /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
+    # Not a function of its columns.
+    ("user-defined function", "SELECT a, my_udf(a) AS k, count(*) AS c FROM f GROUP BY a, my_udf(a) /**ASSERT UNIQUE(a)**/", Outcome.UNKNOWN),
+    ("random", "SELECT a, a + random() AS k, count(*) AS c FROM f GROUP BY a, a + random() /**ASSERT UNIQUE(a)**/", Outcome.UNKNOWN),
+    # Equal is not identical: 'x' = 'X' under NOCASE, -0.0 = 0.0 as DOUBLE.
+    ("collated text", "SELECT n, n || '' AS k, count(*) AS c FROM f GROUP BY n, n || '' /**ASSERT UNIQUE(n)**/", Outcome.UNKNOWN),
+    ("double", "SELECT d, CAST(d AS VARCHAR) AS k, count(*) AS c FROM f GROUP BY d, CAST(d AS VARCHAR) /**ASSERT UNIQUE(d)**/", Outcome.UNKNOWN),
+    # f(X) does not determine X: no injectivity.
+    ("not injective", "SELECT a, a % 2 AS k, count(*) AS c FROM f GROUP BY a, a % 2 /**ASSERT UNIQUE(k)**/", Outcome.UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(("label", "sql", "outcome"), FUNCTION_CASES)
+def test_a_deterministic_function_is_determined_by_its_arguments(label: str, sql: str, outcome: Outcome):
+    assert outcomes(sql, FUNCTIONS) == [outcome], label

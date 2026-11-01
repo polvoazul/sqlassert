@@ -113,6 +113,17 @@ def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
             return Result(column.comparison_type, "Declared comparison type", (column,))
 
 
+@analysis(Stratum.EQUALITY_GROUP)
+def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
+    """Whether equal values of `column` are identical, from its declared type."""
+    relation = column.get_relation(current_arena().program)
+    match column.scalar_expr:
+        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+            return _identity_comparison(source)
+        case _:
+            return Result(column.identity_comparison, "Declared type compares by identity", (column,))
+
+
 def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
     """The inputs whose groups hold on `relation`'s pass-through columns.
 
