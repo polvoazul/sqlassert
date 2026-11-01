@@ -1,7 +1,8 @@
 """Python analysis functions establish public relational properties.
 
-The rules derive and propagate unique sets, generalize uniqueness to column
-sets of interest, establish unique joins from right-side key coverage, and
-follow non-null columns to their sources; non-null unique sets combine the two.
-Assertions register sets of interest; reporting checks public properties.
+Null sources say why a column may be NULL (nullability). Functional
+dependencies and their closure decide uniqueness: a column set is a Unique
+Set when its closure reaches the relation's Row Identity, and a join is a
+Unique Join when the right columns ON binds reach the right input's
+(uniqueness, unique_join). Foreign Keys and Exactly One Joins build on both.
 """
