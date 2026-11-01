@@ -8,7 +8,7 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [17. Complete typed `ENUM` support](0017-complete-typed-enum-support.md) — open
 - [18. Assert exhaustive simple `CASE` expressions](0018-assert-exhaustive-simple-case-expressions.md) — open
 - [20. Propagate Foreign Keys through queries](0020-propagate-foreign-keys-through-queries.md) — open
-- [21. Assert simple `EXACTLY ONE` joins](0021-assert-simple-exactly-one-joins.md) — open
+- [21. Assert simple `EXACTLY ONE` joins](0021-assert-simple-exactly-one-joins.md) — open (two items after 24)
 - [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
 - [24. Functional-dependency reasoning](0024-functional-dependency-reasoning.md) — open (epic, planned)
@@ -22,6 +22,6 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 2. 24 functional-dependency reasoning, starting with its 23 prerequisites.
 3. Lanes, one at a time in `sqlassert/rules/`:
    - Values: 26 → 16 → 17 → 18
-   - Foreign Keys (19 done): 21; 26 → 20; 20 + 21 → 22
+   - Foreign Keys (19, 21 done; 21 leftovers after 24): 26 → 20; 20 → 22
 4. Independent, in parallel at any time: 11, 15 (marker suggestions done;
    rewrite suggestions wait for 24). 25 is re-scoped after 24.
