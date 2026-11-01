@@ -20,7 +20,7 @@ Priorities (reasoning per item in the open-issues map artifact):
 
 - **P1:** done (#34; #23 connection warnings; #23 outer and cross joins).
 - **P2, next:** #15 Kossmann triage, then Low
-  smells; #15 annotate flag; #32; #30; #33 chain part.
+  smells; #32; #30; #33 chain part.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P4, out of scope for now (not covered by Paulley):** #23 window functions
   (and #33's CTE part, which needs them), recursive CTEs, column lineage,

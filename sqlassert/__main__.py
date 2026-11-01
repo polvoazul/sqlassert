@@ -31,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
         "--max-size", type=int, default=DEFAULT_MAX_SIZE, help="widest Unique Set searched exhaustively"
     )
     suggest_command.add_argument("--explain", action="store_true", help="print each suggestion's evidence")
+    suggest_command.add_argument(
+        "--annotate", action="store_true",
+        help="paste every suggested marker into FILE (for -, print the annotated SQL instead of the list)",
+    )
     arguments = parser.parse_args(argv)
 
     sql = sys.stdin.read() if arguments.file == "-" else Path(arguments.file).read_text()
@@ -39,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
     for warning in report.warnings:
         print(f"warning: {warning.code}: {warning.message}", file=sys.stderr)
+    if arguments.annotate and arguments.file == "-":
+        sys.stdout.write(report.annotated())
+        return 1 if report.diagnostics else 0
+    if arguments.annotate and report.suggestions:
+        Path(arguments.file).write_text(report.annotated())
     # Improvements (High) first, then markers (Mid).
     items = (*report.improvements, *report.suggestions)
     rows = [

@@ -179,7 +179,9 @@ Still open:
   "Ideas to adopt"). Order dependencies (ORDER BY / sort elimination) are
   untouched so far.
 - [ ] Low level: other code smells, from the *add* rows of that triage.
-- [ ] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
+- [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
+  Done: `sqlassert suggest --annotate FILE` rewrites FILE with every
+  suggested marker; for `-` it prints the annotated SQL instead of the list.
 
 ## Related
 

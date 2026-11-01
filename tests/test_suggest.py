@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest
@@ -298,3 +300,24 @@ def test_the_cli_prints_connection_warnings_without_failing(tmp_path, capsys):
 
     assert main(["suggest", str(path)]) == 0
     assert "warning: undeclared-table: table accounts" in capsys.readouterr().err
+
+
+def test_the_cli_annotates_a_file_in_place(tmp_path, capsys):
+    path = tmp_path / "query.sql"
+    sql = SCHEMA + "SELECT * FROM sessions\nJOIN users ON sessions.user_id = users.id"
+    path.write_text(sql)
+
+    assert main(["suggest", "--annotate", str(path)]) == 0
+
+    assert path.read_text() == suggest(sql).annotated()
+    assert len(capsys.readouterr().out.splitlines()) == len(suggest(sql).suggestions)
+    assert analyze(path.read_text()).proved
+    assert suggest(path.read_text()).suggestions == ()
+
+
+def test_the_cli_annotates_stdin_to_stdout(monkeypatch, capsys):
+    sql = SCHEMA + "SELECT * FROM sessions\nJOIN users ON sessions.user_id = users.id"
+    monkeypatch.setattr("sys.stdin", io.StringIO(sql))
+
+    assert main(["suggest", "--annotate", "-"]) == 0
+    assert capsys.readouterr().out == suggest(sql).annotated()
