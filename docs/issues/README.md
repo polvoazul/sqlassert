@@ -8,16 +8,15 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 - [22. Complete `EXACTLY ONE` reasoning](0022-complete-exactly-one-reasoning.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
-- [29. ENUM: distinct string literals may compare equal](0029-enum-string-literals-may-coincide.md) — open (soundness bug)
 
 ## Order
 
-Done: 14, 16, 17, 19, 20, 21, 24, 26, 28, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 19, 20, 21, 24, 26, 28, 29, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Next, as dependencies allow:
 
-1. Values: 29 (soundness fix) → 18.
+1. Values: 18.
 2. Foreign Keys: 22.
 3. Independent: 15 High level (rewrite suggestions).
 4. Skipped for now (need downloaded corpora): 11, 27 Part 2.
