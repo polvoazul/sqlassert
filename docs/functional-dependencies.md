@@ -303,6 +303,19 @@ through only with definite determinants.
 | F7 | Full join: a key of the result needs η for each input key | §3.2.10.1, p.99 | implemented | `uniqueness._join_dependencies` keys the result by both Row Identities; reaching each side's identity through a key needs η via the delegation | `test_paulley_audit.py` F3 |
 | F8 | Full join: null constraints within each side | Thm 4 null, p.101 | implemented | Null Sources: a full join pads both sides (`nullability._padded_sides`), each removed by a null-rejecting conjunct on a column it pads | `test_paulley_audit.py` F8, F8- |
 
+Summary: 77 rows; every implemented row has a case in
+`tests/test_paulley_audit.py`, judged by the soundness oracle (0
+counterexamples). The *missing* rows are filed in issue 23 ("Found by the
+Paulley audit"): E4/R3/L14 (equivalences and domains across outer joins),
+S5 (CHECK constraints), R4, R9, R10, R11 (restriction predicates beyond `=`),
+I1/I2 (the right input of INTERSECT), U2 (UNION ALL equivalences), L13, and
+F2/F4 (full join ON dependencies). Two differences are deliberate and
+stronger than Paulley: our lax FDs are lax in the determinant only (A7), so
+a strict step may continue from a lax-reached attribute, where Paulley's
+Dependency-closure (line 651) stops; and unique indexes are lax keys (S1).
+Both suspected text-extraction errors were negations lost in extraction
+(`literature-notes.md`); neither changed a rule.
+
 ## Opportunities
 
 Ordered roughly by payoff over cost.

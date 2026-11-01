@@ -1,6 +1,6 @@
 # 35. Check: audit FD propagation against Paulley, operator by operator
 
-- **State:** open
+- **State:** done
 - **Labels:** check, ready-for-agent
 - **Created:** 2026-11-01
 
@@ -9,7 +9,7 @@ turn every gap into a test or an issue.
 
 ## Why
 
-[`functional-dependencies.md`](../functional-dependencies.md) and issue 24 were
+[`functional-dependencies.md`](../../functional-dependencies.md) and issue 24 were
 built from Paulley 2000 (`papers/2000-paulley-...pdf`), but nobody has walked
 the thesis rule by rule against `sqlassert/rules/`. Known gaps (set
 operations, windows, subqueries, scalar-function FDs) are scattered across
@@ -29,13 +29,22 @@ issues 23 and 31; unknown ones are not tracked anywhere.
    Paulley gives one, a counterexample that must stay UNKNOWN).
 4. For every *missing* row, file an issue or add it to an existing one (23, 31).
 5. Resolve the two suspected text-extraction errors listed at the end of
-   [`literature-notes.md`](../literature-notes.md) (Thm 3 lax-equivalence
+   [`literature-notes.md`](../../literature-notes.md) (Thm 3 lax-equivalence
    bullet 3; the definiteness condition in Dependency-closure) against the PDF,
    and fix our docs or rules if they relied on the wrong reading.
 
 ## Acceptance criteria
 
-- [ ] Audit table covers every operator rule in Paulley chapters 2–3.
-- [ ] Every implemented rule has a test; oracle 0 counterexamples.
-- [ ] Every missing rule is tracked in an issue.
-- [ ] The two extraction errors are resolved.
+- [x] Audit table covers every operator rule in Paulley chapters 2–3.
+- [x] Every implemented rule has a test; oracle 0 counterexamples.
+- [x] Every missing rule is tracked in an issue.
+- [x] The two extraction errors are resolved.
+
+## Done
+
+The table is `docs/functional-dependencies.md`, "Paulley audit": 77 rules
+from §2.5.2 and §3.1–3.2, each implemented, different (why), missing, or n/a,
+with its code and its case in `tests/test_paulley_audit.py` (73 cases, 55
+PROVED, all judged by the oracle with 0 counterexamples). The 14 missing rows
+are filed in issue 23. Both suspected extraction errors were lost negations;
+our rules already followed the PDF. No unsound rule was found.
