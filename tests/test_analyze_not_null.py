@@ -46,6 +46,12 @@ PROVED_NOT_NULL = [
     ("ifnull", "SELECT ifnull(nickname, 'anon') AS name FROM users /**ASSERT NOT NULL(name)**/"),
     ("coalesce over a null-extended column", "SELECT coalesce(u.nickname, 'anon') AS name FROM sessions s LEFT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(name)**/"),
     ("right join, preserved side", "SELECT u.email FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(email)**/"),
+    ("count(*) per group", "SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),
+    ("count of a nullable column", "SELECT user_id, count(ts) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),
+    ("count DISTINCT", "SELECT user_id, count(DISTINCT ts) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),
+    ("count without GROUP BY", "SELECT count(*) AS n FROM sessions /**ASSERT NOT NULL(n)**/"),
+    ("count over a padded side", "SELECT s.user_id, count(u.nickname) AS n FROM sessions s LEFT JOIN users u ON s.user_id = u.id GROUP BY s.user_id /**ASSERT NOT NULL(n)**/"),
+    ("count through a CTE", "WITH c AS (SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id) SELECT n FROM c /**ASSERT NOT NULL(n)**/"),
 ]
 
 
@@ -63,6 +69,9 @@ UNKNOWN_NOT_NULL = [
     ("right join, null-extended side", "SELECT s.user_id FROM sessions s RIGHT JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
     ("full join", "SELECT s.user_id FROM sessions s FULL JOIN users u ON s.user_id = u.id /**ASSERT NOT NULL(user_id)**/"),
     ("union", "WITH c AS (SELECT id FROM users UNION ALL SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/"),
+    ("count padded by a later outer join", "WITH c AS (SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id) SELECT c.n FROM users u LEFT JOIN c ON c.user_id = u.id /**ASSERT NOT NULL(n)**/"),
+    ("count inside another expression", "SELECT user_id, nullif(count(*), 0) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),
+    ("sum", "SELECT user_id, sum(user_id) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/"),
 ]
 
 

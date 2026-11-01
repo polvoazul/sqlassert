@@ -56,6 +56,13 @@ class OpaqueExpression(ScalarExpr):
     description: str
 
 
+class Count(ScalarExpr):
+    """`count(*)` or `count(...)`: never NULL, even over no rows; its value is
+    otherwise opaque."""
+
+    description: str
+
+
 @dataclass(frozen=True)
 class LiteralValue:
     """A non-null SQL literal's value: its SQL type and canonical text.

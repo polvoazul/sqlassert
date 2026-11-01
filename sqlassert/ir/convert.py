@@ -685,6 +685,8 @@ class IrParser:
             )
         if isinstance(expression, exp.Null):
             return ir.NullLiteral(origin=origin)
+        if isinstance(expression, exp.Count):
+            return ir.Count(origin=origin, description=expression.sql(dialect=self.dialect))
         if isinstance(expression, exp.Case) and expression.this is not None:
             return self._lower_case(expression, bindings, schema_complete=schema_complete)
         value = literal_value(expression)

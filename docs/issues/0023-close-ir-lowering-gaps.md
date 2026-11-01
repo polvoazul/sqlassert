@@ -18,9 +18,9 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   in `Filter`; the rest are opaque conjuncts the rules read only as "may
   depend on anything". Ranges, `LIKE`, and `OR` are still not reasoned about.
 - [ ] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
-  `CASE` (`ir.SimpleCase`, issue 18), or opaque. Searched `CASE`, `CAST`, and
-  function calls are opaque, so no injectivity
-  (`id + 0`, lossless casts) and no non-nullness (`coalesce(x, 0)`, `count(*)`).
+  `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
+  Searched `CASE`, `CAST`, and other function calls are opaque, so no
+  injectivity (`id + 0`, lossless casts).
 - [ ] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:
   `SetOperation.distinct`, issue 24.)
@@ -50,9 +50,12 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
 ## Folded in from `TODO.md` Later Ideas and the README Ideas list
 
-- [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
+- [x] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
   `WHERE x = 5`, and inner-join equalities imply non-null `x`; `count(...)` is
-  never null. Predicates done in issue 24 (null sources); `count(...)` remains.
+  never null. Predicates done in issue 24 (null sources); `count(...)` lowers
+  to `ir.Count`, which has no Null Source, with or without `GROUP BY`. Only a
+  bare `count(...)` counts: one under a window, `FILTER`, or another function
+  stays opaque.
 - [x] A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all
   of its output columns, the same way `SELECT DISTINCT` does. Derive it from
   the leftmost arm's output columns, and lower set-operation bodies when they
