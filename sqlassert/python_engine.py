@@ -140,6 +140,14 @@ class Stratum(IntEnum):
     about R itself only at its own or a lower stratum. The IR's relations form a
     DAG, so this keeps the whole call graph acyclic: the memoized engine cannot
     compute mutually recursive facts, which would need a fixpoint.
+
+    Unique Joins (and Exactly One Joins) come first, so a relation's Null
+    Sources may use them; dependencies use Null Sources (a padded side's
+    dependencies hold only when the join cannot pad an agreeing row) and Unique
+    Joins; closure uses dependencies and non-nullness; Unique Sets and
+    Functional Dependency assertions are closure questions; Foreign Keys use
+    Unique Sets. A cycle is an internal sqlassert bug, not a problem with the
+    analyzed SQL.
     """
 
     UNIQUE_JOIN = 10

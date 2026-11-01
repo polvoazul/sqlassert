@@ -53,11 +53,13 @@ Unique Set Assertions can be attached to a Root Select, view, CTE, or FROM subqu
 
 A `NOT NULL UNIQUE` assertion is proved when the columns are a Unique Set and each one is non-null.
 
+Uniqueness is proved through functional dependencies, so a key does not have to pass through unchanged. A column pinned to a constant drops out of a key (`select id from items where tenant_id = 5` is unique on `id` when `(tenant_id, id)` is), a column equal to a key column stands in for it (an inner join `on o.user_id = u.id` lets `u.id` replace `o.user_id`), and grouping columns another grouping column determines are not needed (`group by u.id, u.name` is unique on `id`).
+
 `PRIMARY KEY` is accepted as a convenience alias for `NOT NULL UNIQUE` (`/**ASSERT PRIMARY KEY(id)**/`, `/**DECLARE PRIMARY KEY(id)**/`). Unlike SQL's `PRIMARY KEY`, it does not mean one key per relation: a relation may have several Non-Null Unique Sets, and nothing checks that only one is marked.
 
 ### Not Null
 
-`/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, and `coalesce`/`ifnull`/`nvl` with at least one non-null argument. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. It is lost on the null-extended side of a `LEFT`, `RIGHT`, or `FULL` join, and is never guessed for other computed expressions or for set operations.
+`/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, `coalesce`/`ifnull`/`nvl` with at least one non-null argument, and null-rejecting conditions: a `WHERE` or inner-join `ON` conjunct `col = ...` or `col IS NOT NULL`. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. The null-extended side of a `LEFT`, `RIGHT`, or `FULL` join is padded with NULLs, and a null-rejecting `WHERE` conjunct on any padded column (`where u.id = 5`) proves that join matched, so every column it padded is non-null again unless it is nullable for its own reasons. An `UNKNOWN` explanation names each source, such as "nickname is nullable in users" and "nickname is padded by the LEFT JOIN". Non-nullness is never guessed for other computed expressions or for set operations.
 
 ### Foreign Key
 
@@ -109,6 +111,21 @@ Any additional conjunct in the predicate, even another equality, makes the asser
 
 Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
 
+### Functional Dependency
+
+`/**ASSERT DETERMINES(a, b -> c, d)**/` proves that rows agreeing on `a` and `b` agree on `c` and `d`. Like a Unique Set it is lax: rows with a null in `a` or `b` are exempt; agreement on `c` and `d` counts NULL as equal to NULL.
+
+```sql
+select p.part_id, s.rating
+from part p
+left join supply s on p.part_id = s.part_id and s.rating = 'A'
+/**ASSERT DETERMINES(part_id -> rating)**/;
+```
+
+Dependencies come from keys, equalities and constants in `WHERE` and `ON`, grouping, and `DISTINCT`. On an outer join, the preserved side's `ON` columns determine the null-supplying columns the condition binds; a dependency of the null-supplying side survives only when the join cannot pad a row that agrees with a matched one.
+
+`/**DECLARE DETERMINES(zip -> city)**/` states a business rule no schema shows. Closure uses it like any other dependency, so `(zip, street)` is unique when `(city, street)` is and `city` is non-null.
+
 ### Declaring what you know
 
 When you know a fact the SQL cannot show -- say, an upstream job guarantees one row per `user_id` -- state it with `DECLARE` instead of `ASSERT`:
@@ -122,7 +139,7 @@ select * from orders
 /**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
 ```
 
-A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, and `DECLARE NOT NULL UNIQUE` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
+A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, `DECLARE NOT NULL UNIQUE`, and `DECLARE DETERMINES` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
 
 ## Usage
 

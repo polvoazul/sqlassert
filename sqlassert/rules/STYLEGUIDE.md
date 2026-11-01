@@ -7,9 +7,11 @@ internal analysis functions. Its `Stratum` orders facts about one relation: an a
 use facts about the same relation only at its own or a lower stratum, which keeps the
 call graph acyclic; the decorator asserts this on every call. Every concrete public `Property` class has one
 snake-case public analysis function whose parameters match its fields. Internal
-analysis functions start with `_`. `ColumnSet` is an ordinary derived value defined in
-these rules. Use explicit matches for semantic dispatch, and fail on unhandled
-node types. Keep IR traversal and set operations in small helpers so analysis
+analysis functions start with `_`. `ColumnSet`, `Closure`, and `RowIdentity` are
+ordinary derived values defined in these rules. Uniqueness is a closure question:
+derive dependencies a relation introduces in `_functional_dependencies`, and let
+`_closure` reach into inputs; never copy an input's facts up to its consumer.
+Use explicit matches for semantic dispatch, and fail on unhandled node types. Keep IR traversal and set operations in small helpers so analysis
 functions state their semantic rule directly. Use `&` / `|` or `all_of` /
 `any_of` to preserve evidence; Python's `and` / `or` deliberately reject
 `Result` values. Use `.value` for every result, including Boolean results

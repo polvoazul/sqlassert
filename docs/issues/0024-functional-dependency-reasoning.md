@@ -82,7 +82,13 @@ test must end green. Work test-first.
      Set*) to the new mechanism; remove docs of deleted code.
 
 Decided: padding tracking (`matched`) is in the first cut, as null sources.
-Still open: whether `RelationFacts` reports minimal keys only (step 5).
+Decided (step 5): `RelationFacts` reports minimal keys only. `suggest`
+already reports minimal sets, a superset of a reported key is unique anyway
+(`is_unique` answers for it), and with closure every superset is a key, so
+listing them would be noise. Keys are enumerated smallest first up to three
+columns, plus one shrunk key when none is that small. Two existing facts
+expectations changed accordingly (a proved superset and a Distinct whose key
+shrank by a dependency); no assertion outcome did.
 
 Follow-ups, not in this plan: a null-equal strict key Property (needs a name
 and a marker), window functions, deterministic and injective expressions,
