@@ -37,6 +37,12 @@ def referential_coverage(columns: tuple[ir.OutputColumn, ...], referenced_column
     if restated:
         return Result(True, "Known coverage pairs the same columns in another order", columns, [any_of(e) for e in restated])
 
+    target = current_arena().program.relation_of(frozenset(referenced_columns))
+    if isinstance(target, ir.Alias):
+        # Covering an alias's rows is covering its source's rows: they are the same rows.
+        alias = Result(True, "A referenced alias re-exposes its source's rows unchanged", (target,))
+        return alias & referential_coverage(columns, _alias_sources(target, referenced_columns))
+
     relation = current_arena().program.relation_of(frozenset(columns))
     match relation:
         case ir.Alias():

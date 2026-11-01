@@ -16,12 +16,13 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin, UniqueSet,
+    ExactlyOneJoin, ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
+    UniqueSet,
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
-    FOREIGN_KEY_KINDS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers, join_origin,
-    marker_position,
+    FOREIGN_KEY_KINDS, JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
+    join_marker_kind, join_origin, marker_position,
 )
 
 
@@ -429,7 +430,7 @@ class IrParser:
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
-        equalities = self._lower_join_predicate(join, left, right)
+        equalities, residual = self._lower_join_predicate(join, left, right)
         input_columns = left.relation.output_columns + right.relation.output_columns
         output_columns = _pass_output_columns(input_columns, origin)
         remapped = {source: output for source, output in zip(input_columns, output_columns)}
@@ -441,22 +442,30 @@ class IrParser:
             left=left.relation,
             right=right.relation,
             equalities=equalities,
+            residual_conjuncts=residual,
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column])
             for binding in left.bindings + right.bindings
         )
-        if assertion_line(join) is not None:
-            self._assertions.append(
-                ir.Assertion(
-                    origin=join_origin(join, self.dialect),
-                    property=UniqueJoin(join=relation),
+        match join_marker_kind(join):
+            case "unique-join":
+                self._assertions.append(ir.Assertion(origin=join_origin(join, self.dialect), property=UniqueJoin(join=relation)))
+            case "exactly-one-join":
+                self._assertions.append(
+                    ir.Assertion(origin=join_origin(join, self.dialect), property=ExactlyOneJoin(join=relation))
                 )
-            )
+            case None:
+                pass
+            case kind:
+                raise ValueError(f"Unhandled join marker kind: {kind}")
         self._add_attachment_site(join, _join_label(join, self.dialect), relation, trailing=False)
         return _Lowered(relation, bindings)
 
-    def _lower_join_predicate(self, join: exp.Join, left: _Lowered, right: _Lowered) -> tuple[ir.Equality, ...]:
+    def _lower_join_predicate(
+        self, join: exp.Join, left: _Lowered, right: _Lowered
+    ) -> tuple[tuple[ir.Equality, ...], tuple[ir.ScalarExpr, ...]]:
+        """The predicate's equality conjuncts, and its other conjuncts."""
         using = join.args.get("using")
         if using:
             return tuple(
@@ -466,14 +475,14 @@ class IrParser:
                     right=self._lower_expression(exp.column(identifier.name), right.bindings),
                 )
                 for identifier in using
-            )
+            ), ()
         predicate = join.args.get("on")
         if predicate is None:
-            return ()
+            return (), ()
         conjuncts = list(predicate.flatten()) if isinstance(predicate, exp.And) else [predicate]
         bindings = left.bindings + right.bindings
         complete = left.relation.is_schema_complete and right.relation.is_schema_complete
-        return tuple(
+        equalities = tuple(
             ir.Equality(
                 origin=self._origin(conjunct),
                 left=self._lower_expression(conjunct.this, bindings, schema_complete=complete),
@@ -482,6 +491,12 @@ class IrParser:
             for conjunct in conjuncts
             if isinstance(conjunct, exp.EQ)
         )
+        residual = tuple(
+            self._lower_expression(conjunct, bindings, schema_complete=complete)
+            for conjunct in conjuncts
+            if not isinstance(conjunct, exp.EQ)
+        )
+        return equalities, residual
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
         group = select.args.get("group")
@@ -790,16 +805,18 @@ class IrParser:
         analyzed = {
             assertion.origin.line
             for assertion in self._assertions
-            if isinstance(assertion.property, UniqueJoin)
+            if isinstance(assertion.property, UniqueJoin | ExactlyOneJoin)
         }
         for join in _asserted_joins(ast):
-            line = assertion_line(join)
+            line, kind = assertion_line(join), join_marker_kind(join)
             if line in analyzed:
                 continue
+            assert kind is not None, "every asserted join records its marker kind"
             self._diagnostics.append(
                 Diagnostic(
                     diag.UNANALYZED_ASSERTION,
-                    f"the unique join assertion on line {line} is in a part of the program this analysis does not model",
+                    f"the {JOIN_MARKER_NOUNS[kind]} assertion on line {line} "
+                    "is in a part of the program this analysis does not model",
                     join_origin(join, self.dialect),
                 )
             )

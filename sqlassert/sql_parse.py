@@ -1,5 +1,5 @@
 """Parse SQL text into a SQL Program: Create Statements plus at most one Root
-Select, with Unique Join Assertion markers resolved onto the joins they mark
+Select, with join markers resolved onto the joins they mark
 and column markers resolved onto the Select Expressions they follow.
 
 The marker is real syntax, not a comment we go looking for: a custom dialect
@@ -27,8 +27,9 @@ from sqlassert import diagnostics as diag
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.provenance import SQL, Origin
 
-# Where a resolved assertion is recorded on its Join node.
+# Where a resolved assertion is recorded on its Join node, and which join marker it was.
 _ASSERTED_AT = "sqlassert.asserted_at"
+_JOIN_MARKER_KIND = "sqlassert.join_marker_kind"
 
 # A comment opening with `/**` is how an author writes an assertion or a
 # Property Declaration.
@@ -45,6 +46,7 @@ class SqlassertToken(enum.Enum):
     """
 
     SQLASSERT_UNIQUE = enum.auto()
+    SQLASSERT_EXACTLY_ONE = enum.auto()
     SQLASSERT_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_NON_NULL_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_DECLARED_UNIQUE_SET_OPEN = enum.auto()
@@ -57,7 +59,7 @@ class SqlassertToken(enum.Enum):
 
 
 # Every marker sqlassert understands, and the token each becomes. The single
-# source of truth for the Unique Join marker and the fixed opening/closing
+# source of truth for the join markers and the fixed opening/closing
 # literals of a column marker: the dialect tokenizes exactly these, and
 # `_unrecognized_markers` reports anything else shaped like one.
 #
@@ -73,6 +75,7 @@ class SqlassertToken(enum.Enum):
 # `/**ASSERT FOREIGN KEY(a, b) REFERENCES t(x, y)**/`.
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
+    "/**ASSERT EXACTLY ONE**/": SqlassertToken.SQLASSERT_EXACTLY_ONE,
     "/**ASSERT UNIQUE(": SqlassertToken.SQLASSERT_UNIQUE_SET_OPEN,
     "/**ASSERT NOT NULL UNIQUE(": SqlassertToken.SQLASSERT_NON_NULL_UNIQUE_SET_OPEN,
     # `PRIMARY KEY` is a convenience alias for `NOT NULL UNIQUE`: it does not
@@ -87,6 +90,16 @@ MARKERS = {
     "/**DECLARE FOREIGN KEY(": SqlassertToken.SQLASSERT_DECLARED_FOREIGN_KEY_OPEN,
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
+
+# The join markers, written immediately before a JOIN, and the kind each states:
+# "unique-join" a Unique Join, "exactly-one-join" an Exactly One Join.
+JOIN_MARKER_KINDS = {
+    SqlassertToken.SQLASSERT_UNIQUE: "unique-join",
+    SqlassertToken.SQLASSERT_EXACTLY_ONE: "exactly-one-join",
+}
+
+# How diagnostics name each join marker kind.
+JOIN_MARKER_NOUNS = {"unique-join": "unique join", "exactly-one-join": "exactly one join"}
 
 # The open literals of a column marker, and the kind each one states --
 # "unique" is a nullable-tolerant Unique Set, "key" the stricter
@@ -162,7 +175,7 @@ class UnattachedMarker(ParseError):
 
 @lru_cache(maxsize=None)
 def sqlassert_dialect(base: str) -> type[Dialect]:
-    """The named dialect, plus Unique Join Assertion markers as real syntax.
+    """The named dialect, plus Property Markers as real syntax.
 
     Cached because SQLGlot registers every dialect class by name, so one class
     per base dialect must be built once rather than per analysis.
@@ -215,7 +228,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # hook.
     class _Parser(parent.Parser):  # ty: ignore[unresolved-attribute]
         def _parse_join(self, *args, **kwargs):
-            if not self._match(SqlassertToken.SQLASSERT_UNIQUE):
+            if self._curr is None or self._curr.token_type not in JOIN_MARKER_KINDS:
                 start = self._curr
                 join = super()._parse_join(*args, **kwargs)
                 # A comma join has no JOIN keyword a marker could precede.
@@ -223,9 +236,11 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                     join.meta[_MARKER_POSITION] = (start.start, start.line)
                 return join
 
+            kind = JOIN_MARKER_KINDS[self._curr.token_type]
+            self._advance()
             line = self._prev.line
             unattached = UnattachedMarker(
-                f"the unique join marker on line {line} is not followed by the JOIN keyword",
+                f"the {JOIN_MARKER_NOUNS[kind]} marker on line {line} is not followed by the JOIN keyword",
                 line,
                 self._prev.text,
             )
@@ -240,6 +255,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 raise unattached
 
             join.meta[_ASSERTED_AT] = line
+            join.meta[_JOIN_MARKER_KIND] = kind
             return join
 
         def _parse_select_query(self, *args, **kwargs):
@@ -426,7 +442,7 @@ class SqlParser:
             return Diagnostic(diag.SQL_PARSE_FAILED, f"SQL could not be parsed: {error}")
         return Diagnostic(
             diag.SQL_PARSE_FAILED,
-            f"SQL could not be parsed, and a unique join marker is on line {marker.line}: {error}",
+            f"SQL could not be parsed, and a join marker is on line {marker.line}: {error}",
             Origin(SQL, marker.text, marker.line),
         )
 
@@ -436,14 +452,14 @@ class SqlParser:
         except SqlglotError:
             return None
         return next(
-            (token for token in tokens if token.token_type is SqlassertToken.SQLASSERT_UNIQUE),
+            (token for token in tokens if token.token_type in JOIN_MARKER_KINDS),
             None,
         )
 
 
 def _is_recognized_marker(text: str) -> bool:
     """Whether `text` (a whole `/**...*/`-shaped span) is a marker this
-    dialect's grammar actually tokenizes -- the Unique Join marker exactly,
+    dialect's grammar actually tokenizes -- a join marker exactly,
     or a column marker's fixed open literal followed by
     its close, with a variable column list in between that this text-level
     check does not itself validate; the grammar does that once it parses.
@@ -467,10 +483,10 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
     # `MARKERS` also holds the fragment literals a parameterized marker
     # tokenizes as (`"/**ASSERT UNIQUE("`, `"**/"`) -- real grammar, but not
     # themselves complete, user-facing marker shapes, so this list shows only
-    # whole shapes: the bare join marker, and each parameterized marker's
+    # whole shapes: the bare join markers, and each parameterized marker's
     # full open-to-close form.
     recognized = ", ".join(
-        sorted(literal for literal, token in MARKERS.items() if token is SqlassertToken.SQLASSERT_UNIQUE)
+        sorted(literal for literal, token in MARKERS.items() if token in JOIN_MARKER_KINDS)
         + sorted(_marker_shape(open_, kind) for open_, kind in _COLUMN_MARKER_OPENS.items())
     )
     return [
@@ -538,8 +554,13 @@ def _line_of(sql: str, offset: int) -> int:
 
 
 def assertion_line(join: exp.Join) -> int | None:
-    """The source line asserting this join is unique, if it is asserted at all."""
+    """The source line of the marker asserting a Property of this join, if any."""
     return join.meta.get(_ASSERTED_AT)
+
+
+def join_marker_kind(join: exp.Join) -> str | None:
+    """The kind (a value of `JOIN_MARKER_KINDS`) of the marker on this join, if any."""
+    return join.meta.get(_JOIN_MARKER_KIND)
 
 
 def join_origin(join: exp.Join, dialect: str) -> Origin:
