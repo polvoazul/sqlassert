@@ -57,6 +57,8 @@ class SqlassertToken(enum.Enum):
     SQLASSERT_DECLARED_FOREIGN_KEY_OPEN = enum.auto()
     SQLASSERT_DETERMINES_OPEN = enum.auto()
     SQLASSERT_DECLARED_DETERMINES_OPEN = enum.auto()
+    SQLASSERT_ENUM_OPEN = enum.auto()
+    SQLASSERT_DECLARED_ENUM_OPEN = enum.auto()
     SQLASSERT_MARKER_CLOSE = enum.auto()
 
 
@@ -75,7 +77,9 @@ class SqlassertToken(enum.Enum):
 # (`_Parser._parse_select_query` below). A Foreign Key marker continues its
 # column list with `REFERENCES relation(col, ...)`, pairing columns by position:
 # `/**ASSERT FOREIGN KEY(a, b) REFERENCES t(x, y)**/`. A Functional Dependency
-# marker splits its list with `->`: `/**ASSERT DETERMINES(a, b -> c)**/`.
+# marker splits its list with `->`: `/**ASSERT DETERMINES(a, b -> c)**/`. An
+# Enumerated Domain marker names one column and the literals its non-null
+# values are drawn from: `/**ASSERT ENUM(status IN ('new', 'paid'))**/`.
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
     "/**ASSERT EXACTLY ONE**/": SqlassertToken.SQLASSERT_EXACTLY_ONE,
@@ -93,6 +97,8 @@ MARKERS = {
     "/**DECLARE FOREIGN KEY(": SqlassertToken.SQLASSERT_DECLARED_FOREIGN_KEY_OPEN,
     "/**ASSERT DETERMINES(": SqlassertToken.SQLASSERT_DETERMINES_OPEN,
     "/**DECLARE DETERMINES(": SqlassertToken.SQLASSERT_DECLARED_DETERMINES_OPEN,
+    "/**ASSERT ENUM(": SqlassertToken.SQLASSERT_ENUM_OPEN,
+    "/**DECLARE ENUM(": SqlassertToken.SQLASSERT_DECLARED_ENUM_OPEN,
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
@@ -110,7 +116,8 @@ JOIN_MARKER_NOUNS = {"unique-join": "unique join", "exactly-one-join": "exactly 
 # "unique" is a nullable-tolerant Unique Set, "key" the stricter
 # Non-Null Unique Set, "not-null" non-nullness of every listed column, and
 # "foreign-key" a Foreign Key from the listed columns, "determines" a Functional
-# Dependency from the columns before `->` to those after. A "declared-" kind states
+# Dependency from the columns before `->` to those after, "enum" an Enumerated
+# Domain of the one column before `IN`. A "declared-" kind states
 # the same Property as a trusted declaration.
 _COLUMN_MARKER_OPENS = {
     "/**ASSERT UNIQUE(": "unique",
@@ -125,11 +132,14 @@ _COLUMN_MARKER_OPENS = {
     "/**DECLARE FOREIGN KEY(": "declared-foreign-key",
     "/**ASSERT DETERMINES(": "determines",
     "/**DECLARE DETERMINES(": "declared-determines",
+    "/**ASSERT ENUM(": "enum",
+    "/**DECLARE ENUM(": "declared-enum",
 }
 
 # Column marker kinds that are Property Declarations rather than Assertions.
 DECLARED_KINDS = frozenset({
     "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines",
+    "declared-enum",
 })
 
 # Column marker kinds followed by `REFERENCES relation(col, ...)`.
@@ -137,6 +147,9 @@ FOREIGN_KEY_KINDS = frozenset({"foreign-key", "declared-foreign-key"})
 
 # Column marker kinds whose list is `determinant -> dependent`.
 DETERMINES_KINDS = frozenset({"determines", "declared-determines"})
+
+# Column marker kinds whose list is `column IN (literal, ...)`.
+ENUM_KINDS = frozenset({"enum", "declared-enum"})
 
 # How diagnostics name each column marker kind.
 MARKER_NOUNS = {
@@ -150,6 +163,8 @@ MARKER_NOUNS = {
     "declared-foreign-key": "foreign key declaration",
     "determines": "functional dependency assertion",
     "declared-determines": "functional dependency declaration",
+    "enum": "enum assertion",
+    "declared-enum": "enum declaration",
 }
 
 # Where resolved column markers are recorded on its Select node.
@@ -171,7 +186,8 @@ class ColumnMarker(NamedTuple):
     A Foreign Key marker also names the referenced relation, as written, and
     its referenced columns, paired with `columns` by position. A Functional
     Dependency marker's `columns` are its determinant and `dependent` the
-    columns after `->`.
+    columns after `->`. An Enumerated Domain marker's one column is `columns`
+    and its literals, as SQLGlot parsed them, are `values`.
     """
 
     kind: str
@@ -180,6 +196,7 @@ class ColumnMarker(NamedTuple):
     referenced_relation: str | None = None
     referenced_columns: tuple[str, ...] = ()
     dependent: tuple[str, ...] = ()
+    values: tuple[exp.Expression, ...] = ()
 
 
 class UnattachedMarker(ParseError):
@@ -297,8 +314,11 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 self._advance()
 
                 dependent: tuple[str, ...] = ()
+                values: tuple[exp.Expression, ...] = ()
                 if kind in DETERMINES_KINDS:
                     names, dependent = self._parse_marker_dependency(kind, line)
+                elif kind in ENUM_KINDS:
+                    names, values = self._parse_marker_domain(kind, line)
                 else:
                     names = self._parse_marker_columns(kind, line)
                 referenced_relation, referenced_columns = None, ()
@@ -309,7 +329,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                         f"the {MARKER_NOUNS[kind]} on line {line} is not closed with **/", line, self._prev.text
                     )
 
-                found.append(ColumnMarker(kind, names, line, referenced_relation, referenced_columns, dependent))
+                found.append(ColumnMarker(kind, names, line, referenced_relation, referenced_columns, dependent, values))
 
             if found:
                 result.meta[_COLUMN_MARKERS_AT] = found
@@ -371,6 +391,31 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                     self._prev.text,
                 )
             return determinant, dependent
+
+        def _parse_marker_domain(self, kind: str, line: int) -> tuple[tuple[str, ...], tuple[exp.Expression, ...]]:
+            """`column IN (literal, ...)`, through the marker's closing parenthesis.
+
+            Only distinct, non-null string literals are domain members for now.
+            """
+
+            def malformed(problem: str) -> UnattachedMarker:
+                return UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {line} {problem}", line, self._prev.text)
+
+            column = self._parse_id_var(any_token=False)
+            if column is None or not self._match(TokenType.IN) or not self._match(TokenType.L_PAREN):
+                raise malformed("must be written as ENUM(column IN ('value', ...))")
+            values = tuple(self._parse_csv(self._parse_bitwise))
+            if not self._match(TokenType.R_PAREN) or not self._match(TokenType.R_PAREN):
+                raise malformed("must be written as ENUM(column IN ('value', ...))")
+            if not values:
+                raise malformed("lists no values")
+            if any(isinstance(value, exp.Null) for value in values):
+                raise malformed("lists NULL; NULL is never in an Enumerated Domain, and NOT NULL governs it")
+            if not all(isinstance(value, exp.Literal) and value.is_string for value in values):
+                raise malformed("lists a value that is not a string; only string literals are supported")
+            if len({value.this for value in values}) != len(values):
+                raise malformed("lists the same value more than once")
+            return (column.name,), values
 
         def _parse_marker_reference(self, kind: str, line: int, count: int) -> tuple[str, tuple[str, ...]]:
             """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
@@ -544,7 +589,7 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
 def _marker_shape(open_: str, kind: str) -> str:
     """The whole user-facing shape of a column marker opening with `open_`."""
     reference = " REFERENCES relation(...)" if kind in FOREIGN_KEY_KINDS else ""
-    columns = "... -> ..." if kind in DETERMINES_KINDS else "..."
+    columns = "... -> ..." if kind in DETERMINES_KINDS else "column IN ('value', ...)" if kind in ENUM_KINDS else "..."
     return f"{open_}{columns}){reference}**/"
 
 

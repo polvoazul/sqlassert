@@ -56,8 +56,25 @@ class OpaqueExpression(ScalarExpr):
     description: str
 
 
+@dataclass(frozen=True, order=True)
+class LiteralValue:
+    """A non-null SQL literal's value: its SQL type and canonical text.
+
+    Two values are the same only when both match, so a typed value never
+    collides with a string spelled alike. Only "string" exists for now.
+    """
+
+    type: str
+    text: str
+
+    def sql(self) -> str:
+        return "'" + self.text.replace("'", "''") + "'"
+
+
 class Constant(ScalarExpr):
-    """A non-null literal whose concrete value is irrelevant to current proofs."""
+    """A non-null literal; `value` is None while its type is not modelled."""
+
+    value: LiteralValue | None = None
 
 
 class NullLiteral(ScalarExpr):
@@ -87,6 +104,13 @@ class Equality(ScalarExpr):
 
     left: ScalarExpr
     right: ScalarExpr
+
+
+class InList(ScalarExpr):
+    """`operand IN (values...)`, recognized as a WHERE or ON conjunct."""
+
+    operand: ScalarExpr
+    values: tuple[ScalarExpr, ...]
 
 
 class IsNull(ScalarExpr):
@@ -149,7 +173,7 @@ class Alias(RelationExpr):
 class Join(RelationExpr):
     """A join and the conjuncts of its ON (or USING) condition.
 
-    Recognized conjuncts are `Equality`, `IsNull`, and `IsNotNull`; any other
+    Recognized conjuncts are `Equality`, `InList`, `IsNull`, and `IsNotNull`; any other
     conjunct is kept as an opaque scalar expression, so the tuple is the whole
     condition.
     """
