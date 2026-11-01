@@ -147,8 +147,9 @@ class Stratum(IntEnum):
     dependencies hold only when the join cannot pad an agreeing row) and Unique
     Joins; closure uses dependencies and non-nullness; Unique Sets and
     Functional Dependency assertions are closure questions; Foreign Keys use
-    Unique Sets. A cycle is an internal sqlassert bug, not a problem with the
-    analyzed SQL.
+    Unique Sets. Enumerated Domains come last: they read equality groups and
+    nothing above them. A cycle is an internal sqlassert bug, not a problem
+    with the analyzed SQL.
     """
 
     EQUALITY_GROUP = 5
@@ -158,6 +159,7 @@ class Stratum(IntEnum):
     CLOSURE = 40
     UNIQUE_SET = 50
     FOREIGN_KEY = 60
+    DOMAIN = 70
 
 
 def analysis(stratum: Stratum):
@@ -241,9 +243,12 @@ class Arena:
             for cls in Property._subclasses:
                 if cls not in type(item).__mro__:
                     continue
-                arguments = tuple(sorted((field.name, getattr(item, field.name)) for field in fields(cls)))
-                key = (snake(cls.__name__), arguments)
+                key = _accepted_key(cls, item)
                 self.accepted[key] = (*self.accepted.get(key, ()), evidence)
+
+    def accepted_evidence(self, item: Property) -> tuple[Result[bool], ...]:
+        """The evidence accepting `item` as Knowledge, empty when it is not."""
+        return self.accepted.get(_accepted_key(type(item), item), ())
 
     def prove(self, property: Property) -> Result[bool]:
         values = {field.name: getattr(property, field.name) for field in fields(property)}
@@ -251,12 +256,17 @@ class Arena:
         return evaluator(**values)
 
 
+def _accepted_key(cls: type[Property], item: Property) -> tuple:
+    """How `item`, as an instance of `cls`, is looked up among accepted results."""
+    return (snake(cls.__name__), tuple(sorted((field.name, getattr(item, field.name)) for field in fields(cls))))
+
+
 class Engine:
     @contextmanager
     def session(self, program: ir.Program, knowledge: tuple[Property, ...] = ()) -> Iterator[Arena]:
         assert _active.get(None) is None, "An analysis arena is already active"
         # Importing registers analysis functions; inference remains in rules/.
-        from sqlassert.rules import equality, exactly_one, foreign_key, nullability, unique_join, uniqueness  # noqa: F401
+        from sqlassert.rules import domain, equality, exactly_one, foreign_key, nullability, unique_join, uniqueness  # noqa: F401
 
         arena = Arena(program, knowledge)
         token = _active.set(arena)

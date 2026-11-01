@@ -13,7 +13,15 @@ enumerations fail explicitly.
 
 ## Blocked by
 
- [#16](0016-assert-and-declare-string-enum-domains.md) (Task 4) — Assert and declare string `ENUM` domains.
+- Issue 16 (done) — Assert and declare string `ENUM` domains.
+
+## Starting point
+
+`ir.LiteralValue` (`type`, `text`) is the domain member and `ir.Constant`'s
+value; only `"string"` exists. Widen `_literal_value` in `ir/convert.py` and
+the value checks in `sql_parse._parse_marker_domain`, which today reject
+non-string members (empty lists, NULL, and duplicates are already rejected),
+and `LiteralValue.sql` for rendering.
 
 ## Acceptance criteria
 

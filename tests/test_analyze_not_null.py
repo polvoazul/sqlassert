@@ -30,6 +30,7 @@ PROVED_NOT_NULL = [
     ("several columns", "SELECT id, email FROM users /**ASSERT NOT NULL(id, email)**/"),
     ("renamed column", "SELECT email AS address FROM users /**ASSERT NOT NULL(address)**/"),
     ("filtered", "SELECT id FROM users WHERE nickname = 'x' /**ASSERT NOT NULL(id)**/"),
+    ("filtered by IN", "SELECT nickname FROM users WHERE nickname IN ('a', 'b') /**ASSERT NOT NULL(nickname)**/"),
     ("star", "SELECT * FROM users /**ASSERT NOT NULL(id)**/"),
     ("string literal", "SELECT 'x' AS tag FROM users /**ASSERT NOT NULL(tag)**/"),
     ("numeric literal", "SELECT 1 AS one FROM users /**ASSERT NOT NULL(one)**/"),

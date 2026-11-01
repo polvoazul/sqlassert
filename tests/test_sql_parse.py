@@ -266,3 +266,21 @@ def test_an_unrecognized_marker_lists_the_foreign_key_shape():
 
     assert [d.code for d in program.diagnostics] == ["unrecognized-marker"]
     assert "/**ASSERT FOREIGN KEY(...) REFERENCES relation(...)**/" in program.diagnostics[0].message
+
+
+def test_an_enum_marker_records_its_column_and_string_literals():
+    program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT ENUM(a IN ('x', 'y'))**/ /**DECLARE ENUM(a IN ('x'))**/")
+
+    assert program.diagnostics == ()
+    assert program.root_select is not None
+    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    assert [(m.kind, m.columns, [v.this for v in m.values]) for m in markers] == [
+        ("enum", ("a",), ["x", "y"]),
+        ("declared-enum", ("a",), ["x"]),
+    ]
+
+
+def test_an_unrecognized_marker_lists_the_enum_shape():
+    program = SqlParser("duckdb").parse("SELECT a FROM t /**ASSERT ENUMS(a)**/")
+
+    assert "/**ASSERT ENUM(column IN ('value', ...))**/" in program.diagnostics[0].message

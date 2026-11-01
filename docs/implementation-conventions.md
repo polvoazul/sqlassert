@@ -46,7 +46,13 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   skips its evaluator, and the referenced Unique Set must still be proved.
   A Functional Dependency marker (`/**ASSERT DETERMINES(a, b -> c)**/`) splits
   its column list at `->`; the parser records the determinant as the
-  `ColumnMarker`'s `columns` and the rest as its `dependent`.
+  `ColumnMarker`'s `columns` and the rest as its `dependent`. An Enumerated
+  Domain marker (`/**ASSERT ENUM(status IN ('new', 'paid'))**/`) names one
+  column, recorded as `columns`, and its literals as SQLGlot parsed them, as
+  `values`; the parser accepts only distinct string literals, and the IR
+  parser turns each into an `ir.LiteralValue` (a type plus canonical text, so
+  typed values can join without colliding with strings). An `ir.Constant`
+  carries the same `LiteralValue` when its type is modelled.
   Consumed at the one grammar production common to a Root Select, a CTE
   definition, a view body, and a subquery (`_parse_select_query`), so a
   marker means the same thing regardless of which of these it sits on.
@@ -81,10 +87,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   relation's Equality Groups; `nullability.py` computes each column's Null
   Sources; `uniqueness.py` holds functional dependencies, their
   closure, and the Unique Set and Functional Dependency evaluators built on it;
-  `unique_join.py`, `foreign_key.py`, and `exactly_one.py` build on those. The
+  `unique_join.py`, `foreign_key.py`, and `exactly_one.py` build on those.
+  `domain.py` computes Enumerated Domains, intersected across Equality Groups. The
   design and its soundness arguments are in `docs/functional-dependencies.md`.
 - `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
-  `Join.conjuncts`: `=`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
+  `Join.conjuncts`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
   any other conjunct is kept as an ordinary (usually opaque) scalar expression,
   so the tuple is always the whole condition.
 - `discovery/` hydrates a SQL Program from a database catalog before the

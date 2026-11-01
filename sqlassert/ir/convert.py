@@ -16,7 +16,7 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    ExactlyOneJoin, ForeignKey, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
+    EnumeratedDomain, ExactlyOneJoin, ForeignKey, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
     UniqueSet,
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
@@ -484,8 +484,8 @@ class IrParser:
     def _lower_conjuncts(
         self, predicate: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
     ) -> tuple[ir.ScalarExpr, ...]:
-        """Every conjunct of `predicate`: `=`, `IS NULL`, and `IS NOT NULL` are
-        recognized; anything else is lowered as an ordinary scalar expression."""
+        """Every conjunct of `predicate`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL`
+        are recognized; anything else is lowered as an ordinary scalar expression."""
         lowered: list[ir.ScalarExpr] = []
         for conjunct in _conjuncts(predicate):
             origin = self._origin(conjunct, _source_line(conjunct))
@@ -502,6 +502,15 @@ class IrParser:
                 case exp.Not(this=exp.Is(expression=exp.Null()) as test):
                     operand = self._lower_expression(test.this, bindings, schema_complete=schema_complete)
                     lowered.append(ir.IsNotNull(origin=origin, operand=operand))
+                case exp.In() if conjunct.expressions and not any(conjunct.args.get(key) for key in ("query", "unnest", "field")):
+                    lowered.append(ir.InList(
+                        origin=origin,
+                        operand=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
+                        values=tuple(
+                            self._lower_expression(value, bindings, schema_complete=schema_complete)
+                            for value in conjunct.expressions
+                        ),
+                    ))
                 case _:
                     lowered.append(self._lower_expression(conjunct, bindings, schema_complete=schema_complete))
         return tuple(lowered)
@@ -662,7 +671,7 @@ class IrParser:
         if isinstance(expression, exp.Null):
             return ir.NullLiteral(origin=origin)
         if isinstance(expression, (exp.Literal, exp.Boolean)):
-            return ir.Constant(origin=origin)
+            return ir.Constant(origin=origin, value=_literal_value(expression))
         return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
 
     def _opaque_relation(self, source: exp.Expression, names=()) -> ir.OpaqueRelation:
@@ -723,6 +732,14 @@ class IrParser:
                     self._assertions.append(ir.Assertion(origin=origin, property=property))
                 case "declared-determines":
                     self._declarations.append(FunctionalDependency(determinant=members, dependent=dependent))
+                case "enum" | "declared-enum":
+                    column, = members
+                    values = frozenset(_marker_value(value) for value in marker.values)
+                    domain = EnumeratedDomain(column=column, values=values)
+                    if kind == "enum":
+                        self._assertions.append(ir.Assertion(origin=origin, property=domain))
+                    else:
+                        self._declarations.append(domain)
                 case _:
                     raise ValueError(f"Unhandled column marker kind: {kind}")
 
@@ -890,6 +907,21 @@ def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) ->
         ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
         for column in inputs
     )
+
+
+def _literal_value(literal: exp.Literal | exp.Boolean) -> ir.LiteralValue | None:
+    """The value of a literal whose type is modelled: only strings, for now."""
+    if isinstance(literal, exp.Literal) and literal.is_string:
+        return ir.LiteralValue(type="string", text=literal.this)
+    return None
+
+
+def _marker_value(literal: exp.Expression) -> ir.LiteralValue:
+    """A domain member; the marker grammar admits only modelled literals."""
+    assert isinstance(literal, exp.Literal | exp.Boolean), "an ENUM marker lists literals only"
+    value = _literal_value(literal)
+    assert value is not None, "an ENUM marker lists only literals whose type is modelled"
+    return value
 
 
 def _source_line(node: exp.Expression) -> int | None:
