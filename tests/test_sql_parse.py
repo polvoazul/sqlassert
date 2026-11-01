@@ -11,6 +11,7 @@ from sqlassert.sql_parse import (
     _unresolved_markers,
     sqlassert_dialect,
     column_markers,
+    marker_position,
 )
 
 
@@ -219,3 +220,16 @@ def test_a_declaration_marker_is_recognized_as_a_declared_kind():
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (("declared-unique", ("a",), 1), ("unique", ("a", "b"), 1))
+
+
+def test_every_join_and_select_records_where_its_marker_would_be_written():
+    sql = "SELECT a FROM t UNION SELECT a FROM (SELECT a FROM u) AS s LEFT JOIN v USING (a), w"
+    root = SqlParser("duckdb").parse(sql).root_select
+    assert root is not None
+
+    ends = sorted(sql[: position[0]] for select in root.find_all(exp.Select) if (position := marker_position(select)))
+    starts = {marker_position(join) for join in root.find_all(exp.Join)}
+
+    assert ends == ["SELECT a FROM t", "SELECT a FROM t UNION SELECT a FROM (SELECT a FROM u", sql]
+    # A comma join has no JOIN keyword for a marker to precede.
+    assert starts == {(sql.index("LEFT JOIN"), 1), None}

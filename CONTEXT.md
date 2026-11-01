@@ -152,6 +152,13 @@ _Avoid_: rowid, ι, row number
 The `SELECT` query body common to a Root Select, a view or CTE definition, and a subquery, independent of how it is introduced into the program.
 _Avoid_: Select-like expression, query, statement
 
+**Attachment Site**:
+A place in the SQL text where a Property Marker can be written: right before a
+JOIN, or right after the last token of a Select Expression. Every marker
+attaches at one; `suggest` names each by its line and the JOIN or Select
+Expression it marks.
+_Avoid_: Marker position, anchor
+
 **Create Statement**:
 A top-level SQL declaration that introduces a Named Relation or related schema Knowledge into the analyzed program.
 _Avoid_: Root select

@@ -16,8 +16,8 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, UniqueJoin, UniqueSet
-from sqlassert.provenance import Origin, SQL
-from sqlassert.sql_parse import MARKER_NOUNS, ParsedProgram, assertion_line, join_origin, column_markers
+from sqlassert.provenance import AttachmentSite, Origin, SQL
+from sqlassert.sql_parse import MARKER_NOUNS, ParsedProgram, assertion_line, join_origin, column_markers, marker_position
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,7 @@ class IrParser:
     _diagnostics: list[Diagnostic] = field(default_factory=list)
     _handled_column_marker_lines: set[int] = field(default_factory=set)
     _reported_cycles: set[_Symbol] = field(default_factory=set)
+    _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr]] = field(default_factory=list)
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
             if isinstance(statement, exp.Create):
@@ -83,7 +84,7 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations)), tuple(self._knowledge), tuple(self._diagnostics))
+        return IrConversionResult(ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites)), tuple(self._knowledge), tuple(self._diagnostics))
 
     # Declaration and symbol discovery ---------------------------------------
 
@@ -257,6 +258,7 @@ class IrParser:
 
         relation = self._lower_select_tail(lowered, select)
         self._register_column_markers(relation, select)
+        self._add_attachment_site(select, _select_label(select), relation, trailing=True)
         return relation
 
     def _lower_source(self, source: exp.Expression) -> _Lowered:
@@ -385,6 +387,7 @@ class IrParser:
                     property=UniqueJoin(join=relation),
                 )
             )
+        self._add_attachment_site(join, _join_label(join, self.dialect), relation, trailing=False)
         return _Lowered(relation, bindings)
 
     def _lower_join_predicate(self, join: exp.Join, left: _Lowered, right: _Lowered) -> tuple[ir.Equality, ...]:
@@ -618,6 +621,12 @@ class IrParser:
                 case _:
                     raise ValueError(f"Unhandled column marker kind: {kind}")
 
+    def _add_attachment_site(self, node: exp.Join | exp.Select, label: str, relation: ir.RelationExpr, *, trailing: bool) -> None:
+        position = marker_position(node)
+        if position is not None:
+            offset, line = position
+            self._attachment_sites.append((AttachmentSite(label, line, offset, trailing), relation))
+
     def _report_cycle(self, symbol: _Symbol, table: exp.Table) -> None:
         if symbol in self._reported_cycles:
             return
@@ -810,3 +819,29 @@ def _join_kind(join: exp.Join) -> str:
         return kind
     side = (join.args.get("side") or "").lower()
     return side or kind or ir.INNER
+
+
+def _join_label(join: exp.Join, dialect: str) -> str:
+    keywords = " ".join(part for part in (join.side, join.kind, "JOIN") if part)
+    source = join.this
+    if isinstance(source, exp.Subquery):
+        return f"{keywords} subquery {source.alias}".rstrip()
+    return f"{keywords} {source.sql(dialect=dialect)}"
+
+
+def _select_label(select: exp.Select) -> str:
+    node = select.parent
+    while node is not None:
+        match node:
+            case exp.CTE():
+                return f"CTE {node.alias}"
+            case exp.Create():
+                table = node.this.this if isinstance(node.this, exp.Schema) else node.this
+                return f"view {table.name}"
+            case exp.Subquery() if node.alias:
+                return f"subquery {node.alias}"
+            case exp.Subquery():
+                return "subquery"
+            case _:
+                node = node.parent
+    return "Root Select"
