@@ -44,6 +44,9 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   itself. `DECLARE FOREIGN KEY` and `REFERENCES` constraints become
   `ReferentialCoverage` Knowledge, never `ForeignKey`: an accepted Property
   skips its evaluator, and the referenced Unique Set must still be proved.
+  A Functional Dependency marker (`/**ASSERT DETERMINES(a, b -> c)**/`) splits
+  its column list at `->`; the parser records the determinant as the
+  `ColumnMarker`'s `columns` and the rest as its `dependent`.
   Consumed at the one grammar production common to a Root Select, a CTE
   definition, a view body, and a subquery (`_parse_select_query`), so a
   marker means the same thing regardless of which of these it sits on.
@@ -74,7 +77,15 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   evaluator. Declarations supply accepted results without executing the public
   evaluator body. The arena rejects nested analysis sessions.
 - `reporting.py` defines the durable Report values.
-- `rules/` contains the analysis functions.
+- `rules/` contains the analysis functions. `nullability.py` computes each
+  column's Null Sources; `uniqueness.py` holds functional dependencies, their
+  closure, and the Unique Set and Functional Dependency evaluators built on it;
+  `unique_join.py`, `foreign_key.py`, and `exactly_one.py` build on those. The
+  design and its soundness arguments are in `docs/functional-dependencies.md`.
+- `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
+  `Join.conjuncts`: `=`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
+  any other conjunct is kept as an ordinary (usually opaque) scalar expression,
+  so the tuple is always the whole condition.
 - `discovery/` hydrates a SQL Program from a database catalog before the
   engine runs; the engine never sees it. `DatabaseKnowledgeFetcher` links the
   Program once without a connection to find the external Named Relations it

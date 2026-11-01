@@ -9,15 +9,20 @@ What lowering ([`ir/convert.py`](../../sqlassert/ir/convert.py)) loses today. Ea
 caps what the rules can prove, however good the rules get. Feature-level gaps
 live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
-- [ ] `Filter` carries no predicate. `WHERE k = 5` cannot pin `k` (so `(k, id)`
+- [x] `Filter` carries no predicate. `WHERE k = 5` cannot pin `k` (so `(k, id)`
   cannot reduce to `(id)`), and `WHERE x IS NOT NULL` cannot establish non-null `x`.
-- [ ] Join predicates keep only top-level `=` conjuncts. `OR`, ranges,
+  Done in issue 24: `Filter.conjuncts` recognizes `=`, `IS NULL`, `IS NOT NULL`.
+- [x] Join predicates keep only top-level `=` conjuncts. `OR`, ranges,
   `IS NOT DISTINCT FROM`, and equalities over expressions are dropped.
+  Done in issue 24: `Join.conjuncts` holds the whole condition, recognized as
+  in `Filter`; the rest are opaque conjuncts the rules read only as "may
+  depend on anything". Ranges, `LIKE`, and `OR` are still not reasoned about.
 - [ ] Scalar expressions are column, literal, `NULL`, or opaque. `CASE`,
   `COALESCE`, `CAST`, and function calls are opaque, so no injectivity
   (`id + 0`, lossless casts) and no non-nullness (`coalesce(x, 0)`, `count(*)`).
 - [ ] `SetOperation` output columns refer to the left arm only; the right arm's
-  columns are not tracked and `ALL` vs distinct is not distinguished.
+  columns are not tracked. (`ALL` vs distinct is now distinguished:
+  `SetOperation.distinct`, issue 24.)
 - [ ] Unique-join analysis models only `inner` and `left`; `right`, `full`,
   `semi`, `anti`, `cross`, and `LATERAL`/`UNNEST` sources are not modelled.
 - [ ] Windows: only `QUALIFY row_number() over (partition by ...) = 1` is
@@ -36,7 +41,8 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 - [ ] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Needs catalog input to `IrParser`, not just knowledge for the engine.
-- [ ] No functional dependencies (`X → Y`). Keys, equality predicates,
+- [x] No functional dependencies (`X → Y`). Done in issue 24, except
+  deterministic and injective expressions (still opaque). Keys, equality predicates,
   deterministic expressions, and `GROUP BY` all create them; without them,
   uniqueness only flows through columns that pass through unchanged. Theory
   and planned opportunities: [`docs/functional-dependencies.md`](../functional-dependencies.md).
@@ -45,11 +51,13 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
 - [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
   `WHERE x = 5`, and inner-join equalities imply non-null `x`; `count(...)` is
-  never null. Needs `Filter` to carry its conjuncts (first item above).
+  never null. Predicates done in issue 24 (null sources); `count(...)` remains.
 - [ ] A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all
   of its output columns, the same way `SELECT DISTINCT` does. Derive it from
   the leftmost arm's output columns, and lower set-operation bodies when they
-  appear inside a view, CTE, or subquery.
+  appear inside a view, CTE, or subquery. The Unique Set is done in issue 24
+  (view and CTE bodies already lower); a set operation inside a FROM subquery
+  is still opaque.
 - [ ] Column lineage, column unique status.
 - [ ] General window modeling: represent window expressions and their filtering
   as separate `Window` and `Filter` operations, with the engine deriving

@@ -2,12 +2,10 @@
 
 Each arm of a set operation is lowered independently, exactly as if it were
 its own top-level query, so a marked join in either arm is analyzed on its
-own relation rather than reported as unanalyzed. What is deliberately not
-modeled is the set operation's own row-set semantics: `UNION`/`INTERSECT`/
-`EXCEPT` (without `ALL`) dedup their combined output, which would itself be a
-Unique Set over every output column -- the `ALL` form of each keeps
-duplicates instead, and either way that is a proof in its own right, not
-exercised here.
+own relation rather than reported as unanalyzed. `UNION`/`INTERSECT`/`EXCEPT`
+without `ALL` dedup their output, so every output column together is a Unique
+Set; `INTERSECT` and `EXCEPT` also keep the left input's Unique Sets, since
+every output row is a row of it.
 """
 
 from __future__ import annotations
@@ -147,3 +145,41 @@ def test_a_join_inside_a_from_subquery_wrapping_a_union_is_still_unanalyzed(user
 
     assert report.assertions == ()
     assert [diagnostic.code for diagnostic in report.diagnostics] == [UNANALYZED_ASSERTION]
+
+
+@pytest.mark.parametrize(
+    ("operator", "expected"),
+    [
+        ("UNION", Outcome.PROVED),
+        ("INTERSECT", Outcome.PROVED),
+        ("EXCEPT", Outcome.PROVED),
+        ("UNION ALL", Outcome.UNKNOWN),
+        ("INTERSECT ALL", Outcome.UNKNOWN),
+        ("EXCEPT ALL", Outcome.UNKNOWN),
+    ],
+)
+def test_a_distinct_set_operation_makes_its_output_columns_a_unique_set(operator: str, expected: Outcome):
+    report = analyze(
+        f"""
+        CREATE TABLE sessions (user_id INTEGER);
+        CREATE TABLE orders (user_id INTEGER);
+        WITH ids AS (SELECT user_id FROM sessions {operator} SELECT user_id FROM orders)
+        SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/
+        """
+    )
+
+    assert [assertion.outcome for assertion in report.assertions] == [expected], operator
+
+
+@pytest.mark.parametrize("operator", ["INTERSECT ALL", "EXCEPT ALL"])
+def test_intersect_and_except_keep_the_left_input_s_unique_sets(operator: str):
+    report = analyze(
+        f"""
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE orders (user_id INTEGER);
+        WITH ids AS (SELECT id FROM users {operator} SELECT user_id FROM orders)
+        SELECT id FROM ids /**ASSERT UNIQUE(id)**/
+        """
+    )
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED], operator
