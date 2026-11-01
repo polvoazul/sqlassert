@@ -180,6 +180,11 @@ Still open:
   untouched so far.
   Done: see "Kossmann Table 1 triage" below.
 - [ ] Low level: other code smells, from the *add* rows of that triage.
+  First smell done: Arbitrary LIMIT (`sqlassert/smells.py`, `report.smells`,
+  `Level.LOW`, printed last by the CLI). The other *add* rows wait: most need
+  ORDER BY or select-list subqueries lowered, or are High-level rewrites
+  (redundant `EXISTS`, `EXCEPT ALL`, whole `GROUP BY`, self-join, UNION and
+  INTERSECT simplification, redundant `LIMIT` on one row).
 - [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
   Done: `sqlassert suggest --annotate FILE` rewrites FILE with every
   suggested marker; for `-` it prints the annotated SQL instead of the list.

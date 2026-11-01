@@ -295,6 +295,12 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 
 `report.improvements` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
 
+Low-level smells come last: places whose result the SQL leaves unspecified. `report.smells` holds them, each with its `site`, `concern`, `message`, and the failed proof as `evidence`.
+
+| Smell | When |
+|---|---|
+| Arbitrary LIMIT | A `LIMIT` or `OFFSET` whose `ORDER BY` (if any) does not determine every selected column, NULL equal to NULL: rows tied on the sort keys may come in any order, so which rows are kept can change between runs. Silent when an `ORDER BY` key is an expression or a name sqlassert cannot map to one column. |
+
 `NATURAL JOIN` is unsupported: its presence anywhere in the program produces an `unsupported-natural-join` diagnostic, and `suggest` returns no suggestions. Write explicit `ON` or `USING` conditions instead.
 
 ## Details
