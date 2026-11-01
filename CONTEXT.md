@@ -168,6 +168,10 @@ _Avoid_: Reference, relationship, join key
 A Property of a relation, written `X → Y` (`DETERMINES`): any two rows that agree on the columns X also agree on the columns Y, for every database the schema allows. Strict when NULL counts as agreeing with NULL; lax when it holds only on rows whose X columns are all non-null.
 _Avoid_: Correlation, derived column
 
+**Equality Group**:
+An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE` and inner-join `ON` `a = b`), never by an outer join's `ON`. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
+_Avoid_: Equivalence class, alias set
+
 **Null Source**:
 A reason an output column may be NULL: organically (a nullable source column, an opaque expression, a NULL literal) or because an outer join padded its row. A column is non-null when it has no Null Source; a null-rejecting condition on a padded column proves its join matched and removes that padding from every column it padded.
 _Avoid_: Nullable flag, null-extension
