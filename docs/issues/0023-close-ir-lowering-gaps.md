@@ -155,3 +155,14 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   `tests/test_analyze_marker_accounting.py` checks every marker kind in every
   context for an Assertion, a Declaration, or a Diagnostic on its line.
 
+
+## Found by the Paulley audit (issue 35)
+
+Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
+"Paulley audit"):
+
+- [ ] **E4** (eq7): a lax equivalence whose columns a later filter makes
+  definite does not become an Equality Group: after `LEFT JOIN r ON r.z = l.a
+  WHERE r.z IS NOT NULL`, z and a are not merged, so Enumerated Domains and
+  Foreign Key stand-ins do not cross between them. (The FD closure already
+  strengthens the lax FD.)
