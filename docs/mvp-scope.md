@@ -27,7 +27,6 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 - `RIGHT`, `FULL`, `SEMI`, `ANTI`, and `CROSS` join analysis.
 - Non-equality, null-safe, and `OR` join predicates.
 - Scalar and correlated subqueries.
-- Unique Set inference for `UNION`, `INTERSECT`, and `EXCEPT`, and set-operation bodies inside views, CTEs, or subqueries.
 - Grouping sets, `ROLLUP`, and `CUBE`.
 - General window-function property reasoning beyond recognized partition qualification.
 - Non-nullness implied by predicates (`IS NOT NULL`, equality filters, inner-join equalities) or by never-null expressions such as `count`.
