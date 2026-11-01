@@ -41,6 +41,23 @@ CASES = {
     "E5": ("SELECT t.a, u.z FROM t LEFT JOIN u ON u.z = t.a /**ASSERT DETERMINES(z -> a)**/", PROVED),
     "E6": ("SELECT t.b, u.z FROM t LEFT JOIN u ON u.z = t.a WHERE t.a = t.b /**ASSERT DETERMINES(z -> b)**/", PROVED),
     "E6-": ("SELECT t.a, v.w FROM t LEFT JOIN u ON u.z = t.a LEFT JOIN v ON v.w = u.z /**ASSERT DETERMINES(w -> a)**/", UNKNOWN),
+    # Sources (§3.1–3.2.1).
+    "S1": ("SELECT id, a FROM t /**ASSERT NOT NULL UNIQUE(id)**/", PROVED),
+    # A unique index, like UNIQUE, repeats NULLs in SQL: a lax key, not Paulley's strict one.
+    "S1-": ("CREATE TABLE w (m INTEGER); CREATE UNIQUE INDEX wm ON w (m); SELECT m FROM w /**ASSERT NOT NULL UNIQUE(m)**/", UNKNOWN),
+    "S2": ("SELECT x, z FROM u /**ASSERT UNIQUE(x)**/", PROVED),
+    "S2-": ("SELECT x, z FROM u /**ASSERT NOT NULL UNIQUE(x)**/", UNKNOWN),
+    "S3": ("SELECT a, b FROM t WHERE a = 5 AND b = 6 /**ASSERT DETERMINES(a -> b)**/", PROVED),
+    "S4": ("SELECT a, a + 1 AS k FROM t /**ASSERT DETERMINES(a -> k)**/", PROVED),
+    # Projection (§3.2.2).
+    "P1": ("SELECT a, b FROM t WHERE a = id /**ASSERT UNIQUE(a)**/", PROVED),
+    "P2": ("SELECT id, a * 2 AS k FROM t /**ASSERT DETERMINES(id -> k)**/", PROVED),
+    "P3": ("SELECT DISTINCT a, b FROM t /**ASSERT UNIQUE(a, b)**/", PROVED),
+    # Cartesian product (§3.2.3).
+    "C1": ("SELECT t.id, t.a, v.w FROM t CROSS JOIN v /**ASSERT DETERMINES(id -> a)**/", PROVED),
+    "C2": ("SELECT t.id, u.k FROM t CROSS JOIN u /**ASSERT UNIQUE(id, k)**/", PROVED),
+    "C2-": ("SELECT t.id, u.k FROM t CROSS JOIN u /**ASSERT UNIQUE(id)**/", UNKNOWN),
+    "C3": ("SELECT t.id FROM t CROSS JOIN (SELECT count(*) AS n FROM v) AS c /**ASSERT UNIQUE(id)**/", PROVED),
 }
 
 

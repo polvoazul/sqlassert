@@ -242,17 +242,17 @@ through only with definite determinants.
 | E4 | Lax equivalence strengthened when both definite | eq7, p.69 | missing | equality groups never strengthen: `WHERE r.z IS NOT NULL` after `LEFT JOIN r ON r.z = l.a` does not put z and a in one group, so domains and Foreign Key stand-ins do not cross (the closure does, via A9). Filed in issue 23 |  |
 | E5 | Lax equivalence implies lax FDs both ways | eq8, p.69 | implemented | `uniqueness._outer_on_dependencies` (lax padded → preserved) | `test_paulley_audit.py` E5 |
 | E6 | Lax equivalence transitive: strict∘lax, or lax∘lax through a definite middle | eq9a/b, Lemma 5, p.70 | implemented | `uniqueness._closure` (strict after lax; lax after lax only through a definite middle) | `test_paulley_audit.py` E6, E6- |
-| S1 | PRIMARY KEY and unique index: strict key K → ι | Claim 16, p.73 | pending | | |
-| S2 | UNIQUE constraint: lax key U ↦ ι | Claim 16, p.73 | pending | | |
-| S3 | Equality to a constant: ∅ → A | §3.1.3, p.68 | pending | | |
-| S4 | Scalar function: X → λ(X), result possibly NULL | §3.1.4, p.71 | pending | | |
-| S5 | CHECK constraints: equalities over non-null columns strict, else lax | §3.2.1, p.73 | pending | | |
-| P1 | Projection keeps input FDs, transitively through dropped columns | Claim 17, p.74 | pending | | |
-| P2 | Projection: X → λ(X) and ι → λ(X) | Claim 17, p.74 | pending | | |
-| P3 | Distinct projection: selected attributes → ι | Claim 18, p.75 | pending | | |
-| C1 | Cartesian product keeps both inputs' FDs and equivalences | Claim 19, p.75 | pending | | |
-| C2 | Cartesian product: ι(S) ∪ ι(T) ↔ ι | Claim 19, p.76 | pending | | |
-| C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | pending | | |
+| S1 | PRIMARY KEY and unique index: strict key K → ι | Claim 16, p.73 | different | PRIMARY KEY: strict key (`NonNullColumn` + `UniqueSet` Knowledge, `convert._table_knowledge`). A unique index is a lax key like UNIQUE: SQL unique indexes repeat NULLs, Paulley's strict reading would be unsound | `test_paulley_audit.py` S1, S1- |
+| S2 | UNIQUE constraint: lax key U ↦ ι | Claim 16, p.73 | implemented | `convert._table_knowledge` → `UniqueSet`, a lax key onto the Row Identity (`uniqueness._functional_dependencies`) | `test_paulley_audit.py` S2, S2- |
+| S3 | Equality to a constant: ∅ → A | §3.1.3, p.68 | implemented | `uniqueness._equality_dependencies` (`∅ → col` for `col = literal`) | `test_paulley_audit.py` S3 |
+| S4 | Scalar function: X → λ(X), result possibly NULL | §3.1.4, p.71 | different | `OpaqueExpression.inputs` and `uniqueness._computed`: only built-in deterministic functions, and only of inputs compared by identity (NOCASE text and DOUBLE equal values a function tells apart) | `test_paulley_audit.py` S4 |
+| S5 | CHECK constraints: equalities over non-null columns strict, else lax | §3.2.1, p.73 | missing | CHECK constraints are ignored without a diagnostic. `CHECK (m = 1)` or `CHECK (m IN (...))` would give a domain and a constant (true-interpreted: NULL passes, so lax). Filed in issue 23 |  |
+| P1 | Projection keeps input FDs, transitively through dropped columns | Claim 17, p.74 | implemented | `uniqueness._row_preserving` delegation: closure runs in the input, so dropped columns still connect (hide, don't delete) | `test_paulley_audit.py` P1 |
+| P2 | Projection: X → λ(X) and ι → λ(X) | Claim 17, p.74 | implemented | `uniqueness._computed` on the Project delegation (with S4's restriction) | `test_paulley_audit.py` P2 |
+| P3 | Distinct projection: selected attributes → ι | Claim 18, p.75 | implemented | `uniqueness._functional_dependencies` (Distinct: output columns → ι) | `test_paulley_audit.py` P3 |
+| C1 | Cartesian product keeps both inputs' FDs and equivalences | Claim 19, p.75 | implemented | `uniqueness._join_side` delegations for `cross` | `test_paulley_audit.py` C1 |
+| C2 | Cartesian product: ι(S) ∪ ι(T) ↔ ι | Claim 19, p.76 | implemented | `uniqueness._join_dependencies` (`(ι(left), ι(right)) → ι`) | `test_paulley_audit.py` C2, C2- |
+| C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | implemented | `unique_join` with no conjuncts: the right input's empty set reaches its Row Identity; a scalar aggregate is grouped by nothing (issue 23) | `test_paulley_audit.py` C3 |
 | R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | pending | | |
 | R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | pending | | |
 | R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | pending | | |
