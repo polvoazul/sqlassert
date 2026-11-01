@@ -1,7 +1,8 @@
 # Literature Notes
 
 What sqlassert can take from the papers in `papers/`. Companion to
-[`functional-dependencies.md`](functional-dependencies.md). Page and section
+[`functional-dependencies.md`](functional-dependencies.md), which holds the
+rules themselves. Page and section
 numbers refer to each paper's printed numbering.
 
 ## How our goal differs
@@ -31,57 +32,13 @@ Consequences:
 
 ## Corrections to our FD plan (Paulley 2000)
 
-- **Three kinds of key, not two.** Besides lax (Unique Set) and non-null strict
-  (Non-Null Unique Set) there is a *null-equal strict* key: NULL compares
-  equal to NULL. `DISTINCT`, `GROUP BY`, and set operators produce it even
-  over nullable columns (Claims 18, 22). GROUP BY elimination needs only this,
-  not a Non-Null Unique Set. Do **not** treat DuckDB `UNIQUE` as one: it is
-  ANSI (multiple NULLs allowed), so it is lax (Claim 16, p.73).
-- **Union-find merges strict equivalences only.** Lax transitivity is unsound
-  unless the middle column is non-null (fd4b, fd7b, eq9b; counterexample
-  Fig. 2.1 p.38). Lax ON-clause equalities need separate edges.
-- **Lax becomes strict** once all involved columns are known non-null (fd6,
-  eq7). Null-rejecting predicates spread non-nullness across strict
-  equivalences.
-- **Left join (Thm 3, p.96).** A right-side FD `X → Y` stays strict when some
-  `x ∈ X` is non-null **or rejected by the ON condition when NULL** (η, Def 37).
-  The second case covers the common `l.x = r.y` right column; our doc only had
-  the first. ON-clause FDs follow Lemma 9's four cases: *all* left columns
-  referenced in ON determine a right column bound by it, including right-side
-  constants (Example 20: `{T.X, T.Y, T.Z} → S.D` from `S.D = 2`).
-- **Null constraint (Def 38).** The non-null columns from the right side are
-  all NULL together. A later null-rejecting `WHERE` on one makes them all
-  non-null, which turns lax FDs strict.
-- **MIN/MAX pass-through is our extension**, not the thesis's (Claims 22–23
-  treat every aggregate as a fresh value). Sound only when `g → x` is strict.
-- **Set operators** (§3.2.5–3.2.7), missing from our doc:
-  - INTERSECT (ALL): FDs and keys of both inputs hold; corresponding columns
-    are strictly equivalent.
-  - EXCEPT: everything of the left input holds.
-  - UNION ALL: no FDs in general; only equivalences and constants common to
-    both branches. UNION (distinct): all output columns form a key.
-  - Ours, not the thesis's: branches tagged with distinct literals make
-    `(tag, branch key)` a key.
+Folded into [`functional-dependencies.md`](functional-dependencies.md): three
+kinds of key, strict-only union-find, lax-to-strict promotion, `Filter`
+predicates, left join η and ON-clause FDs, full join, aggregate caveats, set
+operations, and the ι / FD-graph representation ideas.
 
 ## Ideas to adopt
 
-- **Keys as FDs to a row identifier** (Paulley Def 27, §3.1.2). Give each
-  relation a virtual column ι; a key K is the FD `K → ι`. Uniqueness becomes
-  "does `closure(S)` reach ι?", one test instead of key sets plus FDs. Joins:
-  `ι(L) ∪ ι(R) → ι(out)` (Claim 19); a Unique Join is `ι(L) → ι(out)`; an input
-  with at most one row lets the other side's ι determine everything (p.254).
-- **FD-graph** (Paulley, from Ausiello–D'Atri–Saccà): a hypergraph with
-  compound vertices for multi-column left sides. Closure is BFS with counters,
-  O(V²) (§3.6.1, Lemma 29). Constants seed it. The lax variant steps only
-  through non-null columns.
-- **Projection marks hidden columns** instead of deleting them, so transitive
-  FDs survive without recomputing closure (§3.2.2). Fits our IR, where every
-  stage already keeps a reference to its input.
-- **Predicates worth recognizing in `Filter`** (pp.77–78): `col = col`,
-  `col = const`, `IS NOT NULL`, `IS NULL` (equal to a NULL constant), `LIKE`
-  without wildcards (equality), `= (uncorrelated scalar subquery)` (unknown
-  constant). Disjunctions ignored. Correlated outer columns are constants
-  inside EXISTS.
 - **Rewrite preconditions as assertion ideas** (Kossmann Table 1; Lindner
   §3.2): redundant DISTINCT, redundant GROUP BY columns, EXISTS → join, join
   elimination / join → semi-join (UCC on the join key, no right columns used),
