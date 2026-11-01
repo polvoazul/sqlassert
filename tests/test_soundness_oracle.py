@@ -253,6 +253,40 @@ def test_query_literals_join_the_value_domain():
     assert counterexample.instance["sessions"] == [(47,), (47,)]
 
 
+def test_a_false_enum_claim_is_refuted_by_a_value_outside_the_set():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (status VARCHAR);
+        SELECT status FROM orders /**ASSERT ENUM(status IN ('new', 'paid'))**/
+    """))
+
+    counterexample, = judgement.counterexamples
+    status, = counterexample.instance["orders"][0]
+    assert status not in {"new", "paid", None}
+
+
+def test_a_null_never_violates_an_enum():
+    judgement = judged(*claimed_proved("""
+        CREATE TABLE orders (status VARCHAR);
+        SELECT status FROM orders WHERE status IS NULL /**ASSERT ENUM(status IN ('new'))**/
+    """))
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+
+
+def test_a_declared_enum_constrains_the_instances_searched():
+    sql = """
+        CREATE TABLE orders (status VARCHAR);
+        WITH o AS (SELECT status FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+        SELECT status FROM o WHERE status <> 'new' /**ASSERT ENUM(status IN ('paid'))**/
+    """
+    # Only the declaration rules out every other value; the analysis does not read `<>`.
+    judgement = judged(*claimed_proved(sql))
+
+    assert judgement.checked == 1
+    assert judgement.counterexamples == ()
+
+
 def test_instances_that_break_a_property_declaration_are_rejected():
     # The declaration is a trusted assumption, so data violating it is no
     # counterexample to the proof built on it.
