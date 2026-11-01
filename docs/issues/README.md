@@ -4,7 +4,6 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
-- [16. Assert and declare string `ENUM` domains](0016-assert-and-declare-string-enum-domains.md) — open
 - [17. Complete typed `ENUM` support](0017-complete-typed-enum-support.md) — open
 - [18. Assert exhaustive simple `CASE` expressions](0018-assert-exhaustive-simple-case-expressions.md) — open
 - [20. Propagate Foreign Keys through queries](0020-propagate-foreign-keys-through-queries.md) — open
@@ -15,12 +14,12 @@ Open work, one file per issue. Issues 11 and 14 were migrated from GitHub issues
 
 ## Order
 
-Done: 14, 19, 21, 24, 26, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 19, 21, 24, 26, 27 Part 1, 15 Mid level. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Next, as dependencies allow:
 
-1. Values: 16 → 17 → 18.
+1. Values: 17 → 18.
 2. Foreign Keys: 20 → 22.
 3. Independent: 15 High level (rewrite suggestions), 28 joins inside CTE, view and subquery bodies.
 4. Skipped for now (need downloaded corpora): 11, 27 Part 2.
