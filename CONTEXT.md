@@ -21,6 +21,14 @@ _Avoid_: Assertion, Proof, Create Statement
 An assertion that a join cannot increase the number of rows contributed by its left-hand input.
 _Avoid_: Unique join marker, duplicate check
 
+**Exactly One Join Assertion**:
+An assertion that every row of a join's left-hand input matches exactly one
+right-hand row, so the join neither multiplies nor removes left rows and a left
+join null-extends none of them. It combines a Unique Join (at most one match)
+with guaranteed matching (at least one): a non-null left column with Referential
+Coverage onto the right predicate column.
+_Avoid_: Lookup join, mandatory join, 1:1 join
+
 **Unique Set Assertion**:
 An assertion that a named set of a Select Expression's output columns forms a Unique Set, or, when asserted as a key, a Candidate Key.
 _Avoid_: Unique constraint, primary key marker, uniqueness check

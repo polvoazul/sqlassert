@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports Unique Join Assertions, Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, and direct Foreign Keys. It is only tested with the DuckDB SQL dialect._
+_Alpha warning: Today `sqlassert` supports Unique Join Assertions, Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is only tested with the DuckDB SQL dialect._
 
 ## Features
 
@@ -82,6 +82,30 @@ A Foreign Key needs two things, and an `UNKNOWN` explanation names whichever is 
 Nulls follow SQL's `MATCH SIMPLE`: a row with a null in any referencing column is exempt, so nullable referencing columns do not weaken a Foreign Key. Assert `NOT NULL` separately when every row must match.
 
 `/**DECLARE FOREIGN KEY(...) REFERENCES relation(...)**/` states the coverage as trusted evidence (`Declared ReferentialCoverage` in explanations); it never vouches for the referenced Unique Set, which is still proved separately. A marker naming a column the referenced relation does not have is reported as `unknown-referenced-column`.
+
+### Exactly One Join
+
+`/**ASSERT EXACTLY ONE**/` before a join proves that every left row matches exactly one right row: the join neither multiplies nor drops left rows, and a `LEFT` join null-extends none of them.
+
+```sql
+create table users (id integer primary key);
+create table orders (
+  id integer,
+  user_id integer not null references users(id)
+);
+
+select * from orders
+/**ASSERT EXACTLY ONE**/ join users
+  on orders.user_id = users.id;
+```
+
+It is supported on `INNER` and `LEFT` joins whose predicate is a single column-to-column equality (`ON` or a one-column `USING`). It needs three things, and an `UNKNOWN` explanation names each one that is missing:
+
+- At most one match: the right predicate column covers a Unique Set, as for `/**ASSERT UNIQUE**/`.
+- At least one match: Referential Coverage from the left column onto that exact right column, as for a Foreign Key. Coverage onto a table is not coverage onto a filtered view or CTE of it.
+- A non-null left column, since a null matches nothing.
+
+Any additional conjunct in the predicate, even another equality, makes the assertion `UNKNOWN`: it could remove the guaranteed match. Composite keys and joins over derived relations are not supported yet.
 
 Every assertion is written with an explicit `ASSERT`. A bare `/**UNIQUE**/` is rejected with a diagnostic that names the explicit spelling.
 
