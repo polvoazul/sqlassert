@@ -13,7 +13,8 @@ any join, since a padded side is NULL in every column. A column may stand in
 for any column of its Equality Group, so an inner equality join onto the
 referenced columns establishes coverage. On the referenced side, coverage of
 an input carries over only to a relation that keeps every input row's values;
-one that may drop rows (a filter, an inner join) must be covered on its own.
+one that may drop rows (a filter, an inner join) must be covered on its own,
+except the left input of a proved Exactly One Join, which keeps every left row.
 Anything else stops propagation and names where.
 """
 
@@ -80,7 +81,8 @@ def _targets(referenced_columns: _Columns) -> list[tuple[_Columns, list[Result[b
                 return [(referenced_columns, [])]
             upstream = [tuple(column for _, column in filter(None, kept))]
             reason = f"{_describe(referenced_columns)} keeps the values of every row of its input"
-    step = Result(True, reason, (target,))
+    matched = [_exactly_one(target)] if isinstance(target, ir.Join) and target.kind == "inner" else []
+    step = Result(True, reason, (target,), matched)
     return [(referenced_columns, []), *(
         (columns, [step, *steps]) for branch in upstream for columns, steps in _targets(branch)
     )]
@@ -205,8 +207,17 @@ def _kept(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple[ir.Relati
             return left, upstream
         case ir.Join(kind="right" | "full", right=right), ir.ColumnRef(column=upstream) if upstream in right.output_columns:
             return right, upstream
+        case ir.Join(kind="inner", left=left), ir.ColumnRef(column=upstream) if upstream in left.output_columns:
+            return (left, upstream) if _exactly_one(relation).value else None
         case _:
             return None  # The relation may drop input rows, or the column is computed.
+
+
+def _exactly_one(join: ir.Join) -> Result[bool]:
+    """Whether `join` matches every left row exactly once, so it keeps every left row."""
+    from sqlassert.rules.exactly_one import exactly_one_join  # It builds on Referential Coverage.
+
+    return exactly_one_join(join)
 
 
 def _narrows(relation: ir.RelationExpr) -> bool:
