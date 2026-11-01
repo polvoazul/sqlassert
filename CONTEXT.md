@@ -206,6 +206,14 @@ simple `CASE`. Every marker attaches at one; `suggest` names each JOIN or
 Select Expression site by its line and what it marks.
 _Avoid_: Marker position, anchor
 
+**Improvement**:
+A rewrite of the SQL itself, at one Attachment Site, that a Proof shows leaves
+the program's result unchanged as a multiset: an outer join that cannot keep a
+padded row written as an inner join, a join that is redundant or only filters,
+a redundant `DISTINCT` or grouping column, an unused CTE. `suggest` ranks
+Improvements (High level) before markers to paste (Mid level).
+_Avoid_: Optimization, lint, hint
+
 **Create Statement**:
 A top-level SQL declaration that introduces a Named Relation or related schema Knowledge into the analyzed program.
 _Avoid_: Root select
