@@ -184,3 +184,29 @@ def test_a_mistyped_exactly_one_marker_is_reported_with_the_marker_list():
 
     assert [diagnostic.code for diagnostic in report.diagnostics] == [UNRECOGNIZED_MARKER]
     assert "/**ASSERT EXACTLY ONE**/" in report.diagnostics[0].message
+
+
+def test_a_proved_exactly_one_left_join_pads_no_right_column():
+    # Every left row has its match, so the LEFT JOIN never null-extends.
+    proved = """
+        SELECT o.id, u.id AS matched_id FROM orders AS o
+        /**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u ON u.id = o.user_id
+        /**ASSERT NOT NULL(matched_id)**/
+    """
+    # A nullable buyer may match nothing, so the right side may be padded.
+    padded = """
+        SELECT o.id, u.id AS matched_id FROM orders AS o
+        /**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u ON u.id = o.buyer
+        /**ASSERT NOT NULL(matched_id)**/
+    """
+
+    assert outcomes(proved) == [Outcome.PROVED, Outcome.PROVED]
+    assert outcomes(padded) == [Outcome.UNKNOWN, Outcome.UNKNOWN]
+
+
+def test_a_proved_exactly_one_join_keeps_the_left_inputs_key():
+    assert outcomes("""
+        SELECT o.id, u.name FROM orders AS o
+        /**ASSERT EXACTLY ONE**/ JOIN users AS u ON u.id = o.user_id
+        /**ASSERT NOT NULL UNIQUE(id)**/
+    """) == [Outcome.PROVED, Outcome.PROVED]
