@@ -33,25 +33,47 @@ search, not a complete one. See
 
 ## Part 1 — judge existing `PROVED` outcomes
 
-- [ ] Collect `(sql, report)` pairs from the existing tests (fixture or
+Done: `tests/soundness_oracle.py`, run with `python -m pytest --soundness-oracle`.
+`tests/conftest.py` wraps `analyze` to record every program the suite
+analyzes, and the marked oracle test runs last to judge each `PROVED`
+assertion. Part 2 and the z3 alternative remain open.
+
+- [x] Collect `(sql, report)` pairs from the existing tests (fixture or
   conftest hook around `analyze`) without rewriting the tests.
-- [ ] Generate table contents from the parsed DDL: values from a tiny domain
+- [x] Generate table contents from the parsed DDL: values from a tiny domain
   (e.g. `[1, 2, None]`) plus the query's literals, respecting primary keys,
   `UNIQUE`, and `NOT NULL`, so collisions and NULLs are frequent.
-- [ ] First cut: Unique Set and Non-Null Unique Set assertions on the Root
+- [x] First cut: Unique Set and Non-Null Unique Set assertions on the Root
   Select, checked with `GROUP BY <cols> HAVING count(*) > 1` over the query
   (and a NULL check for Non-Null Unique Sets).
-- [ ] Unique Join assertions: the join's row count never exceeds its left
+- [x] Unique Join assertions: the join's row count never exceeds its left
   input's. Needs the left input and the join extracted as SQL from the parsed
-  node.
-- [ ] Assertions on views (query the view), CTEs and FROM subqueries (extract
+  node. Built as a stronger check: the join is rewritten to `LEFT`, so the
+  counts differ exactly when some left row matches more than once.
+- [x] Assertions on views (query the view), CTEs and FROM subqueries (extract
   the node's SQL with sqlglot, carrying any `WITH` clause it depends on).
-- [ ] Property Declarations must hold in generated data, or they cause false
+- [x] Property Declarations must hold in generated data, or they cause false
   alarms: table-level ones become extra constraints; declarations on query
-  results are enforced by rejecting violating instances.
-- [ ] Skip programs with tables that have no `CREATE` (no schema to generate).
-- [ ] Opt-in suite (marker excluded from the default run) that fails on any
+  results are enforced by rejecting violating instances. (Every `DECLARE`
+  marker sits on a Select Expression today, so all are enforced by rejection;
+  DDL constraints are enforced by DuckDB and by the generator.)
+- [x] Skip programs with tables that have no `CREATE` (no schema to generate).
+- [x] Opt-in suite (marker excluded from the default run) that fails on any
   `PROVED` with a counterexample, printing the instance.
+
+### Findings
+
+First run (260 programs, 139 `PROVED` assertions, 200 examples of up to 3
+rows per table; also clean at 1500 examples of up to 4 rows): no
+counterexamples. Skipped, because DuckDB rejects the program itself:
+
+- `test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_proved`
+  and `test_a_positional_grouping_key_maps_to_its_selected_output` self-join
+  a view without aliases (`FROM per_user JOIN per_user USING (user_id)`),
+  which DuckDB reports as an ambiguous table reference.
+
+A seeded rule bug (every join accepted as unique) is caught, with two-row
+counterexamples.
 
 ## Part 2 — differential testing without markers
 
