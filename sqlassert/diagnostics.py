@@ -12,6 +12,7 @@ from sqlassert.provenance import Origin
 
 CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
 CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
+CONSTRAINT_WITHOUT_TABLE = "constraint-without-table"
 DUPLICATE_DECLARATION = "duplicate-declaration"
 INCOMPLETE_CATALOG_METADATA = "incomplete-catalog-metadata"
 INVALID_FOREIGN_KEY_CONSTRAINT = "invalid-foreign-key-constraint"

@@ -552,6 +552,7 @@ class ParsedProgram:
     """One SQL Program. Sequence arguments may be any iterable; what is stored
     is always an immutable tuple."""
 
+    # CREATE and ALTER TABLE statements, in program order.
     create_statements: tuple[exp.Expression, ...] = ()
     root_select: exp.Query | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
@@ -584,7 +585,7 @@ class SqlParser:
         selects: list[exp.Query] = []
 
         for statement in statements:
-            if isinstance(statement, exp.Create):
+            if isinstance(statement, exp.Create) or _is_alter_table(statement):
                 creates.append(statement)
             elif isinstance(statement, exp.Query):
                 selects.append(statement)
@@ -763,6 +764,10 @@ def join_origin(join: exp.Join, dialect: str) -> Origin:
 def exhaustive_line(case: exp.Case) -> int | None:
     """The source line of the marker asserting this CASE exhaustive, if any."""
     return case.meta.get(_EXHAUSTIVE_AT)
+
+
+def _is_alter_table(statement: exp.Expression) -> bool:
+    return isinstance(statement, exp.Alter) and (statement.args.get("kind") or "").upper() == "TABLE"
 
 
 def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:

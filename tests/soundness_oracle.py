@@ -487,11 +487,33 @@ class _Database:
 
 def _runnable_create(statement: exp.Expression) -> str:
     """The statement as DuckDB runs it. A table created from a query becomes a
-    view, so its contents follow from generated data instead of being generated."""
+    view, so its contents follow from generated data instead of being generated.
+    DuckDB cannot ALTER TABLE ... ADD UNIQUE, so that becomes a unique index."""
     if isinstance(statement, exp.Create) and (statement.kind or "").upper() == "TABLE" and statement.expression:
         statement = statement.copy()
         statement.set("kind", "VIEW")
+    if isinstance(statement, exp.Alter):
+        indexes = _unique_indexes(statement)
+        if indexes is not None:
+            return "; ".join(indexes)
     return statement.sql(dialect="duckdb")
+
+
+def _unique_indexes(alter: exp.Alter) -> list[str] | None:
+    """`ALTER TABLE t ADD UNIQUE (...)`, each constraint as `CREATE UNIQUE INDEX`,
+    or None when the statement does anything else."""
+    table = alter.this.sql(dialect="duckdb")
+    indexes = []
+    for action in alter.args.get("actions") or ():
+        constraints = action.expressions if isinstance(action, exp.AddConstraint) else [action]
+        for constraint in constraints:
+            if isinstance(constraint, exp.Constraint) and len(constraint.expressions) == 1:
+                constraint = constraint.expressions[0]
+            if not (isinstance(constraint, exp.UniqueColumnConstraint) and isinstance(constraint.this, exp.Schema)):
+                return None
+            columns = ", ".join(column.sql(dialect="duckdb") for column in constraint.this.expressions)
+            indexes.append(f"CREATE UNIQUE INDEX sqlassert_unique_{id(constraint)} ON {table} ({columns})")
+    return indexes or None
 
 
 def _respecting_keys(rows: list[tuple], keys: tuple[tuple[int, ...], ...]) -> list[tuple]:
