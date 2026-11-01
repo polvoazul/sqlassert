@@ -15,7 +15,6 @@ import pytest
 
 from sqlassert import Outcome, analyze
 from sqlassert.diagnostics import (
-    UNANALYZED_ASSERTION,
     UNATTACHED_MARKER,
     UNKNOWN_ASSERTED_COLUMN,
     UNRECOGNIZED_MARKER,
@@ -235,9 +234,7 @@ def test_a_typo_in_the_keyword_is_reported_as_an_unrecognized_marker():
     assert [d.code for d in report.diagnostics] == [UNRECOGNIZED_MARKER]
 
 
-def test_a_marker_on_a_join_inside_a_cte_body_is_unanalyzed_not_dropped():
-    """A CTE body containing a JOIN is still not modeled (unrelated to this
-    marker) -- the marker on it must be reported, not silently lost."""
+def test_a_marker_on_a_select_with_a_join_inside_a_cte_body_is_analyzed():
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -253,8 +250,8 @@ def test_a_marker_on_a_join_inside_a_cte_body_is_unanalyzed_not_dropped():
         """
     )
 
-    assert report.assertions == ()
-    assert [d.code for d in report.diagnostics] == [UNANALYZED_ASSERTION]
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+    assert not report.diagnostics
 
 
 def test_report_facts_includes_unique_sets_earned_through_a_proved_assertion():

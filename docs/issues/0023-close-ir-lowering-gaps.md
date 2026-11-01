@@ -52,12 +52,12 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 - [ ] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
   `WHERE x = 5`, and inner-join equalities imply non-null `x`; `count(...)` is
   never null. Predicates done in issue 24 (null sources); `count(...)` remains.
-- [ ] A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all
+- [x] A `UNION`/`INTERSECT`/`EXCEPT` without `ALL` earns a Unique Set over all
   of its output columns, the same way `SELECT DISTINCT` does. Derive it from
   the leftmost arm's output columns, and lower set-operation bodies when they
-  appear inside a view, CTE, or subquery. The Unique Set is done in issue 24
-  (view and CTE bodies already lower); a set operation inside a FROM subquery
-  is still opaque.
+  appear inside a view, CTE, or subquery. The Unique Set is done in issue 24;
+  issue 28 lowers every view, CTE, and FROM-subquery body the way the Root
+  Select is lowered, set operations and joins included.
 - [ ] Column lineage, column unique status.
 - [ ] General window modeling: represent window expressions and their filtering
   as separate `Window` and `Filter` operations, with the engine deriving

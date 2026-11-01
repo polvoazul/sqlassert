@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 
 from sqlassert import Outcome, analyze
-from sqlassert.diagnostics import UNANALYZED_ASSERTION
 
 
 @pytest.fixture
@@ -242,23 +241,6 @@ def test_a_correlated_subquery_projected_as_a_key_member_is_unsupported_and_neve
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
-def test_a_join_inside_a_cte_body_is_not_modeled_and_reports_a_diagnostic(users_and_sessions):
-    report = analyze(
-        users_and_sessions
-        + """
-        WITH enriched AS (
-            SELECT users.id
-            FROM users
-            /**ASSERT UNIQUE**/ JOIN sessions ON sessions.user_id = users.id
-        )
-        SELECT * FROM enriched
-        """
-    )
-
-    assert report.assertions == ()
-    assert [diagnostic.code for diagnostic in report.diagnostics] == [UNANALYZED_ASSERTION]
 
 
 def test_a_self_referencing_cte_without_recursive_does_not_hang_and_is_unknown(users_and_sessions):
