@@ -10,7 +10,10 @@ from dataclasses import dataclass
 
 from sqlassert.provenance import Origin
 
+CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
+CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
 DUPLICATE_DECLARATION = "duplicate-declaration"
+INCOMPLETE_CATALOG_METADATA = "incomplete-catalog-metadata"
 MULTIPLE_ROOT_SELECTS = "multiple-root-selects"
 RECURSIVE_VIEW_DEFINITION = "recursive-view-definition"
 SQL_PARSE_FAILED = "sql-parse-failed"

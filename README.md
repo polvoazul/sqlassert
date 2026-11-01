@@ -131,9 +131,21 @@ for diagnostic in report.diagnostics:
     print(diagnostic.code, diagnostic.message)
 ```
 
-Database knowledge gatherers bind facts to this Program's IR nodes before it
-reaches the engine; `analyze` itself accepts one SQL Program. This work is
-tracked in [#14](https://github.com/polvoazul/sqlassert/issues/14).
+`analyze` reads only the SQL Program. To take tables, keys, and views from a
+live database instead of `CREATE` statements, pass a catalog fetcher
+(`pip install sqlassert[duckdb]`):
+
+```python
+import duckdb
+from sqlassert import analyze_database
+from sqlassert.discovery.duckdb import DuckDBKnowledgeFetcher
+
+report = analyze_database(sql, DuckDBKnowledgeFetcher(duckdb.connect("warehouse.db")))
+```
+
+The fetcher reads catalog metadata only (columns, nullability, primary keys,
+unique constraints, view definitions), never table rows. `CREATE` statements in
+the SQL take precedence over catalog objects of the same name.
 
 ## Details
 

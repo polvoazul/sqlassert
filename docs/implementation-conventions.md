@@ -66,9 +66,22 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   evaluator body. The arena rejects nested analysis sessions.
 - `reporting.py` defines the durable Report values.
 - `rules/` contains the analysis functions.
-- `discovery/duckdb` is a future adapter that binds database metadata to IR
-  nodes and produces Properties accepted as knowledge; it is not part of the MVP engine. See
-  [#14](https://github.com/polvoazul/sqlassert/issues/14).
+- `discovery/` hydrates a SQL Program from a database catalog before the
+  engine runs; the engine never sees it. `DatabaseKnowledgeFetcher` links the
+  Program once without a connection to find the external Named Relations it
+  reaches, then relinks it with each fetched table declared as a column-only
+  `CREATE TABLE` and each fetched view as its stored `CREATE VIEW`, until no
+  new Relation is reached. Names inside a fetched view are rewritten to
+  canonical identities first, because they resolve in the view's own schema.
+  Catalog constraints never enter those declarations: `bind` turns them into
+  Properties over the final IR, passed to `Engine.run` as `Accepted`
+  Knowledge. SQL declarations win over catalog objects of the same name and
+  are never fetched. A missing object, an unreadable catalog, or incomplete
+  metadata is a Diagnostic, and the Relation stays opaque. Subclasses own one
+  database's catalog boundary: name resolution and metadata queries.
+  `discovery/duckdb.py` is the DuckDB adapter, behind the optional `duckdb`
+  extra. `analyze_database(sql, fetcher, *, dialect=...)` in `main.py`
+  composes it; `analyze` stays pure.
 
 ## Stage Objects
 
@@ -91,4 +104,8 @@ The public shape is:
 `analyze(sql, *, dialect="duckdb") -> Report`
 
 `sql` is the complete SQL Program. Analysis returns data and never prints.
+
+`analyze_database(sql, fetcher, *, dialect="duckdb") -> Report` is the opt-in
+catalog-backed variant: the same Program and Report, with external Relations
+hydrated by a `DatabaseKnowledgeFetcher`.
 Assertion evidence supports `.explain()`.
