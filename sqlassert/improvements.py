@@ -14,6 +14,8 @@ as a multiset, and the evidence that it does:
   selected columns; a `GROUP BY` column the remaining grouping columns
   strictly determine.
 - A CTE nothing references.
+- A `WHERE EXISTS` or `IN` subquery (or a SEMI JOIN) every row passes: its
+  semi join is proved Exactly One, so it keeps every row once.
 
 Proofs come from the rules' internals (null sources, strict closure) as well
 as `Arena.prove`, since none of these facts is a Property. Whether a column
@@ -56,6 +58,7 @@ class Rewrite(Enum):
     FILTER_JOIN = "Filter-Only Join"
     REDUNDANT_DISTINCT = "Redundant DISTINCT"
     REDUNDANT_GROUPING = "Redundant GROUP BY"
+    REDUNDANT_FILTER = "Redundant EXISTS"
     UNUSED_CTE = "Unused CTE"
 
 
@@ -89,6 +92,8 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
         node = syntax.get((site.offset, site.trailing))
         if isinstance(relation, ir.Limit):
             relation = relation.input
+        if site.trailing:
+            found.extend(_redundant_subquery_filters(arena, site, relation))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
                 removed = _redundant_join(arena, site, relation, node, dialect)
@@ -102,6 +107,25 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
                 pass  # Other Select Expressions have nothing to rewrite yet.
     found.extend(_unused_ctes(ast))
     return sorted(found, key=lambda item: item.site.offset)
+
+
+def _redundant_subquery_filters(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr) -> list[Improvement]:
+    """The semi joins of this Select (its WHERE subqueries, issue 23, or an
+    explicit SEMI JOIN) that match every row exactly once, so filter nothing."""
+    found: list[Improvement] = []
+    while True:
+        match relation:
+            case ir.Project(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source) | ir.Filter(input=source):
+                relation = source
+            case ir.Join(kind="semi" | "anti", left=source):
+                if relation.kind == "semi":
+                    proof = arena.prove(ExactlyOneJoin(join=relation))
+                    if proof.value:
+                        message = f"every row matches exactly one row, so {relation.origin.detail} filters nothing: delete it"
+                        found.append(Improvement(site, Rewrite.REDUNDANT_FILTER, message, proof))
+                relation = source
+            case _:
+                return found
 
 
 def _syntax_at_sites(ast: ParsedProgram) -> dict[tuple[int, bool], exp.Join | exp.Select]:

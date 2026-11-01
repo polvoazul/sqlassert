@@ -291,6 +291,7 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 | Filter-Only Join | The same for an inner JOIN with at most one match: it only filters, so it can be a `WHERE EXISTS`. Not suggested when a RIGHT or FULL JOIN follows it. |
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
 | Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
+| Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 
 `report.improvements` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.

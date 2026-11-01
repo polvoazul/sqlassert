@@ -264,7 +264,7 @@ sparse over dense indexes) are physical or estimation.
 | Eliminate EXCEPT (8.2) | Set ops | ∗ | add, Low: `A EXCEPT B` is always empty under the same precondition |
 | Accurate cardinalities (8.2) | Set ops | ‡ | n/a: estimation |
 | Query folding [33, 51, 57] | Other | ∗ | n/a: reuses other queries' results |
-| Eliminate correlated subqueries in EXISTS [85] (8.2) | Other | ∗ | add, High: an `EXISTS`/`IN` filter every row passes (the semi join's at-least-one half: coverage onto the ON columns, non-null, only cross-input equalities) is redundant |
+| Eliminate correlated subqueries in EXISTS [85] (8.2) | Other | ∗ | covered (Redundant EXISTS, via Exactly One); was add, High: an `EXISTS`/`IN` filter every row passes (the semi join's at-least-one half: coverage onto the ON columns, non-null, only cross-input equalities) is redundant |
 
 Chosen first (no new lowering needed): the redundant `EXISTS`/`IN` filter
 (High) and the arbitrary `ORDER BY … LIMIT` (Low).
