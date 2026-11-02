@@ -14,6 +14,9 @@ Run it over every program the test suite analyzes::
 
 With the option, `conftest.py` records each test's `analyze()` calls and judges
 them after its fixtures finish. Pytest distributes whole tests across CPUs.
+
+Only programs in the DuckDB dialect are judged; others are skipped with the
+reason. Rendering SQL for DuckDB is best-effort and may change its meaning.
 """
 
 from __future__ import annotations
@@ -145,6 +148,11 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
     proved = [index for index, assertion in enumerate(report.assertions) if assertion.outcome is Outcome.PROVED]
     if not proved:
         return Judgement()
+    if dialect != "duckdb":
+        # Rendering for DuckDB is best-effort and may change the query: sqlglot
+        # 28 turns Spark's RIGHT SEMI JOIN into a SEMI JOIN. The oracle judges
+        # only what DuckDB runs as written.
+        return Judgement(skipped=(f"dialect {dialect}: the oracle runs DuckDB SQL only",))
 
     parsed = SqlParser(dialect).parse(sql)
     properties = [assertion.property for assertion in IrParser(dialect).parse(parsed).program.assertions]
