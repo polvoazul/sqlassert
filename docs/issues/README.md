@@ -15,7 +15,7 @@ Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33,
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
 
 - **P1, now:** #23 R11 (every comparison rejects NULL: cheapest, most common gap the
-  #35 audit found); the oracle's dialect gap (not filed yet).
+  #35 audit found). The oracle's dialect gap is closed: it judges DuckDB SQL only.
 - **P2:** done, except #15's remaining Low smells and High rewrites from the
   Kossmann triage (most need ORDER BY or select-list subqueries lowered).
 - **P3, needs downloaded corpora:** #11, #27 Part 2.

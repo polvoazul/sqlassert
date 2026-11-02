@@ -571,3 +571,13 @@ def test_an_insufficient_search_is_reported_as_skipped(monkeypatch):
     assert judgement.checked == 0
     assert "insufficient valid data" in judgement.skipped[0]
     assert judgement.searches[0][1].rejected == 10
+
+
+def test_programs_in_another_dialect_are_skipped():
+    # Rendering for DuckDB may change the query (sqlglot turns Spark's RIGHT
+    # SEMI JOIN into a SEMI JOIN), so only DuckDB SQL is judged.
+    sql = "CREATE TABLE t (id INTEGER PRIMARY KEY); SELECT id FROM t /**ASSERT UNIQUE(id)**/"
+    judgement = judge(sql, analyze(sql, dialect="spark"), dialect="spark")
+
+    assert judgement.checked == 0
+    assert judgement.skipped == ("dialect spark: the oracle runs DuckDB SQL only",)
