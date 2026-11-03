@@ -55,7 +55,7 @@ def test_create_sequence_is_reported_and_dropped():
     assert [diagnostic.code for diagnostic in report.diagnostics] == [UNSUPPORTED_CREATE_STATEMENT]
 
 
-def test_create_schema_is_reported_and_dropped():
+def test_create_schema_is_accepted_silently():
     report = analyze(
         """
         CREATE SCHEMA analytics;
@@ -64,4 +64,4 @@ def test_create_schema_is_reported_and_dropped():
         """
     )
 
-    assert [diagnostic.code for diagnostic in report.diagnostics] == [UNSUPPORTED_CREATE_STATEMENT]
+    assert [diagnostic.code for diagnostic in report.diagnostics] == []

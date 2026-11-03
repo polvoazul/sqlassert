@@ -114,6 +114,8 @@ class IrParser:
             match statement:
                 case exp.Create(kind="INDEX"):
                     self._declare_index(statement)
+                case exp.Create(kind="SCHEMA"):
+                    pass  # A schema states nothing about rows, like a plain index.
                 case exp.Create():
                     self._declare(statement)
                 case exp.Alter():
@@ -163,7 +165,7 @@ class IrParser:
             self._diagnostics.append(
                 Diagnostic(
                     diag.UNSUPPORTED_CREATE_STATEMENT,
-                    f"create statement kind {kind or '<unknown>'} is not supported; only TABLE, VIEW, and INDEX are analyzed: {statement.sql(dialect=self.dialect)}",
+                    f"create statement kind {kind or '<unknown>'} is not supported; only TABLE, VIEW, INDEX, and SCHEMA are analyzed: {statement.sql(dialect=self.dialect)}",
                 )
             )
             return
