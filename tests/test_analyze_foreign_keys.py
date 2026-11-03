@@ -19,7 +19,6 @@ from sqlassert.diagnostics import (
     UNATTACHED_MARKER,
     UNKNOWN_ASSERTED_COLUMN,
     UNKNOWN_REFERENCED_COLUMN,
-    UNSUPPORTED_CREATE_STATEMENT,
 )
 
 SCHEMA = """
@@ -103,8 +102,7 @@ def test_qualified_and_named_table_level_constraints():
         """
     )
 
-    # sqlassert reports CREATE SCHEMA as unsupported; DuckDB needs it to run the program.
-    assert [diagnostic.code for diagnostic in report.diagnostics] == [UNSUPPORTED_CREATE_STATEMENT]
+    assert [diagnostic.code for diagnostic in report.diagnostics] == []
     assert [a.outcome for a in report.assertions] == [Outcome.PROVED]
 
 
