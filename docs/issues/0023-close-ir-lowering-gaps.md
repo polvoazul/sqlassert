@@ -177,11 +177,17 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
   Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
   passes), which is exactly what ENUM means.
-- [ ] **R11** (§3.2.4, footnote 9): only `=`, `IN (...)` and `IS NOT NULL`
-  reject NULL. Paulley counts every false-interpreted comparison as
-  null-intolerant: `<`, `>`, `<=`, `>=`, `<>`, `BETWEEN`, `LIKE` with column
-  operands. `WHERE total > 0` should make `total` non-null (and enable the
-  INNER JOIN suggestion). Cheapest and most common of these rows.
+- [x] **R11** (§3.2.4, footnote 9): only `=`, `IN (...)` and `IS NOT NULL`
+  rejected NULL. Done: a conjunct rejects every column it is strict in (NULL
+  whenever the column is), recorded at lowering as
+  `OpaqueExpression.strict_inputs`. Every comparison but the IS family is
+  strict in its operands, through arithmetic, CAST and NOT; BETWEEN and IN in
+  the tested operand; AND and OR in a column both sides are strict in. Not
+  strict: the IS family, `coalesce`, CASE, functions (`concat` and Postgres
+  `greatest` skip NULLs), `||` (Oracle reads NULL as `''`), and comparisons
+  with ANY or ALL (TRUE over no rows). Still open: per-function null
+  behaviour (most built-ins are strict), and AND under OR rejecting without
+  being strict (`(a > 0 AND b > 0) OR a < 0` rejects `a`).
 - [ ] **R4** (Claim 20): `WHERE b = a + 1` should give `a → b` when the
   expression is deterministic and its inputs compare by identity (the same
   rule as a computed column, `uniqueness._computed`).

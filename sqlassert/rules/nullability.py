@@ -249,23 +249,37 @@ def _rejected(
 
 
 def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn, ir.ScalarExpr]:
-    """Each column a conjunct requires to be non-null, with that conjunct."""
+    """Each column a conjunct requires to be non-null, with that conjunct.
+
+    A conjunct cannot be TRUE while it is NULL, so it rejects every column it
+    is strict in; `IS NOT NULL` rejects those of its operand (Paulley §3.2.4,
+    footnote 9).
+    """
     rejected: dict[ir.OutputColumn, ir.ScalarExpr] = {}
     for conjunct in conjuncts:
         match conjunct:
-            case ir.Equality(left=left, right=right):
-                operands: tuple[ir.ScalarExpr, ...] = (left, right)
-            case ir.IsNotNull(operand=operand) | ir.InList(operand=operand):
-                operands = (operand,)
+            case ir.IsNotNull(operand=operand):
+                columns = _strict_inputs(operand)
             case _:
-                operands = ()  # IS NULL and opaque conjuncts may hold on NULL.
-        for operand in operands:
-            match operand:
-                case ir.ColumnRef(column=column):
-                    rejected.setdefault(column, conjunct)
-                case _:
-                    pass  # Only a column operand is a column the conjunct rejects.
+                columns = _strict_inputs(conjunct)
+        for column in columns:
+            rejected.setdefault(column, conjunct)
     return rejected
+
+
+def _strict_inputs(expression: ir.ScalarExpr) -> tuple[ir.OutputColumn, ...]:
+    """The columns whose NULL makes `expression` NULL."""
+    match expression:
+        case ir.ColumnRef(column=column):
+            return (column,)
+        case ir.OpaqueExpression(strict_inputs=columns):
+            return columns
+        case ir.Equality(left=left, right=right):
+            return _strict_inputs(left) + _strict_inputs(right)
+        case ir.InList(operand=operand):
+            return _strict_inputs(operand)  # `1 IN (1, NULL)` is TRUE.
+        case _:
+            return ()  # IS NULL, IS NOT NULL, coalesce and CASE may be non-null on NULL.
 
 
 def _on_rejected(join: ir.Join) -> dict[ir.OutputColumn, ir.ScalarExpr]:
