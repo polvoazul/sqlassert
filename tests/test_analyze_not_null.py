@@ -300,3 +300,97 @@ def test_a_simple_case_is_non_null_when_every_arm_it_can_take_is(label: str, sql
     if reason is not None:
         evidence = report.assertions[0].evidence
         assert evidence is not None and reason in evidence.explain(), label
+
+
+# Null rejection by WHERE and ON (Paulley §3.2.4, footnote 9). A conjunct
+# rejects a column when it cannot be TRUE while the column is NULL: every
+# comparison but the IS family, over operands that are NULL whenever the
+# column is (columns, arithmetic, CAST, ...). `coalesce`, CASE and functions
+# may turn a NULL into a value, so they reject nothing.
+REJECTION_SCHEMA = "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, m INTEGER, s VARCHAR, flag BOOLEAN);"
+
+REJECTING_CONJUNCTS = [
+    ("n > 0", "n"),
+    ("n < 0", "n"),
+    ("n >= 0", "n"),
+    ("n <= 0", "n"),
+    ("n <> 0", "n"),
+    ("n != 0", "n"),
+    ("0 < n", "n"),
+    ("n > m", "n, m"),
+    ("n BETWEEN 1 AND 5", "n"),
+    ("s LIKE 'a%'", "s"),
+    ("s ILIKE 'a%'", "s"),
+    ("s NOT LIKE 'a%'", "s"),
+    ("n NOT IN (1, 2)", "n"),
+    ("(n > 0)", "n"),
+    ("NOT (n > 0)", "n"),
+    ("n > 0 OR n < -5", "n"),
+    ("n + 1 > 0", "n"),
+    ("-n = 3", "n"),
+    ("n * m = 4", "n, m"),
+    ("n % 2 = 0", "n"),
+    ("CAST(n AS VARCHAR) = '1'", "n"),
+    ("n + 1 = m", "n, m"),
+    ("n + 1 IN (2, 3)", "n"),
+    ("n + 1 IS NOT NULL", "n"),
+    ("flag", "flag"),
+    ("NOT flag", "flag"),
+]
+
+
+@pytest.mark.parametrize(("condition", "columns"), REJECTING_CONJUNCTS)
+def test_a_null_rejecting_conjunct_proves_its_columns_non_null(condition: str, columns: str):
+    report = analyze(f"{REJECTION_SCHEMA} SELECT n, m, s, flag FROM t WHERE {condition} /**ASSERT NOT NULL({columns})**/")
+    assert not report.diagnostics, report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED], condition
+
+
+NON_REJECTING_CONJUNCTS = [
+    # Each can be TRUE on a row where n is NULL.
+    "n IS NULL",
+    "n IS DISTINCT FROM 1",
+    "n IS NOT DISTINCT FROM 1",
+    "NOT (n IS NOT NULL)",
+    "(n > 0) IS NOT FALSE",
+    "(n > 0) IS NULL",
+    "coalesce(n, 0) = 0",
+    "ifnull(n, 0) = 0",
+    "CASE WHEN n IS NULL THEN 1 END = 1",
+    "concat(n, 'a') = 'a'",
+    "greatest(n, 5) = 5",
+    "s || 'x' = 'ax'",  # Oracle reads NULL as '' here; MySQL reads || as OR.
+    "n > 0 OR m > 0",
+    "n > 0 OR TRUE",
+    "(n > 0 AND m > 0) = FALSE",
+    "NOT (n > 0 AND m > 0)",
+    "m BETWEEN n AND 5",
+    "m IN (1, n)",
+    "n > ALL (SELECT m FROM t WHERE FALSE)",
+    "n >= ANY (SELECT m FROM t)",
+    "NOT (n IN (SELECT m FROM t))",
+]
+
+
+@pytest.mark.parametrize("condition", NON_REJECTING_CONJUNCTS)
+def test_a_conjunct_true_on_a_null_rejects_nothing(condition: str):
+    report = analyze(f"{REJECTION_SCHEMA} SELECT n, m FROM t WHERE {condition} /**ASSERT NOT NULL(n)**/")
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN], condition
+
+
+def test_a_comparison_undoes_a_left_join_s_padding():
+    assert padded_outcomes(
+        """
+        SELECT u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id
+        WHERE u.id > 5 /**ASSERT NOT NULL(email)**/
+        """
+    ) == [Outcome.PROVED]
+
+
+def test_an_inner_join_on_comparison_rejects_null():
+    report = analyze(
+        f"{REJECTION_SCHEMA} CREATE TABLE r (id INTEGER PRIMARY KEY, n INTEGER);"
+        "SELECT r.n FROM t JOIN r ON r.id = t.id AND r.n + 1 > t.id /**ASSERT NOT NULL(n)**/"
+    )
+    assert not report.diagnostics, report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]

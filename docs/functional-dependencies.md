@@ -263,7 +263,7 @@ through only with definite determinants.
 | R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | implemented | `uniqueness._equality_dependencies` (`col IS NULL`: `∅ → col`) | `test_paulley_audit.py` R8 |
 | R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | missing | LIKE is opaque; without wildcards it is an equality. Filed in issue 23 |  |
 | R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | missing | `col = (uncorrelated scalar subquery)` gives nothing; the subquery is one value for every row, so `∅ → col`. Filed in issue 23 |  |
-| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | missing | partly: `=`, `IN` and `IS NOT NULL` reject NULL (`nullability._null_rejected`) and non-nullness spreads through Equality Groups, but other comparisons (`<`, `>`, `<>`, `BETWEEN`, `LIKE`), which Paulley counts as null-intolerant, are opaque. Filed in issue 23 | `test_paulley_audit.py` R11 |
+| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | implemented | `nullability._null_rejected`: a conjunct rejects every column it is strict in (`OpaqueExpression.strict_inputs`, computed by `convert._strict_inputs`): every comparison but the IS family, through arithmetic, CAST, NOT, and AND/OR when both sides are strict in it; `IS NOT NULL` rejects its operand's. Non-nullness spreads through Equality Groups | `test_paulley_audit.py` R11 |
 | R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `test_paulley_audit.py` R12 |
 | R13 | Disjunctions give nothing | §3.2.4, p.77 | implemented | OR is an opaque conjunct (`convert._lower_conjuncts`) | `test_paulley_audit.py` R13- |
 | I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | missing | partly: the left input's FDs hold (`uniqueness._delegations`, `_grouped` onto the left), the right input's do not. Sound only under identity comparison (an INTERSECT row carries the left value). Filed in issue 23 | `test_paulley_audit.py` I1 |
@@ -307,7 +307,7 @@ Summary: 77 rows; every implemented row has a case in
 `tests/test_paulley_audit.py`, judged by the soundness oracle (0
 counterexamples). The *missing* rows are filed in issue 23 ("Found by the
 Paulley audit"): E4/R3/L14 (equivalences and domains across outer joins),
-S5 (CHECK constraints), R4, R9, R10, R11 (restriction predicates beyond `=`),
+S5 (CHECK constraints), R4, R9, R10 (restriction predicates beyond `=`),
 I1/I2 (the right input of INTERSECT), U2 (UNION ALL equivalences), L13, and
 F2/F4 (full join ON dependencies). Two differences are deliberate and
 stronger than Paulley: our lax FDs are lax in the determinant only (A7), so

@@ -56,12 +56,15 @@ class OpaqueExpression(ScalarExpr):
     """An expression whose value is not modelled.
 
     `deterministic` ones are a function of exactly the input columns in
-    `inputs` (Paulley §3.1.4): rows agreeing on them agree on it. Nothing else
-    about the value, its nullability or its domain is known."""
+    `inputs` (Paulley §3.1.4): rows agreeing on them agree on it. It is NULL
+    whenever one of `strict_inputs` is (`n + 1`, `n > m`, `NOT p`), so a
+    WHERE or ON conjunct rejects them. Nothing else about the value, its
+    nullability or its domain is known."""
 
     description: str
     deterministic: bool = False
     inputs: tuple[OutputColumn, ...] = ()
+    strict_inputs: tuple[OutputColumn, ...] = ()
 
 
 class Count(ScalarExpr):

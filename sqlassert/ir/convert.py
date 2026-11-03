@@ -948,7 +948,44 @@ class IrParser:
         return ir.OpaqueExpression(
             origin=origin, description=expression.sql(dialect=self.dialect),
             deterministic=inputs is not None, inputs=inputs or (),
+            strict_inputs=() if isinstance(expression, exp.Column)  # An unresolved column.
+            else tuple(self._strict_inputs(expression, bindings, schema_complete=schema_complete)),
         )
+
+    def _strict_inputs(
+        self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
+    ) -> dict[ir.OutputColumn, None]:
+        """The resolved columns whose NULL makes `expression` NULL.
+
+        Comparisons, arithmetic, CAST and NOT are NULL when an operand is;
+        BETWEEN and IN only in the tested operand (`1 IN (1, NULL)` is TRUE);
+        AND and OR only in a column both sides are (`NULL OR TRUE` is TRUE).
+        The IS family, coalesce, CASE and functions may turn NULL into a value,
+        and a comparison with ANY or ALL is TRUE over no rows.
+        """
+
+        def strict(node: exp.Expression) -> dict[ir.OutputColumn, None]:
+            return self._strict_inputs(node, bindings, schema_complete=schema_complete)
+
+        match expression:
+            case exp.Column():
+                lowered = self._lower_expression(expression, bindings, schema_complete=schema_complete)
+                return {lowered.column: None} if isinstance(lowered, ir.ColumnRef) else {}
+            case exp.Binary(this=exp.Any() | exp.All()) | exp.Binary(expression=exp.Any() | exp.All()):
+                return {}
+            case exp.Binary() if isinstance(expression, _STRICT_BINARY):
+                return strict(expression.this) | strict(expression.expression)
+            case exp.Paren() | exp.Not() | exp.Neg() | exp.BitwiseNot() | exp.Cast():
+                return strict(expression.this)
+            case exp.Between():
+                return strict(expression.this)
+            case exp.In() if expression.expressions and not any(expression.args.get(key) for key in ("query", "unnest", "field")):
+                return strict(expression.this)
+            case exp.And() | exp.Or():
+                right = strict(expression.expression)
+                return {column: None for column in strict(expression.this) if column in right}
+            case _:
+                return {}
 
     def _function_inputs(
         self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
@@ -1267,6 +1304,15 @@ def _subquery_conjunct(conjunct: exp.Expression) -> tuple[str, exp.Select, exp.E
             return ("semi", body, operand) if isinstance(body, exp.Select) else None
         case _:
             return None
+
+
+# Binary operators that are NULL when either operand is. Not `||`: Oracle
+# reads NULL as '' there, and MySQL reads it as OR.
+_STRICT_BINARY = (
+    exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike,
+    exp.Add, exp.Sub, exp.Mul, exp.Div, exp.IntDiv, exp.Mod,
+    exp.BitwiseAnd, exp.BitwiseOr, exp.BitwiseXor, exp.BitwiseLeftShift, exp.BitwiseRightShift,
+)
 
 
 def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:
