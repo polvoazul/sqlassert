@@ -169,6 +169,33 @@ class IsNotNull(ScalarExpr):
     operand: ScalarExpr
 
 
+class And(ScalarExpr):
+    """`p AND q ...` in a WHERE or ON condition, flattened: TRUE when every part is."""
+
+    parts: tuple[ScalarExpr, ...]
+
+
+class Or(ScalarExpr):
+    """`p OR q ...` in a WHERE or ON condition, flattened: TRUE when some part is.
+
+    Its parts are lowered like a WHERE condition. An AND or OR inside a value,
+    such as `(a OR b) = c`, stays an opaque expression.
+    """
+
+    parts: tuple[ScalarExpr, ...]
+
+
+def conjuncts(predicate: ScalarExpr | None) -> tuple[ScalarExpr, ...]:
+    """The parts of `predicate`'s top-level AND; none for no predicate."""
+    match predicate:
+        case None:
+            return ()
+        case And(parts=parts):
+            return parts
+        case _:
+            return (predicate,)
+
+
 class OutputColumn(Node):
     """One named output of one relational stage and the expression producing it.
 
@@ -229,24 +256,32 @@ class Alias(RelationExpr):
 
 
 class Join(RelationExpr):
-    """A join and the conjuncts of its ON (or USING) condition.
+    """A join and its ON (or USING) condition; None for a cross join.
 
-    Recognized conjuncts are `Equality`, `InList`, `IsNull`, and `IsNotNull`; any other
-    conjunct is kept as an opaque scalar expression, so the tuple is the whole
-    condition.
+    A condition is `And` and `Or` over the recognized `Equality`, `InList`,
+    `IsNull`, and `IsNotNull`; anything else is an opaque scalar expression, so
+    the predicate is the whole condition.
     """
 
     kind: str
     left: RelationExpr
     right: RelationExpr
-    conjuncts: tuple[ScalarExpr, ...] = ()
+    predicate: ScalarExpr | None = None
+
+    @property
+    def conjuncts(self) -> tuple[ScalarExpr, ...]:
+        return conjuncts(self.predicate)
 
 
 class Filter(RelationExpr):
-    """A WHERE clause and its conjuncts, recognized as in `Join`."""
+    """A WHERE clause, its condition lowered as in `Join`."""
 
     input: RelationExpr
-    conjuncts: tuple[ScalarExpr, ...] = ()
+    predicate: ScalarExpr | None = None
+
+    @property
+    def conjuncts(self) -> tuple[ScalarExpr, ...]:
+        return conjuncts(self.predicate)
 
 
 class Project(RelationExpr):

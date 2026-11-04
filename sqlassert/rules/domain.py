@@ -198,7 +198,7 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(arm.value for arm in arms if arm.value is not None))
             premises = [*arms, unreachable] if unreachable.value else arms
             return Result(value, "A CASE takes one of its arms' values", (expression,), premises)
-        case ir.Constant() | ir.OpaqueExpression() | ir.Count() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull():
+        case ir.Constant() | ir.OpaqueExpression() | ir.Count() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:
             raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
@@ -226,20 +226,41 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
             return []
     narrowings: list[Result[Domain]] = []
     for conjunct in conjuncts:
-        match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=other) if first is source:
-                bounds = [_bound_domain(source, other)]
-            case ir.Equality(left=other, right=ir.ColumnRef(column=second)) if second is source:
-                bounds = [_bound_domain(source, other)]
-            case ir.InList(operand=ir.ColumnRef(column=operand), values=values) if operand is source:
-                bounds = [_bound_domain(source, value) for value in values]
-            case _:
-                continue  # Other conjuncts do not bound this column.
-        if any(bound.value is None for bound in bounds):
-            continue
-        value = frozenset().union(*(bound.value for bound in bounds if bound.value is not None))
-        narrowings.append(Result(value, f"The {clause} conjunct bounds {column.name} to {_render(value)}", (conjunct,), bounds))
+        bound = _conjunct_bound(conjunct, source)
+        if bound is not None and bound.value is not None:
+            narrowings.append(Result(bound.value, f"The {clause} conjunct bounds {column.name} to {_render(bound.value)}", (conjunct,), [bound]))
     return narrowings
+
+
+def _conjunct_bound(conjunct: ir.ScalarExpr, source: ir.OutputColumn) -> Result[Domain] | None:
+    """The values `source` takes on rows where `conjunct` is TRUE, or None
+    when the conjunct does not bound it.
+
+    An AND bounds it to what each of its bounding parts allows; an OR to the
+    union of its parts' bounds, when every part bounds it. A bound is never an
+    unknown domain.
+    """
+    match conjunct:
+        case ir.Equality(left=ir.ColumnRef(column=first), right=other) if first is source:
+            bounds = [_bound_domain(source, other)]
+        case ir.Equality(left=other, right=ir.ColumnRef(column=second)) if second is source:
+            bounds = [_bound_domain(source, other)]
+        case ir.InList(operand=ir.ColumnRef(column=operand), values=values) if operand is source:
+            bounds = [_bound_domain(source, value) for value in values]
+        case ir.And(parts=parts):
+            found = [bound for part in parts if (bound := _conjunct_bound(part, source)) is not None]
+            # Distinct literals may compare equal (issue 29), so parts meet as domains do.
+            return _intersection(source, found) if found else None
+        case ir.Or(parts=parts):
+            bounds = [_conjunct_bound(part, source) for part in parts]
+            if any(bound is None for bound in bounds):
+                return None  # A part that does not bound the column lets any value through.
+        case _:
+            return None  # Other conjuncts do not bound this column.
+    if any(bound is None or bound.value is None for bound in bounds):
+        return None
+    value = frozenset().union(*(bound.value for bound in bounds if bound is not None and bound.value is not None))
+    return Result(value, f"{source.name} is in {_render(value)} on every row this conjunct keeps", (conjunct,), [bound for bound in bounds if bound is not None])
 
 
 def _bound_domain(column: ir.OutputColumn, expression: ir.ScalarExpr) -> Result[Domain]:

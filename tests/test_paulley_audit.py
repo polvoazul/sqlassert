@@ -66,7 +66,7 @@ CASES = {
     "R8": ("SELECT a, b FROM t WHERE a IS NULL /**ASSERT DETERMINES(b -> a)**/", PROVED),
     "R11": ("SELECT a, b, c FROM t WHERE a = b AND c + 1 > 0 /**ASSERT NOT NULL(a, b, c)**/", PROVED),
     "R12": ("SELECT a FROM t WHERE EXISTS (SELECT 1 FROM v WHERE v.w = t.a) /**ASSERT NOT NULL(a)**/", PROVED),
-    "R13-": ("SELECT a FROM t WHERE a = 1 OR a = 2 /**ASSERT ENUM(a IN (1, 2))**/", UNKNOWN),
+    "R13": ("SELECT a FROM t WHERE a = 1 OR a = 2 /**ASSERT ENUM(a IN (1, 2))**/", PROVED),
     # Set operations (§3.2.5–3.2.7), asserted on a CTE: a trailing marker would mark the last input.
     "I1": ("WITH q AS (SELECT id, a FROM t INTERSECT ALL SELECT id, a FROM t WHERE a = 1) SELECT id, a FROM q /**ASSERT DETERMINES(id -> a)**/", PROVED),
     "I2": ("WITH q AS (SELECT id FROM t INTERSECT ALL SELECT a FROM t) SELECT id FROM q /**ASSERT UNIQUE(id)**/", PROVED),

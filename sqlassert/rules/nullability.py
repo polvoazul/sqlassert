@@ -127,7 +127,7 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             return _expression_sources(value)
         case ir.OpaqueExpression(description=description):
             return {ORGANIC: unknown(f"Nullability of {description} is not known", expression)}, []
-        case ir.Equality() | ir.IsNull() | ir.IsNotNull():
+        case ir.Equality() | ir.IsNull() | ir.IsNotNull() | ir.InList() | ir.And() | ir.Or():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []
         case ir.SimpleCase():
             return _case_sources(expression)
@@ -253,11 +253,14 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
 
     A conjunct cannot be TRUE while it is NULL, so it rejects every column it
     is strict in; `IS NOT NULL` rejects those of its operand (Paulley §3.2.4,
-    footnote 9).
+    footnote 9). An OR rejects the columns each of its parts rejects.
     """
     rejected: dict[ir.OutputColumn, ir.ScalarExpr] = {}
     for conjunct in conjuncts:
         match conjunct:
+            case ir.Or(parts=parts):
+                first, *others = (_null_rejected(ir.conjuncts(part)) for part in parts)
+                columns = tuple(column for column in first if all(column in other for other in others))
             case ir.IsNotNull(operand=operand):
                 columns = _strict_inputs(operand)
             case _:

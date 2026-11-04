@@ -16,7 +16,11 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   `IS NOT DISTINCT FROM`, and equalities over expressions are dropped.
   Done in issue 24: `Join.conjuncts` holds the whole condition, recognized as
   in `Filter`; the rest are opaque conjuncts the rules read only as "may
-  depend on anything". Ranges, `LIKE`, and `OR` are still not reasoned about.
+  depend on anything". Now `Filter.predicate` and `Join.predicate` hold the
+  condition as n-ary `ir.And` and `ir.Or` nodes over the recognized
+  conjuncts (`conjuncts` is the top-level AND's parts); an AND or OR inside a
+  value stays opaque. Ranges and `LIKE` reject NULL (R11); `OR` gives null
+  rejection and Enumerated Domains (R13), not FDs.
 - [ ] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
   `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
   Searched `CASE`, `CAST`, and other function calls are opaque, so no
@@ -186,8 +190,9 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   strict: the IS family, `coalesce`, CASE, functions (`concat` and Postgres
   `greatest` skip NULLs), `||` (Oracle reads NULL as `''`), and comparisons
   with ANY or ALL (TRUE over no rows). Still open: per-function null
-  behaviour (most built-ins are strict), and AND under OR rejecting without
-  being strict (`(a > 0 AND b > 0) OR a < 0` rejects `a`).
+  behaviour (most built-ins are strict). An AND under an OR rejects what
+  any of its parts does: `(a > 0 AND b > 0) OR a < 0` rejects `a`, read from
+  `ir.Or` rather than strictness.
 - [ ] **R4** (Claim 20): `WHERE b = a + 1` should give `a → b` when the
   expression is deterministic and its inputs compare by identity (the same
   rule as a computed column, `uniqueness._computed`).

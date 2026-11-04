@@ -124,7 +124,10 @@ unknown counts as false), so its equalities are strict.
 - `col IS NOT NULL`: non-null. `col IS NULL`: equal to a NULL constant.
 - `LIKE` without wildcards is an equality. `= (uncorrelated scalar subquery)`
   is an unknown but single constant.
-- Disjunctions are ignored. Inside `EXISTS`, correlated outer columns are
+- Disjunctions give no FDs. Paulley ignores them; we read row-wise facts that
+  hold in every branch: an OR rejects NULL in the columns every branch
+  rejects, and bounds a column's domain to the union of the branches' bounds
+  when every branch bounds it. Inside `EXISTS`, correlated outer columns are
   constants (§3.2).
 - Non-nullness spreads across strict equivalences, which can turn lax FDs
   strict ("Set definite", p.123).
@@ -265,7 +268,7 @@ through only with definite determinants.
 | R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | missing | `col = (uncorrelated scalar subquery)` gives nothing; the subquery is one value for every row, so `∅ → col`. Filed in issue 23 |  |
 | R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | implemented | `nullability._null_rejected`: a conjunct rejects every column it is strict in (`OpaqueExpression.strict_inputs`, computed by `convert._strict_inputs`): every comparison but the IS family, through arithmetic, CAST, NOT, and AND/OR when both sides are strict in it; `IS NOT NULL` rejects its operand's. Non-nullness spreads through Equality Groups | `test_paulley_audit.py` R11 |
 | R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `test_paulley_audit.py` R12 |
-| R13 | Disjunctions give nothing | §3.2.4, p.77 | implemented | OR is an opaque conjunct (`convert._lower_conjuncts`) | `test_paulley_audit.py` R13- |
+| R13 | Disjunctions give nothing | §3.2.4, p.77 | different | No FDs from an `ir.Or`, as Paulley. Stronger for row-wise facts that hold in every branch: null rejection (`nullability._null_rejected`) and Enumerated Domains (`domain._conjunct_bound`, the union of the branches' bounds) | `test_paulley_audit.py` R13 |
 | I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | missing | partly: the left input's FDs hold (`uniqueness._delegations`, `_grouped` onto the left), the right input's do not. Sound only under identity comparison (an INTERSECT row carries the left value). Filed in issue 23 | `test_paulley_audit.py` I1 |
 | I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | missing | partly, as I1: the left input's keys hold, the right input's do not. Filed in issue 23 | `test_paulley_audit.py` I2 |
 | I3 | Intersection strengthens lax FDs and equivalences made definite | Claim 21, p.81 | implemented | nullability through INTERSECT takes either input (`nullability._set_operation_sources`), and the closure then strengthens lax steps (A9) | `test_paulley_audit.py` I3 |

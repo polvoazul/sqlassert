@@ -605,18 +605,18 @@ class IrParser:
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
-        conjuncts = self._lower_join_predicate(join, left, right)
+        predicate = self._lower_join_predicate(join, left, right)
         if _join_kind(join) in {"semi", "anti"}:
             # RIGHT SEMI and RIGHT ANTI keep right rows: the same join, inputs swapped.
             kept, other = (right, left) if (join.args.get("side") or "").lower() == "right" else (left, right)
-            filtered = self._filtering_join(kept, other.relation, _join_kind(join), conjuncts, origin)
+            filtered = self._filtering_join(kept, other.relation, _join_kind(join), predicate, origin)
             assert isinstance(filtered.relation, ir.Join)
             self._join_marker(join, filtered.relation)
             self._add_attachment_site(join, _join_label(join, self.dialect), filtered.relation, trailing=False)
             return filtered
         if _is_positional(join):
             # A FULL JOIN on row position: an opaque condition, as no column holds it.
-            conjuncts = (ir.OpaqueExpression(origin=origin, description="row position"),)
+            predicate = ir.OpaqueExpression(origin=origin, description="row position")
         input_columns = left.relation.output_columns + right.relation.output_columns
         output_columns = _pass_output_columns(input_columns, origin)
         remapped = {source: output for source, output in zip(input_columns, output_columns)}
@@ -627,7 +627,7 @@ class IrParser:
             kind=_join_kind(join),
             left=left.relation,
             right=right.relation,
-            conjuncts=conjuncts,
+            predicate=predicate,
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column])
@@ -652,59 +652,67 @@ class IrParser:
             case kind:
                 raise ValueError(f"Unhandled join marker kind: {kind}")
 
-    def _lower_join_predicate(
-        self, join: exp.Join, left: _Lowered, right: _Lowered
-    ) -> tuple[ir.ScalarExpr, ...]:
-        """The predicate's conjuncts; USING is one equality per column."""
+    def _lower_join_predicate(self, join: exp.Join, left: _Lowered, right: _Lowered) -> ir.ScalarExpr | None:
+        """The ON condition; USING is an AND of one equality per column."""
         using = join.args.get("using")
         if using:
-            return tuple(
+            return _and(tuple(
                 ir.Equality(
                     origin=self._origin(identifier, _source_line(identifier)),
                     left=self._lower_expression(exp.column(identifier.name), left.bindings),
                     right=self._lower_expression(exp.column(identifier.name), right.bindings),
                 )
                 for identifier in using
-            )
+            ), self._origin(join))
         predicate = join.args.get("on")
         if predicate is None:
-            return ()
+            return None
         complete = left.relation.is_schema_complete and right.relation.is_schema_complete
-        return self._lower_conjuncts(_conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
+        return self._lower_condition(predicate, _conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
 
-    def _lower_conjuncts(
-        self, conjuncts: Iterable[exp.Expression], bindings: tuple[_Binding, ...], *, schema_complete: bool
-    ) -> tuple[ir.ScalarExpr, ...]:
-        """Each conjunct: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are
-        recognized; anything else is lowered as an ordinary scalar expression."""
-        lowered: list[ir.ScalarExpr] = []
-        for conjunct in conjuncts:
-            origin = self._origin(conjunct, _source_line(conjunct))
-            match conjunct:
-                case exp.EQ():
-                    lowered.append(ir.Equality(
-                        origin=origin,
-                        left=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
-                        right=self._lower_expression(conjunct.expression, bindings, schema_complete=schema_complete),
-                    ))
-                case exp.Is(expression=exp.Null()):
-                    operand = self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete)
-                    lowered.append(ir.IsNull(origin=origin, operand=operand))
-                case exp.Not(this=exp.Is(expression=exp.Null()) as test):
-                    operand = self._lower_expression(test.this, bindings, schema_complete=schema_complete)
-                    lowered.append(ir.IsNotNull(origin=origin, operand=operand))
-                case exp.In() if conjunct.expressions and not any(conjunct.args.get(key) for key in ("query", "unnest", "field")):
-                    lowered.append(ir.InList(
-                        origin=origin,
-                        operand=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
-                        values=tuple(
-                            self._lower_expression(value, bindings, schema_complete=schema_complete)
-                            for value in conjunct.expressions
-                        ),
-                    ))
-                case _:
-                    lowered.append(self._lower_expression(conjunct, bindings, schema_complete=schema_complete))
-        return tuple(lowered)
+    def _lower_condition(
+        self, source: exp.Expression, conjuncts: list[exp.Expression], bindings: tuple[_Binding, ...], *, schema_complete: bool
+    ) -> ir.ScalarExpr:
+        """The AND of `conjuncts`, the top-level conjuncts of `source`."""
+        assert conjuncts, "a condition has at least one conjunct"
+        lowered = _and(
+            tuple(self._lower_conjunct(conjunct, bindings, schema_complete=schema_complete) for conjunct in conjuncts),
+            self._origin(source, _source_line(source)),
+        )
+        assert lowered is not None
+        return lowered
+
+    def _lower_conjunct(self, conjunct: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.ScalarExpr:
+        """`OR`, `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized;
+        anything else is lowered as an ordinary scalar expression."""
+        origin = self._origin(conjunct, _source_line(conjunct))
+        match conjunct:
+            case exp.Or():
+                return ir.Or(origin=origin, parts=tuple(
+                    self._lower_condition(branch, _conjuncts(branch), bindings, schema_complete=schema_complete)
+                    for branch in _disjuncts(conjunct)
+                ))
+            case exp.EQ():
+                return ir.Equality(
+                    origin=origin,
+                    left=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
+                    right=self._lower_expression(conjunct.expression, bindings, schema_complete=schema_complete),
+                )
+            case exp.Is(expression=exp.Null()):
+                return ir.IsNull(origin=origin, operand=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete))
+            case exp.Not(this=exp.Is(expression=exp.Null()) as test):
+                return ir.IsNotNull(origin=origin, operand=self._lower_expression(test.this, bindings, schema_complete=schema_complete))
+            case exp.In() if conjunct.expressions and not any(conjunct.args.get(key) for key in ("query", "unnest", "field")):
+                return ir.InList(
+                    origin=origin,
+                    operand=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
+                    values=tuple(
+                        self._lower_expression(value, bindings, schema_complete=schema_complete)
+                        for value in conjunct.expressions
+                    ),
+                )
+            case _:
+                return self._lower_expression(conjunct, bindings, schema_complete=schema_complete)
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
         group = select.args.get("group")
@@ -744,7 +752,7 @@ class IrParser:
         complete = lowered.relation.is_schema_complete
         relation = ir.Filter(
             origin=origin, output_columns=output_columns, is_schema_complete=complete, input=lowered.relation,
-            conjuncts=self._lower_conjuncts(remaining, lowered.bindings, schema_complete=complete),
+            predicate=self._lower_condition(where.this, remaining, lowered.bindings, schema_complete=complete),
         )
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
@@ -770,8 +778,8 @@ class IrParser:
             for join in select.args.get("joins") or ():
                 right = self._lower_join(right, join)
             inner = select.args.get("where")
-            conjuncts = self._lower_conjuncts(
-                _conjuncts(inner.this) if inner is not None else (), lowered.bindings + right.bindings,
+            predicate = None if inner is None else self._lower_condition(
+                inner.this, _conjuncts(inner.this), lowered.bindings + right.bindings,
                 schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
             )
             relation = right.relation
@@ -780,22 +788,22 @@ class IrParser:
             if subquery is None or len(subquery.output_columns) != 1:
                 return None
             relation = subquery
-            conjuncts = (ir.Equality(
+            predicate = ir.Equality(
                 origin=self._origin(conjunct, _source_line(conjunct)),
                 left=self._lower_expression(operand, lowered.bindings, schema_complete=lowered.relation.is_schema_complete),
                 right=ir.ColumnRef(origin=subquery.origin, column=subquery.output_columns[0]),
-            ),)
-        return self._filtering_join(lowered, relation, kind, conjuncts, self._origin(conjunct))
+            )
+        return self._filtering_join(lowered, relation, kind, predicate, self._origin(conjunct))
 
     def _filtering_join(
-        self, left: _Lowered, right: ir.RelationExpr, kind: str, conjuncts: tuple[ir.ScalarExpr, ...], origin: Origin
+        self, left: _Lowered, right: ir.RelationExpr, kind: str, predicate: ir.ScalarExpr | None, origin: Origin
     ) -> _Lowered:
         """A semi or anti join: it keeps or drops left rows, and outputs only theirs."""
         output_columns = _pass_output_columns(left.relation.output_columns, origin)
         remapped = {source: output for source, output in zip(left.relation.output_columns, output_columns)}
         relation = ir.Join(
             origin=origin, output_columns=output_columns, is_schema_complete=left.relation.is_schema_complete,
-            kind=kind, left=left.relation, right=right, conjuncts=conjuncts,
+            kind=kind, left=left.relation, right=right, predicate=predicate,
         )
         return _Lowered(relation, tuple(_Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in left.bindings))
 
@@ -1313,6 +1321,26 @@ _STRICT_BINARY = (
     exp.Add, exp.Sub, exp.Mul, exp.Div, exp.IntDiv, exp.Mod,
     exp.BitwiseAnd, exp.BitwiseOr, exp.BitwiseXor, exp.BitwiseLeftShift, exp.BitwiseRightShift,
 )
+
+
+def _disjuncts(predicate: exp.Expression) -> list[exp.Expression]:
+    """The operands of a predicate's top-level ORs, parentheses removed."""
+    while isinstance(predicate, exp.Paren):
+        predicate = predicate.this
+    if isinstance(predicate, exp.Or):
+        return _disjuncts(predicate.this) + _disjuncts(predicate.expression)
+    return [predicate]
+
+
+def _and(parts: tuple[ir.ScalarExpr, ...], origin: Origin) -> ir.ScalarExpr | None:
+    """The AND of `parts`: None for none, the part itself for one."""
+    match parts:
+        case ():
+            return None
+        case (part,):
+            return part
+        case _:
+            return ir.And(origin=origin, parts=parts)
 
 
 def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:
