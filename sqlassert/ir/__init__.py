@@ -1,10 +1,11 @@
 """Relational intermediate representation."""
 
-from sqlassert.ir.model import Aggregate, Alias, AnyAggregate, Assertion, Coalesce, ColumnRef, Constant, Count, Distinct, Equality, Filter, INNER, InList, IsNotNull, IsNull, Join, Limit, NamedRelation, Node, NullLiteral, OpaqueExpression, OpaqueRelation, OutputColumn, Program, Project, QualifyByPartition, RecursiveRelation, RelationExpr, RelationRole, ScalarExpr, SetOperation, SimpleCase, LiteralValue, children
+from sqlassert.ir.model import Aggregate, Alias, And, AnyAggregate, Assertion, Coalesce, ColumnRef, Constant, Count, Distinct, Equality, Filter, INNER, InList, IsNotNull, IsNull, Join, Limit, NamedRelation, Node, NullLiteral, OpaqueExpression, OpaqueRelation, Or, OutputColumn, Program, Project, QualifyByPartition, RecursiveRelation, RelationExpr, RelationRole, ScalarExpr, SetOperation, SimpleCase, LiteralValue, children, conjuncts
 
 __all__ = [
     "Aggregate",
     "Alias",
+    "And",
     "AnyAggregate",
     "Assertion",
     "Coalesce",
@@ -26,6 +27,7 @@ __all__ = [
     "NullLiteral",
     "OpaqueExpression",
     "OpaqueRelation",
+    "Or",
     "OutputColumn",
     "Program",
     "Project",
@@ -37,4 +39,5 @@ __all__ = [
     "SetOperation",
     "SimpleCase",
     "children",
+    "conjuncts",
 ]

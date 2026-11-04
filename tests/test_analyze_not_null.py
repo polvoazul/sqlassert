@@ -394,3 +394,41 @@ def test_an_inner_join_on_comparison_rejects_null():
     )
     assert not report.diagnostics, report.diagnostics
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
+# An OR rejects the columns every branch rejects; a branch is a little WHERE
+# clause, whose AND rejects what any of its parts does.
+OR_CONJUNCTS = [
+    ("(n > 0 AND m > 0) OR n < 0", "n", Outcome.PROVED),
+    ("(n > 0 AND m > 0) OR n < 0", "m", Outcome.UNKNOWN),
+    ("n = 1 OR (m = 2 AND n IS NOT NULL)", "n", Outcome.PROVED),
+    ("(n > 0 AND m > 0) OR (n < 0 AND m < 0)", "n, m", Outcome.PROVED),
+    ("n > 0 OR (m > 0 AND (n < 0 OR n IN (1, 2)))", "n", Outcome.PROVED),
+    ("n > 0 OR (m > 0 AND (n < 0 OR s = 'x'))", "n", Outcome.UNKNOWN),
+    ("n > 0 OR m > 0 OR n < 0", "n", Outcome.UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(("condition", "columns", "outcome"), OR_CONJUNCTS)
+def test_an_or_rejects_what_every_branch_rejects(condition: str, columns: str, outcome: Outcome):
+    report = analyze(f"{REJECTION_SCHEMA} SELECT n, m FROM t WHERE {condition} /**ASSERT NOT NULL({columns})**/")
+    assert not report.diagnostics, report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [outcome], condition
+
+
+def test_an_or_undoes_a_left_join_s_padding():
+    assert padded_outcomes(
+        """
+        SELECT u.email FROM orders o LEFT JOIN users u ON o.user_id = u.id
+        WHERE (u.id > 5 AND o.id > 0) OR u.id < 0 /**ASSERT NOT NULL(email)**/
+        """
+    ) == [Outcome.PROVED]
+
+
+def test_an_inner_join_on_or_rejects_null():
+    report = analyze(
+        f"{REJECTION_SCHEMA} CREATE TABLE r (id INTEGER PRIMARY KEY, n INTEGER);"
+        "SELECT r.n FROM t JOIN r ON (r.id = t.id AND r.n > 0) OR (r.id = t.n AND r.n < 0) /**ASSERT NOT NULL(n)**/"
+    )
+    assert not report.diagnostics, report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]

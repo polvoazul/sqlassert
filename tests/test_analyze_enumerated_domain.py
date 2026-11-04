@@ -310,3 +310,20 @@ def test_a_domain_flows_through_set_operations(label: str, sql: str, outcome: Ou
 
     assert not report.diagnostics, report.diagnostics
     assert [assertion.outcome for assertion in report.assertions] == [outcome], label
+
+
+# An OR bounds a column to the union of its branches' bounds when every branch
+# bounds it; a branch bounds it to what all its bounding parts allow.
+OR_DOMAINS = [
+    ("status = 'a' OR status = 'b'", "'a', 'b'", Outcome.PROVED),
+    ("status = 'a' OR status = 'b'", "'a'", Outcome.UNKNOWN),
+    ("(status = 'a' AND id = 1) OR status IN ('b', 'c')", "'a', 'b', 'c'", Outcome.PROVED),
+    ("(status IN ('a', 'b') AND status IN ('b', 'c')) OR status = 'd'", "'b', 'd'", Outcome.PROVED),
+    ("status = 'a' OR (id = 1 AND (status = 'b' OR status = 'c'))", "'a', 'b', 'c'", Outcome.PROVED),
+    ("status = 'a' OR (id = 1 AND (status = 'b' OR kind = 'c'))", "'a', 'b'", Outcome.UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(("condition", "values", "outcome"), OR_DOMAINS)
+def test_an_or_bounds_a_column_every_branch_bounds(condition: str, values: str, outcome: Outcome):
+    assert outcomes(f"SELECT status FROM orders WHERE {condition} /**ASSERT ENUM(status IN ({values}))**/") == [outcome], condition
