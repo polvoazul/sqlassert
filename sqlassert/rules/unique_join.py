@@ -29,7 +29,7 @@ def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
         for rhs, value in ((equality.left, equality.right), (equality.right, equality.left)):
             if rhs is value:
                 continue
-            rhs, value = ir.closed_scalar(rhs), ir.closed_scalar(value)
+            rhs, value = rhs.closed, value.closed
             match rhs:
                 case ir.ColumnRef(column=column):
                     if column not in join.right.output_columns:
