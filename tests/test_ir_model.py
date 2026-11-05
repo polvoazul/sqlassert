@@ -49,7 +49,7 @@ def test_assertions_point_directly_into_the_relation_graph():
         scalar_expr=ir.OpaqueExpression(origin=_origin("result.id"), description="result column"),
     )
     empty = ir.OpaqueRelation(origin=_origin("unsupported"), output_columns=(column,), description="unsupported")
-    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=empty, right=empty)
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=empty, right=empty)
     join_property = UniqueJoin(join=join)
     set_property = UniqueSet(columns=frozenset({column}))
     join_assertion = ir.Assertion(origin=_origin("marker"), property=join_property)
@@ -119,7 +119,7 @@ def test_program_rejects_an_output_column_shared_by_two_relations():
     shared = _opaque_column("shared")
     left = ir.OpaqueRelation(origin=_origin("left"), output_columns=(shared,), description="left")
     right = ir.OpaqueRelation(origin=_origin("right"), output_columns=(shared,), description="right")
-    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind=ir.INNER, left=left, right=right)
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=left, right=right)
 
     with pytest.raises(ValueError, match="belongs to both"):
         ir.Program(root=join)

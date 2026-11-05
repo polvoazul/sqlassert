@@ -18,6 +18,7 @@ never does.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, analysis, current_arena
@@ -141,6 +142,7 @@ def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
     Each output row of these takes its pass-through values from one row of
     each listed input (or, for a padded side, NULL in every column).
     """
+    relation = ir.closed_relation(relation)
     match relation:
         case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.Limit(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source):
             return (source,)
@@ -156,7 +158,7 @@ def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
             # A UNION row may come from either branch; the right one is not tracked.
             return ()
         case _:
-            raise TypeError(f"Unhandled relation: {type(relation).__name__}")
+            assert_never(relation)
 
 
 def _strict_conjuncts(relation: ir.RelationExpr) -> tuple[tuple[ir.ScalarExpr, ...], str]:

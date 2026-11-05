@@ -19,6 +19,7 @@ Anything else stops propagation and names where.
 """
 
 from itertools import product
+from typing import assert_never
 
 from sqlassert import ir
 from sqlassert.properties import ReferentialCoverage
@@ -200,7 +201,7 @@ def _set_operation(relation: ir.SetOperation, columns: _Columns, referenced_colu
         case "except":
             return Result(True, "An EXCEPT row comes from the left branch", (relation,)) & left
         case _:
-            raise TypeError(f"Unhandled set operator: {relation.operator}")
+            assert_never(relation.operator)
 
 
 def _narrowed(targets: list[tuple[_Columns, list[Result[bool]]]]) -> list[Result[bool]]:

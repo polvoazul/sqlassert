@@ -1,12 +1,14 @@
 """Relational intermediate representation."""
 
-from sqlassert.ir.model import Aggregate, Alias, And, AnyAggregate, Assertion, Builtin, BuiltinVariadic, Call, Coalesce, ColumnRef, Constant, Count, Distinct, Equality, Filter, INNER, InList, IsNotNull, IsNull, Join, Limit, NamedRelation, Node, NullLiteral, OpaqueExpression, OpaquePureFunction, OpaqueRelation, Or, OutputColumn, Program, Project, QualifyByPartition, RecursiveRelation, RelationExpr, RelationRole, ScalarExpr, SetOperation, SimpleCase, LiteralValue, children, conjuncts, determinants, injective_input, strict_inputs
+from sqlassert.ir.model import Aggregate, Alias, And, AnyAggregate, AnyRelation, AnyScalar, Assertion, Builtin, BuiltinVariadic, Call, Coalesce, ColumnRef, Constant, Count, Distinct, Equality, Filter, InList, IsNotNull, IsNull, Join, JoinKind, Limit, NamedRelation, Node, NullLiteral, OpaqueExpression, OpaquePureFunction, OpaqueRelation, Or, OutputColumn, Program, Project, QualifyByPartition, RecursiveRelation, RelationExpr, RelationRole, ScalarExpr, SetOperation, SimpleCase, LiteralType, LiteralValue, SetOperator, children, closed_relation, closed_scalar, conjuncts, determinants, injective_input, strict_inputs
 
 __all__ = [
     "Aggregate",
     "Alias",
     "And",
     "AnyAggregate",
+    "AnyRelation",
+    "AnyScalar",
     "Builtin",
     "BuiltinVariadic",
     "Call",
@@ -18,12 +20,13 @@ __all__ = [
     "Distinct",
     "Equality",
     "Filter",
-    "INNER",
     "IsNotNull",
     "IsNull",
     "InList",
     "Join",
+    "JoinKind",
     "Limit",
+    "LiteralType",
     "LiteralValue",
     "NamedRelation",
     "Node",
@@ -41,8 +44,11 @@ __all__ = [
     "RelationRole",
     "ScalarExpr",
     "SetOperation",
+    "SetOperator",
     "SimpleCase",
     "children",
+    "closed_relation",
+    "closed_scalar",
     "conjuncts",
     "determinants",
     "injective_input",

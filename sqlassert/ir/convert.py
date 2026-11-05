@@ -425,7 +425,7 @@ class IrParser:
             output_columns = _pass_output_columns(left.output_columns, self._origin(query))
             relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
-                operator=query.key, left=left, right=right, distinct=bool(query.args.get("distinct")),
+                operator=_SET_OPERATORS[type(query)], left=left, right=right, distinct=bool(query.args.get("distinct")),
                 by_name=bool(query.args.get("by_name")),
             )
             return self._lower_limit(relation, query)
@@ -775,7 +775,7 @@ class IrParser:
         return self._filtering_join(lowered, relation, kind, predicate, self._origin(conjunct))
 
     def _filtering_join(
-        self, left: _Lowered, right: ir.RelationExpr, kind: str, predicate: ir.ScalarExpr | None, origin: Origin
+        self, left: _Lowered, right: ir.RelationExpr, kind: ir.JoinKind, predicate: ir.ScalarExpr | None, origin: Origin
     ) -> _Lowered:
         """A semi or anti join: it keeps or drops left rows, and outputs only theirs."""
         output_columns = _pass_output_columns(left.relation.output_columns, origin)
@@ -1274,7 +1274,7 @@ def _source_line(node: exp.Expression) -> int | None:
     return min(lines, default=None)
 
 
-def _subquery_conjunct(conjunct: exp.Expression) -> tuple[str, exp.Select, exp.Expression | None] | None:
+def _subquery_conjunct(conjunct: exp.Expression) -> tuple[ir.JoinKind, exp.Select, exp.Expression | None] | None:
     """A WHERE conjunct lowered as a filtering join: its kind, the subquery,
     and the IN operand (None for EXISTS)."""
     match conjunct:
@@ -1552,7 +1552,7 @@ def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
     return window
 
 
-_JOIN_KINDS_OVERRIDING_SIDE = {"semi", "anti", "cross"}
+_SET_OPERATORS: dict[type[exp.Expression], ir.SetOperator] = {exp.Union: "union", exp.Intersect: "intersect", exp.Except: "except"}
 
 
 # Types whose equal values are identical: no collation (text has a comparison
@@ -1596,14 +1596,24 @@ def _is_positional(join: exp.Join) -> bool:
     return (join.args.get("method") or "").lower() == "positional"
 
 
-def _join_kind(join: exp.Join) -> str:
+def _join_kind(join: exp.Join) -> ir.JoinKind:
+    """SEMI, ANTI and CROSS whatever the side; otherwise the side, else INNER
+    (`STRAIGHT_JOIN`, and ASOF, which keeps a subset of the inner join's rows).
+    Any other kind (ClickHouse `ARRAY JOIN`) is read as CROSS, which pairs rows
+    and proves nothing from the condition beyond an inner join's."""
     if _is_positional(join):
         return "full"
-    kind = (join.args.get("kind") or "").lower()
-    if kind in _JOIN_KINDS_OVERRIDING_SIDE:
-        return kind
-    side = (join.args.get("side") or "").lower()
-    return side or kind or ir.INNER
+    match (join.args.get("kind") or "").lower(), (join.args.get("side") or "").lower():
+        case ("semi" | "anti" | "cross") as kind, _:
+            return kind
+        case _, ("left" | "right" | "full") as side:
+            return side
+        case "outer", _:
+            return "full"
+        case "" | "inner" | "straight_join", _:
+            return "inner"
+        case _:
+            return "cross"
 
 
 def _join_label(join: exp.Join, dialect: str) -> str:
