@@ -88,15 +88,8 @@ def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, select: exp.Select) 
 
 def _needed(column: ir.OutputColumn) -> frozenset[ir.OutputColumn] | None:
     """The input columns a projected column's value is a function of, if known."""
-    match column.scalar_expr:
-        case ir.ColumnRef(column=upstream):
-            return frozenset({upstream})
-        case ir.Constant() | ir.NullLiteral():
-            return frozenset()
-        case ir.OpaqueExpression(deterministic=True, inputs=inputs):
-            return frozenset(inputs)
-        case _:
-            return None
+    inputs = ir.determinants(column.scalar_expr)
+    return None if inputs is None else frozenset(inputs)
 
 
 def _sort_keys(

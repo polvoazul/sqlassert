@@ -196,7 +196,7 @@ def test_a_simple_case_proved_exhaustive_is_suggested():
         "CASE qty WHEN 1 THEN 1 END",
         "CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 WHEN upper('x') THEN 3 END",
         "/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END",
-        "upper(CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' END)",
+        "max(CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' END) OVER ()",
     ],
     ids=["an arm missing", "no finite domain", "a WHEN no marker allows", "already marked", "inside an opaque expression"],
 )

@@ -53,18 +53,51 @@ class ScalarExpr(Node, abstract=True):
 
 
 class OpaqueExpression(ScalarExpr):
-    """An expression whose value is not modelled.
-
-    `deterministic` ones are a function of exactly the input columns in
-    `inputs` (Paulley §3.1.4): rows agreeing on them agree on it. It is NULL
-    whenever one of `strict_inputs` is (`n + 1`, `n > m`, `NOT p`), so a
-    WHERE or ON conjunct rejects them. Nothing else about the value, its
-    nullability or its domain is known."""
+    """An expression nothing is known about: not even which columns its value
+    depends on. A user-defined or volatile function, an aggregate or window,
+    a subquery, or a column that does not resolve."""
 
     description: str
-    deterministic: bool = False
-    inputs: tuple[OutputColumn, ...] = ()
-    strict_inputs: tuple[OutputColumn, ...] = ()
+
+
+class Strictness(Enum):
+    """Which arguments of a Builtin make its value NULL when they are."""
+
+    EVERY_ARGUMENT = "every argument"  # `n + 1`, `n > m`, `CAST(n AS ...)`, `NOT p`
+    FIRST_ARGUMENT = "first argument"  # `n BETWEEN lo AND hi`: `1 BETWEEN NULL AND 0` is FALSE
+
+
+@dataclass(frozen=True)
+class Builtin:
+    """A built-in operator or function whose behaviour is modelled: a pure
+    function of its arguments' values, NULL whenever a `strictness` argument is.
+
+    An `injective` one is one-to-one in its single argument that is not an
+    integer or decimal literal, when that argument is an integer or decimal:
+    `a + 1`, `10 - a`, `-a`. Only where exact arithmetic raises an error on
+    overflow instead of wrapping, saturating, or turning to a float.
+    """
+
+    name: str
+    strictness: Strictness
+    injective: bool = False
+
+
+class Call(ScalarExpr):
+    """A Builtin applied to arguments: `n + 1`, `n > 0`, `CAST(n AS BIGINT)`, `NOT p`."""
+
+    function: Builtin
+    arguments: tuple[ScalarExpr, ...]
+    description: str
+
+
+class OpaqueFunction(ScalarExpr):
+    """A built-in function or operator whose behaviour is not modelled: a pure
+    function of its arguments, and nothing else is known about it. Searched
+    CASE, `concat`, `||`, `greatest`, `IS DISTINCT FROM`, and the like."""
+
+    arguments: tuple[ScalarExpr, ...]
+    description: str
 
 
 class Count(ScalarExpr):
@@ -151,7 +184,7 @@ class Equality(ScalarExpr):
 
 
 class InList(ScalarExpr):
-    """`operand IN (values...)`, recognized as a WHERE or ON conjunct."""
+    """`operand IN (values...)` over a list of values, not a subquery."""
 
     operand: ScalarExpr
     values: tuple[ScalarExpr, ...]
@@ -170,17 +203,13 @@ class IsNotNull(ScalarExpr):
 
 
 class And(ScalarExpr):
-    """`p AND q ...` in a WHERE or ON condition, flattened: TRUE when every part is."""
+    """`p AND q ...`, flattened: TRUE when every part is."""
 
     parts: tuple[ScalarExpr, ...]
 
 
 class Or(ScalarExpr):
-    """`p OR q ...` in a WHERE or ON condition, flattened: TRUE when some part is.
-
-    Its parts are lowered like a WHERE condition. An AND or OR inside a value,
-    such as `(a OR b) = c`, stays an opaque expression.
-    """
+    """`p OR q ...`, flattened: TRUE when some part is."""
 
     parts: tuple[ScalarExpr, ...]
 
@@ -196,6 +225,76 @@ def conjuncts(predicate: ScalarExpr | None) -> tuple[ScalarExpr, ...]:
             return (predicate,)
 
 
+def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
+    """The columns `expression` is a pure function of, in order of first use,
+    or None when it is not one of any: its value may depend on other rows, on
+    state, or on nothing known (Paulley §3.1.4)."""
+    match expression:
+        case ColumnRef(column=column):
+            return (column,)
+        case OpaqueExpression() | Count() | AnyAggregate():
+            return None
+        case Constant() | NullLiteral() | Call() | OpaqueFunction() | Coalesce() | SimpleCase() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or():
+            found: dict[OutputColumn, None] = {}
+            for child in children(expression):
+                assert isinstance(child, ScalarExpr)
+                inputs = determinants(child)
+                if inputs is None:
+                    return None
+                found.update(dict.fromkeys(inputs))
+            return tuple(found)
+        case _:
+            raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
+
+
+def injective_input(expression: ScalarExpr) -> OutputColumn | None:
+    """The one column `expression` is a one-to-one function of, given that the
+    column is an integer or decimal: the column itself, or an injective
+    Builtin of such an expression and integer or decimal literals."""
+    match expression:
+        case ColumnRef(column=column):
+            return column
+        case Call(function=Builtin(injective=True), arguments=arguments):
+            others = [argument for argument in arguments if not _exact_literal(argument)]
+            return injective_input(others[0]) if len(others) == 1 else None
+        case _:
+            return None
+
+
+def _exact_literal(expression: ScalarExpr) -> bool:
+    """An integer or decimal literal: not an exponent form, which is a double."""
+    match expression:
+        case Constant(value=LiteralValue(type="numeric", text=text)):
+            return "e" not in text
+        case _:
+            return False
+
+
+def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
+    """The columns whose NULL makes `expression` NULL, in order of first use.
+
+    A Builtin passes on its strict arguments'; `=` both sides'; `IN (...)` its
+    operand's (`1 IN (1, NULL)` is TRUE); AND and OR only a column every part
+    is strict in (`NULL OR TRUE` is TRUE). Coalesce, CASE, the IS family and
+    unmodelled functions may turn NULL into a value."""
+    match expression:
+        case ColumnRef(column=column):
+            return (column,)
+        case Call(function=Builtin(strictness=Strictness.EVERY_ARGUMENT), arguments=arguments):
+            return tuple(dict.fromkeys(column for argument in arguments for column in strict_inputs(argument)))
+        case Call(function=Builtin(strictness=Strictness.FIRST_ARGUMENT), arguments=(first, *_)):
+            return strict_inputs(first)
+        case Equality(left=left, right=right):
+            return tuple(dict.fromkeys((*strict_inputs(left), *strict_inputs(right))))
+        case InList(operand=operand):
+            return strict_inputs(operand)
+        case And(parts=(first, *others)) | Or(parts=(first, *others)):
+            rest = [strict_inputs(other) for other in others]
+            return tuple(column for column in strict_inputs(first) if all(column in columns for columns in rest))
+        case _:
+            return ()
+
+
 class OutputColumn(Node):
     """One named output of one relational stage and the expression producing it.
 
@@ -207,6 +306,8 @@ class OutputColumn(Node):
     identical: an integer, decimal, boolean, date, time, timestamp or UUID
     type, or binary text. Not a float (`-0.0 = 0.0`), an interval, or text
     under a collation.
+
+    `exact_numeric` marks a table column declared as an integer or decimal.
     """
 
     name: str
@@ -215,6 +316,7 @@ class OutputColumn(Node):
     # Declared SQL type where equality compares values without casts or collation.
     comparison_type: str | None = None
     identity_comparison: bool = False
+    exact_numeric: bool = False
 
     def get_relation(self, program: Program) -> RelationExpr:
         """The one relation in ``program`` whose output includes this column."""

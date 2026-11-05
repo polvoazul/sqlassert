@@ -124,6 +124,17 @@ def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
             return Result(column.identity_comparison, "Declared type compares by identity", (column,))
 
 
+@analysis(Stratum.EQUALITY_GROUP)
+def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
+    """Whether `column` is an integer or decimal, from its declared type."""
+    relation = column.get_relation(current_arena().program)
+    match column.scalar_expr:
+        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+            return exact_numeric(source)
+        case _:
+            return Result(column.exact_numeric, "Declared an integer or decimal", (column,))
+
+
 def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
     """The inputs whose groups hold on `relation`'s pass-through columns.
 

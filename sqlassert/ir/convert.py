@@ -7,8 +7,9 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Set
+from collections.abc import Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
+from functools import cache
 
 from sqlglot import exp
 
@@ -544,6 +545,7 @@ class IrParser:
                 column, binary_text=self._is_binary_text(by_name[column.name]),
                 comparison_type=self._comparison_type(by_name[column.name]),
                 identity_comparison=self._identity_comparison(by_name[column.name]),
+                exact_numeric=self._exact_numeric(by_name[column.name]),
             )
             if column.name in by_name else column for column in columns
         ), complete
@@ -563,6 +565,10 @@ class IrParser:
         when compared by identity, which `_comparison_type` already checks)."""
         kind = definition.args.get("kind")
         return self._comparison_type(definition) is not None and isinstance(kind, exp.DataType) and kind.this in _IDENTITY_TYPES
+
+    def _exact_numeric(self, definition: exp.ColumnDef) -> bool:
+        kind = definition.args.get("kind")
+        return isinstance(kind, exp.DataType) and kind.this in _EXACT_NUMERIC_TYPES
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
         """Declared VARCHAR or TEXT under the dialect's binary default collation.
@@ -683,36 +689,7 @@ class IrParser:
         return lowered
 
     def _lower_conjunct(self, conjunct: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.ScalarExpr:
-        """`OR`, `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized;
-        anything else is lowered as an ordinary scalar expression."""
-        origin = self._origin(conjunct, _source_line(conjunct))
-        match conjunct:
-            case exp.Or():
-                return ir.Or(origin=origin, parts=tuple(
-                    self._lower_condition(branch, _conjuncts(branch), bindings, schema_complete=schema_complete)
-                    for branch in _disjuncts(conjunct)
-                ))
-            case exp.EQ():
-                return ir.Equality(
-                    origin=origin,
-                    left=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
-                    right=self._lower_expression(conjunct.expression, bindings, schema_complete=schema_complete),
-                )
-            case exp.Is(expression=exp.Null()):
-                return ir.IsNull(origin=origin, operand=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete))
-            case exp.Not(this=exp.Is(expression=exp.Null()) as test):
-                return ir.IsNotNull(origin=origin, operand=self._lower_expression(test.this, bindings, schema_complete=schema_complete))
-            case exp.In() if conjunct.expressions and not any(conjunct.args.get(key) for key in ("query", "unnest", "field")):
-                return ir.InList(
-                    origin=origin,
-                    operand=self._lower_expression(conjunct.this, bindings, schema_complete=schema_complete),
-                    values=tuple(
-                        self._lower_expression(value, bindings, schema_complete=schema_complete)
-                        for value in conjunct.expressions
-                    ),
-                )
-            case _:
-                return self._lower_expression(conjunct, bindings, schema_complete=schema_complete)
+        return self._lower_expression(conjunct, bindings, schema_complete=schema_complete, line=_source_line(conjunct))
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
         group = select.args.get("group")
@@ -877,7 +854,7 @@ class IrParser:
         return self._one_row_per_partition(lowered, select, keys, ())
 
     def _one_row_per_partition(
-        self, lowered: _Lowered, select: exp.Select, partitions: list[exp.Expression], order: list[exp.Ordered],
+        self, lowered: _Lowered, select: exp.Select, partitions: Sequence[exp.Expression], order: Sequence[exp.Ordered],
     ) -> ir.QualifyByPartition | None:
         """Every partition key must be a selected output: the Unique Set is stated on outputs."""
         if not partitions or select.args.get("having") is not None or _star_only(select):
@@ -931,11 +908,21 @@ class IrParser:
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 
-    def _lower_expression(self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool = False) -> ir.ScalarExpr:
+    def _lower_expression(
+        self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool = False, line: int | None = None
+    ) -> ir.ScalarExpr:
         """An unqualified column resolves by name across several sources only
         when every source's schema is complete: otherwise the one visible match
-        might be shadowed by a column of a source whose columns are unknown."""
-        origin = self._origin(expression)
+        might be shadowed by a column of a source whose columns are unknown.
+
+        A Builtin becomes a Call; any other function or operator an
+        OpaqueFunction of its lowered arguments, unless its value is not a
+        function of them (`_NOT_A_FUNCTION_OF_ITS_COLUMNS`)."""
+        origin = self._origin(expression, line)
+
+        def lower(node: exp.Expression) -> ir.ScalarExpr:
+            return self._lower_expression(node, bindings, schema_complete=schema_complete)
+
         if isinstance(expression, exp.Column):
             if expression.table:
                 matches = [binding for binding in bindings if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower()]
@@ -953,79 +940,49 @@ class IrParser:
                 ))
             if len(matches) == 1:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)
-        if isinstance(expression, exp.Coalesce):
-            arguments = (expression.this, *expression.expressions)
-            return ir.Coalesce(
-                origin=origin,
-                arguments=tuple(self._lower_expression(argument, bindings, schema_complete=schema_complete) for argument in arguments),
-            )
-        if isinstance(expression, exp.Null):
-            return ir.NullLiteral(origin=origin)
-        if isinstance(expression, exp.Count):
-            return ir.Count(origin=origin, description=expression.sql(dialect=self.dialect))
-        if isinstance(expression, exp.Case) and expression.this is not None:
-            return self._lower_case(expression, bindings, schema_complete=schema_complete)
+            return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
+        description = expression.sql(dialect=self.dialect)
+        quantified = isinstance(expression, exp.Binary) and any(
+            isinstance(operand, (exp.Any, exp.All)) for operand in (expression.this, expression.expression)
+        )  # `n > ANY (...)` is FALSE over no rows, even for a NULL `n`.
+        match expression:
+            case exp.Paren():
+                return self._lower_expression(expression.this, bindings, schema_complete=schema_complete, line=line)
+            case exp.Null():
+                return ir.NullLiteral(origin=origin)
+            case exp.Count():
+                return ir.Count(origin=origin, description=description)
+            case exp.Coalesce():
+                return ir.Coalesce(origin=origin, arguments=tuple(lower(argument) for argument in (expression.this, *expression.expressions)))
+            case exp.Case() if expression.this is not None:
+                return self._lower_case(expression, bindings, schema_complete=schema_complete)
+            case exp.And():
+                return self._lower_condition(expression, _conjuncts(expression), bindings, schema_complete=schema_complete)
+            case exp.Or():
+                return ir.Or(origin=origin, parts=tuple(
+                    self._lower_condition(branch, _conjuncts(branch), bindings, schema_complete=schema_complete)
+                    for branch in _disjuncts(expression)
+                ))
+            case exp.EQ() if not quantified:
+                return ir.Equality(origin=origin, left=lower(expression.this), right=lower(expression.expression))
+            case exp.Is(expression=exp.Null()):
+                return ir.IsNull(origin=origin, operand=lower(expression.this))
+            case exp.Not(this=exp.Is(expression=exp.Null()) as test):
+                return ir.IsNotNull(origin=origin, operand=lower(test.this))
+            case exp.In() if expression.expressions and not any(expression.args.get(key) for key in ("query", "unnest", "field")):
+                return ir.InList(origin=origin, operand=lower(expression.this), values=tuple(lower(value) for value in expression.expressions))
+            case _:
+                pass
         value = literal_value(expression)
         if value is not None or isinstance(expression, exp.Literal):
             return ir.Constant(origin=origin, value=value)
-        inputs = self._function_inputs(expression, bindings, schema_complete=schema_complete)
-        return ir.OpaqueExpression(
-            origin=origin, description=expression.sql(dialect=self.dialect),
-            deterministic=inputs is not None, inputs=inputs or (),
-            strict_inputs=() if isinstance(expression, exp.Column)  # An unresolved column.
-            else tuple(self._strict_inputs(expression, bindings, schema_complete=schema_complete)),
-        )
-
-    def _strict_inputs(
-        self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
-    ) -> dict[ir.OutputColumn, None]:
-        """The resolved columns whose NULL makes `expression` NULL.
-
-        Comparisons, arithmetic, CAST and NOT are NULL when an operand is;
-        BETWEEN and IN only in the tested operand (`1 IN (1, NULL)` is TRUE);
-        AND and OR only in a column both sides are (`NULL OR TRUE` is TRUE).
-        The IS family, coalesce, CASE and functions may turn NULL into a value,
-        and a comparison with ANY or ALL is TRUE over no rows.
-        """
-
-        def strict(node: exp.Expression) -> dict[ir.OutputColumn, None]:
-            return self._strict_inputs(node, bindings, schema_complete=schema_complete)
-
-        match expression:
-            case exp.Column():
-                lowered = self._lower_expression(expression, bindings, schema_complete=schema_complete)
-                return {lowered.column: None} if isinstance(lowered, ir.ColumnRef) else {}
-            case exp.Binary(this=exp.Any() | exp.All()) | exp.Binary(expression=exp.Any() | exp.All()):
-                return {}
-            case exp.Binary() if isinstance(expression, _STRICT_BINARY):
-                return strict(expression.this) | strict(expression.expression)
-            case exp.Paren() | exp.Not() | exp.Neg() | exp.BitwiseNot() | exp.Cast():
-                return strict(expression.this)
-            case exp.Between():
-                return strict(expression.this)
-            case exp.In() if expression.expressions and not any(expression.args.get(key) for key in ("query", "unnest", "field")):
-                return strict(expression.this)
-            case exp.And() | exp.Or():
-                right = strict(expression.expression)
-                return {column: None for column in strict(expression.this) if column in right}
-            case _:
-                return {}
-
-    def _function_inputs(
-        self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool
-    ) -> tuple[ir.OutputColumn, ...] | None:
-        """The input columns `expression` is a deterministic function of, or
-        None when it may not be one: a user-defined or volatile function, an
-        aggregate or window, a subquery, or a column that does not resolve."""
-        if isinstance(expression, exp.Column) or any(isinstance(node, _NOT_A_FUNCTION_OF_ITS_COLUMNS) for node in expression.walk()):
-            return None  # An unresolved column is no function of resolved ones.
-        inputs: dict[ir.OutputColumn, None] = {}
-        for column in expression.find_all(exp.Column):
-            lowered = self._lower_expression(column, bindings, schema_complete=schema_complete)
-            if not isinstance(lowered, ir.ColumnRef):
-                return None
-            inputs[lowered.column] = None
-        return tuple(inputs)
+        builtin = _builtins(self.dialect).get(type(expression))
+        if builtin is not None and not quantified:
+            function, keys = builtin
+            return ir.Call(origin=origin, function=function, arguments=tuple(lower(expression.args[key]) for key in keys), description=description)
+        if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
+            return ir.OpaqueExpression(origin=origin, description=description)
+        return ir.OpaqueFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
 
     def _lower_case(self, case: exp.Case, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.SimpleCase:
         """A simple CASE, and the assertion its marker states, once per CASE."""
@@ -1332,11 +1289,32 @@ def _subquery_conjunct(conjunct: exp.Expression) -> tuple[str, exp.Select, exp.E
 
 # Binary operators that are NULL when either operand is. Not `||`: Oracle
 # reads NULL as '' there, and MySQL reads it as OR.
-_STRICT_BINARY = (
-    exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike,
-    exp.Add, exp.Sub, exp.Mul, exp.Div, exp.IntDiv, exp.Mod,
-    exp.BitwiseAnd, exp.BitwiseOr, exp.BitwiseXor, exp.BitwiseLeftShift, exp.BitwiseRightShift,
-)
+@cache
+def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]]:
+    """Each modelled Builtin, by the SQLGlot node it lowers from (exactly that
+    type: TRY_CAST, a subclass of CAST, is not strict), with its arguments.
+    `+`, `-` and negation are injective where exact arithmetic overflows into
+    an error (`_CHECKED_ARITHMETIC_DIALECTS`)."""
+    every, first = ir.Strictness.EVERY_ARGUMENT, ir.Strictness.FIRST_ARGUMENT
+    checked = dialect in _CHECKED_ARITHMETIC_DIALECTS
+    binary = {
+        exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=", exp.Like: "LIKE", exp.ILike: "ILIKE",
+        exp.Mul: "*", exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%",
+        exp.BitwiseAnd: "&", exp.BitwiseOr: "|", exp.BitwiseXor: "^", exp.BitwiseLeftShift: "<<", exp.BitwiseRightShift: ">>",
+    }
+    unary = {exp.Not: "NOT", exp.BitwiseNot: "~", exp.Cast: "CAST"}
+    return {
+        **{node: (ir.Builtin(name=name, strictness=every), ("this", "expression")) for node, name in binary.items()},
+        **{node: (ir.Builtin(name=name, strictness=every, injective=checked), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
+        **{node: (ir.Builtin(name=name, strictness=every), ("this",)) for node, name in unary.items()},
+        exp.Neg: (ir.Builtin(name="unary -", strictness=every, injective=checked), ("this",)),
+        exp.Between: (ir.Builtin(name="BETWEEN", strictness=first), ("this", "low", "high")),
+    }
+
+
+# SQLite turns an overflowing integer into a REAL, and MySQL outside strict
+# mode saturates it: there `a + 1` may be equal for two `a`s.
+_CHECKED_ARITHMETIC_DIALECTS = {"duckdb", "postgres"}
 
 
 def _disjuncts(predicate: exp.Expression) -> list[exp.Expression]:
@@ -1559,10 +1537,12 @@ _IDENTITY_TYPES = {
     exp.DataType.Type.TIMESTAMP, exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.UUID,
 }
 
+_EXACT_NUMERIC_TYPES = {*exp.DataType.INTEGER_TYPES, exp.DataType.Type.DECIMAL}
+
 # Nodes whose value is not a function of the columns an expression reads.
 _NOT_A_FUNCTION_OF_ITS_COLUMNS = (
     exp.Anonymous, exp.Rand, exp.Randn, exp.Uuid, exp.AggFunc, exp.Window, exp.Query, exp.Subquery,
-    exp.CurrentDate, exp.CurrentDatetime, exp.CurrentTime, exp.CurrentTimestamp, exp.Placeholder, exp.Parameter,
+    exp.CurrentDate, exp.CurrentDatetime, exp.CurrentTime, exp.CurrentTimestamp, exp.Placeholder, exp.Parameter, exp.Star,
 )
 
 

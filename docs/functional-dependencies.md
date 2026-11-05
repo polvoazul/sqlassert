@@ -248,7 +248,7 @@ through only with definite determinants.
 | S1 | PRIMARY KEY and unique index: strict key K → ι | Claim 16, p.73 | different | PRIMARY KEY: strict key (`NonNullColumn` + `UniqueSet` Knowledge, `convert._table_knowledge`). A unique index is a lax key like UNIQUE: SQL unique indexes repeat NULLs, Paulley's strict reading would be unsound | `test_paulley_audit.py` S1, S1- |
 | S2 | UNIQUE constraint: lax key U ↦ ι | Claim 16, p.73 | implemented | `convert._table_knowledge` → `UniqueSet`, a lax key onto the Row Identity (`uniqueness._functional_dependencies`) | `test_paulley_audit.py` S2, S2- |
 | S3 | Equality to a constant: ∅ → A | §3.1.3, p.68 | implemented | `uniqueness._equality_dependencies` (`∅ → col` for `col = literal`) | `test_paulley_audit.py` S3 |
-| S4 | Scalar function: X → λ(X), result possibly NULL | §3.1.4, p.71 | different | `OpaqueExpression.inputs` and `uniqueness._computed`: only built-in deterministic functions, and only of inputs compared by identity (NOCASE text and DOUBLE equal values a function tells apart) | `test_paulley_audit.py` S4 |
+| S4 | Scalar function: X → λ(X), result possibly NULL | §3.1.4, p.71 | different | `ir.determinants` and `uniqueness._computed`: any expression built from columns, literals, `Call`s of Builtins, `OpaqueFunction`s, coalesce and CASE, but not from a user-defined or volatile function, aggregate, window or subquery (`OpaqueExpression`); only of inputs compared by identity (NOCASE text and DOUBLE equal values a function tells apart). Injective Builtins (`a + 1`, `-a` over integers and decimals) also give f(X) → X (`uniqueness._one_to_one`) | `test_paulley_audit.py` S4 |
 | S5 | CHECK constraints: equalities over non-null columns strict, else lax | §3.2.1, p.73 | missing | CHECK constraints are ignored without a diagnostic. `CHECK (m = 1)` or `CHECK (m IN (...))` would give a domain and a constant (true-interpreted: NULL passes, so lax). Filed in issue 23 |  |
 | P1 | Projection keeps input FDs, transitively through dropped columns | Claim 17, p.74 | implemented | `uniqueness._row_preserving` delegation: closure runs in the input, so dropped columns still connect (hide, don't delete) | `test_paulley_audit.py` P1 |
 | P2 | Projection: X → λ(X) and ι → λ(X) | Claim 17, p.74 | implemented | `uniqueness._computed` on the Project delegation (with S4's restriction) | `test_paulley_audit.py` P2 |
@@ -259,14 +259,14 @@ through only with definite determinants.
 | R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | implemented | `uniqueness._row_preserving` (Filter delegates to its input) | `test_paulley_audit.py` R1 |
 | R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | implemented | `uniqueness._definite` reads `non_null_column` of the Filter's output, so a lax step through a column the WHERE makes non-null fires | `test_paulley_audit.py` R2 |
 | R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | missing | see E4 |  |
-| R4 | Function in WHERE: X → λ(X) | Claim 20, p.78 | missing | `WHERE b = a + 1` gives nothing: `_equality_dependencies` reads column-to-column and column-to-literal equalities only, not a deterministic expression's inputs. Filed in issue 23 |  |
+| R4 | Function in WHERE: X → λ(X) | Claim 20, p.78 | implemented | `uniqueness._equality_dependencies`: `b = f(X)` gives X → b under the S4 conditions, and b → a too when f is injective in a and both are integers or decimals | `test_paulley_audit.py` R4, R4- |
 | R5 | False-interpreted Type 1/2 equality: strict equivalence, FDs both ways | Claim 20, p.79 | implemented | `uniqueness._equality_dependencies`, `equality._equality_groups`, `nullability._null_rejected` | `test_paulley_audit.py` R5 |
 | R6 | True-interpreted equality (correlation inside a subquery): lax equivalence and FDs | Claim 20, p.79 | different | EXISTS is lowered as a semi join whose ON is false-interpreted, which is exact (issue 23); the true-interpreted forms (NOT IN, ALL) are not lowered, so no lax facts arise |  |
 | R7 | IS NOT NULL: attribute definite | §3.2.4, p.77 | implemented | `nullability._null_rejected` (IS NOT NULL) | `test_paulley_audit.py` R7 |
 | R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | implemented | `uniqueness._equality_dependencies` (`col IS NULL`: `∅ → col`) | `test_paulley_audit.py` R8 |
 | R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | missing | LIKE is opaque; without wildcards it is an equality. Filed in issue 23 |  |
 | R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | missing | `col = (uncorrelated scalar subquery)` gives nothing; the subquery is one value for every row, so `∅ → col`. Filed in issue 23 |  |
-| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | implemented | `nullability._null_rejected`: a conjunct rejects every column it is strict in (`OpaqueExpression.strict_inputs`, computed by `convert._strict_inputs`): every comparison but the IS family, through arithmetic, CAST, NOT, and AND/OR when both sides are strict in it; `IS NOT NULL` rejects its operand's. Non-nullness spreads through Equality Groups | `test_paulley_audit.py` R11 |
+| R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | implemented | `nullability._null_rejected`: a conjunct rejects every column it is strict in (`ir.strict_inputs`, from each Builtin's `strictness`): every comparison but the IS family, through arithmetic, CAST, NOT, and AND/OR when both sides are strict in it; `IS NOT NULL` rejects its operand's. Non-nullness spreads through Equality Groups | `test_paulley_audit.py` R11 |
 | R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `test_paulley_audit.py` R12 |
 | R13 | Disjunctions give nothing | §3.2.4, p.77 | different | No FDs from an `ir.Or`, as Paulley. Stronger for row-wise facts that hold in every branch: null rejection (`nullability._null_rejected`) and Enumerated Domains (`domain._conjunct_bound`, the union of the branches' bounds) | `test_paulley_audit.py` R13 |
 | I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | missing | partly: the left input's FDs hold (`uniqueness._delegations`, `_grouped` onto the left), the right input's do not. Sound only under identity comparison (an INTERSECT row carries the left value). Filed in issue 23 | `test_paulley_audit.py` I1 |
@@ -310,7 +310,7 @@ Summary: 77 rows; every implemented row has a case in
 `tests/test_paulley_audit.py`, judged by the soundness oracle (0
 counterexamples). The *missing* rows are filed in issue 23 ("Found by the
 Paulley audit"): E4/R3/L14 (equivalences and domains across outer joins),
-S5 (CHECK constraints), R4, R9, R10 (restriction predicates beyond `=`),
+S5 (CHECK constraints), R9, R10 (restriction predicates beyond `=`),
 I1/I2 (the right input of INTERSECT), U2 (UNION ALL equivalences), L13, and
 F2/F4 (full join ON dependencies). Two differences are deliberate and
 stronger than Paulley: our lax FDs are lax in the determinant only (A7), so
@@ -341,8 +341,10 @@ Ordered roughly by payoff over cost.
   function of its columns. Every input must compare by identity
   (`OutputColumn.identity_comparison`): under `NOCASE` `'a' = 'A'` and a
   DOUBLE's `-0.0 = 0.0`, yet a function can tell them apart.
-- [ ] **Injective expressions** — a curated allowlist (lossless casts,
-  `x ± constant`); everything else non-injective.
+- [x] **Injective expressions** — `Builtin.injective`: `+`, `-` and
+  negation with integer or decimal literals, over an integer or decimal
+  column, in dialects where exact arithmetic raises on overflow (DuckDB,
+  Postgres). Not yet: lossless casts, multiplication by a nonzero literal.
 - [x] **Strict/lax FDs in the left-join rules** above, including η.
 - [x] **Set-operation rules** — UNION / INTERSECT / EXCEPT without `ALL` key
   all their columns; INTERSECT and EXCEPT keep the left input's dependencies.

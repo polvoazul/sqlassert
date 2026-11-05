@@ -8,6 +8,8 @@ these are the scenarios `test_analyze_unique_join.py` does not cover.
 
 from __future__ import annotations
 
+import pytest
+
 from sqlassert import Outcome, analyze
 
 
@@ -75,20 +77,21 @@ def test_dropping_a_required_key_member_is_unknown():
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_replacing_a_key_member_with_a_computed_expression_is_unknown():
+@pytest.mark.parametrize(("expression", "outcome"), [("id % 7", Outcome.UNKNOWN), ("id + 7", Outcome.PROVED)])
+def test_replacing_a_key_member_with_a_computed_expression_keeps_it_only_if_one_to_one(expression: str, outcome: Outcome):
     report = analyze(
-        """
+        f"""
         CREATE TABLE users (id INTEGER PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
 
         SELECT *
         FROM sessions
-        /**ASSERT UNIQUE**/ JOIN (SELECT id + 0 AS id FROM users) AS u
+        /**ASSERT UNIQUE**/ JOIN (SELECT {expression} AS id FROM users) AS u
             ON sessions.user_id = u.id
         """
     )
 
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+    assert [assertion.outcome for assertion in report.assertions] == [outcome]
 
 
 def test_two_aliases_of_the_same_relation_are_separate_occurrences():

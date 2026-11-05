@@ -28,7 +28,7 @@ from itertools import combinations
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
-from sqlassert.rules.equality import _identity_comparison
+from sqlassert.rules.equality import _identity_comparison, exact_numeric
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -256,9 +256,22 @@ def _pass_through(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[ir
     return mapping
 
 
+def _one_to_one(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[ir.OutputColumn, ir.OutputColumn]:
+    """Each output column that is an input column, or a one-to-one function
+    of an integer or decimal one (`a + 1`), with that column: equal on one,
+    equal on the other."""
+    passed = _pass_through(relation, source)
+    mapping: dict[ir.OutputColumn, ir.OutputColumn] = {}
+    for column in relation.output_columns:
+        upstream = ir.injective_input(column.scalar_expr)
+        if column not in passed and upstream in source.output_columns and exact_numeric(upstream).value:
+            mapping[column] = upstream
+    return mapping | passed  # Last, so mapping back prefers a pass-through.
+
+
 def _row_preserving(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
     """Each output row is one input row, so every input dependency holds."""
-    down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _pass_through(relation, source).items()}
+    down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _one_to_one(relation, source).items()}
     down[RowIdentity(relation)] = RowIdentity(source)
     return _Delegation(
         source, down, {upstream: own for own, upstream in down.items()}, "Determined in the input",
@@ -276,7 +289,7 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
     value constant across the group); and to the Row Identity because one
     input row belongs to one output row.
     """
-    down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _pass_through(relation, source).items()}
+    down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _one_to_one(relation, source).items()}
     back: dict[Attribute, Attribute] = {upstream: own for own, upstream in down.items()}
     back[RowIdentity(source)] = RowIdentity(relation)
     if isinstance(relation, ir.Aggregate):
@@ -295,20 +308,27 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
 
 
 def _computed(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[Attribute, frozenset[Attribute]]:
-    """Paulley §3.1.4: each column a deterministic function computes from
-    columns of `source`, with those columns. Only columns compared by identity
-    qualify: under NOCASE `'a' = 'A'` while `upper(x) || x` tells them apart,
-    and a DOUBLE's `-0.0 = 0.0` while its text does not."""
+    """Paulley §3.1.4: each column computed from columns of `source` by a pure
+    function, with those columns. Only columns compared by identity qualify:
+    under NOCASE `'a' = 'A'` while `upper(x) || x` tells them apart, and a
+    DOUBLE's `-0.0 = 0.0` while its text does not."""
     computed: dict[Attribute, frozenset[Attribute]] = {}
     for column in relation.output_columns:
-        match column.scalar_expr:
-            case ir.OpaqueExpression(deterministic=True, inputs=inputs) if all(
-                upstream in source.output_columns and _identity_comparison(upstream).value for upstream in inputs
-            ):
-                computed[column] = frozenset(inputs)
-            case _:
-                pass  # Pass-through columns map back directly; others are new values.
+        if isinstance(column.scalar_expr, ir.ColumnRef):
+            continue  # Pass-through columns map back directly.
+        inputs = _identity_inputs(column.scalar_expr, source.output_columns)
+        if inputs is not None:
+            computed[column] = frozenset(inputs)
     return computed
+
+
+def _identity_inputs(expression: ir.ScalarExpr, columns: tuple[ir.OutputColumn, ...]) -> tuple[ir.OutputColumn, ...] | None:
+    """The columns `expression` is a pure function of, when all are among
+    `columns` and compared by identity."""
+    inputs = ir.determinants(expression)
+    if inputs is None or not all(column in columns and _identity_comparison(column).value for column in inputs):
+        return None
+    return inputs
 
 
 def _join_side(join: ir.Join, left: bool) -> _Delegation:
@@ -436,7 +456,8 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
 
 def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[ir.OutputColumn, ir.OutputColumn], clause: str):
     """Dependencies of conjuncts that hold on every row: `a = b` both ways,
-    `a = literal` and `a IS NULL` from the empty set."""
+    `a = literal` and `a IS NULL` from the empty set, and `b = f(x...)` from
+    `x...` (Paulley Claim 20) when f is pure and they compare by identity."""
     for conjunct in conjuncts:
         evidence = Result(True, f"{clause} conjunct", (conjunct,))
         match conjunct:
@@ -445,6 +466,17 @@ def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[i
                 yield (outputs[second],), outputs[first], evidence
             case ir.Equality(left=ir.ColumnRef(column=column), right=ir.Constant()) | ir.Equality(left=ir.Constant(), right=ir.ColumnRef(column=column)) | ir.IsNull(operand=ir.ColumnRef(column=column)) if column in outputs:
                 yield (), outputs[column], evidence
+            case ir.Equality(left=left, right=right):
+                for target, value in ((left, right), (right, left)):
+                    if not (isinstance(target, ir.ColumnRef) and target.column in outputs and _identity_comparison(target.column).value):
+                        continue
+                    inputs = _identity_inputs(value, tuple(outputs))
+                    if inputs is not None:
+                        yield tuple(outputs[column] for column in inputs), outputs[target.column], evidence
+                    # One-to-one: `b = a + 1` also gives b -> a, when both are exact.
+                    source = ir.injective_input(value)
+                    if source in outputs and exact_numeric(source).value and exact_numeric(target.column).value:
+                        yield (outputs[target.column],), outputs[source], evidence
             case _:
                 pass  # Other conjuncts only remove rows.
 

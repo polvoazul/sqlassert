@@ -21,7 +21,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P4, out of scope for now (not covered by Paulley):** #23 window functions
   (and #33's CTE part, which needs them), recursive CTEs, column lineage,
-  LATERAL, CAST injectivity.
+  LATERAL, CAST and multiplication injectivity.
 
 ## Done
 

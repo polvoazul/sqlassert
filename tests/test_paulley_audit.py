@@ -61,6 +61,8 @@ CASES = {
     # Restriction (§3.2.4).
     "R1": ("SELECT id, a FROM t WHERE b = 1 /**ASSERT UNIQUE(id)**/", PROVED),
     "R2": ("WITH s AS (SELECT * FROM t /**DECLARE DETERMINES(a -> b)**/ /**DECLARE DETERMINES(b -> c)**/) SELECT a, b, c FROM s WHERE b IS NOT NULL /**ASSERT DETERMINES(a -> c)**/", PROVED),
+    "R4": ("SELECT a, b FROM t WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/", PROVED),
+    "R4-": ("SELECT a, b FROM t WHERE b = a % 2 /**ASSERT DETERMINES(b -> a)**/", UNKNOWN),
     "R5": ("SELECT a, b FROM t WHERE a = b /**ASSERT DETERMINES(a -> b)**/", PROVED),
     "R7": ("SELECT a FROM t WHERE a IS NOT NULL /**ASSERT NOT NULL(a)**/", PROVED),
     "R8": ("SELECT a, b FROM t WHERE a IS NULL /**ASSERT DETERMINES(b -> a)**/", PROVED),

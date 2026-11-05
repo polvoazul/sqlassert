@@ -19,16 +19,22 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   depend on anything". Now `Filter.predicate` and `Join.predicate` hold the
   condition as n-ary `ir.And` and `ir.Or` nodes over the recognized
   conjuncts (`conjuncts` is the top-level AND's parts); an AND or OR inside a
-  value stays opaque. Ranges and `LIKE` reject NULL (R11); `OR` gives null
+  value is lowered the same way. Ranges and `LIKE` reject NULL (R11); `OR` gives null
   rejection and Enumerated Domains (R13), not FDs.
-- [ ] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
+- [x] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
   `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
-  Searched `CASE`, `CAST`, and other function calls are opaque, so no
-  injectivity (`id + 0`, lossless casts). Function FDs done (Paulley §3.1.4):
-  an opaque expression built only from built-in functions and operators over
-  resolved columns records them as `inputs`, and closure reaches it from them
-  when each compares by identity. Still open: injectivity (P4), and searched
-  `CASE`, `coalesce` and simple `CASE` as FD sources.
+  Done: a modelled operator or function is an `ir.Call` of an `ir.Builtin`
+  (strictness, injectivity), lowered from a registry
+  (`convert._builtins`); `=`, IS NULL, IN-list, AND and OR are their own
+  nodes in a value too. Any other built-in is an `ir.OpaqueFunction`: a pure
+  function of its lowered arguments, nothing else known (searched CASE,
+  `concat`, `||`, `upper`). `ir.OpaqueExpression` is only what is not a
+  function of its columns: a user-defined or volatile function, an aggregate,
+  window or subquery, an unresolved column. FD facts are recursive functions
+  over the tree (`ir.determinants`, `ir.injective_input`,
+  `ir.strict_inputs`), so coalesce, CASE and every nesting of them are FD
+  sources, and `a + 1`, `10 - a`, `-a` over an integer or decimal keep keys.
+  Not yet injective: lossless casts, multiplication.
 - [x] `SetOperation` output columns refer to the left arm only; the right arm's
   columns are not tracked. (`ALL` vs distinct is now distinguished:
   `SetOperation.distinct`, issue 24.) Done: `SetOperation.arms(column)` pairs
@@ -117,8 +123,8 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   connection, hydration already declares each catalog table's columns, so the
   column resolves; catalog column types and collations are passed too (issue 30).
   Tests: `tests/test_connection_warnings.py`.
-- [x] No functional dependencies (`X → Y`). Done in issue 24, except
-  deterministic and injective expressions (still opaque). Keys, equality predicates,
+- [x] No functional dependencies (`X → Y`). Done in issue 24; pure and
+  injective expressions since (see scalar expressions above). Keys, equality predicates,
   deterministic expressions, and `GROUP BY` all create them; without them,
   uniqueness only flows through columns that pass through unchanged. Theory
   and planned opportunities: [`docs/functional-dependencies.md`](../functional-dependencies.md).
@@ -183,19 +189,21 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   passes), which is exactly what ENUM means.
 - [x] **R11** (§3.2.4, footnote 9): only `=`, `IN (...)` and `IS NOT NULL`
   rejected NULL. Done: a conjunct rejects every column it is strict in (NULL
-  whenever the column is), recorded at lowering as
-  `OpaqueExpression.strict_inputs`. Every comparison but the IS family is
+  whenever the column is), `ir.strict_inputs` from each `ir.Builtin`'s
+  `strictness`. Every comparison but the IS family is
   strict in its operands, through arithmetic, CAST and NOT; BETWEEN and IN in
   the tested operand; AND and OR in a column both sides are strict in. Not
   strict: the IS family, `coalesce`, CASE, functions (`concat` and Postgres
   `greatest` skip NULLs), `||` (Oracle reads NULL as `''`), and comparisons
   with ANY or ALL (TRUE over no rows). Still open: per-function null
-  behaviour (most built-ins are strict). An AND under an OR rejects what
+  behaviour (most built-ins are strict): each is now a registry entry in
+  `convert._builtins`, moving it from `ir.OpaqueFunction` to `ir.Call`. An AND under an OR rejects what
   any of its parts does: `(a > 0 AND b > 0) OR a < 0` rejects `a`, read from
   `ir.Or` rather than strictness.
-- [ ] **R4** (Claim 20): `WHERE b = a + 1` should give `a → b` when the
-  expression is deterministic and its inputs compare by identity (the same
-  rule as a computed column, `uniqueness._computed`).
+- [x] **R4** (Claim 20): `WHERE b = a + 1` gives `a → b` when the
+  expression is pure and its inputs compare by identity, and `b → a` when it
+  is injective in `a` and both are integers or decimals
+  (`uniqueness._equality_dependencies`).
 - [ ] **R10** (§3.2.4): `WHERE a = (uncorrelated scalar subquery)` makes `a`
   constant (`∅ → a`).
 - [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.

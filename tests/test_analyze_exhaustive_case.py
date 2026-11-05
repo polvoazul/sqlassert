@@ -181,7 +181,13 @@ def test_declare_exhaustive_is_diagnosed():
 
 
 def test_an_exhaustive_case_the_analysis_does_not_reach_is_diagnosed():
-    result = report("SELECT upper(/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 'a' END) AS n FROM orders")
+    result = report("SELECT max(/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 'a' END) AS n FROM orders")
     diagnostic, = result.diagnostics
     assert diagnostic.code == UNANALYZED_ASSERTION
     assert "exhaustive" in diagnostic.message
+
+
+def test_an_exhaustive_case_inside_a_function_is_analyzed():
+    result = report("SELECT upper(/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 'a' END) AS n FROM orders")
+    assert result.diagnostics == ()
+    assert len(result.assertions) == 1
