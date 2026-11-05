@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
+from typing import Literal, assert_never
 
 from sqlglot import exp
 
@@ -22,7 +23,7 @@ from sqlassert.properties import (
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
-    FOREIGN_KEY_KINDS, JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
+    JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
     exhaustive_line, join_marker_kind, join_origin, literal_value, marker_position,
 )
 
@@ -61,6 +62,7 @@ class _MarkerReference:
     """A Foreign Key marker whose referencing columns are lowered, awaiting its referenced relation."""
 
     marker: ColumnMarker
+    kind: Literal["foreign-key", "declared-foreign-key"]
     origin: Origin
     columns: tuple[ir.OutputColumn, ...]
     target: _Symbol
@@ -644,9 +646,10 @@ class IrParser:
         return _Lowered(relation, bindings)
 
     def _join_marker(self, join: exp.Join, relation: ir.Join) -> None:
-        if join_marker_kind(join) is not None:
+        kind = join_marker_kind(join)
+        if kind is not None:
             self._handled_joins.add(id(join))
-        match join_marker_kind(join):
+        match kind:
             case "unique-join":
                 self._assertions.append(ir.Assertion(origin=join_origin(join, self.dialect), property=UniqueJoin(join=relation)))
             case "exactly-one-join":
@@ -655,8 +658,8 @@ class IrParser:
                 )
             case None:
                 pass
-            case kind:
-                raise ValueError(f"Unhandled join marker kind: {kind}")
+            case _:
+                assert_never(kind)
 
     def _lower_join_predicate(self, join: exp.Join, left: _Lowered, right: _Lowered) -> ir.ScalarExpr | None:
         """The ON condition; USING is an AND of one equality per column."""
@@ -1050,15 +1053,14 @@ class IrParser:
                     )
                 )
                 continue
-            if kind in FOREIGN_KEY_KINDS:
-                self._marker_references.append(_MarkerReference(
-                    marker, origin, tuple(by_name[column.lower()] for column in columns),
-                    self._marker_targets[id(marker)], len(self._assertions),
-                ))
-                continue
             members = frozenset(by_name[column.lower()] for column in columns)
             dependent = frozenset(by_name[column.lower()] for column in marker.dependent)
             match kind:
+                case "foreign-key" | "declared-foreign-key":
+                    self._marker_references.append(_MarkerReference(
+                        marker, kind, origin, tuple(by_name[column.lower()] for column in columns),
+                        self._marker_targets[id(marker)], len(self._assertions),
+                    ))
                 case "unique":
                     self._assertions.append(ir.Assertion(origin=origin, property=UniqueSet(columns=members)))
                 case "key":
@@ -1088,7 +1090,7 @@ class IrParser:
                     else:
                         self._declarations.append(domain)
                 case _:
-                    raise ValueError(f"Unhandled column marker kind: {kind}")
+                    assert_never(kind)
 
     def _add_attachment_site(
         self, node: exp.Join | exp.Select | exp.Case, label: str, relation: ir.RelationExpr | ir.SimpleCase, *, trailing: bool
@@ -1116,7 +1118,7 @@ class IrParser:
                     pending.origin,
                 ))
                 continue
-            match marker.kind:
+            match pending.kind:
                 case "foreign-key":
                     placed.append((pending.position, ir.Assertion(
                         origin=pending.origin, property=ForeignKey(columns=pending.columns, referenced_columns=referenced),
@@ -1124,7 +1126,7 @@ class IrParser:
                 case "declared-foreign-key":
                     self._declarations.append(ReferentialCoverage(columns=pending.columns, referenced_columns=referenced))
                 case _:
-                    raise ValueError(f"Unhandled foreign key marker kind: {marker.kind}")
+                    assert_never(pending.kind)
         # Descending, so earlier positions stay valid; ties keep written order.
         for position, assertion in reversed(placed):
             self._assertions.insert(position, assertion)

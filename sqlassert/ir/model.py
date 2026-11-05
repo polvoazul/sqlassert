@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
 type JoinKind = Literal["inner", "cross", "left", "right", "full", "semi", "anti"]
 type SetOperator = Literal["union", "intersect", "except"]
-type LiteralType = Literal["string", "numeric", "boolean"]
 
 
 @dataclass_transform(eq_default=False, frozen_default=True, kw_only_default=True)
@@ -188,7 +187,7 @@ class LiteralValue:
     value is a separate, conservative question (`rules/domain.py`).
     """
 
-    type: LiteralType
+    type: Literal["string", "numeric", "boolean"]
     text: str
 
     def sql(self) -> str:
