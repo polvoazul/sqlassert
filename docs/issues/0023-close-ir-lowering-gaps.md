@@ -24,9 +24,9 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 - [x] Scalar expressions are column, literal, `NULL`, `coalesce`, simple
   `CASE` (`ir.SimpleCase`, issue 18), `count(...)` (`ir.Count`), or opaque.
   Done: a modelled operator or function is an `ir.Call` of an `ir.Builtin`
-  (strictness, injectivity), lowered from a registry
+  (per parameter: strict, total; injective), lowered from a per-dialect registry
   (`convert._builtins`); `=`, IS NULL, IN-list, AND and OR are their own
-  nodes in a value too. Any other built-in is an `ir.OpaqueFunction`: a pure
+  nodes in a value too. Any other built-in is an `ir.OpaquePureFunction`: a pure
   function of its lowered arguments, nothing else known (searched CASE,
   `concat`, `||`, `upper`). `ir.OpaqueExpression` is only what is not a
   function of its columns: a user-defined or volatile function, an aggregate,
@@ -189,17 +189,21 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   passes), which is exactly what ENUM means.
 - [x] **R11** (§3.2.4, footnote 9): only `=`, `IN (...)` and `IS NOT NULL`
   rejected NULL. Done: a conjunct rejects every column it is strict in (NULL
-  whenever the column is), `ir.strict_inputs` from each `ir.Builtin`'s
-  `strictness`. Every comparison but the IS family is
+  whenever the column is), `ir.strict_inputs` from each `ir.Call`'s
+  `strict_arguments`. Every comparison but the IS family is
   strict in its operands, through arithmetic, CAST and NOT; BETWEEN and IN in
   the tested operand; AND and OR in a column both sides are strict in. Not
   strict: the IS family, `coalesce`, CASE, functions (`concat` and Postgres
   `greatest` skip NULLs), `||` (Oracle reads NULL as `''`), and comparisons
-  with ANY or ALL (TRUE over no rows). Still open: per-function null
-  behaviour (most built-ins are strict): each is now a registry entry in
-  `convert._builtins`, moving it from `ir.OpaqueFunction` to `ir.Call`. An AND under an OR rejects what
+  with ANY or ALL (TRUE over no rows). A Call's value is non-null when its
+  `total_arguments` are (`n + 1` in DuckDB and Postgres; not SQLite, where
+  `inf - inf` is NULL, nor DuckDB's `n % 0`); `concat_ws` is a
+  `BuiltinVariadic`, strict and total in its separator alone. Still open:
+  more per-function entries (most built-ins are strict), each a registry
+  entry in `convert._builtins` moving it from `ir.OpaquePureFunction` to
+  `ir.Call`. An AND under an OR rejects what
   any of its parts does: `(a > 0 AND b > 0) OR a < 0` rejects `a`, read from
-  `ir.Or` rather than strictness.
+  `ir.Or` rather than strict arguments.
 - [x] **R4** (Claim 20): `WHERE b = a + 1` gives `a → b` when the
   expression is pure and its inputs compare by identity, and `b → a` when it
   is injective in `a` and both are integers or decimals

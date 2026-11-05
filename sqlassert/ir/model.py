@@ -60,17 +60,16 @@ class OpaqueExpression(ScalarExpr):
     description: str
 
 
-class Strictness(Enum):
-    """Which arguments of a Builtin make its value NULL when they are."""
-
-    EVERY_ARGUMENT = "every argument"  # `n + 1`, `n > m`, `CAST(n AS ...)`, `NOT p`
-    FIRST_ARGUMENT = "first argument"  # `n BETWEEN lo AND hi`: `1 BETWEEN NULL AND 0` is FALSE
-
-
 @dataclass(frozen=True)
 class Builtin:
     """A built-in operator or function whose behaviour is modelled: a pure
-    function of its arguments' values, NULL whenever a `strictness` argument is.
+    function of its arguments' values, one flag of each kind per parameter.
+
+    A `strict` parameter makes the value NULL whenever its argument is NULL.
+    The value is non-null whenever every `total` parameter's argument is
+    non-null: all False means never NULL, and `total` None means it may be NULL
+    even then (`n % 0` in DuckDB). Unless `total` is None, a strict parameter
+    is total.
 
     An `injective` one is one-to-one in its single argument that is not an
     integer or decimal literal, when that argument is an integer or decimal:
@@ -79,8 +78,48 @@ class Builtin:
     """
 
     name: str
-    strictness: Strictness
-    injective: bool = False
+    strict: tuple[bool, ...]
+    total: tuple[bool, ...] | None
+    injective: bool
+
+    def __post_init__(self) -> None:
+        assert self.total is None or len(self.total) == len(self.strict), f"{self.name}: one total flag per parameter"
+        assert self.total is None or all(total for strict, total in zip(self.strict, self.total) if strict), (
+            f"{self.name}: a strict parameter is total"
+        )
+
+    def accepts(self, count: int) -> bool:
+        return count == len(self.strict)
+
+    def strict_flags(self, count: int) -> tuple[bool, ...]:
+        return self.strict
+
+    def total_flags(self, count: int) -> tuple[bool, ...] | None:
+        return self.total
+
+
+@dataclass(frozen=True)
+class BuiltinVariadic(Builtin):
+    """A Builtin whose last parameter repeats any number of times (none
+    included), each repetition with the `repeated_` flags:
+    `concat_ws(sep, value, ...)` is strict and total in `sep` alone."""
+
+    repeated_strict: bool
+    repeated_total: bool
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert not self.injective, f"{self.name}: a variadic Builtin is not injective"
+        assert self.total is None or self.repeated_total or not self.repeated_strict, f"{self.name}: a strict parameter is total"
+
+    def accepts(self, count: int) -> bool:
+        return count >= len(self.strict)
+
+    def strict_flags(self, count: int) -> tuple[bool, ...]:
+        return self.strict + (self.repeated_strict,) * (count - len(self.strict))
+
+    def total_flags(self, count: int) -> tuple[bool, ...] | None:
+        return None if self.total is None else self.total + (self.repeated_total,) * (count - len(self.total))
 
 
 class Call(ScalarExpr):
@@ -90,8 +129,33 @@ class Call(ScalarExpr):
     arguments: tuple[ScalarExpr, ...]
     description: str
 
+    def __post_init__(self) -> None:
+        assert self.function.accepts(len(self.arguments)), f"{self.function.name} takes no {len(self.arguments)} arguments"
 
-class OpaqueFunction(ScalarExpr):
+    @property
+    def strict_arguments(self) -> tuple[ScalarExpr, ...]:
+        """The arguments whose NULL makes the value NULL."""
+        flags = self.function.strict_flags(len(self.arguments))
+        return tuple(argument for argument, strict in zip(self.arguments, flags) if strict)
+
+    @property
+    def total_arguments(self) -> tuple[ScalarExpr, ...] | None:
+        """The arguments whose being non-null makes the value non-null (none:
+        never NULL), or None when the value may be NULL regardless."""
+        flags = self.function.total_flags(len(self.arguments))
+        return None if flags is None else tuple(argument for argument, total in zip(self.arguments, flags) if total)
+
+    @property
+    def injective_argument(self) -> ScalarExpr | None:
+        """The argument the value is one-to-one in, when it is an integer or
+        decimal: the single one that is not an integer or decimal literal."""
+        if not self.function.injective:
+            return None
+        others = [argument for argument in self.arguments if not _exact_literal(argument)]
+        return others[0] if len(others) == 1 else None
+
+
+class OpaquePureFunction(ScalarExpr):
     """A built-in function or operator whose behaviour is not modelled: a pure
     function of its arguments, and nothing else is known about it. Searched
     CASE, `concat`, `||`, `greatest`, `IS DISTINCT FROM`, and the like."""
@@ -234,7 +298,7 @@ def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
             return (column,)
         case OpaqueExpression() | Count() | AnyAggregate():
             return None
-        case Constant() | NullLiteral() | Call() | OpaqueFunction() | Coalesce() | SimpleCase() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or():
+        case Constant() | NullLiteral() | Call() | OpaquePureFunction() | Coalesce() | SimpleCase() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or():
             found: dict[OutputColumn, None] = {}
             for child in children(expression):
                 assert isinstance(child, ScalarExpr)
@@ -254,9 +318,8 @@ def injective_input(expression: ScalarExpr) -> OutputColumn | None:
     match expression:
         case ColumnRef(column=column):
             return column
-        case Call(function=Builtin(injective=True), arguments=arguments):
-            others = [argument for argument in arguments if not _exact_literal(argument)]
-            return injective_input(others[0]) if len(others) == 1 else None
+        case Call(injective_argument=ScalarExpr() as argument):
+            return injective_input(argument)
         case _:
             return None
 
@@ -280,10 +343,8 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
     match expression:
         case ColumnRef(column=column):
             return (column,)
-        case Call(function=Builtin(strictness=Strictness.EVERY_ARGUMENT), arguments=arguments):
+        case Call(strict_arguments=arguments):
             return tuple(dict.fromkeys(column for argument in arguments for column in strict_inputs(argument)))
-        case Call(function=Builtin(strictness=Strictness.FIRST_ARGUMENT), arguments=(first, *_)):
-            return strict_inputs(first)
         case Equality(left=left, right=right):
             return tuple(dict.fromkeys((*strict_inputs(left), *strict_inputs(right))))
         case InList(operand=operand):

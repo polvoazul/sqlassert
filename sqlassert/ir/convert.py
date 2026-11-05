@@ -916,7 +916,7 @@ class IrParser:
         might be shadowed by a column of a source whose columns are unknown.
 
         A Builtin becomes a Call; any other function or operator an
-        OpaqueFunction of its lowered arguments, unless its value is not a
+        OpaquePureFunction of its lowered arguments, unless its value is not a
         function of them (`_NOT_A_FUNCTION_OF_ITS_COLUMNS`)."""
         origin = self._origin(expression, line)
 
@@ -979,10 +979,12 @@ class IrParser:
         builtin = _builtins(self.dialect).get(type(expression))
         if builtin is not None and not quantified:
             function, keys = builtin
-            return ir.Call(origin=origin, function=function, arguments=tuple(lower(expression.args[key]) for key in keys), description=description)
+            values = [value for key in keys for value in _as_list(expression.args[key])]
+            if function.accepts(len(values)):
+                return ir.Call(origin=origin, function=function, arguments=tuple(lower(value) for value in values), description=description)
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             return ir.OpaqueExpression(origin=origin, description=description)
-        return ir.OpaqueFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
+        return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
 
     def _lower_case(self, case: exp.Case, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.SimpleCase:
         """A simple CASE, and the assertion its marker states, once per CASE."""
@@ -1287,34 +1289,59 @@ def _subquery_conjunct(conjunct: exp.Expression) -> tuple[str, exp.Select, exp.E
             return None
 
 
-# Binary operators that are NULL when either operand is. Not `||`: Oracle
-# reads NULL as '' there, and MySQL reads it as OR.
 @cache
 def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]]:
     """Each modelled Builtin, by the SQLGlot node it lowers from (exactly that
-    type: TRY_CAST, a subclass of CAST, is not strict), with its arguments.
-    `+`, `-` and negation are injective where exact arithmetic overflows into
-    an error (`_CHECKED_ARITHMETIC_DIALECTS`)."""
-    every, first = ir.Strictness.EVERY_ARGUMENT, ir.Strictness.FIRST_ARGUMENT
+    type: TRY_CAST, a subclass of CAST, may be NULL for a value), with the
+    argument keys its parameters come from, a list key in place of a variadic
+    Builtin's repeated parameter. Not `||`: Oracle reads NULL as '' there, and
+    MySQL reads it as OR.
+
+    Comparisons, LIKE, NOT, BETWEEN and the bitwise operators are never NULL
+    for non-null arguments. Arithmetic and CAST only where they raise an error
+    rather than return NULL (`_CHECKED_ARITHMETIC_DIALECTS`: SQLite turns a
+    NaN into NULL, MySQL a bad date CAST), and division and remainder only
+    where division by zero raises too (`_CHECKED_DIVISION_DIALECTS`). `+`, `-`
+    and negation are injective where exact arithmetic overflows into an error."""
     checked = dialect in _CHECKED_ARITHMETIC_DIALECTS
+
+    def builtin(name: str, arity: int, *, total: bool = True, injective: bool = False) -> ir.Builtin:
+        return ir.Builtin(name=name, strict=(True,) * arity, total=(True,) * arity if total else None, injective=injective)
+
     binary = {
         exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=", exp.Like: "LIKE", exp.ILike: "ILIKE",
-        exp.Mul: "*", exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%",
         exp.BitwiseAnd: "&", exp.BitwiseOr: "|", exp.BitwiseXor: "^", exp.BitwiseLeftShift: "<<", exp.BitwiseRightShift: ">>",
     }
-    unary = {exp.Not: "NOT", exp.BitwiseNot: "~", exp.Cast: "CAST"}
+    division = {exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%"}
     return {
-        **{node: (ir.Builtin(name=name, strictness=every), ("this", "expression")) for node, name in binary.items()},
-        **{node: (ir.Builtin(name=name, strictness=every, injective=checked), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
-        **{node: (ir.Builtin(name=name, strictness=every), ("this",)) for node, name in unary.items()},
-        exp.Neg: (ir.Builtin(name="unary -", strictness=every, injective=checked), ("this",)),
-        exp.Between: (ir.Builtin(name="BETWEEN", strictness=first), ("this", "low", "high")),
+        **{node: (builtin(name, 2), ("this", "expression")) for node, name in binary.items()},
+        exp.Mul: (builtin("*", 2, total=checked), ("this", "expression")),
+        **{node: (builtin(name, 2, total=dialect in _CHECKED_DIVISION_DIALECTS), ("this", "expression")) for node, name in division.items()},
+        **{node: (builtin(name, 2, total=checked, injective=checked), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
+        exp.Neg: (builtin("unary -", 1, total=checked, injective=checked), ("this",)),
+        exp.Not: (builtin("NOT", 1), ("this",)),
+        exp.BitwiseNot: (builtin("~", 1), ("this",)),
+        exp.Cast: (builtin("CAST", 1, total=checked), ("this",)),
+        # `1 BETWEEN NULL AND 0` is FALSE.
+        exp.Between: (ir.Builtin(name="BETWEEN", strict=(True, False, False), total=(True, True, True), injective=False), ("this", "low", "high")),
+        # NULL values are skipped: `concat_ws(',', NULL)` is ''.
+        exp.ConcatWs: (
+            ir.BuiltinVariadic(name="concat_ws", strict=(True,), total=(True,), injective=False, repeated_strict=False, repeated_total=False),
+            ("expressions",),
+        ),
     }
 
 
-# SQLite turns an overflowing integer into a REAL, and MySQL outside strict
-# mode saturates it: there `a + 1` may be equal for two `a`s.
+# SQLite turns an overflowing integer into a REAL and a NaN into NULL, and
+# MySQL outside strict mode saturates an integer: there `a + 1` may be equal
+# for two `a`s, or NULL.
 _CHECKED_ARITHMETIC_DIALECTS = {"duckdb", "postgres"}
+# DuckDB's `n % 0` and `n // 0` are NULL.
+_CHECKED_DIVISION_DIALECTS = {"postgres"}
+
+
+def _as_list(value: exp.Expression | list[exp.Expression]) -> list[exp.Expression]:
+    return value if isinstance(value, list) else [value]
 
 
 def _disjuncts(predicate: exp.Expression) -> list[exp.Expression]:
