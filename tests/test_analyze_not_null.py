@@ -337,6 +337,7 @@ REJECTING_CONJUNCTS = [
     ("flag", "flag"),
     ("NOT flag", "flag"),
     ("NOT ((n = 1) = (m = 1))", "n"),
+    ("concat_ws(s, 'x') = 'x'", "s"),
 ]
 
 
@@ -436,3 +437,48 @@ def test_an_inner_join_on_or_rejects_null():
     )
     assert not report.diagnostics, report.diagnostics
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
+# A Builtin's value is non-null when every argument it is total in is
+# (`n + 1`), never NULL when it is total in none (`concat_ws(',', s)` skips a
+# NULL `s`), and may be NULL regardless where it returns NULL for some values
+# (`n % 0` in DuckDB, `inf - inf` in SQLite).
+VALUE_SCHEMA = "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, m INTEGER, s VARCHAR, sep VARCHAR NOT NULL);"
+
+BUILTIN_VALUES = [
+    ("n + 1", "duckdb", Outcome.PROVED),
+    ("-n * 2", "postgres", Outcome.PROVED),
+    ("n + 1", "sqlite", Outcome.UNKNOWN),
+    ("n + m", "duckdb", Outcome.UNKNOWN),
+    ("n > 0", "sqlite", Outcome.PROVED),
+    ("n > m", "duckdb", Outcome.UNKNOWN),
+    ("NOT (n > 0)", "duckdb", Outcome.PROVED),
+    ("n BETWEEN 0 AND id", "duckdb", Outcome.PROVED),
+    ("n BETWEEN 0 AND m", "duckdb", Outcome.UNKNOWN),
+    ("n % 2", "postgres", Outcome.PROVED),
+    ("n % 2", "duckdb", Outcome.UNKNOWN),
+    ("n / 2", "duckdb", Outcome.UNKNOWN),
+    ("CAST(n AS VARCHAR)", "duckdb", Outcome.PROVED),
+    ("CAST(n AS VARCHAR)", "mysql", Outcome.UNKNOWN),
+    ("TRY_CAST(n AS VARCHAR)", "duckdb", Outcome.UNKNOWN),
+    ("concat_ws(',', s, m)", "duckdb", Outcome.PROVED),
+    ("concat_ws(sep, s)", "postgres", Outcome.PROVED),
+    ("concat_ws(s, sep)", "duckdb", Outcome.UNKNOWN),
+    ("upper(s)", "duckdb", Outcome.UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(("value", "dialect", "outcome"), BUILTIN_VALUES)
+def test_a_builtin_is_non_null_when_its_total_arguments_are(value: str, dialect: str, outcome: Outcome):
+    report = analyze(f"{VALUE_SCHEMA} SELECT {value} AS v FROM t /**ASSERT NOT NULL(v)**/", dialect=dialect)
+    assert not report.diagnostics, report.diagnostics
+    assert [assertion.outcome for assertion in report.assertions] == [outcome]
+
+
+def test_a_builtin_over_a_padded_column_is_non_null_once_the_padding_is_rejected():
+    assert padded_outcomes(
+        "SELECT o.id, p.amount + 1 AS next FROM orders o LEFT JOIN payments p ON p.order_id = o.id /**ASSERT NOT NULL(next)**/"
+    ) == [Outcome.UNKNOWN]
+    assert padded_outcomes(
+        "SELECT o.id, p.amount + 1 AS next FROM orders o LEFT JOIN payments p ON p.order_id = o.id WHERE p.id > 0 /**ASSERT NOT NULL(next)**/"
+    ) == [Outcome.PROVED]

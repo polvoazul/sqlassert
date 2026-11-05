@@ -1,6 +1,6 @@
 """Relational intermediate representation."""
 
-from sqlassert.ir.model import Aggregate, Alias, And, AnyAggregate, Assertion, Builtin, Call, Coalesce, ColumnRef, Constant, Count, Distinct, Equality, Filter, INNER, InList, IsNotNull, IsNull, Join, Limit, NamedRelation, Node, NullLiteral, OpaqueExpression, OpaqueFunction, OpaqueRelation, Or, OutputColumn, Program, Project, QualifyByPartition, RecursiveRelation, RelationExpr, RelationRole, ScalarExpr, SetOperation, SimpleCase, LiteralValue, Strictness, children, conjuncts, determinants, injective_input, strict_inputs
+from sqlassert.ir.model import Aggregate, Alias, And, AnyAggregate, Assertion, Builtin, BuiltinVariadic, Call, Coalesce, ColumnRef, Constant, Count, Distinct, Equality, Filter, INNER, InList, IsNotNull, IsNull, Join, Limit, NamedRelation, Node, NullLiteral, OpaqueExpression, OpaquePureFunction, OpaqueRelation, Or, OutputColumn, Program, Project, QualifyByPartition, RecursiveRelation, RelationExpr, RelationRole, ScalarExpr, SetOperation, SimpleCase, LiteralValue, children, conjuncts, determinants, injective_input, strict_inputs
 
 __all__ = [
     "Aggregate",
@@ -8,6 +8,7 @@ __all__ = [
     "And",
     "AnyAggregate",
     "Builtin",
+    "BuiltinVariadic",
     "Call",
     "Assertion",
     "Coalesce",
@@ -28,7 +29,7 @@ __all__ = [
     "Node",
     "NullLiteral",
     "OpaqueExpression",
-    "OpaqueFunction",
+    "OpaquePureFunction",
     "OpaqueRelation",
     "Or",
     "OutputColumn",
@@ -41,7 +42,6 @@ __all__ = [
     "ScalarExpr",
     "SetOperation",
     "SimpleCase",
-    "Strictness",
     "children",
     "conjuncts",
     "determinants",

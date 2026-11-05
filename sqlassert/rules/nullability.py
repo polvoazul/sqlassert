@@ -125,7 +125,20 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
         case ir.AnyAggregate(input=value):
             # Groups are never empty, so the value comes from some input row.
             return _expression_sources(value)
-        case ir.OpaqueExpression(description=description) | ir.OpaqueFunction(description=description) | ir.Call(description=description):
+        case ir.Call(total_arguments=tuple() as arguments, description=description):
+            # NULL only when an argument it is total in is, so only through theirs.
+            result: _Sources = {}
+            premises: list[Result] = []
+            for argument in arguments:
+                sources, argument_premises = _expression_sources(argument)
+                for source, evidence in sources.items():
+                    result.setdefault(source, evidence)
+                premises.extend(argument_premises)
+            if result:
+                return result, []
+            reason = f"{expression.function.name} is non-null when its arguments are" if arguments else f"{expression.function.name} is never NULL"
+            return {}, [Result(True, reason, (expression,), premises)]
+        case ir.OpaqueExpression(description=description) | ir.OpaquePureFunction(description=description) | ir.Call(description=description):
             return {ORGANIC: unknown(f"Nullability of {description} is not known", expression)}, []
         case ir.Equality() | ir.IsNull() | ir.IsNotNull() | ir.InList() | ir.And() | ir.Or():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []

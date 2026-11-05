@@ -31,7 +31,7 @@ def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
                 case ir.ColumnRef(column=column):
                     if column not in join.right.output_columns:
                         continue
-                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaqueFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
                     raise TypeError(f"Unhandled scalar expression: {type(rhs).__name__}")
@@ -42,7 +42,7 @@ def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
                 case ir.ColumnRef(column=left_column):
                     if left_column not in join.left.output_columns:
                         continue
-                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaqueFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
                     raise TypeError(f"Unhandled scalar expression: {type(value).__name__}")
