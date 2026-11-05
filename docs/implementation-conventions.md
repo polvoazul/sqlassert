@@ -122,6 +122,13 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `domain.py` computes Enumerated Domains, intersected across Equality Groups,
   and proves exhaustive simple CASEs from their operand's domain. The
   design and its soundness arguments are in `docs/functional-dependencies.md`.
+- An analysis that must answer for every node matches over `ir.AnyScalar` or
+  `ir.AnyRelation` (`ir.closed_scalar`, `ir.closed_relation`), lists each node
+  with an explicit answer, conservative ones included, and ends in
+  `assert_never`; so do matches over `Join.kind` and `SetOperation.operator`.
+  A new node then fails `ty` wherever it is not handled, and
+  `tests/test_ir_unions.py` fails until the unions name it. A wildcard is for
+  shape-pickers only, where it means "not this shape".
 - `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
   `Join.conjuncts`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
   any other conjunct is kept as an ordinary (usually opaque) scalar expression,

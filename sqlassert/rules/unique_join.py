@@ -1,5 +1,7 @@
 """Unique joins: the right columns an ON equality binds determine the right row."""
 
+from typing import assert_never
+
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis
 from sqlassert.rules.column_set import ColumnSet
@@ -27,6 +29,7 @@ def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
         for rhs, value in ((equality.left, equality.right), (equality.right, equality.left)):
             if rhs is value:
                 continue
+            rhs, value = ir.closed_scalar(rhs), ir.closed_scalar(value)
             match rhs:
                 case ir.ColumnRef(column=column):
                     if column not in join.right.output_columns:
@@ -34,7 +37,7 @@ def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
                 case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
-                    raise TypeError(f"Unhandled scalar expression: {type(rhs).__name__}")
+                    assert_never(rhs)
 
             match value:
                 case ir.Constant():
@@ -45,7 +48,7 @@ def _multiplicity_columns_rhs(join: ir.Join) -> Result[ColumnSet]:
                 case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
-                    raise TypeError(f"Unhandled scalar expression: {type(value).__name__}")
+                    assert_never(value)
 
             evidence = Result(True, "Equality fixes RHS column for each left row", (equality, column, value))
             members[column] = members[column] | evidence if column in members else evidence

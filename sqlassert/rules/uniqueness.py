@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import combinations
+from typing import assert_never
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
@@ -223,6 +224,7 @@ class _Delegation:
 
 
 def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
+    relation = ir.closed_relation(relation)
     match relation:
         case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.Limit(input=source) | ir.QualifyByPartition(input=source):
             return [_row_preserving(relation, source)]
@@ -241,7 +243,7 @@ def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
         case ir.Join() | ir.SetOperation() | ir.NamedRelation() | ir.OpaqueRelation():
             return []
         case _:
-            raise TypeError(f"Unhandled relation: {type(relation).__name__}")
+            assert_never(relation)
 
 
 def _pass_through(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[ir.OutputColumn, ir.OutputColumn]:
@@ -429,6 +431,8 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
             case _:
                 pass  # Other expressions introduce no dependency here.
 
+    relation = ir.closed_relation(relation)
+
     match relation:
         case ir.Filter(input=source, conjuncts=conjuncts):
             outputs = {upstream: own for own, upstream in _pass_through(relation, source).items()}
@@ -450,7 +454,7 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
         case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.SetOperation() | ir.OpaqueRelation():
             pass
         case _:
-            raise TypeError(f"Unhandled relation: {type(relation).__name__}")
+            assert_never(relation)
     return Result(dependencies, "Functional dependencies", (relation,), list(dependencies.values()))
 
 

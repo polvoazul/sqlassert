@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from fractions import Fraction
+from typing import assert_never
 
 from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
@@ -131,6 +132,7 @@ def _own_domain(column: ir.OutputColumn) -> Result[Domain]:
 
 
 def _computed_domain(relation: ir.RelationExpr, column: ir.OutputColumn) -> Result[Domain]:
+    relation = ir.closed_relation(relation)
     match relation:
         case ir.NamedRelation(body=None) | ir.OpaqueRelation():
             return Result(None, f"{column.name} is not enumerated", (column,))
@@ -141,7 +143,7 @@ def _computed_domain(relation: ir.RelationExpr, column: ir.OutputColumn) -> Resu
         case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.Aggregate() | ir.Distinct() | ir.QualifyByPartition():
             return _expression_domain(column.scalar_expr)
         case _:
-            raise TypeError(f"Unhandled relation: {type(relation).__name__}")
+            assert_never(relation)
 
 
 def _set_operation_domain(relation: ir.SetOperation, column: ir.OutputColumn) -> Result[Domain]:
@@ -171,6 +173,7 @@ def _set_operation_domain(relation: ir.SetOperation, column: ir.OutputColumn) ->
 
 
 def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
+    expression = ir.closed_scalar(expression)
     match expression:
         case ir.ColumnRef(column=source):
             return _domain(source)
@@ -201,7 +204,7 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
         case ir.Constant() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:
-            raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
+            assert_never(expression)
 
 
 def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[Result[Domain]]:
@@ -338,7 +341,7 @@ def _may_coincide(first: ir.LiteralValue, second: ir.LiteralValue, binary_text: 
         case "numeric":
             return _numbers_may_coincide(first.text, second.text)
         case _:
-            raise ValueError(f"Unhandled literal type: {first.type}")
+            assert_never(first.type)
 
 
 def _numbers_may_coincide(first: str, second: str) -> bool:

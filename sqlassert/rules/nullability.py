@@ -10,6 +10,7 @@ removed one column at a time. A column is non-null when no source remains.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
@@ -70,6 +71,7 @@ def _null_sources(column: ir.OutputColumn) -> Result[frozenset[NullSource]]:
 
 
 def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple[_Sources, list[Result]]:
+    relation = ir.closed_relation(relation)
     match relation:
         case ir.NamedRelation(body=None):
             return {ORGANIC: unknown(f"{column.name} is nullable in {relation.name}", relation, column)}, []
@@ -94,10 +96,11 @@ def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple
         case ir.NamedRelation() | ir.Project() | ir.Limit() | ir.Distinct() | ir.QualifyByPartition():
             return _expression_sources(column.scalar_expr)
         case _:
-            raise TypeError(f"Unhandled relation: {type(relation).__name__}")
+            assert_never(relation)
 
 
 def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Result]]:
+    expression = ir.closed_scalar(expression)
     match expression:
         case ir.ColumnRef(column=source):
             sources = _null_sources(source)
@@ -145,7 +148,7 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
         case ir.SimpleCase():
             return _case_sources(expression)
         case _:
-            raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
+            assert_never(expression)
 
 
 def _case_sources(case: ir.SimpleCase) -> tuple[_Sources, list[Result]]:
@@ -218,7 +221,7 @@ def _set_operation_sources(relation: ir.SetOperation, column: ir.OutputColumn) -
                 return {}, [Result(True, "Non-null in the left input of the EXCEPT", (relation, column), [left])]
             return {ORGANIC: Result(False, f"{column.name} may be NULL in the left input of the EXCEPT", (relation, column), [left], kind="unknown")}, []
         case _:
-            raise TypeError(f"Unhandled set operator: {relation.operator}")
+            assert_never(relation.operator)
 
 
 def _left_input(column: ir.OutputColumn) -> ir.OutputColumn:
@@ -299,8 +302,10 @@ def _on_rejected(join: ir.Join) -> dict[ir.OutputColumn, ir.ScalarExpr]:
             return {column: c for column, c in rejected.items() if column in join.right.output_columns}
         case "right":
             return {column: c for column, c in rejected.items() if column in join.left.output_columns}
-        case _:
+        case "cross" | "full" | "anti":
             return {}
+        case _:
+            assert_never(join.kind)
 
 
 def _padded_sides(join: ir.Join) -> frozenset[bool]:
@@ -317,8 +322,10 @@ def _padded_sides(join: ir.Join) -> frozenset[bool]:
             return frozenset({True})
         case "full":
             return frozenset({True, False})
-        case _:
+        case "inner" | "cross" | "semi" | "anti":
             return frozenset()
+        case _:
+            assert_never(join.kind)
 
 
 def _seen_through(alias: ir.Alias, source: NullSource) -> NullSource:

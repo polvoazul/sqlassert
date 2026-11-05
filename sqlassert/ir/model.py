@@ -8,14 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import TYPE_CHECKING, dataclass_transform
+from typing import TYPE_CHECKING, Literal, assert_never, cast, dataclass_transform
 
 from sqlassert.provenance import AttachmentSite, Origin
 
 if TYPE_CHECKING:
     from sqlassert.properties import Property
 
-INNER = "inner"
+type JoinKind = Literal["inner", "cross", "left", "right", "full", "semi", "anti"]
+type SetOperator = Literal["union", "intersect", "except"]
+type LiteralType = Literal["string", "numeric", "boolean"]
 
 
 @dataclass_transform(eq_default=False, frozen_default=True, kw_only_default=True)
@@ -186,7 +188,7 @@ class LiteralValue:
     value is a separate, conservative question (`rules/domain.py`).
     """
 
-    type: str
+    type: LiteralType
     text: str
 
     def sql(self) -> str:
@@ -196,7 +198,7 @@ class LiteralValue:
             case "numeric" | "boolean":
                 return self.text
             case _:
-                raise ValueError(f"Unhandled literal type: {self.type}")
+                assert_never(self.type)
 
 
 class Constant(ScalarExpr):
@@ -293,6 +295,7 @@ def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
     """The columns `expression` is a pure function of, in order of first use,
     or None when it is not one of any: its value may depend on other rows, on
     state, or on nothing known (Paulley §3.1.4)."""
+    expression = closed_scalar(expression)
     match expression:
         case ColumnRef(column=column):
             return (column,)
@@ -308,20 +311,26 @@ def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
                 found.update(dict.fromkeys(inputs))
             return tuple(found)
         case _:
-            raise TypeError(f"Unhandled scalar expression: {type(expression).__name__}")
+            assert_never(expression)
 
 
 def injective_input(expression: ScalarExpr) -> OutputColumn | None:
     """The one column `expression` is a one-to-one function of, given that the
     column is an integer or decimal: the column itself, or an injective
     Builtin of such an expression and integer or decimal literals."""
+    expression = closed_scalar(expression)
     match expression:
         case ColumnRef(column=column):
             return column
         case Call(injective_argument=ScalarExpr() as argument):
             return injective_input(argument)
-        case _:
+        case (
+            Call() | Constant() | NullLiteral() | Coalesce() | SimpleCase() | OpaquePureFunction() | OpaqueExpression()
+            | Count() | AnyAggregate() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or()
+        ):
             return None
+        case _:
+            assert_never(expression)
 
 
 def _exact_literal(expression: ScalarExpr) -> bool:
@@ -339,7 +348,9 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
     A Builtin passes on its strict arguments'; `=` both sides'; `IN (...)` its
     operand's (`1 IN (1, NULL)` is TRUE); AND and OR only a column every part
     is strict in (`NULL OR TRUE` is TRUE). Coalesce, CASE, the IS family and
-    unmodelled functions may turn NULL into a value."""
+    unmodelled functions may turn NULL into a value; a literal, `count(...)`,
+    an opaque expression or an aggregate's value has no column of its own."""
+    expression = closed_scalar(expression)
     match expression:
         case ColumnRef(column=column):
             return (column,)
@@ -352,8 +363,24 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
         case And(parts=(first, *others)) | Or(parts=(first, *others)):
             rest = [strict_inputs(other) for other in others]
             return tuple(column for column in strict_inputs(first) if all(column in columns for columns in rest))
-        case _:
+        case (
+            And() | Or() | Constant() | NullLiteral() | Coalesce() | SimpleCase() | OpaquePureFunction() | OpaqueExpression()
+            | Count() | AnyAggregate() | IsNull() | IsNotNull()
+        ):
             return ()
+        case _:
+            assert_never(expression)
+
+
+# Closed unions of every concrete ScalarExpr and RelationExpr, for an
+# exhaustive `match` ending in `assert_never`. Python has no sealed classes, so
+# a type checker treats a base class as open and cannot prove a match covers
+# it. tests/test_ir_unions.py checks these stay in sync with the subclasses,
+# which makes `closed_scalar` and `closed_relation` sound.
+type AnyScalar = (
+    ColumnRef | Constant | NullLiteral | Coalesce | SimpleCase | Call | OpaquePureFunction | OpaqueExpression
+    | Count | AnyAggregate | Equality | InList | IsNull | IsNotNull | And | Or
+)
 
 
 class OutputColumn(Node):
@@ -426,7 +453,7 @@ class Join(RelationExpr):
     the predicate is the whole condition.
     """
 
-    kind: str
+    kind: JoinKind
     left: RelationExpr
     right: RelationExpr
     predicate: ScalarExpr | None = None
@@ -471,7 +498,7 @@ class SetOperation(RelationExpr):
     """UNION, INTERSECT, or EXCEPT. Output columns refer to the left input;
     `arms` pairs each with the right input's column at its position."""
 
-    operator: str
+    operator: SetOperator
     left: RelationExpr
     right: RelationExpr
     distinct: bool = True
@@ -503,6 +530,22 @@ class RecursiveRelation(OpaqueRelation):
     """An explicit unsupported recursive reference, represented without a cycle."""
 
     relation_name: str
+
+
+type AnyRelation = (
+    NamedRelation | Alias | Join | Filter | Project | Limit | Aggregate | Distinct | SetOperation
+    | QualifyByPartition | OpaqueRelation | RecursiveRelation
+)
+
+
+def closed_scalar(expression: ScalarExpr) -> AnyScalar:
+    """`expression` as one of the concrete ScalarExprs, to match exhaustively."""
+    return cast(AnyScalar, expression)
+
+
+def closed_relation(relation: RelationExpr) -> AnyRelation:
+    """`relation` as one of the concrete RelationExprs, to match exhaustively."""
+    return cast(AnyRelation, relation)
 
 
 class Assertion(Node):
@@ -553,16 +596,7 @@ class Program:
 
     def relations(self) -> tuple[RelationExpr, ...]:
         """Every relation reachable from the program, each once."""
-        relations = []
-        for node in self.nodes():
-            match node:
-                case RelationExpr():
-                    relations.append(node)
-                case ScalarExpr() | OutputColumn() | Assertion():
-                    pass
-                case _:
-                    raise TypeError(f"Unhandled IR node: {type(node).__name__}")
-        return tuple(relations)
+        return tuple(node for node in self.nodes() if isinstance(node, RelationExpr))
 
     def relation_of(self, columns: frozenset[OutputColumn]) -> RelationExpr | None:
         """The parent relation shared by every column, or None when they span several or none."""
