@@ -14,7 +14,7 @@ that must continue with `CASE`. SQLGlot objects stop at this boundary; only the 
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 import enum
 import re
 
@@ -109,15 +109,21 @@ MARKERS = {
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
+type JoinMarkerKind = Literal["unique-join", "exactly-one-join"]
+type ColumnMarkerKind = Literal[
+    "unique", "key", "not-null", "foreign-key", "determines", "enum",
+    "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines", "declared-enum",
+]
+
 # The join markers, written immediately before a JOIN, and the kind each states:
 # "unique-join" a Unique Join, "exactly-one-join" an Exactly One Join.
-JOIN_MARKER_KINDS = {
+JOIN_MARKER_KINDS: dict[SqlassertToken, JoinMarkerKind] = {
     SqlassertToken.SQLASSERT_UNIQUE: "unique-join",
     SqlassertToken.SQLASSERT_EXACTLY_ONE: "exactly-one-join",
 }
 
 # How diagnostics name each join marker kind.
-JOIN_MARKER_NOUNS = {"unique-join": "unique join", "exactly-one-join": "exactly one join"}
+JOIN_MARKER_NOUNS: dict[JoinMarkerKind, str] = {"unique-join": "unique join", "exactly-one-join": "exactly one join"}
 
 # The markers written as one fixed literal: the join markers and the case marker.
 _FIXED_MARKER_TOKENS = frozenset({*JOIN_MARKER_KINDS, SqlassertToken.SQLASSERT_EXHAUSTIVE})
@@ -132,7 +138,7 @@ _EXHAUSTIVE_AT = "sqlassert.exhaustive_at"
 # Dependency from the columns before `->` to those after, "enum" an Enumerated
 # Domain of the one column before `IN`. A "declared-" kind states
 # the same Property as a trusted declaration.
-_COLUMN_MARKER_OPENS = {
+_COLUMN_MARKER_OPENS: dict[str, ColumnMarkerKind] = {
     "/**ASSERT UNIQUE(": "unique",
     "/**ASSERT NOT NULL UNIQUE(": "key",
     "/**ASSERT PRIMARY KEY(": "key",
@@ -150,22 +156,22 @@ _COLUMN_MARKER_OPENS = {
 }
 
 # Column marker kinds that are Property Declarations rather than Assertions.
-DECLARED_KINDS = frozenset({
+DECLARED_KINDS: frozenset[ColumnMarkerKind] = frozenset({
     "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines",
     "declared-enum",
 })
 
 # Column marker kinds followed by `REFERENCES relation(col, ...)`.
-FOREIGN_KEY_KINDS = frozenset({"foreign-key", "declared-foreign-key"})
+FOREIGN_KEY_KINDS: frozenset[ColumnMarkerKind] = frozenset({"foreign-key", "declared-foreign-key"})
 
 # Column marker kinds whose list is `determinant -> dependent`.
-DETERMINES_KINDS = frozenset({"determines", "declared-determines"})
+DETERMINES_KINDS: frozenset[ColumnMarkerKind] = frozenset({"determines", "declared-determines"})
 
 # Column marker kinds whose list is `column IN (literal, ...)`.
-ENUM_KINDS = frozenset({"enum", "declared-enum"})
+ENUM_KINDS: frozenset[ColumnMarkerKind] = frozenset({"enum", "declared-enum"})
 
 # How diagnostics name each column marker kind.
-MARKER_NOUNS = {
+MARKER_NOUNS: dict[ColumnMarkerKind, str] = {
     "unique": "unique set assertion",
     "key": "not null unique assertion",
     "not-null": "not null assertion",
@@ -232,7 +238,7 @@ class ColumnMarker(NamedTuple):
     and its distinct typed literals, in the order written, are `values`.
     """
 
-    kind: str
+    kind: ColumnMarkerKind
     columns: tuple[str, ...]
     line: int
     referenced_relation: str | None = None
@@ -449,7 +455,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 this.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
             return super()._parse_set_operations(this, *args, **kwargs)
 
-        def _parse_marker_columns(self, kind: str, line: int) -> tuple[str, ...]:
+        def _parse_marker_columns(self, kind: ColumnMarkerKind, line: int) -> tuple[str, ...]:
             """A marker's column list after its opening parenthesis, through the closing one."""
             columns = self._parse_csv(self._parse_id_var)
             if not columns:
@@ -469,7 +475,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 )
             return names
 
-        def _parse_marker_dependency(self, kind: str, line: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        def _parse_marker_dependency(self, kind: ColumnMarkerKind, line: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
             """`determinant -> dependent`, each a column list, through the closing parenthesis."""
             determinant = tuple(column.name for column in self._parse_csv(self._parse_id_var))
             if not determinant or not self._match(TokenType.ARROW):
@@ -487,7 +493,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 )
             return determinant, dependent
 
-        def _parse_marker_domain(self, kind: str, line: int) -> tuple[tuple[str, ...], tuple[LiteralValue, ...]]:
+        def _parse_marker_domain(self, kind: ColumnMarkerKind, line: int) -> tuple[tuple[str, ...], tuple[LiteralValue, ...]]:
             """`column IN (literal, ...)`, through the marker's closing parenthesis.
 
             Members are distinct, non-null string, numeric, and boolean literals.
@@ -516,7 +522,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 values.append(value)
             return (column.name,), tuple(values)
 
-        def _parse_marker_reference(self, kind: str, line: int, count: int) -> tuple[str, tuple[str, ...]]:
+        def _parse_marker_reference(self, kind: ColumnMarkerKind, line: int, count: int) -> tuple[str, tuple[str, ...]]:
             """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
             missing = UnattachedMarker(
                 f"the {MARKER_NOUNS[kind]} on line {line} must continue with REFERENCES relation(column, ...)",
@@ -699,7 +705,7 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
     ]
 
 
-def _marker_shape(open_: str, kind: str) -> str:
+def _marker_shape(open_: str, kind: ColumnMarkerKind) -> str:
     """The whole user-facing shape of a column marker opening with `open_`."""
     reference = " REFERENCES relation(...)" if kind in FOREIGN_KEY_KINDS else ""
     columns = "... -> ..." if kind in DETERMINES_KINDS else "column IN ('value', ...)" if kind in ENUM_KINDS else "..."
@@ -765,7 +771,7 @@ def assertion_line(join: exp.Join) -> int | None:
     return join.meta.get(_ASSERTED_AT)
 
 
-def join_marker_kind(join: exp.Join) -> str | None:
+def join_marker_kind(join: exp.Join) -> JoinMarkerKind | None:
     """The kind (a value of `JOIN_MARKER_KINDS`) of the marker on this join, if any."""
     return join.meta.get(_JOIN_MARKER_KIND)
 

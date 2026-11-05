@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, assert_never
 
 import duckdb
 import sqlglot
@@ -41,7 +41,7 @@ from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
 from sqlassert.provenance import SQL, Origin
 from sqlassert.sql_parse import (
-    DECLARED_KINDS, ColumnMarker, ParsedProgram, SqlParser, assertion_line, column_markers, exhaustive_line, join_origin,
+    DECLARED_KINDS, ColumnMarker, ColumnMarkerKind, ParsedProgram, SqlParser, assertion_line, column_markers, exhaustive_line, join_origin,
     literal_value,
 )
 
@@ -55,7 +55,7 @@ MAX_EXAMPLES = 200
 KNOWN_UNSOUND: dict[tuple[str, str], str] = {}
 
 # The marker kind each asserted Property is written with.
-_MARKER_KINDS: dict[type[Property], str] = {
+_MARKER_KINDS: dict[type[Property], ColumnMarkerKind] = {
     UniqueSet: "unique", NonNullUniqueSet: "key", NonNullColumns: "not-null", ForeignKey: "foreign-key",
     FunctionalDependency: "determines", EnumeratedDomain: "enum",
 }
@@ -160,7 +160,7 @@ def judge(sql: str, report: Report, *, dialect: str = "duckdb", max_examples: in
 
     try:
         database = _Database(parsed)
-        declarations = [_violation_query(select, marker) for select, marker in _declared(parsed)]
+        declarations = [_violation_query(select, marker, _checked(marker.kind)) for select, marker in _declared(parsed)]
         for query in declarations:
             database.connection.execute(query)
     except duckdb.Error as error:
@@ -236,16 +236,14 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         and (values is None or frozenset(marker.values) == values)
         and Origin(SQL, select.sql(dialect=dialect), marker.line) == origin
     )
-    return _violation_query(select, marker)
+    return _violation_query(select, marker, _checked(marker.kind))
 
 
 def _declared(parsed: ParsedProgram) -> list[tuple[exp.Select, ColumnMarker]]:
     """Every Property Declaration, as the Select it is written on."""
     statements = [statement for statement in (*parsed.create_statements, parsed.root_select) if statement is not None]
     return [
-        # A declared Foreign Key is Referential Coverage only: its target's
-        # uniqueness is still proved, so instances need not respect it.
-        (select, marker._replace(kind="coverage" if marker.kind == "declared-foreign-key" else marker.kind.removeprefix("declared-")))
+        (select, marker)
         for statement in statements
         for select in statement.find_all(exp.Select)
         for marker in column_markers(select)
@@ -253,8 +251,33 @@ def _declared(parsed: ParsedProgram) -> list[tuple[exp.Select, ColumnMarker]]:
     ]
 
 
-def _violation_query(select: exp.Select, marker: ColumnMarker) -> str:
-    kind = marker.kind
+# What a marker's rows must satisfy. A declared Foreign Key is Referential
+# Coverage only: its target's uniqueness is still proved, so instances need
+# not respect it.
+type _Check = Literal["unique", "key", "not-null", "determines", "enum", "foreign-key", "coverage"]
+
+
+def _checked(kind: ColumnMarkerKind) -> _Check:
+    match kind:
+        case "unique" | "declared-unique":
+            return "unique"
+        case "key" | "declared-key":
+            return "key"
+        case "not-null" | "declared-not-null":
+            return "not-null"
+        case "determines" | "declared-determines":
+            return "determines"
+        case "enum" | "declared-enum":
+            return "enum"
+        case "foreign-key":
+            return "foreign-key"
+        case "declared-foreign-key":
+            return "coverage"
+        case _:
+            assert_never(kind)
+
+
+def _violation_query(select: exp.Select, marker: ColumnMarker, kind: _Check) -> str:
     columns = [_quoted(name) for name in marker.columns]
     any_null = " OR ".join(f"{column} IS NULL" for column in columns)
     all_present = " AND ".join(f"{column} IS NOT NULL" for column in columns)
@@ -294,7 +317,7 @@ def _violation_query(select: exp.Select, marker: ColumnMarker) -> str:
                 repeated = f"SELECT {', '.join(referenced)} FROM {target} WHERE {present} GROUP BY ALL HAVING count(*) > 1"
                 query = f"{unmatched} UNION ALL {repeated}"
         case _:
-            raise ValueError(f"Unhandled column marker kind: {kind}")
+            assert_never(kind)
     return _with_context(select, query)
 
 
@@ -470,8 +493,8 @@ class _Database:
                     referenced = tuple(row[0])
                 if len(names) != len(referenced):
                     raise duckdb.CatalogException("A Foreign Key must pair equally many referencing and referenced columns")
-                marker = ColumnMarker("coverage", names, 0, target.sql(dialect="duckdb"), referenced)
-                checks.append(_violation_query(exp.select("*").from_(source.copy()), marker))
+                marker = ColumnMarker("declared-foreign-key", names, 0, target.sql(dialect="duckdb"), referenced)
+                checks.append(_violation_query(exp.select("*").from_(source.copy()), marker, "coverage"))
         return checks
 
     def _create(self, statements: tuple[exp.Expression, ...]) -> None:
