@@ -30,8 +30,8 @@ CREATE TABLE s (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER);
 """
 
 
-def outcomes(sql: str, schema: str = PAULLEY) -> list[Outcome]:
-    report = analyze(schema + sql)
+def outcomes(sql: str, schema: str = PAULLEY, *, dialect: str = "duckdb") -> list[Outcome]:
+    report = analyze(schema + sql, dialect=dialect)
     assert not report.diagnostics, report.diagnostics
     return [assertion.outcome for assertion in report.assertions]
 
@@ -377,12 +377,31 @@ FUNCTION_CASES = [
     ("distinct", "SELECT DISTINCT a, a * 2 AS k FROM f /**ASSERT UNIQUE(a)**/", Outcome.PROVED),
     ("asserted dependency", "SELECT a, b, a + b AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
     ("through a CTE", "WITH g AS (SELECT a, b, a + b AS k FROM f) SELECT a, b, k FROM g /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
+    ("coalesce", "SELECT a, b, coalesce(a, b) AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
+    ("simple CASE", "SELECT a, CASE a WHEN 1 THEN 'x' ELSE 'y' END AS k FROM f /**ASSERT DETERMINES(a -> k)**/", Outcome.PROVED),
+    ("searched CASE", "SELECT a, b, CASE WHEN a > b THEN a END AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
+    ("comparison as a value", "SELECT a, b, a = b AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
+    ("unmodelled function", "SELECT s, concat(s, 'x') AS k FROM f /**ASSERT DETERMINES(s -> k)**/", Outcome.PROVED),
+    ("nested", "SELECT a, b, coalesce(a + 1, CASE b WHEN 2 THEN a END) AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/", Outcome.PROVED),
     # Not a function of its columns.
+    ("user-defined function inside coalesce", "SELECT a, coalesce(my_udf(a), 0) AS k FROM f /**ASSERT DETERMINES(a -> k)**/", Outcome.UNKNOWN),
+    ("window inside CASE", "SELECT a, CASE a WHEN 1 THEN count(*) OVER () END AS k FROM f /**ASSERT DETERMINES(a -> k)**/", Outcome.UNKNOWN),
     ("user-defined function", "SELECT a, my_udf(a) AS k, count(*) AS c FROM f GROUP BY a, my_udf(a) /**ASSERT UNIQUE(a)**/", Outcome.UNKNOWN),
     ("random", "SELECT a, a + random() AS k, count(*) AS c FROM f GROUP BY a, a + random() /**ASSERT UNIQUE(a)**/", Outcome.UNKNOWN),
     # Equal is not identical: 'x' = 'X' under NOCASE, -0.0 = 0.0 as DOUBLE.
     ("collated text", "SELECT n, n || '' AS k, count(*) AS c FROM f GROUP BY n, n || '' /**ASSERT UNIQUE(n)**/", Outcome.UNKNOWN),
     ("double", "SELECT d, CAST(d AS VARCHAR) AS k, count(*) AS c FROM f GROUP BY d, CAST(d AS VARCHAR) /**ASSERT UNIQUE(d)**/", Outcome.UNKNOWN),
+    # A one-to-one function of an integer or decimal determines it.
+    ("injective", "SELECT id + 1 AS k, b FROM f /**ASSERT DETERMINES(k -> b)**/", Outcome.PROVED),
+    ("injective key", "SELECT id - 10 AS k FROM f /**ASSERT UNIQUE(k)**/", Outcome.PROVED),
+    ("injective nested", "SELECT -(10 - id) AS k FROM f /**ASSERT UNIQUE(k)**/", Outcome.PROVED),
+    ("injective grouping", "SELECT a + 1 AS k, count(*) AS c FROM f GROUP BY a + 1 /**ASSERT DETERMINES(k -> c)**/", Outcome.PROVED),
+    ("injective decimal literal", "SELECT id + 0.5 AS k FROM f /**ASSERT UNIQUE(k)**/", Outcome.PROVED),
+    ("double literal", "SELECT id + 1e0 AS k FROM f /**ASSERT UNIQUE(k)**/", Outcome.UNKNOWN),
+    ("two columns", "SELECT a + b AS k, id FROM f /**ASSERT DETERMINES(k -> id)**/", Outcome.UNKNOWN),
+    ("multiplication", "SELECT id * 2 AS k FROM f /**ASSERT UNIQUE(k)**/", Outcome.UNKNOWN),
+    ("double column", "SELECT d + 1 AS k, id FROM f /**ASSERT DETERMINES(k -> id)**/", Outcome.UNKNOWN),
+    ("text column", "SELECT s || 'x' AS k, id FROM f /**ASSERT DETERMINES(k -> id)**/", Outcome.UNKNOWN),
     # f(X) does not determine X: no injectivity.
     ("not injective", "SELECT a, a % 2 AS k, count(*) AS c FROM f GROUP BY a, a % 2 /**ASSERT UNIQUE(k)**/", Outcome.UNKNOWN),
 ]
@@ -391,3 +410,38 @@ FUNCTION_CASES = [
 @pytest.mark.parametrize(("label", "sql", "outcome"), FUNCTION_CASES)
 def test_a_deterministic_function_is_determined_by_its_arguments(label: str, sql: str, outcome: Outcome):
     assert outcomes(sql, FUNCTIONS) == [outcome], label
+
+
+# A column equal to a function in WHERE or ON (Paulley Claim 20) -----------------
+
+EQUAL_TO_FUNCTION_CASES = [
+    ("arithmetic", "SELECT a, b FROM f WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/", Outcome.PROVED),
+    ("mirrored", "SELECT a, b FROM f WHERE a * 2 = b /**ASSERT DETERMINES(a -> b)**/", Outcome.PROVED),
+    ("two inputs", "SELECT id, a, b FROM f WHERE id = a + b /**ASSERT DETERMINES(a, b -> id)**/", Outcome.PROVED),
+    ("coalesce", "SELECT a, b FROM f WHERE b = coalesce(a, 0) /**ASSERT DETERMINES(a -> b)**/", Outcome.PROVED),
+    ("among other conjuncts", "SELECT a, b FROM f WHERE id > 0 AND b = a - 1 /**ASSERT DETERMINES(a -> b)**/", Outcome.PROVED),
+    ("inner join ON", "SELECT f.a, g.b FROM f JOIN f AS g ON g.b = f.a + 1 /**ASSERT DETERMINES(a -> b)**/", Outcome.PROVED),
+    # A one-to-one function determines its argument.
+    ("reversed", "SELECT a, b FROM f WHERE b = a + 1 /**ASSERT DETERMINES(b -> a)**/", Outcome.PROVED),
+    ("reversed negation", "SELECT id, b FROM f WHERE b = -id /**ASSERT NOT NULL UNIQUE(b)**/", Outcome.PROVED),
+    ("not one-to-one", "SELECT a, b FROM f WHERE b = a % 2 /**ASSERT DETERMINES(b -> a)**/", Outcome.UNKNOWN),
+    ("double target reversed", "SELECT a, d FROM f WHERE d = a + 1 /**ASSERT DETERMINES(d -> a)**/", Outcome.UNKNOWN),
+    ("user-defined function", "SELECT a, b FROM f WHERE b = my_udf(a) /**ASSERT DETERMINES(a -> b)**/", Outcome.UNKNOWN),
+    ("random", "SELECT a, b FROM f WHERE b = a + random() /**ASSERT DETERMINES(a -> b)**/", Outcome.UNKNOWN),
+    # Equal is not identical.
+    ("double target", "SELECT a, d FROM f WHERE d = a + 1 /**ASSERT DETERMINES(a -> d)**/", Outcome.UNKNOWN),
+    ("double input", "SELECT a, d FROM f WHERE a = CAST(d AS INTEGER) /**ASSERT DETERMINES(d -> a)**/", Outcome.UNKNOWN),
+    ("collated input", "SELECT a, n FROM f WHERE a = length(n) /**ASSERT DETERMINES(n -> a)**/", Outcome.UNKNOWN),
+    # An OR branch holds on some rows only.
+    ("under OR", "SELECT a, b FROM f WHERE b = a + 1 OR b = a /**ASSERT DETERMINES(a -> b)**/", Outcome.UNKNOWN),
+]
+
+
+@pytest.mark.parametrize(("label", "sql", "outcome"), EQUAL_TO_FUNCTION_CASES)
+def test_a_column_equal_to_a_function_is_determined_by_its_arguments(label: str, sql: str, outcome: Outcome):
+    assert outcomes(sql, FUNCTIONS) == [outcome], label
+
+
+def test_injectivity_needs_arithmetic_that_raises_on_overflow():
+    sql = "SELECT id + 1 AS k, b FROM f /**ASSERT DETERMINES(k -> b)**/"
+    assert outcomes(sql, FUNCTIONS, dialect="sqlite") == [Outcome.UNKNOWN]

@@ -144,8 +144,8 @@ The High level depends on functional dependencies and null sources
   (label `CASE <operand>`, offset right before `CASE`). `/**ASSERT
   EXHAUSTIVE**/` is suggested there when proved, the CASE is reachable and
   unmarked, and every WHEN is a distinct non-null literal, as the marker's
-  grammar requires. A CASE inside an opaque expression is not lowered, so it
-  gets no site.
+  grammar requires. A CASE inside an aggregate, window or subquery is not
+  lowered, so it gets no site.
 
 ## Acceptance criteria
 

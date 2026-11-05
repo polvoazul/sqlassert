@@ -32,7 +32,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   token where they meet it, so a misplaced marker is an unattached marker
   rather than a bare parse failure. `ir/convert.py` lowers every simple CASE
   to `ir.SimpleCase` and states `ExhaustiveCase` once per marked CASE it
-  lowers; one inside an opaque expression is reported unanalyzed.
+  lowers; one inside an aggregate, window or subquery (an `ir.OpaqueExpression`) is reported unanalyzed.
   `DECLARE EXHAUSTIVE` is not a marker: exhaustiveness is only ever proved.
 
   A column marker (`/**ASSERT UNIQUE(col, ...)**/`, `/**ASSERT NOT NULL(...)**/`,
@@ -159,7 +159,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   Exactly One Joins. Whether a join's columns are used, and whether a CTE is
   referenced, is read from the SQLGlot AST, matched to each IR site by its
   marker position: the IR keeps neither ORDER BY nor the columns inside an
-  opaque expression. Padding is only followed through the joins and WHERE of
+  aggregate, window or subquery. Padding is only followed through the joins and WHERE of
   its own Select Expression, where nothing looks at a row as a whole.
   Grouping replacements use the selected expression already identified by the
   IR output column, so GROUP BY ordinals never become aggregate constants.

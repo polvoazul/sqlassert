@@ -336,6 +336,7 @@ REJECTING_CONJUNCTS = [
     ("n + 1 IS NOT NULL", "n"),
     ("flag", "flag"),
     ("NOT flag", "flag"),
+    ("NOT ((n = 1) = (m = 1))", "n"),
 ]
 
 
@@ -369,6 +370,9 @@ NON_REJECTING_CONJUNCTS = [
     "n > ALL (SELECT m FROM t WHERE FALSE)",
     "n >= ANY (SELECT m FROM t)",
     "NOT (n IN (SELECT m FROM t))",
+    "NOT (n = ANY (SELECT m FROM t WHERE FALSE))",
+    "NOT (n > ALL (SELECT m FROM t WHERE FALSE))",
+    "(n = 1) IS NOT TRUE",
 ]
 
 
