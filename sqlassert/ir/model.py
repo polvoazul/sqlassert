@@ -325,7 +325,7 @@ class SetOperation(RelationExpr):
 
 
 class QualifyByPartition(RelationExpr):
-    """The supported ``row_number() = 1`` qualification special case."""
+    """One row per partition: ``QUALIFY row_number() OVER (PARTITION BY ...) = 1`` or ``DISTINCT ON (...)``."""
 
     input: RelationExpr
     partition_outputs: tuple[OutputColumn, ...]
