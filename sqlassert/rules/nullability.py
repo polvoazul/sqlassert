@@ -71,7 +71,7 @@ def _null_sources(column: ir.OutputColumn) -> Result[frozenset[NullSource]]:
 
 
 def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple[_Sources, list[Result]]:
-    relation = ir.closed_relation(relation)
+    relation = relation.closed
     match relation:
         case ir.NamedRelation(body=None):
             return {ORGANIC: unknown(f"{column.name} is nullable in {relation.name}", relation, column)}, []
@@ -100,7 +100,7 @@ def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple
 
 
 def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Result]]:
-    expression = ir.closed_scalar(expression)
+    expression = expression.closed
     match expression:
         case ir.ColumnRef(column=source):
             sources = _null_sources(source)

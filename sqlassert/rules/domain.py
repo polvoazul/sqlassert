@@ -132,7 +132,7 @@ def _own_domain(column: ir.OutputColumn) -> Result[Domain]:
 
 
 def _computed_domain(relation: ir.RelationExpr, column: ir.OutputColumn) -> Result[Domain]:
-    relation = ir.closed_relation(relation)
+    relation = relation.closed
     match relation:
         case ir.NamedRelation(body=None) | ir.OpaqueRelation():
             return Result(None, f"{column.name} is not enumerated", (column,))
@@ -173,7 +173,7 @@ def _set_operation_domain(relation: ir.SetOperation, column: ir.OutputColumn) ->
 
 
 def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
-    expression = ir.closed_scalar(expression)
+    expression = expression.closed
     match expression:
         case ir.ColumnRef(column=source):
             return _domain(source)

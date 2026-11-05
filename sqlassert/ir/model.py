@@ -52,6 +52,11 @@ class Node(metaclass=NodeMeta, abstract=True):
 class ScalarExpr(Node, abstract=True):
     """A scalar expression produced or consumed by a relational operation."""
 
+    @property
+    def closed(self) -> AnyScalar:
+        """This node as one of the concrete ScalarExprs, to match exhaustively."""
+        return cast(AnyScalar, self)
+
 
 class OpaqueExpression(ScalarExpr):
     """An expression nothing is known about: not even which columns its value
@@ -294,7 +299,7 @@ def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
     """The columns `expression` is a pure function of, in order of first use,
     or None when it is not one of any: its value may depend on other rows, on
     state, or on nothing known (Paulley §3.1.4)."""
-    expression = closed_scalar(expression)
+    expression = expression.closed
     match expression:
         case ColumnRef(column=column):
             return (column,)
@@ -317,7 +322,7 @@ def injective_input(expression: ScalarExpr) -> OutputColumn | None:
     """The one column `expression` is a one-to-one function of, given that the
     column is an integer or decimal: the column itself, or an injective
     Builtin of such an expression and integer or decimal literals."""
-    expression = closed_scalar(expression)
+    expression = expression.closed
     match expression:
         case ColumnRef(column=column):
             return column
@@ -349,7 +354,7 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
     is strict in (`NULL OR TRUE` is TRUE). Coalesce, CASE, the IS family and
     unmodelled functions may turn NULL into a value; a literal, `count(...)`,
     an opaque expression or an aggregate's value has no column of its own."""
-    expression = closed_scalar(expression)
+    expression = expression.closed
     match expression:
         case ColumnRef(column=column):
             return (column,)
@@ -375,7 +380,7 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
 # exhaustive `match` ending in `assert_never`. Python has no sealed classes, so
 # a type checker treats a base class as open and cannot prove a match covers
 # it. tests/test_ir_unions.py checks these stay in sync with the subclasses,
-# which makes `closed_scalar` and `closed_relation` sound.
+# which makes `ScalarExpr.closed` and `RelationExpr.closed` sound.
 type AnyScalar = (
     ColumnRef | Constant | NullLiteral | Coalesce | SimpleCase | Call | OpaquePureFunction | OpaqueExpression
     | Count | AnyAggregate | Equality | InList | IsNull | IsNotNull | And | Or
@@ -417,6 +422,11 @@ class RelationExpr(Node, abstract=True):
 
     output_columns: tuple[OutputColumn, ...]
     is_schema_complete: bool = False
+
+    @property
+    def closed(self) -> AnyRelation:
+        """This node as one of the concrete RelationExprs, to match exhaustively."""
+        return cast(AnyRelation, self)
 
 
 class RelationRole(Enum):
@@ -535,16 +545,6 @@ type AnyRelation = (
     NamedRelation | Alias | Join | Filter | Project | Limit | Aggregate | Distinct | SetOperation
     | QualifyByPartition | OpaqueRelation | RecursiveRelation
 )
-
-
-def closed_scalar(expression: ScalarExpr) -> AnyScalar:
-    """`expression` as one of the concrete ScalarExprs, to match exhaustively."""
-    return cast(AnyScalar, expression)
-
-
-def closed_relation(relation: RelationExpr) -> AnyRelation:
-    """`relation` as one of the concrete RelationExprs, to match exhaustively."""
-    return cast(AnyRelation, relation)
 
 
 class Assertion(Node):

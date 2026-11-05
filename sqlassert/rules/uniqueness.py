@@ -224,7 +224,7 @@ class _Delegation:
 
 
 def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
-    relation = ir.closed_relation(relation)
+    relation = relation.closed
     match relation:
         case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Filter(input=source) | ir.Project(input=source) | ir.Limit(input=source) | ir.QualifyByPartition(input=source):
             return [_row_preserving(relation, source)]
@@ -431,7 +431,7 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
             case _:
                 pass  # Other expressions introduce no dependency here.
 
-    relation = ir.closed_relation(relation)
+    relation = relation.closed
 
     match relation:
         case ir.Filter(input=source, conjuncts=conjuncts):
