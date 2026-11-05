@@ -342,17 +342,76 @@ def test_distinct_star_is_unsupported_and_unknown():
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_distinct_on_is_unsupported_and_unknown(orders_and_customers):
+# DISTINCT ON ----------------------------------------------------------------
+#
+# `DISTINCT ON (k...)` keeps one row per distinct `k...`, so it earns the same
+# Unique Set as `QUALIFY ROW_NUMBER() OVER (PARTITION BY k...) = 1`: its
+# complete set of ON keys, whatever else it selects.
+
+
+@pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
+def test_a_distinct_on_subquery_joined_on_its_full_on_key_is_proved(orders_and_customers, dialect):
     report = analyze(
         orders_and_customers
         + """
         WITH first_per_customer AS (
-            SELECT DISTINCT ON (customer_id) customer_id, region FROM orders
+            SELECT DISTINCT ON (customer_id) customer_id, region, amount FROM orders ORDER BY customer_id, amount DESC
         )
         SELECT *
         FROM customers
         /**ASSERT UNIQUE**/ JOIN first_per_customer
             ON customers.id = first_per_customer.customer_id
+        """,
+        dialect=dialect,
+    )
+
+    assert report.proved
+
+
+def test_a_distinct_on_subquery_joined_on_part_of_a_composite_on_key_is_unknown(orders_and_customers):
+    report = analyze(
+        orders_and_customers
+        + """
+        WITH first_per_customer_region AS (
+            SELECT DISTINCT ON (customer_id, region) customer_id, region, amount FROM orders
+        )
+        SELECT *
+        FROM customers
+        /**ASSERT UNIQUE**/ JOIN first_per_customer_region
+            ON customers.id = first_per_customer_region.customer_id
+        """,
+        dialect="postgres",
+    )
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+
+
+def test_a_distinct_on_view_reports_its_on_key_as_its_unique_set():
+    report = analyze(
+        """
+        CREATE TABLE orders (customer_id INTEGER, region VARCHAR, amount INTEGER);
+        CREATE VIEW first_per_customer_region AS
+            SELECT DISTINCT ON (region, customer_id) customer_id AS cid, region, amount FROM orders WHERE amount > 0;
+
+        SELECT * FROM first_per_customer_region
+        """,
+        dialect="postgres",
+    )
+
+    assert report.facts.unique_sets("first_per_customer_region") == (("cid", "region"),)
+
+
+def test_a_distinct_on_key_absent_from_the_select_list_is_unknown(orders_and_customers):
+    report = analyze(
+        orders_and_customers
+        + """
+        WITH first_per_region AS (
+            SELECT DISTINCT ON (region) customer_id, amount FROM orders
+        )
+        SELECT *
+        FROM customers
+        /**ASSERT UNIQUE**/ JOIN first_per_region
+            ON customers.id = first_per_region.customer_id
         """,
         dialect="postgres",
     )

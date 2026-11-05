@@ -721,6 +721,8 @@ class IrParser:
         elif _is_scalar_aggregate(select):
             # One row, however many rows its input has: grouped by nothing.
             relation = self._lower_aggregate(lowered, select, exp.Group(expressions=[]))
+        elif select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None:
+            relation = self._lower_distinct_on(lowered, select, select.args["distinct"].args["on"])
         elif select.args.get("distinct") is not None:
             relation = self._lower_distinct(lowered, select)
         elif isinstance(select.args.get("qualify"), exp.Qualify):
@@ -847,7 +849,7 @@ class IrParser:
 
     def _lower_distinct(self, lowered: _Lowered, select: exp.Select) -> ir.Distinct | None:
         distinct = select.args.get("distinct")
-        if distinct is None or distinct.args.get("on") is not None or select.args.get("having") is not None or _star_only(select):
+        if distinct is None or select.args.get("having") is not None or _star_only(select):
             return None
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
@@ -857,13 +859,28 @@ class IrParser:
         )
 
     def _lower_qualify(self, lowered: _Lowered, select: exp.Select, qualify: exp.Qualify) -> ir.QualifyByPartition | None:
-        if select.args.get("having") is not None:
-            return None
         window = _row_number_equals_one(qualify.this)
         if window is None:
             return None
-        partitions = window.args.get("partition_by") or ()
-        if not partitions:
+        order = window.args.get("order")
+        return self._one_row_per_partition(
+            lowered, select, window.args.get("partition_by") or (), order.expressions if order else (),
+        )
+
+    def _lower_distinct_on(self, lowered: _Lowered, select: exp.Select, on: exp.Expression) -> ir.QualifyByPartition | None:
+        """`DISTINCT ON (k...)` keeps one row per distinct `k...`, like
+        `QUALIFY ROW_NUMBER() OVER (PARTITION BY k...) = 1`. Its ORDER BY only
+        picks which row survives, and may name outputs, so it is not lowered."""
+        if select.args.get("qualify") is not None:
+            return None
+        keys = on.expressions if isinstance(on, exp.Tuple) else [on]
+        return self._one_row_per_partition(lowered, select, keys, ())
+
+    def _one_row_per_partition(
+        self, lowered: _Lowered, select: exp.Select, partitions: list[exp.Expression], order: list[exp.Ordered],
+    ) -> ir.QualifyByPartition | None:
+        """Every partition key must be a selected output: the Unique Set is stated on outputs."""
+        if not partitions or select.args.get("having") is not None or _star_only(select):
             return None
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
@@ -875,10 +892,9 @@ class IrParser:
             if item is None:
                 return None
             partition_outputs.append(output_columns[select.expressions.index(item)])
-        order = window.args.get("order")
         ordering = tuple(
             self._lower_expression(ordered.this, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
-            for ordered in (order.expressions if order else ())
+            for ordered in order
         )
         return ir.QualifyByPartition(
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
