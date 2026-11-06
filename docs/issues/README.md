@@ -4,8 +4,12 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
-- [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (epic)
+- [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (parent epic of 37, 38, 39)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
+- [36. Refactor tests for corpus and oracle scale](0036-refactor-tests-for-corpus-and-oracle-scale.md) — needs review
+- [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
+- [38. Lower ORDER BY and select-list scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md) — open (child of 23)
+- [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
 
 ## Order
 
@@ -16,12 +20,13 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 
 - **P1:** none open. #23 R11 is done: every comparison but the IS family rejects
   NULL, through null-propagating operators.
-- **P2:** done, except #15's remaining Low smells and High rewrites from the
-  Kossmann triage (most need ORDER BY or select-list subqueries lowered).
+- **P2:** #37 (Paulley audit's missing rules); #15's remaining Low smells
+  and High rewrites from the Kossmann triage, most of which need #38.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
-- **P4, out of scope for now (not covered by Paulley):** #23 window functions
+- **P3:** #39 (smaller lowering gaps).
+- **Not planned (not covered by Paulley), listed in #23:** window functions
   (and #33's CTE part, which needs them), recursive CTEs, column lineage,
-  LATERAL, CAST and multiplication injectivity.
+  LATERAL and UNNEST, ADD COLUMN.
 
 ## Done
 

@@ -1,13 +1,37 @@
 # 23. Close IR lowering gaps
 
 - **State:** open
-- **Labels:** epic
+- **Labels:** epic (parent of 37, 38, 39)
 - **Created:** 2026-11-01
 - **Migrated from:** `TODO.md` (IR Limitations), README Ideas
 
-What lowering ([`ir/convert.py`](../../sqlassert/ir/convert.py)) loses today. Each item
-caps what the rules can prove, however good the rules get. Feature-level gaps
+Parent epic for what lowering ([`ir/convert.py`](../../sqlassert/ir/convert.py)) loses.
+Each gap caps what the rules can prove, however good the rules get. Feature-level gaps
 live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
+
+## Children
+
+- [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md): E4, L13, L14, S5, R9, R10, I1, I2, U2, F2, F4, OR branches.
+- [38. Lower ORDER BY and select-list scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md): for issue 15's Low smells.
+- [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md): registry entries, cast and multiplication injectivity, more subquery forms, expression indexes, opaque join kinds.
+
+## Not planned
+
+Not covered by Paulley, or not needed for any proof:
+
+- Window functions: only `QUALIFY row_number() over (partition by ...) = 1` is
+  recognized. General modelling would add `Window` and `Filter` operations,
+  with the engine deriving uniqueness from recognized shapes. Planned rules:
+  [`docs/functional-dependencies.md`](../functional-dependencies.md#window-functions).
+- Recursive CTEs and views are `RecursiveRelation` (opaque): a recursive
+  relation is a genuine fixpoint, which the memoized engine and its strata
+  cannot compute.
+- `LATERAL` and `UNNEST` sources are opaque.
+- Column lineage and per-column unique status as a first-class output.
+- `ALTER TABLE ... ADD COLUMN` is `unsupported-statement`: only migration-style
+  programs use it, and the statement's diagnostic already says so.
+
+## Done
 
 - [x] `Filter` carries no predicate. `WHERE k = 5` cannot pin `k` (so `(k, id)`
   cannot reduce to `(id)`), and `WHERE x IS NOT NULL` cannot establish non-null `x`.
@@ -54,13 +78,9 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   lowered as an inner join, which proved `NOT NULL` on columns it pads: it is
   now a full join on an opaque row-position condition. `semi` and `anti`
   joins are modelled as filters of their left input (see correlated
-  subqueries below). Still open (P4): `LATERAL`/`UNNEST`.
-- [ ] Windows: only `QUALIFY row_number() over (partition by ...) = 1` is
-  recognized; other window functions are opaque. Planned rules:
-  [`docs/functional-dependencies.md`](../functional-dependencies.md#window-functions).
-- [ ] Recursive CTEs and views become `RecursiveRelation` (opaque). Caveat:
-  a recursive relation is a genuine fixpoint, which the memoized engine and its
-  strata cannot compute; supporting it needs bespoke fixpoint machinery.
+  subqueries below). `LATERAL`/`UNNEST` are not planned. A join kind not modelled (ClickHouse
+  outer, SEMI, ANTI, ANY and ASOF joins, ARRAY JOIN) lowers to an opaque
+  relation, so a marker on it is `unanalyzed-assertion` (issue 39).
 - [x] Correlated subqueries (`EXISTS (… WHERE i.x = o.y)`) are not lowered.
   When they are, lower them as a dependent join (apply) over the outer input,
   so the IR stays a DAG; a subquery that refers to its outer relation directly
@@ -129,7 +149,7 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   uniqueness only flows through columns that pass through unchanged. Theory
   and planned opportunities: [`docs/functional-dependencies.md`](../functional-dependencies.md).
 
-## Folded in from `TODO.md` Later Ideas and the README Ideas list
+### Folded in from `TODO.md` Later Ideas and the README Ideas list
 
 - [x] Non-nullness from predicates and expressions: `WHERE x IS NOT NULL`,
   `WHERE x = 5`, and inner-join equalities imply non-null `x`; `count(...)` is
@@ -143,13 +163,7 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   appear inside a view, CTE, or subquery. The Unique Set is done in issue 24;
   issue 28 lowers every view, CTE, and FROM-subquery body the way the Root
   Select is lowered, set operations and joins included.
-- [ ] Column lineage, column unique status.
-- [ ] General window modeling: represent window expressions and their filtering
-  as separate `Window` and `Filter` operations, with the engine deriving
-  uniqueness from recognized shapes. Until then, keep
-  `QUALIFY row_number() over (partition by ...) = 1` as the explicit special case.
-
-## Found while building issue 28
+### Found while building issue 28
 
 - [x] A column marker naming a column that is not visible in a relation with
   an incomplete schema is dropped silently: no assertion and no diagnostic.
@@ -165,28 +179,10 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
   `tests/test_analyze_marker_accounting.py` checks every marker kind in every
   context for an Assertion, a Declaration, or a Diagnostic on its line.
 
+### Found by the Paulley audit (issue 35)
 
-## Found by the Paulley audit (issue 35)
+The missing rows of the audit table moved to issue 37. Done here:
 
-Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
-"Paulley audit"):
-
-- [ ] **E4** (eq7): a lax equivalence whose columns a later filter makes
-  definite does not become an Equality Group: after `LEFT JOIN r ON r.z = l.a
-  WHERE r.z IS NOT NULL`, z and a are not merged, so Enumerated Domains and
-  Foreign Key stand-ins do not cross between them. (The FD closure already
-  strengthens the lax FD.)
-  Related, **L14**: for Enumerated Domains a lax equivalence is enough, since
-  NULL is outside every domain: after `LEFT JOIN u ON u.z = t.a WHERE t.a =
-  5`, z is 5 or NULL, so `ENUM(z IN (5))` holds; today it is UNKNOWN.
-- [ ] **L13** (Thm 3, strict equivalence 4): an ON equality within the padded
-  side of an outer join (`ON ... AND u.x = u.z`) is a strict equivalence in
-  the result (both NULL on padded rows), but does not merge an Equality Group,
-  so `u.z = 3` in the same ON does not bound x's domain.
-- [ ] **S5** (§3.2.1): CHECK constraints are ignored without a diagnostic.
-  `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
-  Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
-  passes), which is exactly what ENUM means.
 - [x] **R11** (§3.2.4, footnote 9): only `=`, `IN (...)` and `IS NOT NULL`
   rejected NULL. Done: a conjunct rejects every column it is strict in (NULL
   whenever the column is), `ir.strict_inputs` from each `ir.Call`'s
@@ -208,16 +204,3 @@ Rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
   expression is pure and its inputs compare by identity, and `b → a` when it
   is injective in `a` and both are integers or decimals
   (`uniqueness._equality_dependencies`).
-- [ ] **R10** (§3.2.4): `WHERE a = (uncorrelated scalar subquery)` makes `a`
-  constant (`∅ → a`).
-- [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.
-- [ ] **I1, I2** (Lemma 6, Corollary 1): the right input's FDs and keys
-  through INTERSECT. Sound only when the paired columns compare by identity:
-  an INTERSECT row carries the left value, equal to the right one under the
-  left column's comparison (`identity_comparison`).
-- [ ] **U2** (§3.2.6, Example 15): equivalences and constants that hold in
-  both UNION ALL inputs at the same positions hold in the output.
-- [ ] **F2, F4** (Lemma 10, Thm 4): a full join's ON gives no dependencies
-  today. `t FULL JOIN u ON u.z = t.a` gives `a → z` (a non-null a is a left
-  row, and a fixes which rows it matches) when η holds for z and for every
-  right column of p, and the lax `z → a`.

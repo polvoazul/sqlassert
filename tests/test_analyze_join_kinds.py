@@ -79,3 +79,34 @@ def test_a_positional_join_pads_both_sides():
     SELECT x, y FROM a POSITIONAL JOIN b /**ASSERT NOT NULL(x)**/ /**ASSERT NOT NULL(y)**/
     """
     assert outcomes(sql) == [Outcome.UNKNOWN, Outcome.UNKNOWN]
+
+
+PADDED_CONSTANT = """
+CREATE TABLE t (id INTEGER PRIMARY KEY);
+CREATE TABLE u (tid INTEGER);
+SELECT t.id, v.k FROM t {join} (SELECT tid, 'a' AS k FROM u) AS v ON v.tid = t.id /**ASSERT ENUM(k IN ('a'))**/
+"""
+
+
+def test_an_outer_join_pads_with_null_which_is_outside_every_domain():
+    assert [assertion.outcome for assertion in analyze(PADDED_CONSTANT.format(join="LEFT JOIN")).assertions] == [Outcome.PROVED]
+
+
+@pytest.mark.parametrize("join", ["LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "ANY LEFT JOIN", "SEMI LEFT JOIN", "ANTI LEFT JOIN"])
+def test_a_clickhouse_join_other_than_inner_or_cross_is_opaque(join: str):
+    # ClickHouse pads with the column type's default ('' here), not NULL,
+    # unless join_use_nulls is set; its SEMI and ANTI joins keep right columns.
+    report = analyze(PADDED_CONSTANT.format(join=join), dialect="clickhouse")
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN], join
+
+
+def test_a_clickhouse_inner_join_is_an_inner_join():
+    report = analyze(PADDED_CONSTANT.format(join="JOIN"), dialect="clickhouse")
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+
+
+def test_an_unknown_join_kind_is_opaque_and_its_marker_unanalyzed():
+    sql = "CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);\nSELECT t.id FROM t /**ASSERT UNIQUE**/ ARRAY JOIN arr /**ASSERT NOT NULL(id)**/"
+    report = analyze(sql, dialect="clickhouse")
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["unanalyzed-assertion"]

@@ -613,11 +613,14 @@ class IrParser:
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
         origin = self._origin(join, assertion_line(join))
+        kind = _join_kind(join, self.dialect)
+        if kind is None:
+            return self._opaque_join(left, right, join, origin)
         predicate = self._lower_join_predicate(join, left, right)
-        if _join_kind(join) in {"semi", "anti"}:
+        if kind == "semi" or kind == "anti":
             # RIGHT SEMI and RIGHT ANTI keep right rows: the same join, inputs swapped.
             kept, other = (right, left) if (join.args.get("side") or "").lower() == "right" else (left, right)
-            filtered = self._filtering_join(kept, other.relation, _join_kind(join), predicate, origin)
+            filtered = self._filtering_join(kept, other.relation, kind, predicate, origin)
             assert isinstance(filtered.relation, ir.Join)
             self._join_marker(join, filtered.relation)
             self._add_attachment_site(join, _join_label(join, self.dialect), filtered.relation, trailing=False)
@@ -632,7 +635,7 @@ class IrParser:
             origin=origin,
             output_columns=output_columns,
             is_schema_complete=left.relation.is_schema_complete and right.relation.is_schema_complete,
-            kind=_join_kind(join),
+            kind=kind,
             left=left.relation,
             right=right.relation,
             predicate=predicate,
@@ -644,6 +647,20 @@ class IrParser:
         self._join_marker(join, relation)
         self._add_attachment_site(join, _join_label(join, self.dialect), relation, trailing=False)
         return _Lowered(relation, bindings)
+
+    def _opaque_join(self, left: _Lowered, right: _Lowered, join: exp.Join, origin: Origin) -> _Lowered:
+        """A join whose kind is not modelled: every column it outputs is opaque,
+        and a marker on it is reported as unanalyzed."""
+        description = join.sql(dialect=self.dialect)
+        input_columns = left.relation.output_columns + right.relation.output_columns
+        opaque = {
+            column: ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.OpaqueExpression(origin=origin, description=description))
+            for column in input_columns
+        }
+        relation = ir.OpaqueRelation(origin=origin, output_columns=tuple(opaque.values()), is_schema_complete=False, description=description)
+        return _Lowered(relation, tuple(
+            _Binding(binding.qualifier, binding.name, opaque[binding.column]) for binding in left.bindings + right.bindings
+        ))
 
     def _join_marker(self, join: exp.Join, relation: ir.Join) -> None:
         kind = join_marker_kind(join)
@@ -1598,24 +1615,31 @@ def _is_positional(join: exp.Join) -> bool:
     return (join.args.get("method") or "").lower() == "positional"
 
 
-def _join_kind(join: exp.Join) -> ir.JoinKind:
+def _join_kind(join: exp.Join, dialect: str) -> ir.JoinKind | None:
     """SEMI, ANTI and CROSS whatever the side; otherwise the side, else INNER
     (`STRAIGHT_JOIN`, and ASOF, which keeps a subset of the inner join's rows).
-    Any other kind (ClickHouse `ARRAY JOIN`) is read as CROSS, which pairs rows
-    and proves nothing from the condition beyond an inner join's."""
+    None for a join whose semantics are not modelled: it lowers opaque."""
     if _is_positional(join):
         return "full"
-    match (join.args.get("kind") or "").lower(), (join.args.get("side") or "").lower():
+    kind, side = (join.args.get("kind") or "").lower(), (join.args.get("side") or "").lower()
+    if dialect == "clickhouse" and (side or kind not in {"", "inner", "cross"}):
+        # TODO: check ClickHouse semantics. Outer joins pad with the column
+        # type's default, not NULL, unless join_use_nulls is set; SEMI and ANTI
+        # joins keep the right columns; ANY and ASOF pick one match.
+        return None
+    match kind, side:
         case ("semi" | "anti" | "cross") as kind, _:
             return kind
-        case _, ("left" | "right" | "full") as side:
+        case "" | "inner" | "outer" | "straight_join", ("left" | "right" | "full") as side:
             return side
-        case "outer", _:
+        case "outer", "":
             return "full"
-        case "" | "inner" | "straight_join", _:
+        case "" | "inner" | "straight_join", "":
             return "inner"
         case _:
-            return "cross"
+            # TODO: check the semantics of each dialect's other join kinds
+            # (ClickHouse ARRAY JOIN, ANY, ...) before modelling one.
+            return None
 
 
 def _join_label(join: exp.Join, dialect: str) -> str:
