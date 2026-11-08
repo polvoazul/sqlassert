@@ -1,0 +1,118 @@
+# 41. Join cardinality markers and the fan-trap smell
+
+- **State:** open
+- **Labels:** markers, suggestions
+- **Created:** 2026-11-08
+- **Related:** [15: suggestions and smells](0015-suggest-provable-properties-for-unannotated-sql.md), [21](done/0021-assert-simple-exactly-one-joins.md) and [22](done/0022-complete-exactly-one-reasoning.md): Exactly One
+
+## Why
+
+`/**ASSERT UNIQUE**/` before a join is directional today: the right input is
+unique on the join key, so no left row is repeated (many to one). On
+`customers JOIN orders USING (c_id)` it is false, though the join is
+well-behaved: one side is unique on the key, so only the other side's rows
+repeat. To prove it, the author has to put the side with many rows on the
+left. That is bad, since join order carries meaning: `customers LEFT JOIN orders`
+keeps customers with no orders, and in a chain the left input is everything
+joined so far, not a table that can be moved.
+
+The commoner question is "is this join many to many?", the fan trap:
+`orders JOIN payments USING (c_id)` repeats both sides, and every sum over it
+is multiplied. When a direction matters, the author should be able to say
+which one, in the order they wrote the join.
+
+## Markers
+
+Each goes immediately before the join, like today's join markers. "Left" is
+everything before the join, "right" its joined source; the words read in
+FROM order.
+
+| Marker | Proved when | Rows repeated |
+|---|---|---|
+| `ASSERT MANY TO ONE` | the right input is unique on the join key (today's `UNIQUE`) | right only |
+| `ASSERT ONE TO MANY` | the left input is unique on the join key | left only |
+| `ASSERT ONE TO ONE` | both are | none |
+| `ASSERT NOT MANY TO MANY` | either is | one side at most |
+| `ASSERT UNIQUE` | alias of `NOT MANY TO MANY` (**changes today's meaning**) | one side at most |
+
+`EXACTLY ONE` is unchanged: many to one plus guaranteed matching.
+
+Proofs reuse `unique_join` on the join and on its mirror (inputs swapped,
+padding sides swapped), so no rule changes are needed. Unique on any subset of
+the equated columns suffices, through the closure, as today. Padding never
+repeats a row, so LEFT, RIGHT and FULL joins take the same proofs; NULL keys
+match nothing. Whether the join drops rows is a separate question that
+`EXACTLY ONE` answers. Semi and anti joins never repeat left rows, so for them
+`MANY TO ONE`, and with it `NOT MANY TO MANY`, holds trivially; `ONE TO MANY`
+and `ONE TO ONE` should be rejected there, since a semi join keeps no right
+rows.
+
+When `NOT MANY TO MANY` (or `UNIQUE`) is proved, the explanation names the
+side that was unique, so the author gets the direction without asserting it.
+
+### Changing `UNIQUE`
+
+`UNIQUE` becomes `NOT MANY TO MANY` because that is the commoner intent.
+It is weaker than before: `orders /**ASSERT UNIQUE**/ JOIN order_items ON
+i.order_id = o.id` was UNKNOWN and becomes PROVED (orders is unique on `id`),
+though `sum(o.total)` over it is multiplied. That is the intended change; the
+directional markers and the smell below cover the aggregate case. Alpha, so
+no compatibility path:
+
+- Tests that rely on the directional meaning (a `UNIQUE` expected UNKNOWN
+  because only the left side is unique, the oracle's join checks) switch to
+  `MANY TO ONE`. Tests that stay PROVED keep `UNIQUE`.
+- README "Unique Join Syntax", the CONTEXT.md glossary (Unique Join
+  Assertion; add the cardinality terms), and `JOIN_MARKER_NOUNS` in
+  `sql_parse.py`.
+- `suggest` and `--annotate` (`suggest._candidate`): suggest the strongest
+  proved form, `EXACTLY ONE` > `ONE TO ONE` > `MANY TO ONE` or `ONE TO MANY`.
+  `NOT MANY TO MANY` is implied by each, so it is never suggested on its own.
+
+## The fan-trap smell (Low, issue 15)
+
+With no marker, flag a duplicate-sensitive aggregate whose input repeats the
+rows its argument comes from:
+
+- **Fan trap:** `sum(p.amount)` over `orders JOIN payments USING (c_id)`;
+  the join is many to many.
+- **Chasm trap:** `sum(c.credit_limit)` over `customers JOIN orders USING (c_id)`;
+  the join is one to many, and the summed column is on the side that has
+  one row per key.
+
+One check covers both: for an aggregate argument whose columns all come from
+one relation instance R with a known Unique Set K, the smell fires when K
+(lifted through the joins) is not a Unique Set of the aggregate's input. That
+is "R's rows may be repeated before they are summed".
+
+Decide while implementing:
+
+- **Which aggregates:** duplicate-sensitive ones (`sum`, `avg`, `count(x)`,
+  `string_agg`, `array_agg`). Not `min`, `max`, `bool_and`/`bool_or`, or any
+  `DISTINCT` aggregate. Skip `count(*)`: it counts the input's rows, usually
+  on purpose.
+- **Silence on unknowns:** fire only when R has a known Unique Set (declared,
+  a key, or proved). With no known key there is nothing to lose, and firing
+  would be noise.
+- **Bridges:** many-to-many through a bridge table is sometimes intended
+  (weighting). A Low smell, so the message says the value may be counted
+  more than once and names the join that repeats R's rows.
+- **Arguments over several relations:** `sum(o.qty * p.price)` mixes sides.
+  Skip it at first, or require every contributing relation's key.
+- **Through CTEs and subqueries:** the aggregate's input may be a CTE that
+  does the join; the check is on facts, so it should work unchanged.
+
+Each case needs a DuckDB test showing the multiplied total, so the smell's
+claim is checked on data, not only reasoned.
+
+## Acceptance criteria
+
+- [ ] `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE`, `NOT MANY TO MANY` parse,
+  attach before a join, and are proved by `unique_join` and its mirror.
+- [ ] `UNIQUE` means `NOT MANY TO MANY`; tests relying on the old meaning
+  use `MANY TO ONE`; README, CONTEXT.md and suggestions updated.
+- [ ] Explanations of `NOT MANY TO MANY` name the unique side.
+- [ ] The fan-trap/chasm-trap smell fires on both examples, stays silent on
+  `sum(o.amount)` over `customers JOIN orders`, on `min`/`max`/`DISTINCT`
+  aggregates and on relations without a known key.
+- [ ] `pytest --soundness-oracle` passes; the oracle judges the new markers.

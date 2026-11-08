@@ -11,6 +11,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [38. Lower ORDER BY and scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
 - [40. Audit inference against Calcite and adapt targeted regressions](0040-audit-inference-against-calcite.md) — open
+- [41. Join cardinality markers and the fan-trap smell](0041-join-cardinality-markers-and-fan-trap-smell.md) — open
 
 ## Order
 
@@ -21,7 +22,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 
 - **P1:** none open. #23 R11 is done: every comparison but the IS family rejects
   NULL, through null-propagating operators.
-- **P2:** #37 (Paulley audit's missing rules); #15's remaining Low smells
+- **P2:** #41 (join cardinality markers, `UNIQUE` becomes `NOT MANY TO MANY`, fan-trap smell); #37 (Paulley audit's missing rules); #15's remaining Low smells
   and High rewrites from the Kossmann triage, most of which need #38.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
