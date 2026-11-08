@@ -263,6 +263,53 @@ unique constraints, foreign keys, view definitions), never table rows. A
 catalog foreign key is used when the SQL reaches both of its tables. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
 
+### Checking in CI
+
+`check` analyzes each SQL file as one SQL Program, from its SQL alone, and fails when any assertion is `UNKNOWN` or a Diagnostic is reported. Connection Warnings (a table with no `CREATE`, say) are printed but never fail it.
+
+```bash
+$ sqlassert check models/ 'queries/**/*.sql'
+queries/sessions.sql:4:3: error unknown-assertion: /**ASSERT MANY TO ONE**/ is UNKNOWN
+models/events.sql: warning undeclared-table: table events has no CREATE TABLE in the program, ...
+5 files checked: 9 assertions (8 PROVED, 1 UNKNOWN), 1 error, 1 warning
+```
+
+A path is a file, a directory (every `*.sql` under it), or a glob (`**` crosses directories); `-` reads stdin. A path that matches nothing is a usage error rather than an empty pass. Each Finding is placed at the marker itself, line and column.
+
+| Exit status | Meaning |
+|---|---|
+| `0` | Every assertion PROVED and no Diagnostic (warnings allowed). |
+| `1` | An assertion is `UNKNOWN`, or a Diagnostic was reported. |
+| `2` | Bad arguments or configuration, or a file that could not be read. Nothing was checked. |
+
+Options:
+
+- `--format text|json|sarif|github`: `text` (default) is `path:line:column: severity code: message` plus a summary; `json` lists every assertion's outcome and every Finding with its span; `sarif` is a SARIF 2.1.0 log for GitHub code scanning; `github` prints `::error`/`::warning` workflow commands, which GitHub Actions shows as annotations on the marker.
+- `--explain`: print each `UNKNOWN` assertion's evidence (in `json` and `sarif` too), as `suggest --explain` does.
+- `--ignore CODE`: drop Findings with this code (repeatable, or comma-separated). The codes are the Diagnostic codes plus `unknown-assertion`.
+- `--dialect NAME`: the SQLGlot dialect (default `duckdb`).
+
+Defaults live in `pyproject.toml`; `check` reads the nearest one with a `[tool.sqlassert]` table, searching up from the working directory. Each flag, when given, replaces its setting, and paths given on the command line replace `paths`:
+
+```toml
+[tool.sqlassert]
+dialect = "duckdb"
+paths = ["models", "queries/**/*.sql"]  # relative to this pyproject.toml
+ignore = ["undeclared-table"]
+```
+
+In GitHub Actions, annotate the pull request directly, or upload SARIF to code scanning:
+
+```yaml
+- run: sqlassert check --format github
+# or
+- run: sqlassert check --format sarif > sqlassert.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: sqlassert.sarif
+```
+
 ### Suggesting markers
 
 You rarely start from a blank page. `suggest` reads unannotated SQL and lists what sqlassert can already prove, each with the marker to paste:

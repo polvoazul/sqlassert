@@ -151,6 +151,13 @@ _Avoid_: Input column, column identifier
 The SQL location or catalog object from which a semantic element or piece of knowledge arose.
 _Avoid_: SQLGlot node
 
+**Finding**:
+What `sqlassert check` reports for one SQL Program: an `UNKNOWN` assertion or a
+Diagnostic (error level, failing the check), or a Connection Warning (warning
+level, never failing it). A Finding is located at its Origin's span, when it
+has one: the Property Marker as written.
+_Avoid_: Violation, failure, lint
+
 **Knowledge**:
 Properties accepted as true for inference. Knowledge may come from a catalog,
 an explicit Property Declaration, query structure, or a proved Assertion. A

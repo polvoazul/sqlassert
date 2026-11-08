@@ -14,8 +14,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   dialect tokenizes each join marker (`/**ASSERT UNIQUE**/`,
   `/**ASSERT EXACTLY ONE**/`; `JOIN_MARKER_KINDS`) as a token of its own and the
   join rule consumes it, so the grammar is what requires a marker to sit
-  immediately before its join. The line and marker kind are recorded in the
-  node's `meta`, and nothing downstream re-reads SQL text.
+  immediately before its join. The marker's `Span` (`provenance.py`: first
+  and last line and column, from the tokens' source offsets) and kind are
+  recorded in the node's `meta`, and nothing downstream re-reads SQL text.
+  Every Origin of an Assertion, and of a Diagnostic about a marker, carries
+  that span, so `check` annotates the marker itself.
 
   `MARKERS` in that module is the single source of truth for what a marker is:
   the dialect tokenizes exactly those literals, and any other `/**...*/` comment
@@ -29,7 +32,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   The case marker (`/**ASSERT EXHAUSTIVE**/`) is another fixed literal, written
   inside an expression: the dialect adds its token to `PRIMARY_PARSERS`, so it
   parses as a primary expression whose rule requires `CASE` next and records
-  the marker's line on the `exp.Case` (`exhaustive_line`). The same rule
+  the marker's span on the `exp.Case` (`exhaustive_span`). The same rule
   rejects a searched CASE and any `WHEN` value that is not a distinct
   non-null literal (`literal_value`), and the join and Select rules reject the
   token where they meet it, so a misplaced marker is an unattached marker
@@ -161,6 +164,13 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   through `Arena.prove` only. The one internal it reads is a column's
   Enumerated Domain (`rules.domain._domain`), to know which values an ENUM
   candidate lists before proving it. `__main__.py` is the CLI over it.
+- `check.py` is `sqlassert check`, for CI: it runs `analyze` on each file,
+  turns every `UNKNOWN` assertion and Diagnostic into a Finding (a Connection
+  Warning into a warning-level one), and renders Findings as text, JSON,
+  SARIF 2.1.0, or GitHub workflow annotations. Its exit codes, `Finding`,
+  `[tool.sqlassert]` loading and formatters are shared by every command that
+  checks SQL; `__main__.py` only parses arguments. A path that matches no file
+  is a usage error, since a check of nothing would pass.
 - `improvements.py` holds `suggest`'s High level: result-preserving rewrites
   (Improvements). None of their facts is a Property, so it reads rule
   internals in the same arena -- null sources and null-rejected conjuncts

@@ -12,13 +12,48 @@ from dataclasses import dataclass
 SQL = "sql"
 
 
+@dataclass(frozen=True, order=True)
+class Span:
+    """A region of SQL text: where a Property Marker is written. Spans order by position.
+
+    Lines and columns count from 1, columns in characters; `end_column` is
+    one past the region's last character, as SARIF's `endColumn`.
+    """
+
+    line: int
+    column: int
+    end_line: int
+    end_column: int
+
+    @classmethod
+    def of(cls, sql: str, start: int, end: int) -> Span:
+        """The region of `sql[start:end]`."""
+        line, column = _position(sql, start)
+        end_line, end_column = _position(sql, end)
+        return cls(line, column, end_line, end_column)
+
+
+def _position(sql: str, offset: int) -> tuple[int, int]:
+    return sql.count("\n", 0, offset) + 1, offset - sql.rfind("\n", 0, offset)
+
+
 @dataclass(frozen=True)
 class Origin:
-    """A SQL source span or catalog fact that a semantic element arose from."""
+    """A SQL source span or catalog fact that a semantic element arose from.
+
+    `line` is the first source line, when known; `span` the exact region,
+    when the element is a Property Marker (its `line` is then `line`).
+    """
 
     kind: str
     detail: str
     line: int | None = None
+    span: Span | None = None
+
+    @classmethod
+    def marked(cls, detail: str, span: Span) -> Origin:
+        """The Origin of something a Property Marker at `span` asserts or reports."""
+        return cls(SQL, detail, span.line, span)
 
 
 @dataclass(frozen=True)
