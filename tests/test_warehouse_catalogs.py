@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from sqlassert import Outcome, analyze_database
 from sqlassert.diagnostics import UNENFORCED_CONSTRAINT
-from sqlassert.discovery import DatabaseKnowledgeFetcher, DatabaseRelationKind
+from sqlassert.discovery import DatabaseKnowledgeFetcher, DatabaseMetadataError, DatabaseRelationKind
 from sqlassert.discovery.bigquery import BigQueryKnowledgeFetcher
 from sqlassert.discovery.databricks import DatabricksKnowledgeFetcher
 from sqlassert.discovery.information_schema import InformationSchemaKnowledgeFetcher
@@ -252,3 +254,10 @@ def test_a_key_with_an_expression_part_is_not_a_key():
         pass
 
     assert Standard(_Connection(answers)).fetch_relation_metadata(("t",))["t"].unique_sets == ()
+
+
+def test_a_trino_session_without_a_catalog_is_a_metadata_error():
+    fetcher = TrinoKnowledgeFetcher(_Connection([("CURRENT_CATALOG", [(None, None)])]))
+
+    with pytest.raises(DatabaseMetadataError, match="no current catalog"):
+        fetcher.fetch_relation_metadata(("customers",))

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlassert.discovery.fetcher import DatabaseForeignKey
+from sqlassert.discovery.fetcher import DatabaseForeignKey, DatabaseMetadataError, DatabaseRelationMetadata
 from sqlassert.discovery.information_schema import InformationSchemaKnowledgeFetcher, Key, quoted
 
 
@@ -20,6 +20,12 @@ class TrinoKnowledgeFetcher(InformationSchemaKnowledgeFetcher):
     type_dialect = "trino"
     paramstyle = "qmark"
     cross_catalog = True
+
+    def session(self, scope: DatabaseRelationMetadata | None) -> tuple[str, tuple[str, ...]]:
+        catalog, path = super().session(scope)
+        if catalog is None:  # The client may connect without a catalog.
+            raise DatabaseMetadataError("the Trino session has no current catalog: connect with catalog=")
+        return catalog, path
 
     def information_schema(self, catalog: str, schema: str) -> str:
         return f"{quoted(catalog)}.information_schema"

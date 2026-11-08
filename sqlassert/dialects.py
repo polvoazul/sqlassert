@@ -170,7 +170,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Unlike Postgres, a NULL array or element operand makes `||` NULL too.
         pipes="strict",
         concat="strict",
-        concat_ws="skips-null",
+        # Not modelled: it skips a NULL VARCHAR, but its ARRAY(VARCHAR)
+        # overload is NULL for a NULL array, and SQLGlot parses both alike.
         unique_keys="unenforced",
         foreign_keys="unenforced",
     ),

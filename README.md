@@ -288,8 +288,7 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
 
 - **Keys.** DuckDB, PostgreSQL and MySQL enforce primary, unique and foreign
   keys. Snowflake, BigQuery, Databricks / Spark, Redshift and Trino (which has
-  no key constraints) do not, so a key
-  there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
+  no key constraints) do not, so a key there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
   becomes a Property Declaration, and `trust_unenforced_keys=True` makes every
   unenforced key one. Any other is ignored, with an `unenforced-constraint`
   warning. So are a PostgreSQL foreign key added `NOT VALID`, any constraint
@@ -298,8 +297,8 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   does not enforce them, and SQLite foreign keys.
 - **Text.** `VARCHAR` and `TEXT` with no `COLLATE` are taken to compare by
   identity in DuckDB, PostgreSQL and Trino, whose shipped default collation is
-  binary (Trino has no collations); a setting that changes it (DuckDB's `SET default_collation`) is out
-  of scope. MySQL's default collations ignore case, and the warehouses are
+  binary (Trino has no collations); a setting that changes it (DuckDB's
+  `SET default_collation`) is out of scope. MySQL's default collations ignore case, and the warehouses are
   not yet certified, so their text is not. Text with any `COLLATE` is never
   taken to compare by identity.
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null

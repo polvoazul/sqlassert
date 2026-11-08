@@ -30,7 +30,7 @@ before dialects were listed; see "Not done").
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
-| `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | skips NULL |
+| `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 
