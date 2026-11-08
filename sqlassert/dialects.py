@@ -122,7 +122,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         enum_error_value=True,
     ),
     "snowflake": DialectSemantics(
-        checked_arithmetic=True,
+        # Not `checked_arithmetic`: its docs never say integer overflow raises.
         checked_division=True,
         pipes="strict",
         concat="strict",

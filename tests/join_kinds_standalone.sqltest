@@ -8,6 +8,7 @@
 -- left row whole and output no right row: no cardinality marker applies to them.
 
 -- case: an_unknown_join_kind_is_opaque_and_its_marker_unanalyzed
+-- trust_unenforced_keys: false
 -- dialect: clickhouse
 CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);
 --~ unenforced-constraint "clickhouse does not enforce it"

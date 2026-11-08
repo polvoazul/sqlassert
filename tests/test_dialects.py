@@ -17,17 +17,17 @@ CREATE TABLE o (id INT64, t_id INT64, FOREIGN KEY (t_id) REFERENCES t (id) NOT E
 """
 
 
-def test_an_unenforced_key_is_ignored_and_reported_by_default():
-    report = analyze(BIGQUERY + "SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/", dialect="bigquery")
+def test_an_unenforced_key_is_ignored_and_reported_when_not_trusted():
+    report = analyze(
+        BIGQUERY + "SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/", dialect="bigquery", trust_unenforced_keys=False,
+    )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
     assert [warning.code for warning in report.warnings] == ["unenforced-constraint", "unenforced-constraint"]
 
 
-def test_trusting_unenforced_keys_declares_them():
-    report = analyze(
-        BIGQUERY + "SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/", dialect="bigquery", trust_unenforced_keys=True,
-    )
+def test_unenforced_keys_are_trusted_as_declarations_by_default():
+    report = analyze(BIGQUERY + "SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/", dialect="bigquery")
 
     assertion, = report.assertions
     assert assertion.outcome is Outcome.PROVED and assertion.evidence is not None

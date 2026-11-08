@@ -105,7 +105,7 @@ def annotate(sql: str, items: Iterable[Candidate | Suggestion]) -> str:
 
 
 def suggest(
-    sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE, trust_unenforced_keys: bool = False,
+    sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE, trust_unenforced_keys: bool = True,
 ) -> SuggestionReport:
     """Every Property sqlassert can prove about `sql`, as markers to paste,
     and every Improvement a proof justifies.

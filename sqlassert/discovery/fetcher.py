@@ -110,7 +110,7 @@ class DatabaseHydration:
     tables: Mapping[str, DatabaseRelationMetadata] = field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
     dialect: str = "duckdb"
-    trust_unenforced_keys: bool = False
+    trust_unenforced_keys: bool = True
 
 
 @dataclass(frozen=True)
@@ -130,7 +130,7 @@ class DatabaseKnowledgeFetcher(ABC):
     # The SQL dialect the database writes column types in.
     type_dialect: str | None = None
 
-    def hydrate(self, ast: ParsedProgram, *, dialect: str, trust_unenforced_keys: bool = False) -> DatabaseHydration:
+    def hydrate(self, ast: ParsedProgram, *, dialect: str, trust_unenforced_keys: bool = True) -> DatabaseHydration:
         return _Hydration(self, ast, dialect, trust_unenforced_keys).run()
 
     def bind(self, program: ir.Program, hydration: DatabaseHydration) -> CatalogFacts:

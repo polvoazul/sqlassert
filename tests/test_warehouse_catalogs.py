@@ -90,16 +90,17 @@ def test_databricks_reads_the_standard_views_with_qmark_parameters():
     assert any("?" in operation for operation, _ in connection.log)
 
 
-def test_unenforced_catalog_keys_prove_only_when_trusted():
+def test_unenforced_catalog_keys_prove_only_when_trusted_which_is_the_default():
     def fetcher() -> DatabricksKnowledgeFetcher:
         return DatabricksKnowledgeFetcher(_Connection([("current_catalog()", [("main", "shop")]), *_standard("main", "shop")]))
 
-    report = analyze_database(EXACTLY_ONE, fetcher(), dialect="databricks")
+    report = analyze_database(EXACTLY_ONE, fetcher(), dialect="databricks", trust_unenforced_keys=False)
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
     assert {warning.code for warning in report.warnings} == {UNENFORCED_CONSTRAINT}
     assert any("trust_unenforced_keys=True" in warning.message for warning in report.warnings)
     assert _outcomes(fetcher(), "databricks", trust=True) == [Outcome.PROVED]
+    assert [assertion.outcome for assertion in analyze_database(EXACTLY_ONE, fetcher(), dialect="databricks").assertions] == [Outcome.PROVED]
 
 
 def test_not_null_from_a_warehouse_catalog_is_knowledge():
