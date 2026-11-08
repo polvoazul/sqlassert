@@ -146,3 +146,16 @@ claim is checked on data, not only reasoned.
   Fan Trap and Chasm Trap smells in `smells.py` follow the argument's
   columns down through joins; `test_smells.py` shows each total doubled on
   DuckDB.
+
+## Review fixes (2026-11-08)
+
+- An ON equality binds a column only when it pins the column's value
+  whatever casts the comparison adds (`equality._pins`): a non-text type
+  compared by identity always does; text only against text or a string
+  literal (`'01'` and `'1'` both equal 1); a collated, float or unknown type
+  never. This was older than this issue: Many To One had it too, and so did
+  the FD rules (`a = b`, `a = literal`, outer-join ON), now fixed the same
+  way. A text-to-other-type join equality is the new Implicit Cast smell.
+- A trap is reported only when the repeated input's key, carried up to the
+  aggregate's input, is not a Unique Set there: `WHERE o.id = 1` keeps one
+  row per key.

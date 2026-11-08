@@ -107,10 +107,19 @@ When it is not proved, report that the subquery may return more than one row
 - **Smell:** `Program.scalar_subqueries` records each join with the
   subquery's site. Uncorrelated, the body must have the empty set as a Unique
   Set; correlated, `_at_most_one_match` on the join (the flag aside).
-- **ORDER BY:** not lowered into the IR. Both uses read the keys from the
-  syntax at the Select's Attachment Site and ask the closure, as Arbitrary
-  LIMIT already did: the new `Redundant ORDER BY key` improvement (Paulley
-  §3, reducing the sort list) flags a key the earlier keys determine, NULL
-  equal to NULL. No Property needed a Sort node.
+- **ORDER BY:** the keys are resolved during lowering, with the Select's
+  bindings (qualifier and schema included), and kept per Select as
+  `Program.sort_keys`, not as a Sort node: no Property reads them. Arbitrary
+  LIMIT and the new `Redundant ORDER BY key` improvement (Paulley §3,
+  reducing the sort list) read them there. The rewrite needs the earlier
+  keys to compare by identity (a collation ties values its equality tells
+  apart) and skips DISTINCT ON, whose ORDER BY picks the rows it keeps.
+- **Review fixes (2026-11-08):** a subquery column belongs to the innermost
+  scope that has it: a declared table that lacks it does not, and when a
+  table has no CREATE the subquery stays opaque with an `ambiguous-column`
+  warning. Bindings keep an unaliased table's schema, so `s1.t.k` and `s2.t.k`
+  differ. A correlated subquery is lowered only when every outer reference is
+  in its WHERE. The outer columns its WHERE reads determine its row, so
+  `WHERE t.a = (SELECT r.x FROM r WHERE r.k = t.c)` gives `c -> a`.
 - Fixed along the way: discovery required an unqualified column of a nested
   query on the outer query's single source (it belongs to the nested scope).

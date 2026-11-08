@@ -37,7 +37,7 @@ from sqlassert.sql_parse import SqlParser
 def table(name: str, *columns: str, nullable: tuple[str, ...] = (), primary_key: tuple[str, ...] = (), unique: tuple[tuple[str, ...], ...] = (), schema: str = "main") -> DatabaseRelationMetadata:
     return DatabaseRelationMetadata(
         catalog="db", schema=schema, name=name, kind=DatabaseRelationKind.TABLE,
-        columns=tuple(DatabaseColumn(name=column, nullable=column in nullable) for column in columns),
+        columns=tuple(DatabaseColumn(name=column, nullable=column in nullable, data_type="INTEGER") for column in columns),
         primary_key=primary_key, unique_sets=unique,
     )
 

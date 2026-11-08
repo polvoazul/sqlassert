@@ -137,7 +137,34 @@ def test_more_traps(sql: str, concern: Concern):
         "SELECT sum(l.amount) AS s FROM orders o JOIN logs l ON l.customer_id = o.customer_id",
         # An argument reading both inputs is not traced.
         "SELECT sum(o.amount * p.amount) AS s FROM orders o JOIN payments p ON p.customer_id = o.customer_id",
+        # The filter keeps one order, so each customer's row appears once.
+        "SELECT sum(c.credit) AS s FROM customers c JOIN orders o ON o.customer_id = c.id WHERE o.id = 1",
     ],
 )
 def test_an_aggregate_over_rows_no_join_repeats_is_not_a_trap(sql: str):
     assert concerns(sql) == []
+
+
+# Implicit cast -------------------------------------------------------------------
+
+CASTS = """
+CREATE TABLE codes (code VARCHAR PRIMARY KEY, n INTEGER);
+CREATE TABLE nums (v INTEGER);
+"""
+
+
+def test_a_join_equality_that_casts_is_a_smell_and_repeats_rows_on_data():
+    sql = "SELECT * FROM nums JOIN codes ON codes.code = nums.v"
+    assert [smell.concern for smell in suggest(CASTS + sql).smells] == [Concern.IMPLICIT_CAST]
+    connection = duckdb.connect()
+    connection.execute(CASTS + "INSERT INTO codes VALUES ('01', 0), ('1', 0); INSERT INTO nums VALUES (1);")
+    assert connection.execute("SELECT count(*) FROM nums JOIN codes ON codes.code = nums.v").fetchone() == (2,)
+
+
+@pytest.mark.parametrize(
+    "on",
+    ["codes.n = nums.v", "codes.code = CAST(nums.v AS VARCHAR)"],
+    ids=["same type", "explicit cast"],
+)
+def test_a_join_equality_without_an_implicit_cast_is_not_a_smell(on: str):
+    assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").smells == ()

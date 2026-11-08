@@ -83,6 +83,7 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
             if isinstance(child, ir.RelationExpr):
                 parents.setdefault(child, []).append(relation)
     found: list[Improvement] = []
+    sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
         if isinstance(relation, ir.SimpleCase):
             continue  # A CASE has nothing to rewrite yet.
@@ -96,7 +97,7 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
         if site.trailing:
             found.extend(_redundant_subquery_filters(arena, site, relation))
         if site.trailing and isinstance(node, exp.Select):
-            found.extend(_redundant_sort_keys(site, relation, node, dialect))
+            found.extend(_redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
                 removed = _redundant_join(arena, site, relation, node, dialect)
@@ -218,31 +219,31 @@ def _inner_join(
 # Redundant ORDER BY keys -----------------------------------------------------------
 
 
-def _redundant_sort_keys(site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select, dialect: str) -> list[Improvement]:
+def _redundant_sort_keys(
+    site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select, keys: tuple[ir.OutputColumn, ...] | None, dialect: str
+) -> list[Improvement]:
     """Each ORDER BY key the keys before it determine, NULL equal to NULL
     (Paulley §3, reducing the sort list): rows tied on the earlier keys agree
-    on it, so it never breaks a tie. Silent when a key is an expression or a
-    name sqlassert cannot map to one column."""
-    from sqlassert.smells import _sort_keys
+    on it, so it never breaks a tie. Only while the earlier keys compare by
+    identity: a collation or a float ties values its equality tells apart.
+    Silent when a key is an expression or a name that does not resolve to one
+    column, and for DISTINCT ON, whose ORDER BY picks the rows it keeps."""
+    from sqlassert.smells import _ties_identical
 
-    order = select.args.get("order")
-    if order is None:
+    if not keys:
         return []
-    items = order.expressions
+    items = select.args["order"].expressions
     scope = relation.input if isinstance(relation, ir.Project) else relation
-    keys = _sort_keys(items, relation.output_columns, scope)
-    if keys is None:
-        return []
     found = []
     for position in range(1, len(keys)):
+        if not all(_ties_identical(key) for key in keys[:position]):
+            break
         closure = _closure(scope, frozenset(keys[:position]), frozenset())
         key = keys[position]
         if key not in closure.value.columns:
             continue
-        item = items[position]
-        earlier = ", ".join((earlier.this if isinstance(earlier, exp.Ordered) else earlier).sql(dialect=dialect) for earlier in items[:position])
-        written = (item.this if isinstance(item, exp.Ordered) else item).sql(dialect=dialect)
-        message = f"({earlier}) determine {written}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
+        written = [(item.this if isinstance(item, exp.Ordered) else item).sql(dialect=dialect) for item in items]
+        message = f"({', '.join(written[:position])}) determine {written[position]}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
         evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
         found.append(Improvement(site, Rewrite.REDUNDANT_SORT_KEY, message, evidence))
     return found

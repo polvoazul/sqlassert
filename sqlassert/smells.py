@@ -14,6 +14,9 @@ the proof that would have pinned it, which failed:
   aggregate counts, `min` and `max` included: the join is wrong either way.
   `count(*)` has no argument, so only a many-to-many join is a trap for it.
   Silent when the input whose rows are repeated has no known Unique Set.
+- A join equality between text and another declared type: the text is cast,
+  so different strings may match one value (`'01'` and `'1'` both equal 1),
+  and no cardinality is proved across it. Write the cast explicitly.
 - A scalar subquery not proved to return at most one row (issue 38): more
   than one is a runtime error. Uncorrelated, its body must have at most one
   row; correlated, the columns its WHERE binds must reach its Row Identity.
@@ -34,8 +37,9 @@ from sqlassert import ir
 from sqlassert.improvements import Level, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
+from sqlassert.rules.equality import _binary_text, _comparison_type, _exact_arithmetic, _identity_comparison
 from sqlassert.rules.join_cardinality import _at_most_one_match, many_to_one_join, one_to_many_join, unique_join
-from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
+from sqlassert.rules.uniqueness import _closure, _reaches_row_identity, minimal_keys
 from sqlassert.sql_parse import ParsedProgram
 
 
@@ -44,6 +48,7 @@ class Concern(Enum):
     FAN_TRAP = "Fan trap"
     CHASM_TRAP = "Chasm trap"
     SCALAR_SUBQUERY = "Scalar subquery"
+    IMPLICIT_CAST = "Implicit cast"
 
 
 @dataclass(frozen=True)
@@ -63,10 +68,13 @@ def smells(ast: ParsedProgram, program: ir.Program, arena: Arena) -> list[Smell]
     reachable = set(program.nodes())
     found: list[Smell] = []
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
+    sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
         node = syntax.get((site.offset, site.trailing))
         if isinstance(relation, ir.Limit) and relation in reachable and isinstance(node, exp.Select):
-            found.extend(_arbitrary_limit(site, relation, node))
+            found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
+        if isinstance(relation, ir.Join) and relation in reachable and not site.trailing:
+            found.extend(_implicit_casts(site, relation))
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
         if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
             found.extend(_traps(site, aggregate, join_labels))
@@ -74,6 +82,26 @@ def smells(ast: ParsedProgram, program: ir.Program, arena: Arena) -> list[Smell]
         if join in reachable:
             found.extend(_scalar_subquery(site, join))
     return sorted(found, key=lambda item: item.site.offset)
+
+
+def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Smell]:
+    """Each ON equality between a text column and a column of another known type."""
+    found = []
+    for conjunct in join.conjuncts:
+        match conjunct:
+            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)):
+                types = (_comparison_type(first).value, _comparison_type(second).value)
+                if None in types or _binary_text(first).value == _binary_text(second).value:
+                    continue
+                message = (
+                    f"{first.name} ({types[0]}) = {second.name} ({types[1]}) compares text with another type: the text is cast, "
+                    "so different strings may match one value ('01' and '1' both equal 1): cast explicitly"
+                )
+                evidence = Result(False, "The comparison casts text", (conjunct,))
+                found.append(Smell(site, Concern.IMPLICIT_CAST, message, evidence))
+            case _:
+                pass
+    return found
 
 
 def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Smell]:
@@ -109,7 +137,9 @@ def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.J
         columns = frozenset(column for columns in inputs if columns is not None for column in columns)
         if not columns:
             # `count(*)`, or a constant: it counts the input's rows.
-            for join, proof in _many_to_many_joins(aggregate.input):
+            for join, path, proof in _many_to_many_joins(aggregate.input, []):
+                if _unrepeated(aggregate.input, join.left, path) or _unrepeated(aggregate.input, join.right, path):
+                    continue
                 message = (
                     f"{call.description} counts the rows of {_label(join, join_labels)}, which is not proved "
                     "to repeat rows of only one input (a fan trap): rows may be counted more than once"
@@ -119,7 +149,9 @@ def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.J
         repeated = _repeating_join(aggregate.input, columns)
         if repeated is None:
             continue
-        join, proof = repeated
+        join, side, path, proof = repeated
+        if _unrepeated(aggregate.input, side, path):
+            continue  # A filter keeps one row per key after all (`WHERE o.id = 1`).
         if unique_join(join).value:
             concern, why = Concern.CHASM_TRAP, "is one to many, and the argument is on the side with one row per key"
         else:
@@ -132,19 +164,24 @@ def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.J
     return found
 
 
-def _repeating_join(relation: ir.RelationExpr, columns: frozenset[ir.OutputColumn]) -> tuple[ir.Join, Result] | None:
+def _repeating_join(
+    relation: ir.RelationExpr, columns: frozenset[ir.OutputColumn]
+) -> tuple[ir.Join, ir.RelationExpr, list[ir.RelationExpr], Result] | None:
     """The first join, from `relation` down to the input `columns` come from,
-    not proved to keep that input's rows unrepeated, with the failed proof.
-    None when every join on the way is proved, or the columns cannot be traced
-    to one input of a join."""
+    not proved to keep that input's rows unrepeated: the join, that input,
+    the stages from `relation` down to the join, and the failed proof. None
+    when every join on the way is proved, or the columns cannot be traced to
+    one input of a join."""
+    path: list[ir.RelationExpr] = []
     while True:
+        path.append(relation)
+        upstream = _upstream(relation, columns)
+        if upstream is None:
+            return None
         match relation:
             case ir.Join(kind="semi" | "anti"):
                 side = relation.left  # It never repeats a row.
             case ir.Join():
-                upstream = _upstream(relation, columns)
-                if upstream is None:
-                    return None
                 if upstream <= set(relation.left.output_columns):
                     side, proof = relation.left, many_to_one_join(relation)
                 elif upstream <= set(relation.right.output_columns):
@@ -152,37 +189,58 @@ def _repeating_join(relation: ir.RelationExpr, columns: frozenset[ir.OutputColum
                 else:
                     return None  # The argument reads both inputs.
                 if not proof.value and _has_unique_set(side):
-                    return relation, proof
+                    return relation, side, path, proof
             case ir.Filter(input=side) | ir.Alias(source=side) | ir.Project(input=side) | ir.Limit(input=side):
                 pass
             case ir.NamedRelation(body=ir.RelationExpr() as side):
                 pass
             case _:
                 return None  # A base table, or a stage that drops or merges rows.
-        upstream = _upstream(relation, columns)
-        if upstream is None or not upstream <= set(side.output_columns):
+        if not upstream <= set(side.output_columns):
             return None
         relation, columns = side, upstream
 
 
-def _many_to_many_joins(relation: ir.RelationExpr):
+def _many_to_many_joins(relation: ir.RelationExpr, path: list[ir.RelationExpr]):
     """Each join under `relation` not proved to repeat rows of at most one
-    input, both of whose inputs have a known Unique Set, with the failed proof."""
+    input, both of whose inputs have a known Unique Set, with the stages down
+    to it and the failed proof."""
+    path = [*path, relation]
     match relation:
         case ir.Join(kind="semi" | "anti", left=left):
-            yield from _many_to_many_joins(left)
+            yield from _many_to_many_joins(left, path)
         case ir.Join(left=left, right=right):
             proof = unique_join(relation)
             if not proof.value and _has_unique_set(left) and _has_unique_set(right):
-                yield relation, proof
-            yield from _many_to_many_joins(left)
-            yield from _many_to_many_joins(right)
+                yield relation, path, proof
+            yield from _many_to_many_joins(left, path)
+            yield from _many_to_many_joins(right, path)
         case ir.Filter(input=source) | ir.Alias(source=source) | ir.Project(input=source) | ir.Limit(input=source):
-            yield from _many_to_many_joins(source)
+            yield from _many_to_many_joins(source, path)
         case ir.NamedRelation(body=ir.RelationExpr() as source):
-            yield from _many_to_many_joins(source)
+            yield from _many_to_many_joins(source, path)
         case _:
             pass
+
+
+def _unrepeated(top: ir.RelationExpr, side: ir.RelationExpr, path: list[ir.RelationExpr]) -> bool:
+    """Whether a Unique Set of `side`, carried up `path` (the stages from
+    `top` down to the join `side` is an input of), is a Unique Set of `top`:
+    `side`'s rows are not repeated there after all."""
+    for key in minimal_keys(side):
+        lifted: list[ir.OutputColumn] = list(key)
+        for stage in reversed(path):
+            passed = {
+                output.scalar_expr.column: output for output in stage.output_columns if isinstance(output.scalar_expr, ir.ColumnRef)
+            }
+            if not all(column in passed for column in lifted):
+                break
+            lifted = [passed[column] for column in lifted]
+        else:
+            members = frozenset(lifted)
+            if _reaches_row_identity(_closure(top, members, members)).value:
+                return True
+    return False
 
 
 def _upstream(relation: ir.RelationExpr, columns: frozenset[ir.OutputColumn]) -> frozenset[ir.OutputColumn] | None:
@@ -206,27 +264,28 @@ def _label(join: ir.Join, join_labels: dict[ir.Join, str]) -> str:
     return join_labels.get(join, "a join")
 
 
-def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, select: exp.Select) -> list[Smell]:
+# Arbitrary LIMIT -------------------------------------------------------------
+
+
+def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, keys: tuple[ir.OutputColumn, ...] | None) -> list[Smell]:
     """A LIMIT whose sort keys leave two different rows tied.
 
     Rows that agree on every selected column are interchangeable, so the keys
     need only strictly determine the selected columns (NULL equal to NULL, as
     ORDER BY ties them), not a row of the input. Under a projection the keys
-    may be input columns it does not select, so the question is asked there.
+    are input columns it may not select, so the question is asked there. A
+    key that does not compare by identity (a collation, a float) ties
+    different values, so it determines nothing here.
     """
-    if limit.count == 0:
+    if limit.count == 0 or keys is None:
         return []
-    order = select.args.get("order")
-    items = order.expressions if order is not None else []
     relation = limit.input
     if isinstance(relation, ir.Project):
         scope, needed = relation.input, {column: _needed(column) for column in relation.output_columns}
     else:
         scope, needed = relation, {column: frozenset({column}) for column in relation.output_columns}
-    keys = _sort_keys(items, relation.output_columns, scope)
-    if keys is None:
-        return []
-    closure = _closure(scope, frozenset(keys), frozenset())
+    exact = tuple(key for key in keys if _ties_identical(key))
+    closure = _closure(scope, frozenset(exact), frozenset())
     loose = [column for column, inputs in needed.items() if inputs is None or not inputs <= closure.value.columns]
     if not loose:
         return []
@@ -236,48 +295,12 @@ def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, select: exp.Select) 
     return [Smell(site, Concern.ARBITRARY_LIMIT, message, closure)]
 
 
+def _ties_identical(column: ir.OutputColumn) -> bool:
+    """Whether rows ORDER BY ties on `column` hold identical values of it."""
+    return _identity_comparison(column).value or _exact_arithmetic(column)
+
+
 def _needed(column: ir.OutputColumn) -> frozenset[ir.OutputColumn] | None:
     """The input columns a projected column's value is a function of, if known."""
     inputs = ir.determinants(column.scalar_expr)
     return None if inputs is None else frozenset(inputs)
-
-
-def _sort_keys(
-    items: list[exp.Expression], outputs: tuple[ir.OutputColumn, ...], scope: ir.RelationExpr
-) -> list[ir.OutputColumn] | None:
-    """Each ORDER BY item as the column of `scope` it sorts by: a selected
-    column by name or position, or else a column of `scope` by a name only one
-    of its columns has. None when an item is none of these (an expression, or
-    a name that may belong to several columns)."""
-    keys: list[ir.OutputColumn] = []
-    for item in items:
-        expression = item.this if isinstance(item, exp.Ordered) else item
-        match expression:
-            case exp.Column(table="") if (selected := _named(outputs, expression.name)) is not None:
-                key = _in_scope(selected, scope)
-            case exp.Literal(is_int=True) if 1 <= int(expression.this) <= len(outputs):
-                key = _in_scope(outputs[int(expression.this) - 1], scope)
-            case exp.Column():
-                key = _named(scope.output_columns, expression.name)
-            case _:
-                return None
-        if key is None:
-            return None
-        keys.append(key)
-    return keys
-
-
-def _named(columns: tuple[ir.OutputColumn, ...], name: str) -> ir.OutputColumn | None:
-    matches = [column for column in columns if column.name.lower() == name.lower()]
-    return matches[0] if len(matches) == 1 else None
-
-
-def _in_scope(column: ir.OutputColumn, scope: ir.RelationExpr) -> ir.OutputColumn | None:
-    """`column` as a column of `scope`: itself, or the input column it projects."""
-    if column in scope.output_columns:
-        return column
-    match column.scalar_expr:
-        case ir.ColumnRef(column=upstream) if upstream in scope.output_columns:
-            return upstream
-        case _:
-            return None

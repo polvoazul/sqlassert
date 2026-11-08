@@ -25,3 +25,24 @@ FROM customers
 /**ASSERT UNIQUE**/ JOIN orders
 --~ PROVED "PROVED: one_to_many_join" "UNKNOWN: many_to_one_join"
     ON orders.customer_id = customers.id
+
+-- Implicit casts: codes.code = nums.v casts the text to a number, so '01' and
+-- '1' both match 1 and the key no longer bounds the matches. On codes = '01',
+-- '1' and nums = 1, 1, the join has 4 rows.
+-- case: an_equality_that_casts_binds_no_column__not_many_to_many
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE nums (v INTEGER);
+SELECT * FROM nums /**ASSERT NOT MANY TO MANY**/ JOIN codes ON codes.code = nums.v
+--~ UNKNOWN
+
+-- case: an_equality_that_casts_binds_no_column__many_to_one
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE nums (v INTEGER);
+SELECT * FROM nums /**ASSERT MANY TO ONE**/ JOIN codes ON codes.code = nums.v
+--~ UNKNOWN
+
+-- case: an_equality_that_casts_binds_no_column__one_to_one
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE nums (v INTEGER);
+SELECT * FROM nums /**ASSERT ONE TO ONE**/ JOIN codes ON codes.code = nums.v
+--~ UNKNOWN

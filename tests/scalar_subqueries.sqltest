@@ -60,3 +60,49 @@ SELECT a, b
 FROM t
 WHERE a = (SELECT max(x) FROM r WHERE k IN (SELECT c FROM t))
 /**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+
+-- Which scope a subquery column belongs to. r has no column c, so c is t.c:
+-- one value per t row, not one for the query. On t = (1, 1, 1), (2, 1, 2) and
+-- r = (0), both rows match and b = 1 twice.
+-- case: scalar_subqueries__a_column_its_own_table_lacks_is_the_outer_one
+SELECT a, b FROM t WHERE a = (SELECT c FROM r) /**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+
+-- With no CREATE for u, c may be u's or t's: the subquery stays unanalyzed.
+-- case: scalar_subqueries__a_column_of_an_undeclared_table_may_be_the_outer_one
+SELECT a, b FROM t WHERE a = (SELECT c FROM u) /**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+--~ ambiguous-column "column c in a subquery may belong to its own FROM or to the outer query"
+--~! undeclared-table "table u"
+
+-- A schema-qualified outer column correlates the subquery: s2.t.k = s1.t.k
+-- names two tables, not one.
+-- case: scalar_subqueries__a_schema_qualified_outer_column_correlates
+CREATE SCHEMA s1;
+CREATE SCHEMA s2;
+CREATE TABLE s1.t (a INTEGER, b INTEGER, k INTEGER, PRIMARY KEY (a, b));
+CREATE TABLE s2.t (k INTEGER PRIMARY KEY, x INTEGER);
+SELECT a, b FROM s1.t
+WHERE a = (SELECT max(x) FROM s2.t WHERE s2.t.k = s1.t.k)
+/**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+
+-- s2.t.k is a key: at most one row per outer row, so (a, b) stays a key, and
+-- the subquery's row depends only on s1.t.k, so k determines a.
+-- case: scalar_subqueries__a_schema_qualified_correlation_is_a_dependent_join
+CREATE SCHEMA s1;
+CREATE SCHEMA s2;
+CREATE TABLE s1.t (a INTEGER, b INTEGER, k INTEGER, PRIMARY KEY (a, b));
+CREATE TABLE s2.t (k INTEGER PRIMARY KEY, x INTEGER);
+SELECT a, b, k FROM s1.t
+WHERE a = (SELECT s2.t.x FROM s2.t WHERE s2.t.k = s1.t.k)
+/**ASSERT UNIQUE(a, b)**/  --~ PROVED
+/**ASSERT DETERMINES(k -> a)**/  --~ PROVED
+
+-- Outer references are lowered only in the subquery's WHERE.
+-- case: scalar_subqueries__a_correlation_in_an_inner_on_is_not_lowered
+SELECT a, (SELECT x.y FROM r AS x JOIN r AS z ON x.k = t.c AND z.k = x.k) AS m
+FROM t /**ASSERT DETERMINES(a -> m)**/  --~ UNKNOWN
+
+-- The subquery's matching rows depend only on t.c, so c determines its value;
+-- a equals it, so c -> a, even though r.g is no key.
+-- case: scalar_subqueries__correlated_where_columns_determine_the_value
+SELECT a, c FROM t WHERE t.a = (SELECT r.x FROM r WHERE r.g = t.c)
+/**ASSERT DETERMINES(c -> a)**/  --~ PROVED

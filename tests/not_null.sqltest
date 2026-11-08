@@ -288,7 +288,7 @@ SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/  --~ PROVED
 
 -- case: a_primary_key_declaration_proves_a_unique_join
 WITH c AS (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/)
-SELECT * FROM sessions s /**ASSERT MANY TO ONE**/ JOIN c ON s.ts = c.nickname
+SELECT * FROM users u /**ASSERT MANY TO ONE**/ JOIN c ON u.email = c.nickname
 --~ PROVED
 
 -- case: an_unknown_assertion_names_every_column_it_could_not_prove

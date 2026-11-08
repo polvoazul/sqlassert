@@ -15,6 +15,7 @@ from typing import Literal, assert_never
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, any_of, analysis
 from sqlassert.rules.column_set import ColumnSet
+from sqlassert.rules.equality import _pins
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 
 type Side = Literal["left", "right"]
@@ -74,11 +75,13 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[ColumnSet]:
                 case _:
                     assert_never(bound)
 
+            # An equality that casts pins nothing: '01' and '1' both equal 1.
             match value:
                 case ir.Constant():
-                    pass
+                    if not _pins(column, value):
+                        continue
                 case ir.ColumnRef(column=other_column):
-                    if other_column not in other.output_columns:
+                    if other_column not in other.output_columns or not _pins(column, value):
                         continue
                 case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue

@@ -1,6 +1,6 @@
 """Exactly One Joins: every left row matches exactly one right row.
 
-Three halves, each reported. At most one match is a Unique Join, which further
+Three halves, each reported. At most one match is a Many To One Join, which further
 conjuncts only strengthen. At least one match needs every conjunct to be an
 equality between a left and a right column, and Referential Coverage of the
 left columns, as one tuple, onto the right columns they are paired with: a

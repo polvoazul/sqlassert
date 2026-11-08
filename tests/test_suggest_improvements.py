@@ -473,3 +473,19 @@ def test_an_order_by_key_the_earlier_keys_determine_is_redundant(sql: str, messa
 def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
     schema = "CREATE TABLE t_sorted (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);\n"
     assert not any(item.rewrite is Rewrite.REDUNDANT_SORT_KEY for item in suggest(schema + sql).improvements)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # q.b is the input column, not the output alias b, so b DESC still breaks ties.
+        "CREATE TABLE q (a INTEGER, b INTEGER);\nSELECT DISTINCT a AS b FROM q ORDER BY q.b, b DESC LIMIT 1",
+        # DISTINCT ON's ORDER BY picks which row of each group survives.
+        "CREATE TABLE d (id INTEGER, v INTEGER);\nSELECT DISTINCT ON (id) id, v FROM d ORDER BY id, v",
+        # Under NOCASE, 'A' and 'a' tie on name: n orders them.
+        "CREATE TABLE c (name VARCHAR COLLATE NOCASE PRIMARY KEY, n INTEGER);\nSELECT name, n FROM c ORDER BY name, n LIMIT 1",
+    ],
+    ids=["qualified key", "distinct on", "collated key"],
+)
+def test_an_order_by_key_whose_earlier_keys_may_tie_different_rows_is_kept(sql: str):
+    assert not any(item.rewrite is Rewrite.REDUNDANT_SORT_KEY for item in suggest(sql).improvements)

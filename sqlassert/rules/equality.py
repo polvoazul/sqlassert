@@ -125,6 +125,53 @@ def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
             return Result(column.identity_comparison, "Declared type compares by identity", (column,))
 
 
+def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
+    """Whether `column = value` leaves `column` one value for each value of
+    `value`, whatever casts the comparison adds.
+
+    A column of a non-text type whose equal values are identical is: the
+    other side is cast to its type, or it is cast to a wider type, which
+    loses nothing. Text compared by identity is only when the other side is
+    such text too, or a string literal: compared with a number it is cast to
+    the number (`'01'` and `'1'` both equal 1). Anything else is not: a
+    collation or a float equates different values, and of an unknown type
+    nothing is known."""
+    if _binary_text(column).value:
+        match value:
+            case ir.Constant(value=ir.LiteralValue(type="string")):
+                return True
+            case ir.ColumnRef(column=other):
+                return _binary_text(other).value
+            case _:
+                return False
+    return _identity_comparison(column).value or _exact_arithmetic(column)
+
+
+def _exact_arithmetic(column: ir.OutputColumn) -> bool:
+    """Whether `column` is an integer or decimal it computes: a `count`, or
+    exact arithmetic over an integer or decimal (`id + 7`)."""
+    program = current_arena().program
+    while isinstance(column.scalar_expr, ir.ColumnRef) and not isinstance(column.get_relation(program), ir.SetOperation):
+        column = column.scalar_expr.column
+    if isinstance(column.scalar_expr, ir.Count):
+        return True
+    if not isinstance(column.scalar_expr, ir.Call):
+        return False
+    source = ir.injective_input(column.scalar_expr)
+    return source is not None and exact_numeric(source).value
+
+
+@analysis(Stratum.EQUALITY_GROUP)
+def _binary_text(column: ir.OutputColumn) -> Result[bool]:
+    """Whether `column` is text compared by identity, from its declared type."""
+    relation = column.get_relation(current_arena().program)
+    match column.scalar_expr:
+        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+            return _binary_text(source)
+        case _:
+            return Result(column.binary_text, "Declared as text compared by identity", (column,))
+
+
 @analysis(Stratum.EQUALITY_GROUP)
 def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
     """Whether `column` is an integer or decimal, from its declared type."""

@@ -87,7 +87,7 @@ more robust thing to propagate.
 an inclusion dependency whose right side is a key. Theory behind issues
 [19–22](issues/README.md) (Foreign Keys, `EXACTLY ONE`):
 
-- Unique Join = at most one match (right key). Inclusion dependency = at least
+- Many To One Join = at most one match (right key). Inclusion dependency = at least
   one. Together: exactly one; the join neither drops nor duplicates left rows.
 - Composite: `ON l.a = r.x AND l.b = r.y` needs `L[a, b] ⊆ R[x, y]`, the
   tuple; `L[a] ⊆ R[x]` and `L[b] ⊆ R[y]` may be met by different rows. Every

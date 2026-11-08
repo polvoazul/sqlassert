@@ -578,6 +578,12 @@ class Program:
     attachment_sites: tuple[tuple[AttachmentSite, RelationExpr | SimpleCase], ...] = ()
     # Each scalar subquery lowered as a join, with where its Select is written.
     scalar_subqueries: tuple[tuple[AttachmentSite, Join], ...] = ()
+    # Each Select Expression's ORDER BY keys, at its trailing site, as columns
+    # of the stage it sorts: the input of a Project, else the Select's own
+    # relation. Empty with no ORDER BY; None when a key is an expression or a
+    # name that does not resolve to one column, and for DISTINCT ON, whose
+    # ORDER BY picks the rows it keeps.
+    sort_keys: tuple[tuple[AttachmentSite, tuple[OutputColumn, ...] | None], ...] = ()
     column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

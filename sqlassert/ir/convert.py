@@ -56,6 +56,8 @@ class _Binding:
     qualifier: str
     name: str
     column: ir.OutputColumn
+    # The schema (and catalog) of an unaliased table, as `s1` in `s1.t.k`.
+    schema: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,14 @@ class IrParser:
     # binding that holds its value.
     _scalar_values: dict[int, str] = field(default_factory=dict)
     _scalar_subqueries: list[tuple[AttachmentSite, ir.Join]] = field(default_factory=list)
+    _sort_keys: dict[int, tuple[ir.OutputColumn, ...] | None] = field(default_factory=dict)
+    _site_sort_keys: list[tuple[AttachmentSite, tuple[ir.OutputColumn, ...] | None]] = field(default_factory=list)
+    # Columns made up for names a query uses: of a table with no CREATE, or an
+    # opaque relation (`_guessed`), and those a declared table does not have (`_absent`).
+    _guessed: set[ir.OutputColumn] = field(default_factory=set)
+    # A scalar subquery's columns, each bound to the scope that owns it.
+    _scoped_columns: dict[int, ir.OutputColumn] = field(default_factory=dict)
+    _absent: set[ir.OutputColumn] = field(default_factory=set)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
@@ -150,7 +160,7 @@ class IrParser:
         warnings = [*self._undeclared_table_warnings(), *self._warnings]
         return IrConversionResult(
             ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
-                scalar_subqueries=tuple(self._scalar_subqueries)),
+                scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys)),
             tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
         )
 
@@ -468,6 +478,10 @@ class IrParser:
         relation = self._lower_limit(relation, select)
         self._register_column_markers(relation, select)
         self._add_attachment_site(select, _select_label(select), relation, trailing=True)
+        position = marker_position(select)
+        if position is not None:
+            offset, line = position
+            self._site_sort_keys.append((AttachmentSite(_select_label(select), line, offset, True), self._sort_keys.get(id(select))))
         return relation
 
     def _lower_limit(self, relation: ir.RelationExpr, query: exp.Query) -> ir.RelationExpr:
@@ -488,12 +502,14 @@ class IrParser:
         if isinstance(source, exp.Table):
             symbol = self._table_symbols[id(source)]
             alias_name = source.alias or source.name
+            # An unaliased table may be named with its schema: `s1.t.k`.
+            schema = "" if source.alias else _schema_path(source)
             if symbol in self._resolving:
                 if symbol.role is ir.RelationRole.VIEW:
                     self._report_cycle(symbol, source)
                 recursive = self._recursive_relation(symbol, source)
-                return self._alias(recursive, alias_name, self._origin(source))
-            return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source))
+                return self._alias(recursive, alias_name, self._origin(source), schema)
+            return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema)
 
         if isinstance(source, exp.Subquery):
             relation = self._lower_query(source)
@@ -556,6 +572,8 @@ class IrParser:
         complete = symbol.statement is not None and {column.lower() for column in symbol.required_columns} <= seen
         columns = self._opaque_output_columns(names, symbol.origin)
         by_name = {definition.name: definition for definition in definitions}
+        if symbol.statement is not None:
+            self._absent.update(column for column in columns if column.name not in by_name)
         return tuple(
             replace(
                 column, binary_text=self._is_binary_text(by_name[column.name]),
@@ -600,7 +618,7 @@ class IrParser:
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
             names = sorted(names, key=lambda name: (name.lower(), name))
-        return tuple(
+        columns = tuple(
             ir.OutputColumn(
                 origin=origin,
                 name=name,
@@ -608,6 +626,8 @@ class IrParser:
             )
             for name in names
         )
+        self._guessed.update(columns)
+        return columns
 
     def _recursive_relation(self, symbol: _Symbol, source: exp.Expression) -> ir.RecursiveRelation:
         origin = self._origin(source)
@@ -619,10 +639,10 @@ class IrParser:
             relation_name=symbol.name,
         )
 
-    def _alias(self, source: ir.RelationExpr, name: str, origin: Origin) -> _Lowered:
+    def _alias(self, source: ir.RelationExpr, name: str, origin: Origin, schema: str = "") -> _Lowered:
         output_columns = _pass_output_columns(source.output_columns, origin)
         alias = ir.Alias(origin=origin, output_columns=output_columns, is_schema_complete=source.is_schema_complete, source=source, name=name)
-        return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output) for output in output_columns))
+        return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output, schema) for output in output_columns))
 
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
@@ -655,7 +675,7 @@ class IrParser:
             predicate=predicate,
         )
         bindings = tuple(
-            _Binding(binding.qualifier, binding.name, remapped[binding.column])
+            replace(binding, column=remapped[binding.column])
             for binding in left.bindings + right.bindings
         )
         self._join_marker(join, relation)
@@ -673,7 +693,7 @@ class IrParser:
         }
         relation = ir.OpaqueRelation(origin=origin, output_columns=tuple(opaque.values()), is_schema_complete=False, description=description)
         return _Lowered(relation, tuple(
-            _Binding(binding.qualifier, binding.name, opaque[binding.column]) for binding in left.bindings + right.bindings
+            replace(binding, column=opaque[binding.column]) for binding in left.bindings + right.bindings
         ))
 
     def _join_marker(self, join: exp.Join, relation: ir.Join) -> None:
@@ -756,7 +776,51 @@ class IrParser:
             else:
                 lowered, _ = self._join_scalar_subqueries(lowered, select.expressions)
                 relation = self._project(lowered, select.expressions, self._origin(select))
-        return relation if relation is not None else self._opaque_relation(select, _selected_output_names(select))
+        if relation is None:
+            return self._opaque_relation(select, _selected_output_names(select))
+        self._sort_keys[id(select)] = self._resolve_order(select, lowered.bindings, relation)
+        return relation
+
+    def _resolve_order(
+        self, select: exp.Select, bindings: tuple[_Binding, ...], relation: ir.RelationExpr
+    ) -> tuple[ir.OutputColumn, ...] | None:
+        """Each ORDER BY key as a column of the stage it sorts (see
+        `Program.sort_keys`): a selected column by its name or position, else
+        the column a name binds, qualifier and schema included."""
+        order = select.args.get("order")
+        if order is None:
+            return ()
+        distinct = select.args.get("distinct")
+        if distinct is not None and distinct.args.get("on") is not None:
+            return None  # Its ORDER BY picks the row each group keeps.
+        scope = relation.input if isinstance(relation, ir.Project) else relation
+        outputs = relation.output_columns
+        items = [item for item in select.expressions if not isinstance(item, exp.Star)]
+        keys: list[ir.OutputColumn] = []
+        for ordered in order.expressions:
+            expression = ordered.this if isinstance(ordered, exp.Ordered) else ordered
+            key: ir.OutputColumn | None = None
+            match expression:
+                case exp.Column(table="") if len(items) == len(outputs) and [item.alias_or_name.lower() for item in items].count(expression.name.lower()) == 1:
+                    names = [item.alias_or_name.lower() for item in items]
+                    key = _in_scope(outputs[names.index(expression.name.lower())], scope)
+                case exp.Literal(is_int=True) if len(items) == len(outputs) and 1 <= int(expression.this) <= len(outputs):
+                    key = _in_scope(outputs[int(expression.this) - 1], scope)
+                case exp.Column():
+                    schema, name = _schema_path(expression), expression.name.lower()
+                    bound = [
+                        binding for binding in bindings
+                        if binding.name == name and (not expression.table or binding.qualifier == expression.table.lower())
+                        and (not schema or binding.schema == schema)
+                    ]
+                    if len(bound) == 1:
+                        key = _carrying(bound[0].column, scope)
+                case _:
+                    pass
+            if key is None:
+                return None
+            keys.append(key)
+        return tuple(keys)
 
     def _filter(self, lowered: _Lowered, where: exp.Where) -> _Lowered:
         """WHERE: each `EXISTS`, `NOT EXISTS`, or `IN (subquery)` conjunct as a
@@ -781,7 +845,7 @@ class IrParser:
             predicate=self._lower_condition(where.this, remaining, lowered.bindings, schema_complete=complete),
         )
         bindings = tuple(
-            _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
+            replace(binding, column=remapped[binding.column]) for binding in lowered.bindings
         )
         if all(carried[column] is column for column in before):
             return _Lowered(relation, bindings)
@@ -793,9 +857,76 @@ class IrParser:
         )
         projected = dict(zip(kept, project.output_columns))
         return _Lowered(project, tuple(
-            _Binding(binding.qualifier, binding.name, projected[binding.column])
+            replace(binding, column=projected[binding.column])
             for binding in bindings if binding.column in projected
         ))
+
+    def _correlated(self, select: exp.Select, inner: _Lowered, outer: _Lowered) -> bool | None:
+        """Whether `select` reads the outer scope, only in its WHERE; None when
+        it reads it anywhere else, or when a column may belong to either scope."""
+        where = select.args.get("where")
+        correlated = False
+        for column in select.find_all(exp.Column):
+            found = self._scope_of(column, inner, outer)
+            if found is None:
+                return None
+            scope, binding = found
+            self._scoped_columns[id(column)] = binding.column
+            if scope == "outer":
+                if where is None or column.find_ancestor(exp.Where) is not where:
+                    return None  # Only a WHERE becomes the dependent join's ON.
+                correlated = True
+        return correlated
+
+    def _scope_of(
+        self, column: exp.Column, inner: _Lowered, outer: _Lowered
+    ) -> tuple[Literal["inner", "outer"], _Binding] | None:
+        """The scope a subquery's column belongs to, the innermost that has it,
+        and its binding there. None when that is unknown (a table with no
+        CREATE may have the column) or the name binds more than one column."""
+        name = column.name.lower()
+
+        def one(scope: Literal["inner", "outer"], bindings: list[_Binding]) -> tuple[Literal["inner", "outer"], _Binding] | None:
+            return (scope, bindings[0]) if len(bindings) == 1 else None
+
+        if column.table:
+            qualifier, schema = column.table.lower(), _schema_path(column)
+            for scope, bindings in (("inner", inner.bindings), ("outer", outer.bindings)):
+                if any(binding.qualifier == qualifier and (not schema or binding.schema == schema) for binding in bindings):
+                    return one(scope, [
+                        binding for binding in bindings
+                        if binding.qualifier == qualifier and (not schema or binding.schema == schema) and binding.name == name
+                    ])
+            return None
+        inner_named = [binding for binding in inner.bindings if binding.name == name and self._owns(binding) != "no"]
+        outer_named = [binding for binding in outer.bindings if binding.name == name and self._owns(binding) != "no"]
+        owners = {self._owns(binding) for binding in inner_named}
+        if "yes" in owners:
+            return one("inner", inner_named)
+        outer_has = bool(outer_named)
+        if "unknown" in owners or (not inner_named and not inner.relation.is_schema_complete and not any(binding.name == name for binding in inner.bindings)):
+            if not outer_has:
+                return one("inner", inner_named)
+            self._warnings.append(Diagnostic(
+                diag.AMBIGUOUS_COLUMN,
+                f"column {column.name} in a subquery may belong to its own FROM or to the outer query, "
+                "since some of its tables have no declared columns: qualify it, declare those tables with CREATE TABLE, "
+                "or analyze with a database connection (analyze_database)",
+                self._origin(column, _source_line(column)),
+            ))
+            return None
+        return one("outer", outer_named) if outer_has else None
+
+    def _owns(self, binding: _Binding) -> Literal["yes", "no", "unknown"]:
+        """Whether the relation behind `binding` has its column: a declared or
+        computed column it has, one its declared table lacks it does not, and
+        one made up for a table with no CREATE it may have."""
+        base = binding.column
+        while isinstance(base.scalar_expr, ir.ColumnRef):
+            base = base.scalar_expr.column
+        if base in self._absent:
+            return "no"
+        return "unknown" if base in self._guessed else "yes"
 
     def _join_scalar_subqueries(
         self, lowered: _Lowered, expressions: Sequence[exp.Expression]
@@ -836,7 +967,7 @@ class IrParser:
         right = self._lower_source(source)
         for join in select.args.get("joins") or ():
             right = self._lower_join(right, join)
-        correlated = _correlated(select, right, lowered)
+        correlated = self._correlated(select, right, lowered)
         origin = self._origin(subquery)
         if correlated is None:
             return None
@@ -877,7 +1008,7 @@ class IrParser:
         qualifier = f"{_SCALAR_QUALIFIER}{len(self._scalar_values)}"
         self._scalar_values[id(subquery)] = qualifier
         bindings = (
-            *(_Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings),
+            *(replace(binding, column=remapped[binding.column]) for binding in lowered.bindings),
             _Binding(qualifier, _SCALAR_QUALIFIER, remapped[value]),
         )
         return _Lowered(join, bindings), remapped
@@ -928,7 +1059,7 @@ class IrParser:
             origin=origin, output_columns=output_columns, is_schema_complete=left.relation.is_schema_complete,
             kind=kind, left=left.relation, right=right, predicate=predicate,
         )
-        return _Lowered(relation, tuple(_Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in left.bindings))
+        return _Lowered(relation, tuple(replace(binding, column=remapped[binding.column]) for binding in left.bindings))
 
     def _project(self, lowered: _Lowered, items: list[exp.Expression], origin: Origin) -> ir.Project:
         output_columns = tuple(
@@ -1083,9 +1214,17 @@ class IrParser:
             value = next((binding.column for binding in bindings if binding.qualifier == qualifier), None)
             if value is not None:
                 return ir.ColumnRef(origin=origin, column=value)
+        if isinstance(expression, exp.Column) and id(expression) in self._scoped_columns:
+            column = self._scoped_columns[id(expression)]
+            if any(binding.column is column for binding in bindings):
+                return ir.ColumnRef(origin=origin, column=column)
         if isinstance(expression, exp.Column):
             if expression.table:
-                matches = [binding for binding in bindings if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower()]
+                schema = _schema_path(expression)
+                matches = [
+                    binding for binding in bindings
+                    if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower() and (not schema or binding.schema == schema)
+                ]
             elif schema_complete or len({binding.qualifier for binding in bindings if not binding.qualifier.startswith(_SCALAR_QUALIFIER)}) == 1:
                 matches = [binding for binding in bindings if binding.name == expression.name.lower()]
             else:
@@ -1684,29 +1823,32 @@ def _scalar_subqueries(expression: exp.Expression) -> list[exp.Subquery]:
     return found
 
 
-def _correlated(select: exp.Select, inner: _Lowered, outer: _Lowered) -> bool | None:
-    """Whether `select` reads a column of the outer scope; None when a
-    column may belong to either. A column resolves to the innermost scope
-    that has it."""
-    inner_qualifiers = {binding.qualifier for binding in inner.bindings}
-    outer_qualifiers = {binding.qualifier for binding in outer.bindings}
-    correlated = False
-    for column in select.find_all(exp.Column):
-        name = column.name.lower()
-        if column.table:
-            qualifier = column.table.lower()
-            if qualifier in inner_qualifiers:
-                continue
-            if qualifier not in outer_qualifiers:
-                return None
-            correlated = True
-        elif any(binding.name == name for binding in inner.bindings):
-            continue
-        elif inner.relation.is_schema_complete and any(binding.name == name for binding in outer.bindings):
-            correlated = True
-        else:
+def _in_scope(column: ir.OutputColumn, scope: ir.RelationExpr) -> ir.OutputColumn | None:
+    """`column` as a column of `scope`: itself, or the input column it passes on."""
+    if column in scope.output_columns:
+        return column
+    match column.scalar_expr:
+        case ir.ColumnRef(column=upstream) if upstream in scope.output_columns:
+            return upstream
+        case _:
             return None
-    return correlated
+
+
+def _carrying(column: ir.OutputColumn, scope: ir.RelationExpr) -> ir.OutputColumn | None:
+    """The one column of `scope` that passes `column` on, through any stages."""
+    found = []
+    for candidate in scope.output_columns:
+        current = candidate
+        while current is not column and isinstance(current.scalar_expr, ir.ColumnRef):
+            current = current.scalar_expr.column
+        if current is column:
+            found.append(candidate)
+    return found[0] if len(found) == 1 else None
+
+
+def _schema_path(node: exp.Table | exp.Column) -> str:
+    """The catalog and schema a table or column is written with, as `s1` or `c.s1`."""
+    return ".".join(part for part in (node.catalog, node.db) if part).lower()
 
 
 def _star_only(select: exp.Select) -> bool:

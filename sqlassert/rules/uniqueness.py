@@ -29,7 +29,7 @@ from typing import assert_never
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
-from sqlassert.rules.equality import _identity_comparison, exact_numeric
+from sqlassert.rules.equality import _identity_comparison, _pins, exact_numeric
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -465,10 +465,17 @@ def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[i
     for conjunct in conjuncts:
         evidence = Result(True, f"{clause} conjunct", (conjunct,))
         match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)) if first in outputs and second in outputs:
-                yield (outputs[first],), outputs[second], evidence
-                yield (outputs[second],), outputs[first], evidence
-            case ir.Equality(left=ir.ColumnRef(column=column), right=ir.Constant()) | ir.Equality(left=ir.Constant(), right=ir.ColumnRef(column=column)) | ir.IsNull(operand=ir.ColumnRef(column=column)) if column in outputs:
+            # An equality that casts, or compares under a collation, relates
+            # values that differ: it gives no dependency.
+            case ir.Equality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right) if first in outputs and second in outputs:
+                if _pins(second, left):
+                    yield (outputs[first],), outputs[second], evidence
+                if _pins(first, right):
+                    yield (outputs[second],), outputs[first], evidence
+            case ir.Equality(left=ir.ColumnRef(column=column), right=ir.Constant() as constant) | ir.Equality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column)) if column in outputs:
+                if _pins(column, constant):
+                    yield (), outputs[column], evidence
+            case ir.IsNull(operand=ir.ColumnRef(column=column)) if column in outputs:
                 yield (), outputs[column], evidence
             case ir.Equality(left=left, right=right):
                 for target, value in ((left, right), (right, left)):
@@ -505,6 +512,13 @@ def _join_dependencies(join: ir.Join):
         if proof.value:
             yield (left,), identity, True, proof
             yield (left,), right, True, proof
+    if join.scalar_subquery and join.predicate is not None:
+        # Which rows a correlated scalar subquery matches depends only on the
+        # outer columns its WHERE reads, when that WHERE is a pure function.
+        inputs = ir.determinants(join.predicate)
+        if inputs is not None:
+            outer = tuple(outputs[column] for column in inputs if column in join.left.output_columns)
+            yield outer, right, True, Result(True, "A correlated scalar subquery's row depends only on the outer columns its WHERE reads", (join,))
     match join.kind:
         case "inner" | "cross":
             for determinant, dependent, strict_evidence in _equality_dependencies(join.conjuncts, outputs, "ON"):
@@ -543,12 +557,17 @@ def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outp
                 continue
             match value:
                 case ir.ColumnRef(column=other) if other in padded.output_columns:
-                    yield (outputs[other],), outputs[bound.column], True, evidence
+                    if _pins(bound.column, value):
+                        yield (outputs[other],), outputs[bound.column], True, evidence
                 case ir.ColumnRef(column=other):
+                    if _pins(bound.column, value):
+                        yield status, outputs[bound.column], True, evidence
+                    if _pins(other, bound):
+                        yield (outputs[bound.column],), outputs[other], False, evidence
+                case ir.Constant() if _pins(bound.column, value):
                     yield status, outputs[bound.column], True, evidence
-                    yield (outputs[bound.column],), outputs[other], False, evidence
                 case ir.Constant():
-                    yield status, outputs[bound.column], True, evidence
+                    pass
                 case _:
                     pass  # An expression or NULL binds nothing.
 

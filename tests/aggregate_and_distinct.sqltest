@@ -24,13 +24,13 @@ FROM customer_regions
 -- A Grouping Key is a bound scalar expression, not just a bare column --
 -- it maps to the outer column through the selected output that computes it
 -- unrenamed, exactly like a bare column does.
-CREATE TABLE orders (customer_id VARCHAR);
-CREATE TABLE customers (id VARCHAR);
+CREATE TABLE orders (customer_id INTEGER);
+CREATE TABLE customers (id INTEGER);
 
 WITH per_customer AS (
-    SELECT UPPER(customer_id) AS ucid, COUNT(*) AS n
+    SELECT customer_id + 1 AS ucid, COUNT(*) AS n
     FROM orders
-    GROUP BY UPPER(customer_id)
+    GROUP BY customer_id + 1
 )
 SELECT *
 FROM customers

@@ -312,6 +312,7 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 |---|---|
 | Arbitrary LIMIT | A `LIMIT` or `OFFSET` whose `ORDER BY` (if any) does not determine every selected column, NULL equal to NULL: rows tied on the sort keys may come in any order, so which rows are kept can change between runs. Silent when an `ORDER BY` key is an expression or a name sqlassert cannot map to one column. |
 | Scalar subquery | A scalar subquery not proved to return at most one row, a runtime error when it returns more: uncorrelated, its body is not proved to have at most one row; correlated, the columns its WHERE binds to the outer row are not proved a Unique Set. |
+| Implicit Cast | A join equality between a text column and a column of another declared type: the text is cast, so different strings may match one value (`'01'` and `'1'` both equal 1). No cardinality is proved across it either: cast explicitly, and the proof stays `UNKNOWN`, which is correct. |
 | Fan Trap | An aggregate over a join that is not proved to repeat rows of only one input, when its argument (or, for `count(*)`, either input) comes from rows the join may repeat: `sum(p.amount)` over `orders JOIN payments USING (customer_id)`. |
 | Chasm Trap | An aggregate over a one-to-many join whose argument is on the side with one row per key: `sum(c.credit)` over `customers JOIN orders`. Every aggregate counts, `min` and `max` included. Silent when the repeated input has no known Unique Set, or the argument reads both inputs. |
 

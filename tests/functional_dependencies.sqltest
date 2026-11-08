@@ -133,3 +133,19 @@ WITH parts AS (
     SELECT q.part_id FROM quote q WHERE q.min_order < 500
 )
 SELECT part_id FROM parts /**ASSERT UNIQUE(part_id)**/  --~ PROVED
+
+-- Implicit casts: '01' and '1' both equal 1, so v does not determine code.
+-- case: an_equality_that_casts_gives_no_dependency
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE nums (v INTEGER);
+SELECT code, v FROM codes JOIN nums ON codes.code = nums.v
+/**ASSERT DETERMINES(v -> code)**/  --~ UNKNOWN
+
+-- code = 1 keeps '01' and '1': code is not constant.
+-- case: a_numeric_literal_against_text_pins_nothing
+CREATE TABLE codes (code VARCHAR, n INTEGER, PRIMARY KEY (code, n));
+SELECT code, n FROM codes WHERE code = 1 /**ASSERT UNIQUE(n)**/  --~ UNKNOWN
+
+-- case: a_string_literal_against_text_pins_it
+CREATE TABLE codes (code VARCHAR, n INTEGER, PRIMARY KEY (code, n));
+SELECT code, n FROM codes WHERE code = '1' /**ASSERT UNIQUE(n)**/  --~ PROVED
