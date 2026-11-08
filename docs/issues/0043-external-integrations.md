@@ -1,7 +1,7 @@
 # 43. External integrations
 
 - **State:** open
-- **Labels:** epic, needs-design (parent of 44)
+- **Labels:** epic, needs-design (parent of 44, 51-54)
 - **Created:** 2026-11-08
 
 Ways to use sqlassert from the tools people already run, instead of calling
@@ -16,8 +16,13 @@ Ways to use sqlassert from the tools people already run, instead of calling
 
 ## Children
 
-- [44. v1 external integrations](0044-v1-external-integrations.md): analytical
-  dialects, Postgres and MySQL; dbt.
+- [44. v1 external integrations](done/0044-v1-external-integrations.md) (done):
+  `check` CLI; analytical dialects, Postgres and MySQL; dbt.
+- [51](0051-validate-snowflake-against-a-real-engine.md),
+  [52](0052-validate-bigquery-against-a-real-engine.md),
+  [53](0053-validate-databricks-against-a-real-engine.md),
+  [54](0054-validate-redshift-against-a-real-engine.md) (P4): validate
+  Snowflake, BigQuery, Databricks and Redshift against a real engine.
 
 ## Backlog
 
@@ -31,6 +36,9 @@ precise spans moved to 44)
 - [ ] A baseline file, so existing `UNKNOWN`s don't block adoption.
 - [ ] A docs page per diagnostic code.
 - [ ] pre-commit hook and GitHub Action.
+- [ ] `sqlassert-dbt`: `check`'s output formats (JSON, SARIF, GitHub) and
+  `[tool.sqlassert]` config; today exit codes are shared, text output only
+  (left from 44).
 
 **Editor**
 - [ ] LSP server: diagnostics, hover showing proved facts of a relation or
@@ -80,4 +88,4 @@ precise spans moved to 44)
 - Inline suppression (`/**IGNORE ...**/`) would be a new Property Marker, which
   grows the one stable contract. Config-only ignores may be enough.
 - Unenforced warehouse keys: Declared always, only with `RELY`, or opt-in?
-  Decided in 44 for its dialects.
+  Decided in 44: `trust_unenforced_keys`, on by default.

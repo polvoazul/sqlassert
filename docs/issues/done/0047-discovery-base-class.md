@@ -3,7 +3,7 @@
 - **State:** done (2026-11-08)
 - **Labels:** dialects, discovery
 - **Created:** 2026-11-08
-- **Related:** [44. v1 external integrations](../0044-v1-external-integrations.md)
+- **Related:** [44. v1 external integrations](0044-v1-external-integrations.md)
 
 Replaces the separate `discovery/postgres.py` and `discovery/mysql.py`
 fetchers (#44) with a shared base.

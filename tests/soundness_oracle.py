@@ -38,6 +38,7 @@ from sqlglot import exp
 
 import sqlassert
 import sqlassert.main
+from sqlassert.diagnostics import UNENFORCED_CONSTRAINT
 from sqlassert import (
     ExactlyOneJoin, ManyToOneJoin, NonNullColumns, NonNullUniqueSet, OneToManyJoin, OneToOneJoin, Outcome, Report, UniqueJoin, UniqueSet,
 )
@@ -88,12 +89,14 @@ def record_analyze_calls() -> None:
     """
     original = sqlassert.main.analyze
 
-    def recording(sql: str, *, dialect: str = sqlassert.main.DEFAULT_DIALECT, trust_unenforced_keys: bool = False) -> Report:
-        if trust_unenforced_keys:
-            # Keys trusted by the caller, not the SQL, are not the oracle's to judge.
-            return original(sql, dialect=dialect, trust_unenforced_keys=True)
-        report = original(sql, dialect=dialect)
+    def recording(sql: str, *, dialect: str = sqlassert.main.DEFAULT_DIALECT, trust_unenforced_keys: bool = True) -> Report:
+        # Keys trusted by the caller, not the SQL, are not the oracle's to judge:
+        # it records the untrusted report, and the trusted one only differs
+        # where the untrusted run left a key out.
+        report = original(sql, dialect=dialect, trust_unenforced_keys=False)
         _recorded.setdefault((sql, dialect), RecordedProgram(sql, dialect, report))
+        if trust_unenforced_keys and any(warning.code == UNENFORCED_CONSTRAINT for warning in report.warnings):
+            return original(sql, dialect=dialect, trust_unenforced_keys=True)
         return report
 
     setattr(sqlassert, "analyze", recording)

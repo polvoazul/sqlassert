@@ -61,8 +61,8 @@ from sqlassert import Outcome
 
 original_analyze = sqlassert.main.analyze
 
-def unsound_analyze(sql, *, dialect="duckdb"):
-    report = original_analyze(sql, dialect=dialect)
+def unsound_analyze(sql, *, dialect="duckdb", trust_unenforced_keys=True):
+    report = original_analyze(sql, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
     return replace(report, assertions=tuple(replace(a, outcome=Outcome.PROVED) for a in report.assertions))
 
 sqlassert.main.analyze = unsound_analyze

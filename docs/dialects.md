@@ -24,7 +24,7 @@ before dialects were listed; see "Not done").
 
 | | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift | Trino |
 |---|---|---|---|---|---|---|---|---|
-| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | yes | yes | no (ANSI off) | yes | yes |
+| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | no (overflow not documented to raise) | yes | no (ANSI off) | yes | yes |
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
@@ -119,12 +119,12 @@ the SQL alone does not. It becomes a Property Declaration (`Declared`, as a
 - it is marked `RELY` in a dialect that has `RELY` (Snowflake, Databricks /
   Spark): the author's statement that the data satisfies it, and the
   warehouse's own optimizer trusts it on the same terms; or
-- the caller passes `trust_unenforced_keys=True` to `analyze`,
-  `analyze_database` or `suggest`: the opt-in for BigQuery and Redshift, which
-  have no `RELY`, and for any other constraint the database does not check.
+- `trust_unenforced_keys` is on, the default of `analyze`,
+  `analyze_database` and `suggest`: every constraint the database does not
+  check, in BigQuery and Redshift (which have no `RELY`) and everywhere else.
 
-Otherwise it is ignored, and an `unenforced-constraint` warning says why and
-how to trust it. A trusted primary key declares its columns non-null too.
+With `trust_unenforced_keys=False` it is ignored, and an
+`unenforced-constraint` warning says why and how to trust it. A trusted primary key declares its columns non-null too.
 
 Alternatives not taken: declaring every unenforced key (unsound for exactly
 the data that violates them, and silent about it), or ignoring `RELY` and
@@ -186,9 +186,9 @@ Keys are reported as declared: there is no per-constraint trust field, and
 Knowledge is the dialect's `unique_keys` / `foreign_keys` flag, applied by
 `DatabaseKnowledgeFetcher.bind` as `ir/convert.py` applies it to keys
 written in SQL: Knowledge where enforced, a Property Declaration under
-`trust_unenforced_keys`, otherwise an `unenforced-constraint` warning. So a
-warehouse key proves something only when the caller trusts every unenforced
-key; if one is violated, proofs that depend on it are wrong.
+`trust_unenforced_keys` (the default), otherwise an `unenforced-constraint`
+warning. So a warehouse key proves what it states unless the caller opts out;
+if one is violated, proofs that depend on it are wrong.
 
 ## Judging soundness without DuckDB
 
@@ -202,8 +202,8 @@ DuckDB oracle. A dialect changes only the inputs the rules read, through the
 flags above, so a dialect's analysis is sound when (a) the rules are, which
 the oracle checks, and (b) each flag it sets is true of that dialect. (b) is
 certified fact by fact (next section): on the engine where one runs locally,
-from vendor documentation otherwise (Snowflake, BigQuery and Redshift
-`checked_arithmetic`/`checked_division`: overflow and division by zero raise;
+from vendor documentation otherwise (BigQuery and Redshift
+`checked_arithmetic`, and Snowflake, BigQuery and Redshift `checked_division`: overflow and division by zero raise;
 `TRY_`, `SAFE_` and `DIV0` variants are separate functions SQLGlot parses
 apart).
 

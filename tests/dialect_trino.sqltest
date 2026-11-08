@@ -78,15 +78,22 @@ SELECT id FROM t WHERE CAST(ts AS DATE) = DATE '2024-01-01' /**ASSERT NOT NULL(i
 SELECT id FROM t WHERE ts > TIMESTAMP '2024-01-01 00:00:00 UTC' /**ASSERT NOT NULL(id)**/  --~ PROVED
 
 -- case: a_primary_key_is_not_knowledge
+-- trust_unenforced_keys: false
 CREATE TABLE k (id INTEGER PRIMARY KEY);
 --~ unenforced-constraint "trino does not enforce it"
 SELECT id FROM k /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
 
 -- case: a_foreign_key_is_not_knowledge
+-- trust_unenforced_keys: false
 CREATE TABLE k (id INTEGER NOT NULL);
 CREATE TABLE o (id INTEGER NOT NULL, k_id INTEGER, FOREIGN KEY (k_id) REFERENCES k (id));
 --~ unenforced-constraint "foreign key (k_id)"
 SELECT k_id FROM o /**ASSERT FOREIGN KEY(k_id) REFERENCES k(id)**/  --~ UNKNOWN
+
+-- case: a_primary_key_is_trusted_by_default
+-- A Property Declaration (`trust_unenforced_keys` is on by default), never Knowledge.
+CREATE TABLE k (id INTEGER PRIMARY KEY);
+SELECT id FROM k /**ASSERT UNIQUE(id)**/  --~ PROVED
 
 -- case: not_null_is_enforced
 SELECT n FROM t /**ASSERT NOT NULL(n)**/  --~ PROVED

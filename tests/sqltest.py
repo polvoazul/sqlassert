@@ -3,7 +3,8 @@
 A file is SQL. Everything before the first `-- case: name` is setup; each case's
 Program is the setup followed by the case's lines. `-- include: path.sql`
 inserts a file relative to `tests/`; `-- dialect: name` sets the dialect for the
-file (in setup) or one case. `--~` annotations state the expected outcomes and
+file (in setup) or one case, and `-- trust_unenforced_keys: false` analyzes
+without trusting unenforced keys (the default trusts them). `--~` annotations state the expected outcomes and
 Diagnostics:
 
     SQL  --~ PROVED                    the markers and Diagnostics on this line
@@ -37,7 +38,7 @@ TESTS_ROOT = Path(__file__).parent
 DEFAULT_DIALECT = "duckdb"
 OUTCOMES = ("PROVED", "UNKNOWN")
 
-_DIRECTIVE = re.compile(r"^\s*--\s*(case|include|dialect):\s*(.*?)\s*$")
+_DIRECTIVE = re.compile(r"^\s*--\s*(case|include|dialect|trust_unenforced_keys):\s*(.*?)\s*$")
 _CASE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 _ITEM = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([A-Za-z][A-Za-z0-9_-]*)|(,))')
 
@@ -107,6 +108,7 @@ class Case:
     line: int  # the `-- case:` line in the .sqltest file
     dialect: str
     sql: str
+    trust_unenforced_keys: bool
     sources: tuple[Source, ...]  # Program line n is sources[n - 1]
     expectations: dict[int | None, Expectation]  # None: no origin line
 
@@ -234,6 +236,8 @@ def parse_file(path: Path, root: Path = TESTS_ROOT) -> list[Case]:
     setup: list[_Line] = []
     setup_program: list[Expectation] = []
     file_dialect = DEFAULT_DIALECT
+    file_trust = True
+    trust: dict[str, bool] = {}
     cases: list[tuple[str, Source, list[_Line], list[Expectation], str | None]] = []
     names: set[str] = set()
     program_next = False
@@ -259,6 +263,14 @@ def parse_file(path: Path, root: Path = TESTS_ROOT) -> list[Case]:
                 else:
                     file_dialect = value
                 entry = _Line("", source)
+            elif kind == "trust_unenforced_keys":
+                if value not in ("true", "false"):
+                    raise SqlTestError(source.path, source.line, "-- trust_unenforced_keys: is true or false")
+                if cases:
+                    trust[cases[-1][0]] = value == "true"
+                else:
+                    file_trust = value == "true"
+                entry = _Line("", source)
             else:  # program-level annotation follows
                 program_next = True
                 continue
@@ -283,7 +295,7 @@ def parse_file(path: Path, root: Path = TESTS_ROOT) -> list[Case]:
             expectations[None] = whole
         result.append(Case(
             name, source.line, dialect or file_dialect,
-            "\n".join(line.text for line in lines) + "\n",
+            "\n".join(line.text for line in lines) + "\n", trust.get(name, file_trust),
             tuple(line.source for line in lines), expectations,
         ))
     if not result:
@@ -361,7 +373,9 @@ class SqlTestItem(pytest.Item):
 
     def runtest(self) -> None:
         # Looked up at call time, so the soundness oracle's wrapper sees it.
-        report = sqlassert.analyze(self.case.sql, dialect=self.case.dialect)
+        report = sqlassert.analyze(
+            self.case.sql, dialect=self.case.dialect, trust_unenforced_keys=self.case.trust_unenforced_keys,
+        )
         problems = mismatches(self.case, report)
         if problems:
             raise SqlTestMismatch(problems)

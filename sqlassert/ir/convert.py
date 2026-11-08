@@ -96,7 +96,7 @@ class _Lowered:
 class IrParser:
     dialect: str
     # Unenforced keys and foreign keys become Property Declarations, as `RELY` makes them.
-    trust_unenforced_keys: bool = False
+    trust_unenforced_keys: bool = True
     _global_symbols: dict[str, _Symbol] = field(default_factory=dict)
     _symbols: list[_Symbol] = field(default_factory=list)
     _query_scopes: dict[int, dict[str, _Symbol]] = field(default_factory=dict)

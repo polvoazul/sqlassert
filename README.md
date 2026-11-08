@@ -289,8 +289,9 @@ from sqlassert.discovery.postgres import PostgresKnowledgeFetcher
 report = analyze_database(sql, PostgresKnowledgeFetcher(psycopg.connect(dsn)), dialect="postgres")
 ```
 
-Warehouse keys are not enforced, so catalog keys there prove only with
-`trust_unenforced_keys=True` (see Dialects below). `BigQueryKnowledgeFetcher`
+Warehouse keys are not enforced: catalog keys there are trusted as Property
+Declarations by default, and `trust_unenforced_keys=False` ignores them (see
+Dialects below). `BigQueryKnowledgeFetcher`
 also takes the project and default dataset. Trino's catalog has no keys, so
 `TrinoKnowledgeFetcher` reports NOT NULLs only.
 
@@ -302,10 +303,11 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
 
 - **Keys.** DuckDB, PostgreSQL and MySQL enforce primary, unique and foreign
   keys. Snowflake, BigQuery, Databricks / Spark, Redshift and Trino (which has
-  no key constraints) do not, so a key there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
-  becomes a Property Declaration, and `trust_unenforced_keys=True` makes every
-  unenforced key one. Any other is ignored, with an `unenforced-constraint`
-  warning. So are a PostgreSQL foreign key added `NOT VALID`, any constraint
+  no key constraints) do not, so a key
+  there is not Knowledge: it becomes a Property Declaration, since
+  `trust_unenforced_keys` is on by default. With `trust_unenforced_keys=False`
+  only one marked `RELY` (Snowflake, Databricks / Spark) does, and any other is
+  ignored with an `unenforced-constraint` warning. The same holds for a PostgreSQL foreign key added `NOT VALID`, any constraint
   declared `NOT ENFORCED` or `DEFERRABLE`, a MySQL column-level `REFERENCES`
   (ignored before MySQL 9.0), a foreign key of a MySQL table whose `ENGINE`
   does not enforce them, and SQLite foreign keys.
