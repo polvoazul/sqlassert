@@ -1,163 +1,152 @@
-# 36. Refactor semantic tests and prepare the corpus/oracle harness for scale
+# 36. Move semantic tests to `.sqltest` files
 
-- **State:** pending human review
-- **Labels:** needs-human-review, proposal
+- **State:** ready
+- **Labels:** tests, refactor
 - **Created:** 2026-11-01
-- **Related:** [11: SQL corpus and join mutations](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md), [27: soundness oracle and differential properties](0027-soundness-oracle-against-duckdb.md)
-
-This is a design proposal. A human must review and approve the scope and test
-format before implementation or a broad migration of existing tests.
+- **Related:** [27: soundness oracle](0027-soundness-oracle-against-duckdb.md)
 
 ## Why
 
-The suite currently has 483 test functions across 38 files, expanded by pytest
-parametrization into 1,125 cases. Seventy-eight parametrized functions account
-for 720 cases; one marker-accounting function alone covers 201 combinations.
-Hypothesis's generated database samples are additional checks inside those
-cases, not additional pytest items. Reducing the displayed test count is not
-the objective: preserve meaningful coverage while making cases easier to write,
-review, identify, run selectively, and grow.
+Most semantic tests are SQL plus expected outcomes wrapped in Python: build a
+string, call `analyze()`, compare outcomes or Diagnostic codes. The SQL is the
+test; the Python is noise. Move every test that fits into SQL files where each
+expectation sits next to the line it checks.
 
-Issue 11 adds realistic SQL and one-marker-per-join mutations. Issue 27 Part 2
-adds mechanically generated candidate Properties over those queries. The
-number of queries, attachment sites, column subsets, and generated instances
-can multiply rapidly. Writing one Python function per case or creating a pytest
-item per candidate/sample would make that growth harder to manage.
+Corpus import (issue 11) and generated candidate Properties (issue 27) are out
+of scope.
 
-## Current execution model to preserve
+## Format
 
-With `--soundness-oracle`, the test harness wraps `analyze()` before test-module
-imports and records SQL, dialect, and the returned Report. It does not inspect
-arbitrary test locals or infer the test's intent. Recording spans fixture setup,
-the test body, and fixture teardown; calls during collection are excluded.
+Cases live in `.sqltest` files. A file is valid SQL: test metadata is SQL
+comments, so editors highlight it and it can be pasted into DuckDB. The format
+follows inline-expectation tests (rustc UI tests' `//~`, mypy's `# E:`): each
+expectation sits next to the line it checks, so no line numbers are written.
 
-The oracle judges the recorded PROVED assertions after fixture finalizers have
-restored mocks. SQL/dialect pairs are deduplicated within each test, while two
-tests using the same SQL each get their own check. Counterexamples are teardown
-errors on the originating pytest item. Counts and findings are combined through
-pytest's reports, including under xdist.
+```sql
+-- include: paulley.sql
+CREATE TABLE new_table (id INTEGER PRIMARY KEY, x INTEGER);
 
-The suite defaults to `-n auto`; `-n 0` runs serially. Each in-memory DuckDB uses
-one execution thread. There is no separate oracle process pool or final
-catch-all oracle test. Preserve normal node-ID and `-k` selection.
+-- case: left_join_pads_with_null
+SELECT p.id, n.x
+FROM part p LEFT JOIN new_table n ON p.id = n.id
+/**ASSERT NOT NULL(n.x)**/;  --~ UNKNOWN
 
-For context, single end-to-end runs on the same 16-CPU machine took 45.4 seconds
-with the earlier separate pool and 30.7 seconds with per-test judging; the final
-pre-commit verification took 28.3 seconds. These were not controlled repeated
-benchmarks. The ordinary suite without the oracle took 5.7 seconds.
+-- case: unresolved_column_is_diagnosed
+SELECT * FROM part p
+/**ASSERT NOT MANY TO MANY**/ JOIN new_table n ON p.id = n.id  --~ PROVED
+/**ASSERT UNIQUE(name)**/;
+--~ UNRESOLVED_ASSERTED_COLUMN "name"
 
-## Proposed division of tests
-
-| Purpose | Representation | Scheduling unit |
-|---|---|---|
-| Curated semantic regressions | SQL-first named cases, potentially `.test` files | One named case |
-| Issue 11: imported SQL and join mutations | Original SQL fixtures, real schema context, provenance, generated variants | One program or independently reproducible mutation |
-| Issue 27: differential Property testing | Program plus mechanically generated candidates | One program, checking multiple candidates together |
-| Engine internals, fixtures, mocks, detailed Evidence or provenance behavior | Python tests | Existing pytest functions |
-
-Use one underlying analysis/oracle implementation across these inputs. The
-representations can differ without introducing competing implementations of
-SQL semantics or parallel worker pools.
-
-## SQL-first case format to evaluate
-
-Borrow the SQL/expected-result block structure from DuckDB's
-[sqllogictest format](https://www.duckdb.org/docs/preview/dev/sqllogictest/intro).
-The following is a proposal for sqlassert tests, not existing syntax or a claim
-of compatibility with DuckDB's runner:
-
-```text
-# case: right_key_prevents_row_multiplication
-analyze
-CREATE TABLE users (id INTEGER PRIMARY KEY);
-CREATE TABLE events (user_id INTEGER);
-
-SELECT *
-FROM events
-/**ASSERT UNIQUE**/ JOIN users
-    ON events.user_id = users.id;
-----
-assertions: PROVED
-diagnostics: none
+-- case: postgres_specific_behavior
+-- dialect: postgres
+SELECT ...;
 ```
 
-A collector would expose each case as a normal pytest item with a stable,
-readable name and source location. The runner would call `analyze()` and compare
-assertion outcomes in written order and expected Diagnostic codes. The existing
-per-test oracle integration could observe that call.
+### Grammar
 
-Keep the first format small: named cases, SQL, assertion outcomes, and
-Diagnostic codes. Start with self-contained setup. Shared schemas, includes,
-matrices, and other directives need demonstrated corpus use cases before being
-added. The Property Markers and their meaning remain unchanged; test metadata
-must not become new user-facing SQL marker syntax.
+- **Setup.** Everything before the first `-- case:` is setup. Each case's
+  Program is the setup followed by the case's SQL. Setup is not special: its
+  lines may carry annotations like any other line, and those annotations apply
+  to every case in the file, because every case's Program contains them.
+- **Include.** `-- include: path.sql` inserts that file's text. The path is
+  relative to `tests/` and must name a `.sql` file. Includes may nest (with
+  cycle detection) and may carry annotations, so a shared schema with a known
+  warning annotates it once. Python tests that need the same schema read the
+  file.
+- **Case.** `-- case: name` starts a case; it runs to the next `-- case:` or
+  the end of the file. Names are unique within a file. The pytest ID is
+  `<file>.sqltest::<name>`.
+- **Dialect.** `-- dialect: name` in setup sets the file's dialect; inside a
+  case it overrides it for that case. The default is `duckdb`. A file keeps its
+  subject; one case needing another dialect does not need its own file.
+- **Inline annotation.** `SQL  --~ X` checks the markers on that line and the
+  Diagnostics whose origin is that line.
+- **Standalone annotation.** `--~ X` alone on a line checks the nearest line
+  above that is not blank, a comment, or an annotation. Standalone annotations
+  stack; all annotations for one line add up to that line's expectation.
+- **Program-level annotation.** `--~! CODE "substring"` checks a Diagnostic
+  with no origin. It goes at the end of the case, after the final `;`.
+- **Outcomes.** `PROVED` or `UNKNOWN`, comma-separated in written order when a
+  line holds several markers.
+- **Diagnostics.** `CODE "a" "b"`: a Diagnostic with that code (the code's
+  string value, not the Python constant name) whose message contains every
+  quoted substring. Line numbers do not belong in substrings; the annotation's
+  position checks the origin line.
+- **Exhaustive.** Every marker needs an outcome and every Diagnostic needs an
+  annotation. A missing, unexpected, or mismatched expectation fails the case,
+  naming the line. An unannotated Diagnostic in setup therefore fails every
+  case in the file; fix the SQL or annotate it there.
+- **Trailing markers** come before the statement's `;`, as in the README.
+  Anything after the `;` is outside the statement.
 
-Keep tests in Python when they need detailed Evidence structure, exact origins,
-mocking, or behavior that the small case format cannot express naturally.
-Avoid snapshotting whole Reports, proof text, or unstable generated identifiers.
+### Style
 
-## Scaling requirements from issues 11 and 27
+- One marker per line. Split the SQL rather than writing comma lists of
+  outcomes.
+- Outcomes inline, two spaces before `--~`, no column alignment (alignment
+  churns diffs).
+- Diagnostics standalone, under the line they check: they carry message
+  substrings and are long.
+- Standalone whenever an inline annotation would push the line past 88
+  columns.
+- Annotate a shared warning once, where it originates (setup or include), not
+  in each case.
 
-- Preserve a corpus query's actual DDL and trusted constraints. Extracting a
-  SELECT from a DuckDB test while discarding its setup may retain crash
-  coverage but makes a soundness check impossible. Do not invent constraints
-  to make imported queries provable. Report missing schema or unsupported
-  execution explicitly and retain source/license information.
-- For issue 11, retain the original SQL and stable mutation identities. Insert
-  one join marker per variant so a failure identifies the join under test.
-  Unsupported predicates supply no proof facts, but extra filters do not
-  invalidate a proof established by supported conjuncts.
-- Keep collection lightweight. Do not download corpora, run analyses, generate
-  database instances, or eagerly expand every Property/sample combination at
-  collection time. Materialize expensive checks within a worker's program job.
-- For issue 27, investigate loading each generated database instance once and
-  checking multiple candidate Properties against it, reusing the program's
-  schema and database. Shrink a failing candidate separately. Measure this
-  against the current assertion-by-assertion search before adopting it.
-- Keep candidate/sample identities in failure output without necessarily
-  assigning every candidate or generated sample its own pytest item. Program
-  jobs should remain small enough for useful xdist load balancing and reruns.
-- Distinguish soundness failures from completeness observations. PROVED plus a
-  counterexample is a failure. UNKNOWN with no counterexample found is not a
-  Proof; it is a possible missed proof to report and investigate.
-- Keep the large corpus/differential suites opt-in, as issue 11 requires.
-  Promote reduced findings into small, named semantic regressions in the fast
-  suite, with their provenance. Curated regressions must not depend on a
-  corpus download to run.
+### Layout
 
-## Human review decisions
+`.sqltest` files and included `.sql` schemas live in `tests/` alongside the
+Python tests. Move shared schemas such as Paulley's there as `.sql` files.
 
-- Approve SQL-first cases, or prefer a smaller Python case helper initially?
-- Approve the minimum expected-outcome/Diagnostic syntax and case naming.
-- Choose the pilot cases and which detailed assertions remain in Python.
-- Agree on scheduling granularity, corpus ownership, and opt-in execution.
-- Agree on how exact Diagnostic origins are tested when SQL moves into files.
-- Decide whether shared generated instances are a separate optimization after
-  the format/collection refactor, rather than part of its initial scope.
+### Runner
 
-## Suggested implementation after approval
+A `conftest.py` collector only parses `.sqltest` files: it reads includes,
+splits cases, and attaches annotations to lines. It never calls `analyze()`; a
+malformed file or missing include fails collection for that file, naming the
+line. Each case is one pytest item that calls `analyze()` on its Program, maps
+assertions and Diagnostic origins back to file lines (through includes and the
+setup prefix), and compares them with the annotations. The existing per-test
+oracle integration observes that call unchanged. Parallelism stays per case
+under xdist; setup is text, so there is no file-level state. No
+expectation-rewriting mode.
 
-1. Pilot representative PROVED, UNKNOWN, and Diagnostic cases, plus a case
-   that must remain in Python for Evidence/provenance assertions.
-2. Verify case selection, stable IDs and locations, fixture cleanup, failure
-   attribution, and identical behavior in serial and parallel execution.
-3. Compare outcomes, Diagnostic codes, and oracle coverage before and after;
-   do not replace semantic assertions with "does not crash" checks.
-4. Measure collection time, wall time, and memory on a representative corpus,
-   including xdist's repeated collection across workers. Record search budgets
-   and judged/skipped counts so a speedup cannot hide lost oracle coverage.
-5. Migrate related groups only after the pilot is reviewed. Delete superseded
-   helpers and tests in the same change rather than keeping two paths for old
-   and new behavior.
+## What migrates
+
+Every test that only calls `analyze()` and checks outcomes, `.proved`,
+Diagnostic codes, or message substrings moves to `.sqltest`. Parametrized
+tests over hand-written value lists are written out as one case per value.
+
+Stays in Python: tests that need Evidence structure, origins beyond the line,
+mocking, fixtures, suggestions, `analyze_database`, parsing or IR internals,
+and large generated matrices such as marker accounting's 201 combinations.
+Avoid snapshotting whole Reports, proof text, or generated identifiers.
+
+An AST classification on 2026-11-08 (1,465 pytest items, 537 test functions)
+found 213 functions / 742 items (51%) that qualify, about 56% with message
+substrings. Largest groups: `not_null`, `enumerated_domain`,
+`functional_dependencies`, `foreign_keys`, `paulley_audit`, `exactly_one_join`.
+
+Migration order is free. Delete each migrated Python test, and helpers left
+unused, in the same change.
+
+## Coverage must not change
+
+- Every migrated Python item maps to `.sqltest` cases that analyze the same
+  Program and dialect and check the same outcomes, codes, and substrings. A
+  Python test that checked less (only `.proved`, only one Diagnostic) gains
+  exhaustive expectations; it never loses one.
+- `pytest --cov=sqlassert` line and branch coverage is equal before and after.
+- `--soundness-oracle` judged-program, checked, and skipped counts are equal
+  before and after (or higher, never lower).
+- The suite passes with `-n 0` and `-n auto`.
 
 ## Acceptance criteria
 
-- [ ] Human review approves or revises the proposed scope and format.
-- [ ] The pilot preserves expected outcomes, Diagnostics, and oracle coverage.
-- [ ] Cases have stable, readable pytest IDs and useful source locations.
-- [ ] Individual cases and mutations can be selected and rerun independently.
-- [ ] Parallelism is owned by pytest; no second oracle worker pool is added.
-- [ ] Corpus inputs retain real schema context, provenance, and licensing.
-- [ ] Large corpus/differential runs remain separate from the default fast run.
-- [ ] Measured collection/runtime/memory costs and coverage counts are recorded.
-- [ ] Reduced corpus findings become fast, named regression cases.
+- [ ] `.sqltest` collector implements the grammar above, with tests for its
+      parse errors and expectation mismatches.
+- [ ] Every qualifying test is migrated; superseded Python tests and helpers
+      are deleted.
+- [ ] Cases have stable `<file>.sqltest::<name>` IDs, select with `-k`, and
+      report failures at the file line.
+- [ ] Line/branch coverage and oracle counts are recorded before and after
+      and do not drop.
+- [ ] Serial and parallel runs pass.

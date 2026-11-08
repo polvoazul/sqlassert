@@ -6,9 +6,10 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (parent epic of 37, 38, 39)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
-- [36. Refactor tests for corpus and oracle scale](0036-refactor-tests-for-corpus-and-oracle-scale.md) — needs review
+- [36. Move semantic tests to `.sqltest` files](0036-refactor-tests-for-corpus-and-oracle-scale.md) — ready
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
+- [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [40. Audit inference against Calcite and adapt targeted regressions](0040-audit-inference-against-calcite.md) — open
 
 ## Order
@@ -23,10 +24,10 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
   and its missing rules fold into #37); #37 (Paulley audit's missing rules);
   #15's remaining Low smells and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
-- **P3:** #39 (smaller lowering gaps); #36 (test refactor review, with the corpus work).
-- **Not planned (not covered by Paulley), listed in #23:** window functions
-  (and #33's CTE part, which needs them), recursive CTEs, column lineage,
-  LATERAL and UNNEST, ADD COLUMN.
+- **P3:** #39 (smaller lowering gaps); #36 (move semantic tests to `.sqltest`).
+- **P4, not planned:** #42 (lowering support v2): window functions (and
+  #33's CTE part, which needs them), recursive CTEs, column lineage, LATERAL
+  and UNNEST, ADD COLUMN, scalar subqueries in grouped select lists and in ON.
 
 ## Done
 

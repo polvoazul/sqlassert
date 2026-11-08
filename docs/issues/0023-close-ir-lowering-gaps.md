@@ -1,7 +1,7 @@
 # 23. Close IR lowering gaps
 
 - **State:** open
-- **Labels:** epic (parent of 37, 38, 39)
+- **Labels:** epic (parent of 37, 38, 39; 42 holds what is not planned)
 - **Created:** 2026-11-01
 - **Migrated from:** `TODO.md` (IR Limitations), README Ideas
 
@@ -17,19 +17,9 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 
 ## Not planned
 
-Not covered by Paulley, or not needed for any proof:
-
-- Window functions: only `QUALIFY row_number() over (partition by ...) = 1` is
-  recognized. General modelling would add `Window` and `Filter` operations,
-  with the engine deriving uniqueness from recognized shapes. Planned rules:
-  [`docs/functional-dependencies.md`](../functional-dependencies.md#window-functions).
-- Recursive CTEs and views are `RecursiveRelation` (opaque): a recursive
-  relation is a genuine fixpoint, which the memoized engine and its strata
-  cannot compute.
-- `LATERAL` and `UNNEST` sources are opaque.
-- Column lineage and per-column unique status as a first-class output.
-- `ALTER TABLE ... ADD COLUMN` is `unsupported-statement`: only migration-style
-  programs use it, and the statement's diagnostic already says so.
+Moved to [42. Lowering support v2](0042-lowering-support-v2.md) (P4, not
+planned): window functions, recursive CTEs, LATERAL and UNNEST, column
+lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
 
 ## Done
 
