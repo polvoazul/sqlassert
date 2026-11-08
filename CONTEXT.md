@@ -111,7 +111,7 @@ An explicit report that part of a SQL program could not be analyzed, such as an 
 _Avoid_: Error, warning, validation failure, unknown
 
 **Connection Warning**:
-A Diagnostic reported apart, in `Report.warnings`, when the SQL alone lacks a fact a database connection would supply: a table with no `CREATE`, or an unqualified column more than one undeclared source may own. The affected facts are unknown; the warning names the fix. It never fails a Report, and `analyze_database` emits none ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)).
+A Diagnostic reported apart, in `Report.warnings`, when the SQL alone lacks a fact a database connection would supply: a table with no `CREATE`, or an unqualified column more than one undeclared source may own. The affected facts are unknown; the warning names the fix. It never fails a Report, and `analyze_database` emits none ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)). `Report.warnings` also carries the two other facts the SQL leaves open: a key or foreign key the dialect does not enforce (`unenforced-constraint`; `RELY` or `trust_unenforced_keys` makes it a Property Declaration, never Knowledge), and an operator whose meaning a setting decides (`ambiguous-operator`: MySQL's `||`).
 
 **Grouping Key**:
 A scalar expression whose value identifies a group produced by aggregation. The complete set of grouping keys uniquely identifies rows produced by an ordinary aggregation.

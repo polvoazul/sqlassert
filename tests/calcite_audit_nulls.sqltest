@@ -150,9 +150,9 @@ FROM emp
 
 -- case: nullability_of_concat_operator
 -- inspired by SqlStdOperatorTable.CONCAT (nullable only if an operand is)
--- Missing proof in DuckDB and Postgres; Oracle reads NULL as '' there.
+-- Proved since issue 44's dialects: DuckDB's || is strict. Oracle reads NULL as '' there.
 SELECT ename || ename AS f FROM emp
-/**ASSERT NOT NULL(f)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(f)**/  --~ PROVED
 
 -- case: nullability_of_mod_by_zero_duckdb
 -- inspired by Strong.createPolicyMap and ReturnTypes for MOD (non-null for non-null operands)

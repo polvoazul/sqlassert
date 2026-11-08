@@ -357,6 +357,21 @@ def _intersect_first(chain: exp.Expression | None) -> exp.Expression | None:
     return result
 
 
+_AMBIGUOUS_PIPES = "sqlassert_ambiguous_pipes"
+
+
+def _ambiguous_pipes(**kwargs: exp.Expression) -> exp.Or:
+    node = exp.Or(**kwargs)
+    node.meta[_AMBIGUOUS_PIPES] = True
+    return node
+
+
+def is_ambiguous_pipes(node: exp.Expression) -> bool:
+    """Whether `node` is a `||` that a setting may make OR or concatenation
+    (MySQL's `PIPES_AS_CONCAT`): written as an OR, which its operands bound."""
+    return isinstance(node, exp.Or) and bool(node.meta.get(_AMBIGUOUS_PIPES))
+
+
 @lru_cache(maxsize=None)
 def sqlassert_dialect(base: str) -> type[Dialect]:
     """The named dialect, plus Property Markers as real syntax.
@@ -416,6 +431,13 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
         PRIMARY_PARSERS = {
             **parent.Parser.PRIMARY_PARSERS,  # ty: ignore[unresolved-attribute]
             SqlassertToken.SQLASSERT_EXHAUSTIVE: lambda self, token: self._parse_exhaustive_case(token),
+        }
+        # Where SQLGlot reads `||` as OR (MySQL), a setting may make it
+        # concatenation instead, binding tighter than any comparison; the OR
+        # is marked (`is_ambiguous_pipes`) so it is never trusted as either.
+        DISJUNCTION = {
+            **parent.Parser.DISJUNCTION,  # ty: ignore[unresolved-attribute]
+            **({TokenType.DPIPE: _ambiguous_pipes} if TokenType.DPIPE in parent.Parser.DISJUNCTION else {}),  # ty: ignore[unresolved-attribute]
         }
 
         def _span(self, token: Token) -> Span:

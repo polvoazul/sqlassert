@@ -5,7 +5,9 @@ Disproof and never an inference: it says that analysis stopped short, and why.
 
 A warning is a Diagnostic too, reported apart (`Report.warnings`): the program
 is supported, but a fact a connection would supply is missing, so analysis
-treats it as unknown (ADR 0005). Warnings never make a Report fail.
+treats it as unknown (ADR 0005). So are a constraint the dialect does not
+enforce and an operator whose meaning a setting decides (`dialects.py`).
+Warnings never make a Report fail.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from sqlassert.provenance import Origin
 
 CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
 AMBIGUOUS_COLUMN = "ambiguous-column"
+AMBIGUOUS_OPERATOR = "ambiguous-operator"
 CARDINALITY_ON_FILTERING_JOIN = "cardinality-on-filtering-join"
 CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
 CONSTRAINT_WITHOUT_TABLE = "constraint-without-table"
@@ -28,6 +31,7 @@ SQL_PARSE_FAILED = "sql-parse-failed"
 UNANALYZED_ASSERTION = "unanalyzed-assertion"
 UNATTACHED_MARKER = "unattached-marker"
 UNDECLARED_TABLE = "undeclared-table"
+UNENFORCED_CONSTRAINT = "unenforced-constraint"
 UNKNOWN_ASSERTED_COLUMN = "unknown-asserted-column"
 UNRESOLVED_ASSERTED_COLUMN = "unresolved-asserted-column"
 UNKNOWN_REFERENCED_COLUMN = "unknown-referenced-column"

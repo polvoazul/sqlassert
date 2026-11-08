@@ -113,8 +113,8 @@ class DatabaseKnowledgeFetcher(ABC):
     # The SQL dialect the database writes column types in.
     type_dialect: str | None = None
 
-    def hydrate(self, ast: ParsedProgram, *, dialect: str) -> DatabaseHydration:
-        return _Hydration(self, ast, dialect).run()
+    def hydrate(self, ast: ParsedProgram, *, dialect: str, trust_unenforced_keys: bool = False) -> DatabaseHydration:
+        return _Hydration(self, ast, dialect, trust_unenforced_keys).run()
 
     def bind(self, program: ir.Program, hydration: DatabaseHydration) -> tuple[Property, ...]:
         """Catalog facts as Properties over ``program``'s Output Columns.
@@ -190,10 +190,11 @@ def _incomplete_reference(foreign_key: DatabaseForeignKey, target: DatabaseRelat
 class _Hydration:
     """The state of hydrating one SQL Program: catalog answers are memoized for it alone."""
 
-    def __init__(self, fetcher: DatabaseKnowledgeFetcher, ast: ParsedProgram, dialect: str):
+    def __init__(self, fetcher: DatabaseKnowledgeFetcher, ast: ParsedProgram, dialect: str, trust_unenforced_keys: bool):
         self.fetcher = fetcher
         self.ast = ast
         self.dialect = dialect
+        self.trust_unenforced_keys = trust_unenforced_keys
         self.sql_declared = {_qualified_name(table).lower() for table in map(_created_table, ast.create_statements) if table is not None}
         self.resolved: dict[str, DatabaseRelationMetadata | None] = {}
         self.views: dict[str, exp.Create | None] = {}
@@ -205,7 +206,7 @@ class _Hydration:
     def run(self) -> DatabaseHydration:
         while True:
             program = ParsedProgram((*self.declarations.values(), *self.ast.create_statements), self.ast.root_select)
-            conversion = IrParser(self.dialect).parse(program)
+            conversion = IrParser(self.dialect, self.trust_unenforced_keys).parse(program)
             pending = tuple(dict.fromkeys(
                 relation.name for relation in conversion.program.named_relations if self._is_external(relation)
             ))
@@ -317,9 +318,16 @@ class _Hydration:
         resolved = self._resolve(tuple(dict.fromkeys(_qualified_name(table) for table in tables)), metadata)
         if None in resolved.values():
             return None
+        # A column qualified by its table's schema (MySQL stores `db`.`t`.`c`)
+        # is qualified by the alias the table is given below.
+        columns = [column for column in body.find_all(exp.Column) if column.args.get("db")]
         for table in tables:
             target = resolved[_qualified_name(table).lower()]
             assert target is not None
+            for column in columns:
+                if not table.alias and _qualified_name(table).lower().endswith(".".join((column.db, column.table)).lower()):
+                    column.set("db", None)
+                    column.set("catalog", None)
             self.resolved[target.identity.lower()] = target
             alias = table.alias or table.name
             table.set("this", exp.to_identifier(target.name))

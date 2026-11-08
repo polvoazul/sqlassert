@@ -153,8 +153,19 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   metadata is a Diagnostic, and the Relation stays opaque. Subclasses own one
   database's catalog boundary: name resolution and metadata queries.
   `discovery/duckdb.py` is the DuckDB adapter, behind the optional `duckdb`
-  extra. `analyze_database(sql, fetcher, *, dialect=...)` in `main.py`
-  composes it; `analyze` stays pure.
+  extra. `discovery/postgres.py` and `discovery/mysql.py` read `pg_catalog`
+  and `information_schema` through any DB-API connection
+  (`discovery/dbapi.py`), importing no driver. `analyze_database(sql, fetcher,
+  *, dialect=...)` in `main.py` composes it; `analyze` stays pure.
+- `dialects.py` is what each SQL dialect means by the constructs the rules
+  depend on (`DialectSemantics`): which Builtins raise rather than return
+  NULL, which text compares by identity, `||` and `concat()`, and which keys
+  are enforced. Only `ir/convert.py` reads it; the rules see its effect in the
+  IR. A flag claims only what holds under every setting of the dialect, and a
+  dialect not listed gets cautious defaults. An unenforced key is never
+  Knowledge: `RELY` (where the dialect has it) or `trust_unenforced_keys`
+  makes it a Property Declaration, otherwise an `unenforced-constraint`
+  warning reports it. The argument for each entry is in `docs/dialects.md`.
 - `suggest.py` composes the same stages as `main.py` to list provable
   Properties as markers. `sql_parse.py` records on every Join, Select, and
   simple CASE the source position where its marker would be written;

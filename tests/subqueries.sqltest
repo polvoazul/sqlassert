@@ -108,14 +108,6 @@ FROM users u
 WHERE EXISTS (SELECT 1 FROM events e WHERE e.user_id = u.id) AND u.id = 1
 /**ASSERT UNIQUE(name)**/  --~ PROVED
 
--- case: a_right_semi_join_keeps_right_rows
--- dialect: spark
-SELECT *
-FROM events RIGHT
-SEMI JOIN users
-    ON events.user_id = users.id
-/**ASSERT UNIQUE(id)**/  --~ PROVED
-
 -- case: a_join_marker_inside_an_exists_subquery_is_analyzed
 SELECT e.id
 FROM events e

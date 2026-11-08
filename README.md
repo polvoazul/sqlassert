@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is only tested with the DuckDB SQL dialect._
+_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark and Redshift SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
 
 ## Features
 
@@ -154,7 +154,7 @@ select status from o where status <> 'void' and status in ('new', 'paid')
 
 Domains come from `DECLARE ENUM` and external Knowledge, literals, `coalesce` of enumerated arguments, and simple `CASE` expressions (see below), and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated.
 
-A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` with no `COLLATE`, in DuckDB or PostgreSQL (whose default collation is binary). A column of unknown type, including one read from a database catalog, is not narrowed that way.
+A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` compared by identity: with no `COLLATE` in DuckDB or PostgreSQL (whose default collation is binary), or under a collation known to be binary (PostgreSQL's `"C"`, MySQL's `utf8mb4_0900_bin`). A column of unknown type is not narrowed that way. A MySQL `ENUM` column may also hold `''`, which MySQL stores for a value outside its members outside strict mode or under `INSERT IGNORE`, so its domain includes `''`.
 
 ### Exhaustive CASE
 
@@ -262,6 +262,46 @@ The fetcher reads catalog metadata only (columns, nullability, primary keys,
 unique constraints, foreign keys, view definitions), never table rows. A
 catalog foreign key is used when the SQL reaches both of its tables. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
+
+PostgreSQL and MySQL have fetchers too. They take any DB-API connection
+(psycopg, psycopg2, PyMySQL, mysqlclient, mysql-connector), so sqlassert
+depends on no driver:
+
+```python
+import psycopg
+from sqlassert.discovery.postgres import PostgresKnowledgeFetcher
+
+report = analyze_database(sql, PostgresKnowledgeFetcher(psycopg.connect(dsn)), dialect="postgres")
+```
+
+`sqlassert.discovery.mysql.MySQLKnowledgeFetcher` is the MySQL one.
+
+### Dialects
+
+Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
+`suggest`. What the analysis assumes of each dialect is in
+`sqlassert/dialects.py`, argued in [docs/dialects.md](docs/dialects.md):
+
+- **Keys.** DuckDB, PostgreSQL and MySQL enforce primary, unique and foreign
+  keys. Snowflake, BigQuery, Databricks / Spark and Redshift do not, so a key
+  there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
+  becomes a Property Declaration, and `trust_unenforced_keys=True` makes every
+  unenforced key one. Any other is ignored, with an `unenforced-constraint`
+  warning. So are a PostgreSQL foreign key added `NOT VALID`, any constraint
+  declared `NOT ENFORCED` or `DEFERRABLE`, a MySQL column-level `REFERENCES`
+  (ignored before MySQL 9.0), a foreign key of a MySQL table whose `ENGINE`
+  does not enforce them, and SQLite foreign keys.
+- **Text.** Distinct strings compare equal under MySQL's default collations,
+  and the warehouses' default collation can be changed per database or table,
+  so only DuckDB's and PostgreSQL's default is taken to compare by identity.
+- **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
+  operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
+  BigQuery, Redshift); division likewise, except in DuckDB. MySQL (outside
+  strict mode) and Spark (outside ANSI mode) may return NULL even from a
+  comparison. `||` and `concat()` follow each dialect's NULL handling.
+- **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
+  which also groups its operands differently, so it is an unknown function of
+  its operands, with an `ambiguous-operator` warning: write `OR` or `CONCAT()`.
 
 ### Checking in CI
 

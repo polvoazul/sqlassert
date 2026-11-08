@@ -10,6 +10,7 @@
 -- case: an_unknown_join_kind_is_opaque_and_its_marker_unanalyzed
 -- dialect: clickhouse
 CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);
+--~ unenforced-constraint "clickhouse does not enforce it"
 SELECT t.id FROM t /**ASSERT MANY TO ONE**/ ARRAY JOIN arr
 --~ unanalyzed-assertion
 /**ASSERT NOT NULL(id)**/  --~ UNKNOWN

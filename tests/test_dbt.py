@@ -186,7 +186,7 @@ def test_relations_with_unknown_columns_are_warned_about_once(report):
 
 def test_an_unsupported_adapter_is_not_guessed(tmp_path):
     project = copy_project(tmp_path)
-    edit_manifest(project, lambda m: m["metadata"].update(adapter_type="snowflake"))
+    edit_manifest(project, lambda m: m["metadata"].update(adapter_type="sqlserver"))
     report = analyze_project(project)
     assert [p.code for p in report.problems] == ["dbt-unsupported-dialect"]
     assert report.failed and not report.markers

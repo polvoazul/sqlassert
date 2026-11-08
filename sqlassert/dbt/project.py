@@ -16,16 +16,14 @@ from sqlassert.dbt.expectations import Expectation, PropertyKind, expectations
 from sqlassert.dbt.manifest import Manifest, Relation, load_manifest
 from sqlassert.dbt.program import QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, branches, raw_line_of
 from sqlassert.dbt.report import DbtReport, Location, MarkerOutcome, Problem, Status, TestOutcome, Untested
+from sqlassert.dialects import MODELLED_DIALECTS
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
 
-# The dialects sqlassert analyzes soundly. A dbt adapter maps onto its SQLGlot
-# dialect; one not listed here is analyzed only under a fallback argued
-# sound for it (`_SOUND_FALLBACKS`, none yet: DuckDB's casts, collations and
-# builtins differ from every other warehouse's in ways the rules rely on), or
+# The dialects sqlassert analyzes soundly: those `dialects.py` models. A dbt
+# adapter maps onto its SQLGlot dialect; one not modelled is analyzed only
 # under a dialect the user names explicitly.
-SUPPORTED_DIALECTS = frozenset({"duckdb"})
-_SOUND_FALLBACKS: dict[str, str] = {}
+SUPPORTED_DIALECTS = MODELLED_DIALECTS
 _ADAPTER_DIALECTS = {
     "duckdb": "duckdb", "postgres": "postgres", "redshift": "redshift", "snowflake": "snowflake", "bigquery": "bigquery",
     "databricks": "databricks", "spark": "spark", "trino": "trino", "mysql": "mysql", "sqlserver": "tsql",
@@ -109,13 +107,6 @@ class _Analysis:
         dialect = _ADAPTER_DIALECTS.get(adapter or "")
         if dialect in SUPPORTED_DIALECTS:
             return dialect
-        fallback = _SOUND_FALLBACKS.get(dialect or "")
-        if fallback is not None:
-            problems.append(Problem(
-                UNSUPPORTED_DIALECT, f"the {adapter} adapter is analyzed as {fallback}, whose semantics match it where the rules rely on them",
-                "warning",
-            ))
-            return fallback
         problems.append(Problem(
             UNSUPPORTED_DIALECT,
             f"the {adapter or 'unknown'} adapter's SQL dialect is not supported (supported: {', '.join(sorted(SUPPORTED_DIALECTS))}), "

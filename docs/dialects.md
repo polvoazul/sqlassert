@@ -1,0 +1,153 @@
+# Dialects
+
+`sqlassert/dialects.py` holds one `DialectSemantics` per SQLGlot dialect name:
+what that dialect means by the constructs the rules depend on. `ir/convert.py`
+reads it while lowering; the rules never see a dialect, only the IR it
+produced (Builtin flags, column comparison types, Knowledge and Property
+Declarations). This page argues each entry and says how soundness is judged
+for dialects the oracle does not run.
+
+## The rule for every flag
+
+A flag may only claim what holds under *all* of the dialect's settings,
+because the SQL alone does not say which are in force (ADR 0005). Where a
+setting decides (MySQL's `sql_mode`, Spark's ANSI mode, a warehouse's default
+collation), the flag takes the weaker reading: the analysis loses a proof,
+never gains a wrong one. A dialect not listed gets `DialectSemantics()`:
+cautious arithmetic, collation and `||`, and enforced keys (the behaviour
+before dialects were listed; see "Not done").
+
+## Semantics by dialect
+
+| | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift |
+|---|---|---|---|---|---|---|---|
+| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | yes | yes | no (ANSI off) | yes |
+| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes |
+| comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes |
+| text compared by identity by default | yes | yes | no (`_ci`) | no (`DEFAULT_DDL_COLLATION`) | no (`DEFAULT COLLATE`) | no (default collation) | no (`CASE_INSENSITIVE` databases) |
+| binary `COLLATE`s | | `C`, `POSIX`, `ucs_basic`, `default`, `pg_c_utf8` | `utf8mb4_0900_bin`, `binary` | | | | |
+| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict |
+| `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled |
+| primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced |
+| foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced |
+
+Also: SQLite foreign keys are unenforced (`PRAGMA foreign_keys` is off by
+default) and its primary keys may be NULL (only an `INTEGER PRIMARY KEY` may
+not, and SQLGlot reads `INT` and `INTEGER` alike, so none is taken to be
+non-null). A ClickHouse primary key never rejects a duplicate. Hive has
+neither checked arithmetic nor enforced keys.
+
+PostgreSQL `NUMERIC` with no scale (`unscaled_decimal`) keeps each value's own
+scale: `1.0 = 1.00`, but their text differs, so such a column is neither
+compared by identity nor exact; `NUMERIC(10, 2)` is both. DuckDB, MySQL,
+Snowflake, BigQuery and Redshift give a bare `DECIMAL` a fixed scale.
+
+MySQL ENUMs (`enum_error_value`): MySQL stores `''` for a value outside the
+members outside strict mode and under `INSERT IGNORE` in any mode, and strips
+trailing spaces from members, so an ENUM column's domain is its members
+without trailing spaces, plus `''`. Its comparisons follow the column's
+collation, so `e = 'A'` keeps the member `'a'`; ENUM narrowing never treats
+distinct strings as distinct values there.
+
+MySQL `||` is OR unless `sql_mode` has `PIPES_AS_CONCAT`, under which it is
+concatenation *and binds tighter than any comparison*: `a = 1 AND b || c` is
+`(a = 1 AND b) OR c`, or `a = 1 AND (b || c)`. sqlassert parses it as OR (as
+SQLGlot does), marks the node (`sql_parse.is_ambiguous_pipes`), and lowers it
+as an `OpaquePureFunction` of its operands, with an `ambiguous-operator`
+warning. That is sound for both readings: as OR, `||` has the lowest
+precedence, so its node's span is delimited by parentheses, a function's
+arguments or a clause; under either reading the expression over that span is
+a pure function of the columns in it. An OR around it, at the same level,
+splits identically in both readings.
+
+## Unenforced keys (decision)
+
+An unenforced key is never Knowledge (`Accepted`), so it never proves anything
+the SQL alone does not. It becomes a Property Declaration (`Declared`, as a
+`DECLARE` marker does) when:
+
+- it is marked `RELY` in a dialect that has `RELY` (Snowflake, Databricks /
+  Spark): the author's statement that the data satisfies it, and the
+  warehouse's own optimizer trusts it on the same terms; or
+- the caller passes `trust_unenforced_keys=True` to `analyze`,
+  `analyze_database` or `suggest`: the opt-in for BigQuery and Redshift, which
+  have no `RELY`, and for any other constraint the database does not check.
+
+Otherwise it is ignored, and an `unenforced-constraint` warning says why and
+how to trust it. A trusted primary key declares its columns non-null too.
+
+Alternatives not taken: declaring every unenforced key (unsound for exactly
+the data that violates them, and silent about it), or ignoring `RELY` and
+trusting only opt-in (`RELY` is already the warehouse-native statement of
+trust). Redshift's planner trusts declared keys, but that is a reason they
+must be right, not evidence that they are.
+
+Constraints that are written but not enforced on every row are treated the
+same way, in every dialect: `NOT ENFORCED` (BigQuery, PostgreSQL 18),
+`DEFERRABLE` (a transaction may see one violated), a PostgreSQL foreign key
+added by `ALTER TABLE ... NOT VALID`, a MySQL column-level `REFERENCES`
+(parsed and ignored before MySQL 9.0), a foreign key of a MySQL table whose
+`ENGINE` is not InnoDB or NDB.
+
+## Catalog fetchers
+
+`discovery/postgres.py` and `discovery/mysql.py` read `pg_catalog` and
+`information_schema` through any DB-API connection; no driver is a
+dependency. What they keep, beyond the DuckDB fetcher's:
+
+- Postgres: only validated, enforced (PostgreSQL 18), non-deferrable
+  constraints, unique indexes over plain key columns (not `INCLUDE` ones, no
+  `WHERE`), no foreign key onto a table with row-level security (it may hide
+  the referenced row), a column's collation only when nondeterministic. A
+  table others inherit from returns their rows, which its keys and NOT NULLs
+  do not cover, so it is columns only; so is a foreign table. A NOT NULL
+  added `NOT VALID` does not count.
+- MySQL: every text column's collation (`utf8mb4_0900_bin` alone compares by
+  identity), unique indexes with no functional key part, the foreign keys the
+  catalog lists (only enforcing engines keep them). A view's stored
+  definition qualifies columns by schema and table; hydration requalifies
+  them by the table's alias.
+
+Warehouse fetchers are not written: their `information_schema` lists
+unenforced keys with `RELY` flags (Snowflake `SHOW PRIMARY KEYS`, Databricks
+`information_schema.table_constraints`), which `DatabaseRelationMetadata`
+would need a trust field to carry.
+
+## Judging soundness without DuckDB
+
+The soundness oracle runs DuckDB only. For the other dialects the choice is a
+written mapping, plus a live PostgreSQL run of the catalog fetcher
+(`tests/test_postgres_catalog.py`, with `SQLASSERT_PSQL` naming a psql
+command, e.g. `docker exec -i pg psql -U postgres`).
+
+The mapping: every rule is dialect-independent and already judged by the
+DuckDB oracle. A dialect changes only the inputs the rules read, through the
+flags above, so a dialect's analysis is sound when (a) the rules are, which
+the oracle checks, and (b) each flag it sets is true of that dialect. (b) is
+the table above, each entry a documented behaviour; where a flag is *stronger*
+than DuckDB's, it was checked against the engine where one ran:
+
+- Postgres `checked_division` (`n % 0` raises), `||` lenient on arrays, and
+  `concat(NULL)` = `''`: checked on PostgreSQL 18.
+- Snowflake, BigQuery and Redshift `checked_arithmetic`/`checked_division`:
+  from their documentation (overflow and division by zero raise; `TRY_`,
+  `SAFE_` and `DIV0` variants are separate functions SQLGlot parses apart).
+
+Where a flag is *weaker* than DuckDB's (MySQL, Spark, collations, keys), the
+dialect proves a subset of what DuckDB would, so the DuckDB oracle's
+judgement of the same rules covers it. The `.sqltest` cases in each dialect
+(`tests/dialect_*.sqltest`) pin each flag's effect.
+
+## Not done
+
+- A dialect not listed keeps enforced keys and total comparisons, as before
+  (T-SQL, Oracle, Trino, ...). Oracle's `||` reads NULL as `''`, and `''` is
+  NULL there, so it is left unmodelled.
+- MySQL compares a number with a string as DOUBLE, so an integer column above
+  2^53 (or a DECIMAL with more than 15 significant digits) is not pinned by a
+  string; neither, in any dialect, by a DOUBLE. `_pins` does not yet look at
+  the other side's type.
+- MySQL `ANSI_QUOTES` makes `"x"` an identifier rather than a string, and
+  `NO_BACKSLASH_ESCAPES` changes string literals; both are read as the default.
+- SQLite's column types are affinities, not types: an `INTEGER` column may hold
+  text. Its columns are still compared as declared.

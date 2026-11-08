@@ -68,3 +68,16 @@ SELECT concat_ws(s, sep) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 
 -- case: a_builtin_is_non_null_when_its_total_arguments_are__upper_s_duckdb_outcome_unknown
 SELECT upper(s) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: concat_skips_nulls_in_duckdb
+SELECT concat(s, m) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: pipes_of_non_null_operands_are_non_null_in_duckdb
+SELECT sep || 'x' AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: pipes_of_a_nullable_operand_may_be_null_in_duckdb
+SELECT s || 'x' AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: pipes_reject_a_null_operand_in_duckdb
+SELECT o.id AS oid FROM t LEFT JOIN t AS o ON o.id = t.m WHERE o.s || 'x' = 'ax' /**ASSERT NOT NULL(oid)**/
+--~ PROVED
