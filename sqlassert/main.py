@@ -21,6 +21,8 @@ def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: 
     Pure: the Program is the only source of Knowledge. `analyze_database`
     adds a database catalog. Where a catalog would have helped (a table with
     no `CREATE`, a column only a catalog can resolve), the Report warns.
+    `trust_unenforced_keys` makes the keys the dialect does not enforce
+    Property Declarations, as `RELY` does (`docs/dialects.md`).
     """
     sql_parser = SqlParser(dialect)
     ir_parser = IrParser(dialect, trust_unenforced_keys)

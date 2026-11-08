@@ -5,7 +5,9 @@ Disproof and never an inference: it says that analysis stopped short, and why.
 
 A warning is a Diagnostic too, reported apart (`Report.warnings`): the program
 is supported, but a fact a connection would supply is missing, so analysis
-treats it as unknown (ADR 0005). Warnings never make a Report fail.
+treats it as unknown (ADR 0005). So are a constraint the dialect does not
+enforce and an operator whose meaning a setting decides (`dialects.py`).
+Warnings never make a Report fail.
 """
 
 from __future__ import annotations
