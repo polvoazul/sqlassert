@@ -318,9 +318,16 @@ class _Hydration:
         resolved = self._resolve(tuple(dict.fromkeys(_qualified_name(table) for table in tables)), metadata)
         if None in resolved.values():
             return None
+        # A column qualified by its table's schema (MySQL stores `db`.`t`.`c`)
+        # is qualified by the alias the table is given below.
+        columns = [column for column in body.find_all(exp.Column) if column.args.get("db")]
         for table in tables:
             target = resolved[_qualified_name(table).lower()]
             assert target is not None
+            for column in columns:
+                if not table.alias and _qualified_name(table).lower().endswith(".".join((column.db, column.table)).lower()):
+                    column.set("db", None)
+                    column.set("catalog", None)
             self.resolved[target.identity.lower()] = target
             alias = table.alias or table.name
             table.set("this", exp.to_identifier(target.name))
