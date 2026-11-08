@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from sqlassert import properties as props
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.provenance import Origin
 
@@ -26,10 +27,32 @@ class Outcome(Enum):
 
 @dataclass(frozen=True)
 class AssertionReport:
+    """One assertion's outcome. `kind` is the marker that states it
+    (`ASSERTED_KINDS`), so a failure names what was not proved."""
+
     assertion_id: str
     outcome: Outcome
     origin: Origin
+    kind: str
     evidence: Result[bool] | None = field(default=None, compare=False)
+
+
+# The marker each assertable Property is written as, in the words of its `/**ASSERT ...**/`.
+ASSERTED_KINDS: dict[type[props.Property], str] = {
+    props.NonNullColumns: "not-null",
+    props.UniqueSet: "unique",
+    props.NonNullUniqueSet: "not-null-unique",  # also written PRIMARY KEY
+    props.FunctionalDependency: "determines",
+    props.EnumeratedDomain: "enum",
+    props.ReferentialCoverage: "foreign-key",
+    props.ForeignKey: "foreign-key",
+    props.ExhaustiveCase: "exhaustive",
+    props.UniqueJoin: "unique-join",
+    props.ManyToOneJoin: "many-to-one-join",
+    props.OneToManyJoin: "one-to-many-join",
+    props.OneToOneJoin: "one-to-one-join",
+    props.ExactlyOneJoin: "exactly-one-join",
+}
 
 
 @dataclass(frozen=True)

@@ -315,7 +315,7 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
 
 ```bash
 $ sqlassert check models/ 'queries/**/*.sql'
-queries/sessions.sql:4:3: error unknown-assertion: /**ASSERT MANY TO ONE**/ is UNKNOWN
+queries/sessions.sql:4:3: error unproved-many-to-one-join: /**ASSERT MANY TO ONE**/ is not proved (UNKNOWN)
 models/events.sql: warning undeclared-table: table events has no CREATE TABLE in the program, ...
 5 files checked: 9 assertions (8 PROVED, 1 UNKNOWN), 1 error, 1 warning
 ```
@@ -332,7 +332,7 @@ Options:
 
 - `--format text|json|sarif|github`: `text` (default) is `path:line:column: severity code: message` plus a summary; `json` lists every assertion's outcome and every Finding with its span; `sarif` is a SARIF 2.1.0 log for GitHub code scanning; `github` prints `::error`/`::warning` workflow commands, which GitHub Actions shows as annotations on the marker.
 - `--explain`: print each `UNKNOWN` assertion's evidence (in `json` and `sarif` too), as `suggest --explain` does.
-- `--ignore CODE`: also drop Findings with this code, on top of the configured `ignore` (repeatable, or comma-separated). The codes are the Diagnostic codes plus `unknown-assertion`.
+- `--ignore CODE`: also drop Findings with this code, on top of the configured `ignore` (repeatable, or comma-separated). The codes are the Diagnostic codes plus one per marker for an assertion that is not proved: `unproved-unique`, `unproved-not-null-unique` (also `PRIMARY KEY`), `unproved-not-null`, `unproved-foreign-key`, `unproved-determines`, `unproved-enum`, `unproved-exhaustive`, `unproved-unique-join`, `unproved-many-to-one-join`, `unproved-one-to-many-join`, `unproved-one-to-one-join`, `unproved-exactly-one-join`.
 - `--only-ignore CODE`: drop Findings with these codes instead of the configured `ignore`; `--only-ignore ''` ignores nothing.
 - `--dialect NAME`: the SQLGlot dialect (default `duckdb`).
 
@@ -418,7 +418,7 @@ The `sqlassert-dbt` plugin, a separate package in this repository (`integrations
 
 ```bash
 $ pip install ./integrations/dbt   # depends on sqlassert; sqlassert does not depend on it
-$ sqlassert-dbt .
+$ sqlassert-dbt check . --trust-upstream-tests
 models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/ (customers)
 
 Proved statically (a test here can be skipped):
@@ -431,9 +431,17 @@ Proved but untested (schema.yml additions):
   models/schema.yml  customers.customer_id: not_null
 ```
 
-Each model is analyzed from its compiled SQL. Its own tests are assertions: `unique` is a Unique Set, `not_null` Not Null, `accepted_values` an Enum, `relationships` Referential Coverage, `dbt_utils.unique_combination_of_columns` a `NOT NULL UNIQUE` (it counts NULL equal to NULL), and model contract `primary_key`, `unique`, `not_null` and `foreign_key` constraints likewise. The tests of the sources, seeds, snapshots and models it reads are declarations, since they passed before it was built -- but only tests that fail on any failing row: not one with `severity: warn`, a `where:` config, or `error_if`/`fail_calc` thresholds; and a constraint only on a contracted table whose adapter enforces it. A test is never a declaration for its own model.
+Each model is analyzed from its compiled SQL. Its own tests are assertions: `unique` is a Unique Set, `not_null` Not Null, `accepted_values` an Enum, `relationships` Referential Coverage, `dbt_utils.unique_combination_of_columns` a `NOT NULL UNIQUE` (it counts NULL equal to NULL), and model contract `primary_key`, `unique`, `not_null` and `foreign_key` constraints likewise. The tests of the sources, seeds, snapshots and models it reads are declarations when they passed before it was built, as under `dbt build`: say so with `--trust-upstream-tests` (otherwise a `dbt-untrusted-upstream-tests` warning counts them) -- and only tests that fail on any failing row: not one with `severity: warn`, a `where:` config, or `error_if`/`fail_calc` thresholds; and a constraint only on a contracted table whose adapter enforces it. A test is never a declaration for its own model.
 
-Markers written in model files are checked too, and reported at their line in the model file. An ephemeral model is analyzed where dbt inlined it; an incremental model in both `is_incremental()` branches, and a test of one holds only in both, and for a key only under a `merge` or `delete+insert` strategy on that `unique_key`. The other branch is rendered without dbt only when the model uses `ref`, `source`, `this`, `config` and `is_incremental()` alone; otherwise it is reported unanalyzed. The exit code is 1 when a marker is `UNKNOWN` or a diagnostic is reported (tests not proved do not fail it), 2 when the manifest cannot be read. Only adapters whose dialect sqlassert supports are analyzed (DuckDB today); `--dialect` names one explicitly.
+Markers written in model files are checked too, and reported at their line in the model file. An ephemeral model is analyzed where dbt inlined it; an incremental model in both `is_incremental()` branches, and a test of one holds only in both, and for a key only under a `merge` or `delete+insert` strategy on that `unique_key`. The other branch is rendered without dbt only when the model uses `ref`, `source`, `this`, `config` and `is_incremental()` alone; otherwise it is reported unanalyzed. The exit code is 1 when a marker is `UNKNOWN` or a diagnostic is reported (tests not proved do not fail it), 2 when the manifest cannot be read. Only adapters whose dialect sqlassert models are analyzed; `--dialect` names one explicitly.
+
+To check the markers as part of a dbt run, and skip the tests the SQL proves, run dbt through the plugin:
+
+```bash
+$ sqlassert-dbt build . -- --target prod   # or: sqlassert-dbt test
+```
+
+It runs `dbt compile`, prints the check, then runs `dbt build` (or `dbt test`) with every proved test passed as `--exclude`. dbt runs the upstream tests in that same invocation, so they are trusted, unless the arguments after `--` select nodes (`--select`, `--exclude`, `--selector`, ...), which may leave one out. The exit code is dbt's when dbt fails, else that of the check.
 
 ## Details
 
@@ -473,7 +481,7 @@ Supported uniqueness proofs today:
 - `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
 - Views, CTEs, and subqueries that preserve one of the proofs above, including through their own joins.
 
-A view, CTE, or FROM subquery is lowered like the Root Select, joins and markers included, so its facts flow to every query that reads it. A marker in a CTE or view that nothing reads is reported as unanalyzed. Computed expressions and arbitrary subquery semantics are not guessed.
+A view, CTE, or FROM subquery is lowered like the Root Select, joins and markers included, so its facts flow to every query that reads it. Every view is also a query of its own, checked whether or not anything reads it, so a file of views (a project's models, say) needs no Root Select. A marker in a CTE that nothing reads is reported as unanalyzed. Computed expressions and arbitrary subquery semantics are not guessed.
 
 Examples:
 

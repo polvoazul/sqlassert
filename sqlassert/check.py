@@ -32,20 +32,24 @@ from sqlassert import diagnostics as diag
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.main import DEFAULT_DIALECT, analyze
 from sqlassert.provenance import Origin, Span
-from sqlassert.reporting import Outcome, Report
+from sqlassert.reporting import ASSERTED_KINDS, Outcome, Report
 
 # Exit codes, shared by every command that checks SQL.
 EXIT_OK = 0  # every assertion PROVED and no Diagnostic (warnings allowed)
 EXIT_FINDINGS = 1  # an assertion UNKNOWN or a Diagnostic reported
 EXIT_USAGE = 2  # bad arguments or configuration, or SQL that could not be read
 
-# The code of the Finding an `UNKNOWN` assertion produces; ignorable like a Diagnostic code.
-UNKNOWN_ASSERTION = "unknown-assertion"
+
+def unproved(kind: str) -> str:
+    """The code of the Finding an `UNKNOWN` assertion of this marker kind
+    produces: it names what was asserted and not proved, e.g. `unproved-unique`."""
+    return f"unproved-{kind}"
+
 
 # Every code a Finding can carry, so a mistyped ignored code is reported rather than ignored.
+UNPROVED_CODES = frozenset(unproved(kind) for kind in ASSERTED_KINDS.values())
 CODES = frozenset(
-    {UNKNOWN_ASSERTION}
-    | {value for name, value in vars(diag).items() if name.isupper() and isinstance(value, str)}
+    UNPROVED_CODES | {value for name, value in vars(diag).items() if name.isupper() and isinstance(value, str)}
 )
 
 STDIN = "-"
@@ -95,7 +99,7 @@ def findings(path: str, sql: str, report: Report, *, ignore: Iterable[str] = ())
     ignored = frozenset(ignore)
     unknown = [
         Finding(
-            path, Severity.ERROR, UNKNOWN_ASSERTION, f"{_written(sql, assertion.origin)} is UNKNOWN",
+            path, Severity.ERROR, unproved(assertion.kind), f"{_written(sql, assertion.origin)} is not proved (UNKNOWN)",
             assertion.origin, assertion.evidence.explain() if assertion.evidence is not None else None,
         )
         for assertion in report.assertions
@@ -377,7 +381,9 @@ FORMATS: dict[str, Callable[..., str]] = {
     "github": render_github,
 }
 
-_RULE_DESCRIPTIONS = {UNKNOWN_ASSERTION: "An asserted Property is not proved (UNKNOWN)"}
+_RULE_DESCRIPTIONS = {
+    unproved(kind): f"An asserted {kind.replace('-', ' ')} Property is not proved (UNKNOWN)" for kind in ASSERTED_KINDS.values()
+}
 
 
 def _place(finding: Finding) -> str:

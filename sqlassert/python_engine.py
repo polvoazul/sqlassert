@@ -15,7 +15,7 @@ from case_conversion import snake
 from sqlassert import ir
 from sqlassert.diagnostics import DUPLICATE_DECLARATION, Diagnostic
 from sqlassert.properties import Property
-from sqlassert.reporting import AssertionReport, Outcome, RelationFacts, Report
+from sqlassert.reporting import ASSERTED_KINDS, AssertionReport, Outcome, RelationFacts, Report
 
 
 @dataclass(eq=False)
@@ -288,7 +288,8 @@ class Engine:
                 if any(diagnostic.code == DUPLICATE_DECLARATION for diagnostic in diagnostics):
                     evidence = evidence & unknown("Duplicate declarations prevent accepting a proof", assertion)
                 assertions.append(AssertionReport(
-                    f"assert_{index}", Outcome.PROVED if evidence.value else Outcome.UNKNOWN, assertion.origin, evidence,
+                    f"assert_{index}", Outcome.PROVED if evidence.value else Outcome.UNKNOWN, assertion.origin,
+                    ASSERTED_KINDS[type(assertion.property)], evidence,
                 ))
             facts = {}
             for relation in program.named_relations:

@@ -122,3 +122,17 @@ FROM (SELECT id FROM orders UNION SELECT order_id FROM items) AS s
 WITH c AS (SELECT * FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id)
 --~ unanalyzed-assertion
 SELECT 1 AS one
+
+-- A file of views and no Root Select, like a project's models: every view is a
+-- query of its own, so its markers are checked whether or not anything reads it.
+
+-- case: markers_in_views_nothing_reads_are_checked
+CREATE VIEW order_users AS
+SELECT orders.id, users.name
+FROM orders
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON users.id = orders.user_id;
+CREATE VIEW order_ids AS
+SELECT id FROM orders /**ASSERT UNIQUE(id)**/;  --~ PROVED
+CREATE VIEW item_orders AS
+SELECT order_id FROM items /**ASSERT UNIQUE(order_id)**/;  --~ UNKNOWN

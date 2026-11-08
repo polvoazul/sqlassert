@@ -152,8 +152,8 @@ The SQL location or catalog object from which a semantic element or piece of kno
 _Avoid_: SQLGlot node
 
 **Finding**:
-What `sqlassert check` reports for one SQL Program: an `UNKNOWN` assertion or a
-Diagnostic (error level, failing the check), or a Connection Warning (warning
+What `sqlassert check` reports for one SQL Program: an `UNKNOWN` assertion
+(coded `unproved-` and its marker, e.g. `unproved-unique`) or a Diagnostic (error level, failing the check), or a Connection Warning (warning
 level, never failing it). A Finding is located at its Origin's span, when it
 has one: the Property Marker as written.
 _Avoid_: Violation, failure, lint
@@ -243,5 +243,5 @@ A top-level SQL declaration that introduces a Named Relation or related schema K
 _Avoid_: Root select
 
 **Root Select**:
-The optional, single top-level select expression analyzed by a SQL program. It uses the same select-expression form as the body of a view definition but is not introduced by a create statement.
+The optional, single top-level select expression analyzed by a SQL program. It uses the same select-expression form as the body of a view definition but is not introduced by a create statement. A program of views alone has none: each view is analyzed as a query of its own.
 _Avoid_: Main view, implicit view

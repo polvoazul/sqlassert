@@ -84,13 +84,19 @@ warning ([docs/dialects.md](../dialects.md)).
   numbers don't: map each finding back to the model's source file and line.
 - [x] Ephemeral models are inlined as CTEs; incremental models have two
   `is_incremental()` branches, and both must be analyzed.
-- [ ] A command (`sqlassert-dbt [project dir]`, the plugin of #48) that reuses `check`'s exit codes,
+- [ ] A command (`sqlassert-dbt check [project dir]`, the plugin of #48) that reuses `check`'s exit codes,
   config and output formats, for CI. Exit codes shared; text output only, no
-  `[tool.sqlassert]` config yet.
+  `[tool.sqlassert]` config yet (decided: fine for now).
+- [x] Upstream tests are facts only when they ran first: `--trust-upstream-tests`
+  (`dbt build`), else a `dbt-untrusted-upstream-tests` warning. Contract
+  constraints the adapter enforces are facts either way.
+- [x] Skipping proved tests: `sqlassert-dbt build|test [-- DBT_ARGS]` runs
+  `dbt compile`, checks the markers, then `dbt build`/`dbt test` with every
+  proved test passed as `--exclude`; upstream tests are trusted unless
+  DBT_ARGS select nodes.
+- [ ] Reading `catalog.json`: later, [50](0050-dbt-catalog-json.md).
 
 ## Open questions
 
-- Skipping proved tests: only report them, or also emit a selector or
-  exclusion list dbt can use?
 - dbt Fusion (the Rust engine) and dbt Cloud: is `manifest.json` still the
   stable interface for both?

@@ -161,6 +161,12 @@ class IrParser:
         self._propagate_required_columns()
 
         root = self._lower_query(ast.root_select) if ast.root_select is not None else None
+        # Every view is a query of its own: its markers are checked whether or
+        # not the root reads it, so a file of views (a project's models) needs
+        # no root SELECT.
+        for symbol in tuple(self._symbols):
+            if symbol.role is ir.RelationRole.VIEW and symbol not in self._named_relations:
+                self._resolve_symbol(symbol)
         # Referenced relations are linked last: a marker on a view may name
         # the view itself, or one that reads it.
         self._link_constraint_references()

@@ -55,19 +55,16 @@ def test_a_view_actually_used_in_the_program_reports_its_derived_unique_set():
     assert report.facts.is_unique("active_users", ["id"])
 
 
-def test_a_view_never_referenced_reports_no_facts():
-    """The engine only proves properties about relations it actually expands
-    -- a declared-but-unused view was never lowered, so it has no facts."""
+def test_a_view_never_referenced_reports_its_facts():
+    """Every view is a query of its own, read by the root or not."""
     report = analyze(
         """
         CREATE TABLE users (id INTEGER PRIMARY KEY);
         CREATE VIEW active_users AS SELECT id FROM users WHERE id > 0;
-
-        SELECT * FROM users
         """
     )
 
-    assert report.facts.unique_sets("active_users") == ()
+    assert report.facts.unique_sets("active_users") == (("id",),)
 
 
 def test_an_unknown_relation_reports_no_facts():
