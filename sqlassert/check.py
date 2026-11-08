@@ -4,7 +4,7 @@ Each file is one SQL Program, analyzed from its SQL alone (`analyze`). Every
 `UNKNOWN` assertion and every Diagnostic becomes a Finding; a Connection
 Warning is a warning-level Finding and never fails the check, as it never fails
 a `Report`. The exit codes, Findings and formatters are this module's
-interface for any command that checks SQL (the CLI, the dbt integration);
+interface for any command that checks SQL (the CLI, the `sqlassert-dbt` plugin);
 `__main__.py` only parses arguments.
 
 Configuration comes from `[tool.sqlassert]` in the nearest `pyproject.toml`

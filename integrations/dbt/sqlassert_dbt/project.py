@@ -12,10 +12,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlassert.dbt.expectations import Expectation, PropertyKind, expectations
-from sqlassert.dbt.manifest import Manifest, Relation, load_manifest
-from sqlassert.dbt.program import QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, branches, raw_line_of
-from sqlassert.dbt.report import DbtReport, Location, MarkerOutcome, Problem, Status, TestOutcome, Untested
+from sqlassert_dbt.expectations import Expectation, PropertyKind, expectations
+from sqlassert_dbt.manifest import Manifest, Relation, load_manifest
+from sqlassert_dbt.program import QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, branches, raw_line_of
+from sqlassert_dbt.report import DbtReport, Location, MarkerOutcome, Problem, Status, TestOutcome, Untested
 from sqlassert.dialects import MODELLED_DIALECTS
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
@@ -51,7 +51,7 @@ def analyze_project(project_dir: Path, *, manifest_path: Path | None = None, dia
     `dialect` overrides the one the manifest's adapter names; without it, an
     adapter sqlassert does not support leaves every model unanalyzed.
     """
-    from sqlassert.dbt.manifest import ManifestError
+    from sqlassert_dbt.manifest import ManifestError
 
     path = manifest_path or project_dir / "target" / "manifest.json"
     try:

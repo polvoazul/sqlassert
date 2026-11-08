@@ -14,11 +14,10 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [44. v1 external integrations](0044-v1-external-integrations.md) — open (child of 43: `check` CLI; analytical dialects, Postgres, MySQL; dbt)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes per fact; docker for local engines, doc provenance for warehouses)
 - [47. Discovery: one base fetcher, a subclass per dialect](0047-discovery-base-class.md) — open (INFORMATION_SCHEMA base; keys taken as enforced; partial indexes skipped)
-- [48. dbt plugin as its own package](0048-dbt-plugin-package.md) — open (monorepo folder, own build, dbt-duckdb e2e tests)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 48, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -70,3 +69,4 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [35. Audit FD propagation against Paulley](done/0035-audit-fd-propagation-against-paulley.md)
 - [38. Lower ORDER BY and scalar subqueries](done/0038-lower-order-by-and-select-list-subqueries.md)
 - [41. Join cardinality markers and the fan-trap smell](done/0041-join-cardinality-markers-and-fan-trap-smell.md)
+- [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)

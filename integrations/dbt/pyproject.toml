@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlassert-dbt"
+dynamic = ["version"]
+description = "Check a dbt project's tests and sqlassert markers from its compiled manifest."
+requires-python = ">=3.13"
+# Reads target/manifest.json only: dbt itself is needed to compile the
+# project, not to check it, so it is a test dependency here.
+dependencies = [
+  "sqlassert",
+  "sqlglot>=28,<31",
+]
+
+[project.scripts]
+sqlassert-dbt = "sqlassert_dbt.__main__:main"
+
+[project.optional-dependencies]
+test = [
+  "dbt-core>=1.10",
+  "dbt-duckdb>=1.9",
+  "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["sqlassert_dbt", "sqlassert_dbt.*"]
+
+[tool.setuptools_scm]
+root = "../.."
+
+# In this repository the plugin builds and tests against the sibling sqlassert.
+[tool.uv.sources]
+sqlassert = { path = "../..", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "../.."]
+
+[tool.ty.environment]
+extra-paths = ["../.."]

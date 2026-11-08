@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The sqlassert package alone: dbt is never installed here.
+  sqlassert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm reads the version from git
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e ".[test,dev]"
+      - run: python -m pytest -q
+      - run: ty check sqlassert tests
+      - run: python -m pytest --soundness-oracle -q
+
+  # The dbt plugin (integrations/dbt) against this checkout's sqlassert, with
+  # dbt-duckdb to compile its test project.
+  dbt-plugin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/dbt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e ../.. -e ".[test]" ty
+      - run: python -m pytest -q
+      - run: ty check
