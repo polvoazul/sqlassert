@@ -3,7 +3,7 @@
 - **State:** open
 - **Labels:** dialects, soundness
 - **Created:** 2026-11-08
-- **Related:** [44. v1 external integrations](0044-v1-external-integrations.md)
+- **Related:** [44. v1 external integrations](done/0044-v1-external-integrations.md)
 
 Every flag in `DialectSemantics` and every dialect Builtin entry
 (`strict`, `total`, `injective`) is a soundness claim. Today they are argued

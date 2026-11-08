@@ -61,6 +61,7 @@ SELECT /**ASSERT EXHAUSTIVE**/ CASE e WHEN 'a' THEN 1 WHEN 'b' THEN 2 WHEN '' TH
 SELECT e FROM t WHERE e = 'A' /**ASSERT ENUM(e IN ('a'))**/  --~ UNKNOWN
 
 -- case: a_column_level_references_is_ignored
+-- trust_unenforced_keys: false
 CREATE TABLE o (id INT PRIMARY KEY, t_id INT REFERENCES t (id));
 --~ unenforced-constraint "column-level REFERENCES"
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
@@ -70,6 +71,7 @@ CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (i
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED
 
 -- case: a_myisam_table_ignores_foreign_keys
+-- trust_unenforced_keys: false
 CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (id)) ENGINE=MyISAM;
 --~ unenforced-constraint "ENGINE=myisam"
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN

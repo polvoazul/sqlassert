@@ -11,14 +11,17 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: Properties under a collation; today any COLLATE is not identity)
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
-- [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44; backlog of CLI, editor, framework, data quality and agent integrations)
-- [44. v1 external integrations](0044-v1-external-integrations.md) — open (child of 43: `check` CLI; analytical dialects, Postgres, MySQL; dbt)
-- [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md) — not planned (dbt, child of 44: column lists and types for sources and seeds, opt-in)
+- [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44, 50-54; backlog of CLI, editor, framework, data quality and agent integrations)
+- [51. Validate Snowflake against a real engine](0051-validate-snowflake-against-a-real-engine.md) — not planned (P4, child of 43)
+- [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)
+- [53. Validate Databricks against a real engine](0053-validate-databricks-against-a-real-engine.md) — not planned (P4, child of 43)
+- [54. Validate Redshift against a real engine](0054-validate-redshift-against-a-real-engine.md) — not planned (P4, child of 43)
+- [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md) — not planned (dbt, child of 43: column lists and types for sources and seeds, opt-in)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 47, 48, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -29,11 +32,13 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
   SQL); #15's remaining Low smells and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
-- **Integrations (needs design, not yet prioritized):** #44 (v1: `check` CLI
-  and dialects, then dbt); the rest of #43 is backlog.
+- **Integrations:** #44 (v1: `check` CLI, dialects, dbt) is done; the rest of
+  #43 is backlog.
 - **P4, not planned:** #42 (lowering support v2): window functions (and
   #33's CTE part, which needs them), recursive CTEs, column lineage, LATERAL
   and UNNEST, ADD COLUMN, scalar subqueries in grouped select lists and in ON.
+- **P4, not planned:** #51-54 (validate Snowflake, BigQuery, Databricks and
+  Redshift against a real engine; needs warehouse credentials).
 
 ## Done
 
@@ -70,5 +75,6 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [35. Audit FD propagation against Paulley](done/0035-audit-fd-propagation-against-paulley.md)
 - [38. Lower ORDER BY and scalar subqueries](done/0038-lower-order-by-and-select-list-subqueries.md)
 - [41. Join cardinality markers and the fan-trap smell](done/0041-join-cardinality-markers-and-fan-trap-smell.md)
+- [44. v1 external integrations](done/0044-v1-external-integrations.md)
 - [47. Discovery: one base fetcher, a subclass per dialect](done/0047-discovery-base-class.md)
 - [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)

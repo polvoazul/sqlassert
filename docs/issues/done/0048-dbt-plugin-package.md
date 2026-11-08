@@ -3,7 +3,7 @@
 - **State:** done
 - **Labels:** dbt, packaging
 - **Created:** 2026-11-08
-- **Related:** [44. v1 external integrations](../0044-v1-external-integrations.md)
+- **Related:** [44. v1 external integrations](0044-v1-external-integrations.md)
 
 The repo becomes a monorepo. The dbt integration moves out of the
 `sqlassert` package into its own folder that builds and tests on its own.

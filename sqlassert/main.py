@@ -16,14 +16,15 @@ if TYPE_CHECKING:
 DEFAULT_DIALECT = "duckdb"
 
 
-def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: bool = False) -> Report:
+def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: bool = True) -> Report:
     """Prove the Unique Join Assertions and Unique Set Assertions in one SQL Program.
 
     Pure: the Program is the only source of Knowledge. `analyze_database`
     adds a database catalog. Where a catalog would have helped (a table with
     no `CREATE`, a column only a catalog can resolve), the Report warns.
-    `trust_unenforced_keys` makes the keys the dialect does not enforce
-    Property Declarations, as `RELY` does (`docs/dialects.md`).
+    `trust_unenforced_keys` (on by default) makes the keys the dialect does
+    not enforce Property Declarations, as `RELY` does; off, they are ignored
+    with an `unenforced-constraint` warning (`docs/dialects.md`).
     """
     sql_parser = SqlParser(dialect)
     ir_parser = IrParser(dialect, trust_unenforced_keys)
@@ -35,7 +36,7 @@ def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: 
 
 
 def analyze_database(
-    sql: str, fetcher: DatabaseKnowledgeFetcher, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: bool = False,
+    sql: str, fetcher: DatabaseKnowledgeFetcher, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: bool = True,
 ) -> Report:
     """`analyze`, with the external Relations the Program reaches hydrated from a catalog.
 

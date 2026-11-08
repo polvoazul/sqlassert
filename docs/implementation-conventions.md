@@ -149,7 +149,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   Catalog constraints never enter those declarations: `bind` turns them into
   Properties over the final IR: `Accepted` Knowledge where the dialect
   enforces them, Property Declarations for unenforced keys under
-  `trust_unenforced_keys`, otherwise an `unenforced-constraint` warning. SQL declarations win over catalog objects of the same name and
+  `trust_unenforced_keys` (on by default), otherwise an `unenforced-constraint` warning. SQL declarations win over catalog objects of the same name and
   are never fetched. A missing object, an unreadable catalog, or incomplete
   metadata is a Diagnostic, and the Relation stays opaque. Subclasses own one
   database's catalog boundary: name resolution and metadata queries.
@@ -167,7 +167,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   keys; the rules see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
   dialect not listed gets cautious defaults. An unenforced key is never
   Knowledge: `RELY` (where the dialect has it) or `trust_unenforced_keys`
-  makes it a Property Declaration, otherwise an `unenforced-constraint`
+  (on by default) makes it a Property Declaration, otherwise an `unenforced-constraint`
   warning reports it. The argument for each entry is in `docs/dialects.md`.
 - `suggest.py` composes the same stages as `main.py` to list provable
   Properties as markers. `sql_parse.py` records on every Join, Select, and

@@ -52,6 +52,7 @@ SELECT v FROM c WHERE v IN ('a', 'b') AND v = 'B' /**ASSERT ENUM(v IN ('a'))**/ 
 SELECT u FROM c WHERE u IN ('a', 'b') AND u = 'B' /**ASSERT ENUM(u IN ('a'))**/  --~ UNKNOWN
 
 -- case: a_foreign_key_added_not_valid_is_not_knowledge
+-- trust_unenforced_keys: false
 CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER);
 ALTER TABLE o ADD CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id) NOT VALID;
 --~ unenforced-constraint "NOT VALID"
@@ -63,11 +64,13 @@ ALTER TABLE o ADD CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id);
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED
 
 -- case: a_foreign_key_not_enforced_is_not_knowledge
+-- trust_unenforced_keys: false
 CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER REFERENCES t (id) NOT ENFORCED);
 --~ unenforced-constraint "NOT ENFORCED"
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
 
 -- case: a_deferrable_foreign_key_is_not_knowledge
+-- trust_unenforced_keys: false
 CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER, FOREIGN KEY (t_id) REFERENCES t (id) DEFERRABLE INITIALLY DEFERRED);
 --~ unenforced-constraint "DEFERRABLE"
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
