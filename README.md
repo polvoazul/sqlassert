@@ -299,6 +299,7 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 | Redundant Join | No column of the joined relation is used outside its own ON, and the join keeps every left row once: a LEFT JOIN with at most one match, or an Exactly One inner JOIN. |
 | Filter-Only Join | The same for an inner JOIN with at most one match: it only filters, so it can be a `WHERE EXISTS`. Not suggested when a RIGHT or FULL JOIN follows it. |
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
+| Redundant ORDER BY key | The ORDER BY keys before it determine it, NULL equal to NULL: it never breaks a tie. Silent when a key is an expression or a name sqlassert cannot map to one column. |
 | Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
 | Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
@@ -310,6 +311,7 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 | Smell | When |
 |---|---|
 | Arbitrary LIMIT | A `LIMIT` or `OFFSET` whose `ORDER BY` (if any) does not determine every selected column, NULL equal to NULL: rows tied on the sort keys may come in any order, so which rows are kept can change between runs. Silent when an `ORDER BY` key is an expression or a name sqlassert cannot map to one column. |
+| Scalar subquery | A scalar subquery not proved to return at most one row, a runtime error when it returns more: uncorrelated, its body is not proved to have at most one row; correlated, the columns its WHERE binds to the outer row are not proved a Unique Set. |
 | Fan Trap | An aggregate over a join that is not proved to repeat rows of only one input, when its argument (or, for `count(*)`, either input) comes from rows the join may repeat: `sum(p.amount)` over `orders JOIN payments USING (customer_id)`. |
 | Chasm Trap | An aggregate over a one-to-many join whose argument is on the side with one row per key: `sum(c.credit)` over `customers JOIN orders`. Every aggregate counts, `min` and `max` included. Silent when the repeated input has no known Unique Set, or the argument reads both inputs. |
 

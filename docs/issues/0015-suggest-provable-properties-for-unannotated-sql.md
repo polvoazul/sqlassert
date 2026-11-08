@@ -181,8 +181,10 @@ Still open:
   Done: see "Kossmann Table 1 triage" below.
 - [ ] Low level: other code smells, from the *add* rows of that triage.
   First smell done: Arbitrary LIMIT (`sqlassert/smells.py`, `report.smells`,
-  `Level.LOW`, printed last by the CLI). The other *add* rows wait: most need
-  ORDER BY or select-list subqueries lowered, or are High-level rewrites
+  `Level.LOW`, printed last by the CLI). Issue 38 added the scalar subquery
+  smell and the redundant ORDER BY key (a High rewrite, `Redundant ORDER BY
+  key`); issue 41 the Fan Trap and Chasm Trap. Still open: an ON conjunct the
+  others imply, and EXCEPT always empty under coverage. Also High-level rewrites
   (redundant `EXISTS`, `EXCEPT ALL`, whole `GROUP BY`, self-join, UNION and
   INTERSECT simplification, redundant `LIMIT` on one row).
 - [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
@@ -210,7 +212,7 @@ reasons about the query, not its plan, cost or cardinality.
 | Grouping is redundant [23] | Grouping | ∗ | add, High: a `GROUP BY` whose grouping columns are a Unique Set of its input is a projection (precondition: strict closure reaches the input's Row Identity, as for DISTINCT); aggregates then see one row each |
 | Accurate cardinalities (5.6) | Grouping | ‡ | n/a: estimation |
 | Avoid DISTINCT [101–103] | Projection | ∗ | covered: High "redundant DISTINCT" |
-| Reduce attributes (5.6) | Sorting | ∗ | add, High: `ORDER BY` keys after a prefix that is a Unique Set are redundant (needs ORDER BY lowered) |
+| Reduce attributes (5.6) | Sorting | ∗ | add, High: `ORDER BY` keys after a prefix that is a Unique Set are redundant. Done in issue 38, as a case of the row below |
 | Unstable sorting (5.6) | Sorting | ∗ | add, Low: `ORDER BY … LIMIT` whose sort keys are not proved a Unique Set picks arbitrary rows among ties (the inverse precondition) |
 | EXCEPT to EXCEPT ALL [102] | Set ops | ∗ | add, High: `EXCEPT` → `EXCEPT ALL` when the left input is unique on all columns (strict) |
 | INTERSECT to INTERSECT ALL [60, 101] | Set ops | ∗ | add, High: same, for either input of `INTERSECT` |
@@ -234,8 +236,8 @@ reasons about the query, not its plan, cost or cardinality.
 | Distinctness: see grouping [123] | Projection | ∗ | covered: High "redundant DISTINCT" (closure) |
 | Simplification [29] | Projection | ∗ | covered: the same closure |
 | Estimate projections [44] | Projection | ‡ | n/a: estimation |
-| Reduce attributes [24, 112, 116] | Sorting | ∗ | add, High: an `ORDER BY` key earlier keys determine (strictly) is redundant (needs ORDER BY lowered) |
-| Scalar subqueries [29] | Other | — | add, Low: a scalar subquery not proved to return at most one row (precondition: its correlated columns are a Unique Set, as a Unique Join; needs select-list subqueries lowered) |
+| Reduce attributes [24, 112, 116] | Sorting | ∗ | add, High: an `ORDER BY` key earlier keys determine (strictly) is redundant. Done in issue 38 (Redundant ORDER BY key) |
+| Scalar subqueries [29] | Other | — | add, Low: a scalar subquery not proved to return at most one row (precondition: its correlated columns are a Unique Set, as a Unique Join; done in issue 38) |
 | Table decomposition rewrites [45] | Other | — | n/a: physical schema design |
 
 ### Order Dependencies (Sec. 7)

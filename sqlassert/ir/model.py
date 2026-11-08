@@ -466,6 +466,10 @@ class Join(RelationExpr):
     left: RelationExpr
     right: RelationExpr
     predicate: ScalarExpr | None = None
+    # A left join a scalar subquery lowers to: its right input is the
+    # subquery's body, and each left row matches at most one right row, or
+    # the query fails (more than one row is a runtime error).
+    scalar_subquery: bool = False
 
     @property
     def conjuncts(self) -> tuple[ScalarExpr, ...]:
@@ -572,6 +576,8 @@ class Program:
     # Every JOIN, Select Expression, and simple CASE a marker can attach to, with
     # the Join, the relation the Select produces, or the lowered CASE.
     attachment_sites: tuple[tuple[AttachmentSite, RelationExpr | SimpleCase], ...] = ()
+    # Each scalar subquery lowered as a join, with where its Select is written.
+    scalar_subqueries: tuple[tuple[AttachmentSite, Join], ...] = ()
     column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

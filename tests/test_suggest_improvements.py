@@ -449,3 +449,27 @@ def test_a_later_left_join_on_a_column_that_is_not_padded_does_not_chain():
 )
 def test_a_subquery_filter_that_may_reject_a_row_is_kept(sql: str):
     assert Rewrite.REDUNDANT_FILTER not in rewrites(SCHEMA + sql)
+
+
+@pytest.mark.parametrize(
+    ("sql", "message"),
+    [
+        ("SELECT id, name FROM t_sorted ORDER BY id, name", "(id) determine name"),
+        ("SELECT name FROM t_sorted ORDER BY score, score", "(score) determine score"),
+        ("SELECT score, count(*) AS n FROM t_sorted GROUP BY score ORDER BY score, n", "(score) determine n"),
+    ],
+)
+def test_an_order_by_key_the_earlier_keys_determine_is_redundant(sql: str, message: str):
+    schema = "CREATE TABLE t_sorted (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);\n"
+    found = [item for item in suggest(schema + sql).improvements if item.rewrite is Rewrite.REDUNDANT_SORT_KEY]
+    assert len(found) == 1
+    assert message in found[0].message
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["SELECT id, name FROM t_sorted ORDER BY name, id", "SELECT id FROM t_sorted ORDER BY lower(name), id"],
+)
+def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
+    schema = "CREATE TABLE t_sorted (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);\n"
+    assert not any(item.rewrite is Rewrite.REDUNDANT_SORT_KEY for item in suggest(schema + sql).improvements)

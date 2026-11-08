@@ -109,6 +109,10 @@ class IrParser:
     _reported_cycles: set[_Symbol] = field(default_factory=set)
     _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr | ir.SimpleCase]] = field(default_factory=list)
     _sited_cases: set[int] = field(default_factory=set)
+    # Each scalar subquery lowered as a join, by id, and the qualifier of the
+    # binding that holds its value.
+    _scalar_values: dict[int, str] = field(default_factory=dict)
+    _scalar_subqueries: list[tuple[AttachmentSite, ir.Join]] = field(default_factory=list)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
@@ -145,7 +149,8 @@ class IrParser:
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
         warnings = [*self._undeclared_table_warnings(), *self._warnings]
         return IrConversionResult(
-            ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites)),
+            ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
+                scalar_subqueries=tuple(self._scalar_subqueries)),
             tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
         )
 
@@ -316,7 +321,8 @@ class IrParser:
                 matching = by_qualifier.get(column.table.lower(), ())
                 for source in matching:
                     self._require(source, column.name)
-            elif len(sources) == 1:
+            elif len(sources) == 1 and column.find_ancestor(exp.Select) is query:
+                # An unqualified column in a nested query belongs to that query's scope.
                 self._require(sources[0], column.name)
 
         for join in query.args.get("joins") or ():
@@ -341,6 +347,10 @@ class IrParser:
             matched = _subquery_conjunct(conjunct)
             if matched is not None:
                 self._discover_query(matched[1], scope)
+        for expression in (*(_conjuncts(where.this) if where is not None else ()), *query.expressions):
+            for subquery in _scalar_subqueries(expression):
+                if isinstance(subquery.this, exp.Select):
+                    self._discover_query(subquery.this, scope)
 
         if with_clause is not None:
             for cte in with_clause.expressions:
@@ -452,6 +462,9 @@ class IrParser:
             for join in select.args.get("joins") or ():
                 lowered = self._lower_join(lowered, join)
             relation = self._lower_select_tail(lowered, select)
+        return self._finish_select(relation, select)
+
+    def _finish_select(self, relation: ir.RelationExpr, select: exp.Select) -> ir.RelationExpr:
         relation = self._lower_limit(relation, select)
         self._register_column_markers(relation, select)
         self._add_attachment_site(select, _select_label(select), relation, trailing=True)
@@ -741,6 +754,7 @@ class IrParser:
             if _star_only(select):
                 relation = lowered.relation
             else:
+                lowered, _ = self._join_scalar_subqueries(lowered, select.expressions)
                 relation = self._project(lowered, select.expressions, self._origin(select))
         return relation if relation is not None else self._opaque_relation(select, _selected_output_names(select))
 
@@ -756,6 +770,8 @@ class IrParser:
                 lowered = joined
         if not remaining:
             return lowered
+        before = lowered.relation.output_columns
+        lowered, carried = self._join_scalar_subqueries(lowered, remaining)
         origin = self._origin(where)
         output_columns = _pass_output_columns(lowered.relation.output_columns, origin)
         remapped = {source: output for source, output in zip(lowered.relation.output_columns, output_columns)}
@@ -767,7 +783,104 @@ class IrParser:
         bindings = tuple(
             _Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings
         )
-        return _Lowered(relation, bindings)
+        if all(carried[column] is column for column in before):
+            return _Lowered(relation, bindings)
+        # Scalar subqueries were joined in: keep only the columns from before,
+        # so their values stay inside this WHERE.
+        kept = tuple(remapped[carried[column]] for column in before)
+        project = ir.Project(
+            origin=origin, output_columns=_pass_output_columns(kept, origin), is_schema_complete=complete, input=relation,
+        )
+        projected = dict(zip(kept, project.output_columns))
+        return _Lowered(project, tuple(
+            _Binding(binding.qualifier, binding.name, projected[binding.column])
+            for binding in bindings if binding.column in projected
+        ))
+
+    def _join_scalar_subqueries(
+        self, lowered: _Lowered, expressions: Sequence[exp.Expression]
+    ) -> tuple[_Lowered, dict[ir.OutputColumn, ir.OutputColumn]]:
+        """Each scalar subquery in `expressions` joined onto `lowered`, and
+        where each of `lowered`'s columns went."""
+        carried = {column: column for column in lowered.relation.output_columns}
+        for expression in expressions:
+            for subquery in _scalar_subqueries(expression):
+                joined = self._scalar_subquery_join(lowered, subquery)
+                if joined is None:
+                    continue
+                lowered, remapped = joined
+                carried = {column: remapped[current] for column, current in carried.items()}
+        return lowered, carried
+
+    def _scalar_subquery_join(
+        self, lowered: _Lowered, subquery: exp.Subquery
+    ) -> tuple[_Lowered, dict[ir.OutputColumn, ir.OutputColumn]] | None:
+        """A scalar subquery with body B as a left join of `lowered` with B: no
+        row makes it NULL, which is a left join's padding. More than one row
+        is a runtime error, so the join is many to one, or the query fails.
+
+        Uncorrelated, B is lowered whole under an implied LIMIT 1, sound since
+        it changes the result only when the query would fail: its value is
+        the same on every row. Correlated, B's WHERE becomes the ON of a
+        dependent join (as for EXISTS), so only a plain select-from-where
+        whose value is one of its columns is lowered. Anything else, or a
+        column that may belong to either scope, stays opaque."""
+        select = subquery.this
+        if not isinstance(select, exp.Select) or len(select.expressions) != 1 or _star_only(select):
+            return None
+        source = _from_source(select)
+        if source is None or select.args.get("with") or any(
+            join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()
+        ) or any(isinstance(node, (exp.Subquery, exp.Exists, exp.Query)) and node is not select for node in select.walk()):
+            return None
+        right = self._lower_source(source)
+        for join in select.args.get("joins") or ():
+            right = self._lower_join(right, join)
+        correlated = _correlated(select, right, lowered)
+        origin = self._origin(subquery)
+        if correlated is None:
+            return None
+        if not correlated:
+            body = self._finish_select(self._lower_select_tail(right, select), select)
+            right_relation: ir.RelationExpr = ir.Limit(
+                origin=origin, output_columns=_pass_output_columns(body.output_columns, origin),
+                is_schema_complete=body.is_schema_complete, input=body, count=1,
+            )
+            value = right_relation.output_columns[0]
+            predicate = None
+        else:
+            if any(select.args.get(key) for key in ("group", "having", "qualify", "distinct", "limit", "offset", "windows")) or _is_scalar_aggregate(select):
+                return None
+            item = select.expressions[0]
+            lowered_value = self._lower_expression(
+                item.this if isinstance(item, exp.Alias) else item, right.bindings, schema_complete=right.relation.is_schema_complete,
+            )
+            if not (isinstance(lowered_value, ir.ColumnRef) and lowered_value.column in right.relation.output_columns):
+                return None
+            inner = select.args.get("where")
+            predicate = None if inner is None else self._lower_condition(
+                inner.this, _conjuncts(inner.this), lowered.bindings + right.bindings,
+                schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
+            )
+            right_relation, value = right.relation, lowered_value.column
+        input_columns = lowered.relation.output_columns + right_relation.output_columns
+        output_columns = _pass_output_columns(input_columns, origin)
+        remapped = dict(zip(input_columns, output_columns))
+        join = ir.Join(
+            origin=origin, output_columns=output_columns,
+            is_schema_complete=lowered.relation.is_schema_complete and right_relation.is_schema_complete,
+            kind="left", left=lowered.relation, right=right_relation, predicate=predicate, scalar_subquery=True,
+        )
+        position = marker_position(select)
+        if position is not None:
+            self._scalar_subqueries.append((AttachmentSite("scalar subquery", position[1], position[0], True), join))
+        qualifier = f"{_SCALAR_QUALIFIER}{len(self._scalar_values)}"
+        self._scalar_values[id(subquery)] = qualifier
+        bindings = (
+            *(_Binding(binding.qualifier, binding.name, remapped[binding.column]) for binding in lowered.bindings),
+            _Binding(qualifier, _SCALAR_QUALIFIER, remapped[value]),
+        )
+        return _Lowered(join, bindings), remapped
 
     def _subquery_join(self, lowered: _Lowered, conjunct: exp.Expression) -> _Lowered | None:
         """`EXISTS (SELECT ... FROM r WHERE p)` as a semi join of r on p, and
@@ -965,10 +1078,15 @@ class IrParser:
         def lower(node: exp.Expression) -> ir.ScalarExpr:
             return self._lower_expression(node, bindings, schema_complete=schema_complete)
 
+        if isinstance(expression, exp.Subquery) and id(expression) in self._scalar_values:
+            qualifier = self._scalar_values[id(expression)]
+            value = next((binding.column for binding in bindings if binding.qualifier == qualifier), None)
+            if value is not None:
+                return ir.ColumnRef(origin=origin, column=value)
         if isinstance(expression, exp.Column):
             if expression.table:
                 matches = [binding for binding in bindings if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower()]
-            elif schema_complete or len({binding.qualifier for binding in bindings}) == 1:
+            elif schema_complete or len({binding.qualifier for binding in bindings if not binding.qualifier.startswith(_SCALAR_QUALIFIER)}) == 1:
                 matches = [binding for binding in bindings if binding.name == expression.name.lower()]
             else:
                 matches = []
@@ -1550,6 +1668,45 @@ def _arg(node: exp.Expression, name: str) -> exp.Expression | None:
 def _from_source(select: exp.Query) -> exp.Expression | None:
     source = _arg(select, "from")
     return source.this if isinstance(source, exp.From) else None
+
+
+# A scalar subquery's value binding: no SQL name can match it.
+_SCALAR_QUALIFIER = "\0scalar"
+
+
+def _scalar_subqueries(expression: exp.Expression) -> list[exp.Subquery]:
+    """The scalar subqueries `expression` evaluates itself: not one under
+    EXISTS, IN, ANY or ALL, nor inside another subquery."""
+    found = []
+    for node in expression.walk(prune=lambda node: isinstance(node, (exp.Subquery, exp.Query, exp.Exists))):
+        if isinstance(node, exp.Subquery) and not isinstance(node.parent, (exp.In, exp.Exists, exp.Any, exp.All)):
+            found.append(node)
+    return found
+
+
+def _correlated(select: exp.Select, inner: _Lowered, outer: _Lowered) -> bool | None:
+    """Whether `select` reads a column of the outer scope; None when a
+    column may belong to either. A column resolves to the innermost scope
+    that has it."""
+    inner_qualifiers = {binding.qualifier for binding in inner.bindings}
+    outer_qualifiers = {binding.qualifier for binding in outer.bindings}
+    correlated = False
+    for column in select.find_all(exp.Column):
+        name = column.name.lower()
+        if column.table:
+            qualifier = column.table.lower()
+            if qualifier in inner_qualifiers:
+                continue
+            if qualifier not in outer_qualifiers:
+                return None
+            correlated = True
+        elif any(binding.name == name for binding in inner.bindings):
+            continue
+        elif inner.relation.is_schema_complete and any(binding.name == name for binding in outer.bindings):
+            correlated = True
+        else:
+            return None
+    return correlated
 
 
 def _star_only(select: exp.Select) -> bool:

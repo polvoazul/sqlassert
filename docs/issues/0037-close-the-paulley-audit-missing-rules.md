@@ -27,7 +27,7 @@ then OR branches.
   Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
   passes), which is exactly what ENUM means.
 - R10 (§3.2.4, `a = (uncorrelated scalar subquery)` gives `∅ → a`) moved to
-  [38](0038-lower-order-by-and-select-list-subqueries.md): it falls out of lowering scalar subqueries as joins.
+  [38](done/0038-lower-order-by-and-select-list-subqueries.md) (done): it falls out of lowering scalar subqueries as joins.
 - [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.
 - [ ] **I1, I2** (Lemma 6, Corollary 1): the right input's FDs and keys
   through INTERSECT. Sound only when the paired columns compare by identity:

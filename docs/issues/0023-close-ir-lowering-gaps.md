@@ -12,7 +12,7 @@ live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
 ## Children
 
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md): E4, L13, L14, S5, R9, I1, I2, U2, F2, F4, OR branches.
-- [38. Lower ORDER BY and scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md): for issue 15's Low smells, and R10.
+- [38. Lower ORDER BY and scalar subqueries](done/0038-lower-order-by-and-select-list-subqueries.md): for issue 15's Low smells, and R10. Done.
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md): registry entries, cast and multiplication injectivity, more subquery forms, expression indexes, opaque join kinds.
 
 ## Not planned

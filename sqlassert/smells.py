@@ -14,6 +14,9 @@ the proof that would have pinned it, which failed:
   aggregate counts, `min` and `max` included: the join is wrong either way.
   `count(*)` has no argument, so only a many-to-many join is a trap for it.
   Silent when the input whose rows are repeated has no known Unique Set.
+- A scalar subquery not proved to return at most one row (issue 38): more
+  than one is a runtime error. Uncorrelated, its body must have at most one
+  row; correlated, the columns its WHERE binds must reach its Row Identity.
 
 A smell is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
@@ -31,7 +34,7 @@ from sqlassert import ir
 from sqlassert.improvements import Level, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
-from sqlassert.rules.join_cardinality import many_to_one_join, one_to_many_join, unique_join
+from sqlassert.rules.join_cardinality import _at_most_one_match, many_to_one_join, one_to_many_join, unique_join
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 from sqlassert.sql_parse import ParsedProgram
 
@@ -40,6 +43,7 @@ class Concern(Enum):
     ARBITRARY_LIMIT = "Arbitrary LIMIT"
     FAN_TRAP = "Fan trap"
     CHASM_TRAP = "Chasm trap"
+    SCALAR_SUBQUERY = "Scalar subquery"
 
 
 @dataclass(frozen=True)
@@ -66,7 +70,30 @@ def smells(ast: ParsedProgram, program: ir.Program, arena: Arena) -> list[Smell]
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
         if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
             found.extend(_traps(site, aggregate, join_labels))
+    for site, join in program.scalar_subqueries:
+        if join in reachable:
+            found.extend(_scalar_subquery(site, join))
     return sorted(found, key=lambda item: item.site.offset)
+
+
+def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Smell]:
+    """A scalar subquery that may return more than one row.
+
+    Its join is many to one by construction (more rows fail the query), so
+    the question is asked of its body: uncorrelated, under the implied LIMIT
+    1, whether the body has at most one row (the empty set is a Unique Set);
+    correlated, whether the columns ON binds reach the body's Row Identity."""
+    match join.right:
+        case ir.Limit(input=body) if join.predicate is None:
+            proof = _reaches_row_identity(_closure(body, frozenset(), frozenset()))
+            reason = "it is not proved to have at most one row"
+        case _:
+            proof = _at_most_one_match(join, "right")
+            reason = "the columns its WHERE binds to the outer row are not proved to be a Unique Set"
+    if proof.value:
+        return []
+    message = f"this scalar subquery may return more than one row, a runtime error: {reason}"
+    return [Smell(site, Concern.SCALAR_SUBQUERY, message, proof)]
 
 
 # Join traps ------------------------------------------------------------------

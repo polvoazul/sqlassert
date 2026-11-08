@@ -22,6 +22,8 @@ type Side = Literal["left", "right"]
 
 @analysis(Stratum.UNIQUE_JOIN)
 def many_to_one_join(join: ir.Join) -> Result[bool]:
+    if join.scalar_subquery:
+        return Result(True, "A scalar subquery returns at most one row for each outer row, or the query fails", (join,))
     return _at_most_one_match(join, "right")
 
 

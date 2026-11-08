@@ -58,6 +58,7 @@ class Rewrite(Enum):
     FILTER_JOIN = "Filter-Only Join"
     REDUNDANT_DISTINCT = "Redundant DISTINCT"
     REDUNDANT_GROUPING = "Redundant GROUP BY"
+    REDUNDANT_SORT_KEY = "Redundant ORDER BY key"
     REDUNDANT_FILTER = "Redundant EXISTS"
     UNUSED_CTE = "Unused CTE"
 
@@ -94,6 +95,8 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
             relation = relation.input
         if site.trailing:
             found.extend(_redundant_subquery_filters(arena, site, relation))
+        if site.trailing and isinstance(node, exp.Select):
+            found.extend(_redundant_sort_keys(site, relation, node, dialect))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
                 removed = _redundant_join(arena, site, relation, node, dialect)
@@ -210,6 +213,39 @@ def _inner_join(
             return None
         relation = parent
     return None
+
+
+# Redundant ORDER BY keys -----------------------------------------------------------
+
+
+def _redundant_sort_keys(site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select, dialect: str) -> list[Improvement]:
+    """Each ORDER BY key the keys before it determine, NULL equal to NULL
+    (Paulley §3, reducing the sort list): rows tied on the earlier keys agree
+    on it, so it never breaks a tie. Silent when a key is an expression or a
+    name sqlassert cannot map to one column."""
+    from sqlassert.smells import _sort_keys
+
+    order = select.args.get("order")
+    if order is None:
+        return []
+    items = order.expressions
+    scope = relation.input if isinstance(relation, ir.Project) else relation
+    keys = _sort_keys(items, relation.output_columns, scope)
+    if keys is None:
+        return []
+    found = []
+    for position in range(1, len(keys)):
+        closure = _closure(scope, frozenset(keys[:position]), frozenset())
+        key = keys[position]
+        if key not in closure.value.columns:
+            continue
+        item = items[position]
+        earlier = ", ".join((earlier.this if isinstance(earlier, exp.Ordered) else earlier).sql(dialect=dialect) for earlier in items[:position])
+        written = (item.this if isinstance(item, exp.Ordered) else item).sql(dialect=dialect)
+        message = f"({earlier}) determine {written}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
+        evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
+        found.append(Improvement(site, Rewrite.REDUNDANT_SORT_KEY, message, evidence))
+    return found
 
 
 # Redundant joins ------------------------------------------------------------------

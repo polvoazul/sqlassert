@@ -1,10 +1,10 @@
 # 38. Lower ORDER BY and scalar subqueries
 
-- **State:** open
-- **Labels:** child of [23](0023-close-ir-lowering-gaps.md)
+- **State:** done (2026-11-08)
+- **Labels:** child of [23](../0023-close-ir-lowering-gaps.md)
 - **Created:** 2026-11-06
 - **Split from:** issue 23
-- **Unblocks:** [15](0015-suggest-provable-properties-for-unannotated-sql.md)'s remaining Low smells
+- **Unblocks:** [15](../0015-suggest-provable-properties-for-unannotated-sql.md)'s remaining Low smells
 
 ## ORDER BY
 
@@ -90,3 +90,27 @@ When it is not proved, report that the subquery may return more than one row
    program next to the attachment sites.
 5. **Later:** when `unique_join(check)` is proved, the implied Limit adds
    nothing, which is the same judgement a "redundant LIMIT 1" suggestion needs.
+
+## Done
+
+- **Scalar subqueries** in WHERE and in a plain select list lower to
+  `Join(kind="left", scalar_subquery=True)` (`convert._scalar_subquery_join`).
+  Uncorrelated: the body is lowered whole (its markers and Attachment Site
+  included) under `Limit(count=1)`, so R10 holds with no rule of its own.
+  Correlated: a plain select-from-where whose value is one of its columns
+  becomes a dependent join on its WHERE; `many_to_one_join` is proved by the
+  `scalar_subquery` flag (more rows fail the query). A correlated aggregate,
+  a nested subquery, or a column that may belong to either scope stays
+  opaque. A WHERE subquery's value is projected away after the Filter, so
+  `SELECT *` gains no column. Select lists of grouped, DISTINCT or QUALIFY
+  Selects are not lowered yet.
+- **Smell:** `Program.scalar_subqueries` records each join with the
+  subquery's site. Uncorrelated, the body must have the empty set as a Unique
+  Set; correlated, `_at_most_one_match` on the join (the flag aside).
+- **ORDER BY:** not lowered into the IR. Both uses read the keys from the
+  syntax at the Select's Attachment Site and ask the closure, as Arbitrary
+  LIMIT already did: the new `Redundant ORDER BY key` improvement (Paulley
+  §3, reducing the sort list) flags a key the earlier keys determine, NULL
+  equal to NULL. No Property needed a Sort node.
+- Fixed along the way: discovery required an unqualified column of a nested
+  query on the outer query's single source (it belongs to the nested scope).
