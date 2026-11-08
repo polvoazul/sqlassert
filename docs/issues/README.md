@@ -8,7 +8,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 - [36. Refactor tests for corpus and oracle scale](0036-refactor-tests-for-corpus-and-oracle-scale.md) — needs review
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
-- [38. Lower ORDER BY and select-list scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md) — open (child of 23)
+- [38. Lower ORDER BY and scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
 
 ## Order

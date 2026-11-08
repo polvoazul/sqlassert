@@ -265,7 +265,7 @@ through only with definite determinants.
 | R7 | IS NOT NULL: attribute definite | §3.2.4, p.77 | implemented | `nullability._null_rejected` (IS NOT NULL) | `test_paulley_audit.py` R7 |
 | R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | implemented | `uniqueness._equality_dependencies` (`col IS NULL`: `∅ → col`) | `test_paulley_audit.py` R8 |
 | R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | missing | LIKE is opaque; without wildcards it is an equality. Filed in issue 37 |  |
-| R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | missing | `col = (uncorrelated scalar subquery)` gives nothing; the subquery is one value for every row, so `∅ → col`. Filed in issue 37 |  |
+| R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | missing | `col = (uncorrelated scalar subquery)` gives nothing; the subquery is one value for every row, so `∅ → col`. Filed in issue 38 (scalar subqueries lowered as joins under LIMIT 1) |  |
 | R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | implemented | `nullability._null_rejected`: a conjunct rejects every column it is strict in (`ir.strict_inputs`, from each `Call`'s `strict_arguments`): every comparison but the IS family, through arithmetic, CAST, NOT, and AND/OR when both sides are strict in it; `IS NOT NULL` rejects its operand's. Non-nullness spreads through Equality Groups | `test_paulley_audit.py` R11 |
 | R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `test_paulley_audit.py` R12 |
 | R13 | Disjunctions give nothing | §3.2.4, p.77 | different | No FDs from an `ir.Or`, as Paulley. Stronger for row-wise facts that hold in every branch: null rejection (`nullability._null_rejected`) and Enumerated Domains (`domain._conjunct_bound`, the union of the branches' bounds) | `test_paulley_audit.py` R13 |
@@ -309,7 +309,7 @@ through only with definite determinants.
 Summary: 77 rows; every implemented row has a case in
 `tests/test_paulley_audit.py`, judged by the soundness oracle (0
 counterexamples). The *missing* rows are filed in issue 37: E4/R3/L14 (equivalences and domains across outer joins),
-S5 (CHECK constraints), R9, R10 (restriction predicates beyond `=`),
+S5 (CHECK constraints), R9 (LIKE without wildcards; R10 is in issue 38),
 I1/I2 (the right input of INTERSECT), U2 (UNION ALL equivalences), L13, and
 F2/F4 (full join ON dependencies). Two differences are deliberate and
 stronger than Paulley: our lax FDs are lax in the determinant only (A7), so

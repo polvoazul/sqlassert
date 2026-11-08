@@ -7,7 +7,7 @@
 
 The rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
 "Paulley audit", issue 35). None is unsound; each loses proofs Paulley makes.
-Suggested order: E4 with L14, L13, S5, R10, R9, I1 with I2, U2, F2 with F4,
+Suggested order: E4 with L14, L13, S5, R9, I1 with I2, U2, F2 with F4,
 then OR branches.
 
 - [ ] **E4** (eq7): a lax equivalence whose columns a later filter makes
@@ -26,8 +26,8 @@ then OR branches.
   `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
   Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
   passes), which is exactly what ENUM means.
-- [ ] **R10** (§3.2.4): `WHERE a = (uncorrelated scalar subquery)` makes `a`
-  constant (`∅ → a`).
+- R10 (§3.2.4, `a = (uncorrelated scalar subquery)` gives `∅ → a`) moved to
+  [38](0038-lower-order-by-and-select-list-subqueries.md): it falls out of lowering scalar subqueries as joins.
 - [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.
 - [ ] **I1, I2** (Lemma 6, Corollary 1): the right input's FDs and keys
   through INTERSECT. Sound only when the paired columns compare by identity:
