@@ -9,7 +9,7 @@ import pytest
 
 from sqlassert import analyze
 from sqlassert.__main__ import main
-from sqlassert.check import CODES, EXIT_FINDINGS, EXIT_OK, EXIT_USAGE, UNKNOWN_ASSERTION
+from sqlassert.check import CODES, EXIT_FINDINGS, EXIT_OK, EXIT_USAGE, UNPROVED_CODES
 from sqlassert.provenance import Span
 
 PROVED = "CREATE TABLE users (id INTEGER PRIMARY KEY);\nSELECT id FROM users /**ASSERT UNIQUE(id)**/\n"
@@ -56,7 +56,7 @@ def test_an_unknown_assertion_fails_at_its_marker(project, capsys):
     code, out, _ = run(capsys, "q.sql")
 
     assert code == EXIT_FINDINGS
-    assert out.splitlines()[0] == "q.sql:4:3: error unknown-assertion: /**ASSERT MANY TO ONE**/ is UNKNOWN"
+    assert out.splitlines()[0] == "q.sql:4:3: error unproved-many-to-one-join: /**ASSERT MANY TO ONE**/ is not proved (UNKNOWN)"
 
 
 def test_warnings_never_fail_the_check(project, capsys):
@@ -81,7 +81,7 @@ def test_ignored_codes_neither_print_nor_fail(project, capsys):
     (project / "q.sql").write_text(UNKNOWN)
     (project / "m.sql").write_text(MISTYPED)
 
-    code, out, _ = run(capsys, "q.sql", "m.sql", "--ignore", "unknown-assertion,unrecognized-marker")
+    code, out, _ = run(capsys, "q.sql", "m.sql", "--ignore", "unproved-many-to-one-join,unrecognized-marker")
 
     assert code == EXIT_OK
     assert out.splitlines() == ["2 files checked: 1 assertion (0 PROVED, 1 UNKNOWN), 0 errors, 0 warnings"]
@@ -107,9 +107,38 @@ def test_usage_errors_exit_apart_from_findings(project, capsys, argv, message):
     assert message in err
 
 
-def test_every_diagnostic_code_can_be_ignored():
-    assert UNKNOWN_ASSERTION in CODES
-    assert {"undeclared-table", "sql-parse-failed", "unrecognized-marker"} <= CODES
+def test_every_diagnostic_code_and_unproved_kind_can_be_ignored():
+    assert {"unproved-unique", "unproved-not-null", "unproved-exhaustive", "unproved-many-to-one-join"} <= UNPROVED_CODES
+    assert UNPROVED_CODES | {"undeclared-table", "sql-parse-failed", "unrecognized-marker"} <= CODES
+
+
+@pytest.mark.parametrize(
+    ("sql", "code"),
+    [
+        ("CREATE TABLE t (a INTEGER);\nSELECT a FROM t /**ASSERT UNIQUE(a)**/\n", "unproved-unique"),
+        ("CREATE TABLE t (a INTEGER);\nSELECT a FROM t /**ASSERT NOT NULL(a)**/\n", "unproved-not-null"),
+        ("CREATE TABLE t (a INTEGER);\nSELECT a FROM t /**ASSERT PRIMARY KEY(a)**/\n", "unproved-not-null-unique"),
+        (UNKNOWN, "unproved-many-to-one-join"),
+    ],
+)
+def test_an_unproved_assertion_is_coded_by_its_marker(project, capsys, sql, code):
+    (project / "q.sql").write_text(sql)
+
+    exit_, out, _ = run(capsys, "q.sql")
+
+    assert exit_ == EXIT_FINDINGS
+    assert f"error {code}: " in out.splitlines()[0]
+
+
+def test_ignoring_one_unproved_kind_keeps_the_others(project, capsys):
+    (project / "q.sql").write_text(
+        "CREATE TABLE t (a INTEGER);\nSELECT a FROM t /**ASSERT UNIQUE(a)**/ /**ASSERT NOT NULL(a)**/\n"
+    )
+
+    exit_, out, _ = run(capsys, "q.sql", "--ignore", "unproved-unique")
+
+    assert exit_ == EXIT_FINDINGS
+    assert "unproved-not-null" in out and "unproved-unique" not in out
 
 
 # Paths -----------------------------------------------------------------------
@@ -133,7 +162,7 @@ def test_a_dash_reads_the_program_from_stdin(project, capsys, monkeypatch):
     code, out, _ = run(capsys, "-")
 
     assert code == EXIT_FINDINGS
-    assert out.startswith("<stdin>:4:3: error unknown-assertion")
+    assert out.startswith("<stdin>:4:3: error unproved-many-to-one-join")
 
 
 # Configuration -----------------------------------------------------------------
@@ -141,7 +170,7 @@ def test_a_dash_reads_the_program_from_stdin(project, capsys, monkeypatch):
 
 def test_pyproject_configures_paths_dialect_and_ignored_codes_from_a_subdirectory(project, capsys, monkeypatch):
     (project / "pyproject.toml").write_text(
-        '[tool.sqlassert]\ndialect = "postgres"\npaths = ["models"]\nignore = ["unknown-assertion"]\n'
+        '[tool.sqlassert]\ndialect = "postgres"\npaths = ["models"]\nignore = ["unproved-many-to-one-join"]\n'
     )
     (project / "models").mkdir()
     (project / "models" / "q.sql").write_text(UNKNOWN)
@@ -157,29 +186,29 @@ def test_pyproject_configures_paths_dialect_and_ignored_codes_from_a_subdirector
 
 
 def test_paths_and_only_ignore_replace_the_configured_values(project, capsys):
-    (project / "pyproject.toml").write_text('[tool.sqlassert]\npaths = ["ok.sql"]\nignore = ["unknown-assertion"]\n')
+    (project / "pyproject.toml").write_text('[tool.sqlassert]\npaths = ["ok.sql"]\nignore = ["unproved-many-to-one-join"]\n')
     (project / "ok.sql").write_text(PROVED)
     (project / "q.sql").write_text(UNKNOWN)
 
     code, out, _ = run(capsys, "q.sql", "--only-ignore", "undeclared-table")
 
     assert code == EXIT_FINDINGS
-    assert out.startswith("q.sql:4:3: error unknown-assertion")
+    assert out.startswith("q.sql:4:3: error unproved-many-to-one-join")
 
 
 def test_ignore_adds_to_the_configured_codes(project, capsys):
-    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unknown-assertion"]\n')
+    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unproved-many-to-one-join"]\n')
     (project / "q.sql").write_text(UNKNOWN)
     (project / "m.sql").write_text(MISTYPED)
 
     code, out, _ = run(capsys, "q.sql", "m.sql", "--ignore", "unrecognized-marker")
 
     assert code == EXIT_OK
-    assert "unknown-assertion" not in out and "unrecognized-marker" not in out
+    assert "unproved-many-to-one-join" not in out and "unrecognized-marker" not in out
 
 
 def test_only_ignore_empty_ignores_nothing(project, capsys):
-    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unknown-assertion"]\n')
+    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unproved-many-to-one-join"]\n')
     (project / "q.sql").write_text(UNKNOWN)
 
     code, _, _ = run(capsys, "q.sql", "--only-ignore", "")
@@ -191,13 +220,13 @@ def test_ignore_and_only_ignore_are_exclusive(project, capsys):
     (project / "q.sql").write_text(UNKNOWN)
 
     with pytest.raises(SystemExit) as exit_:
-        main(["check", "q.sql", "--ignore", "unknown-assertion", "--only-ignore", "unknown-assertion"])
+        main(["check", "q.sql", "--ignore", "unproved-many-to-one-join", "--only-ignore", "unproved-many-to-one-join"])
 
     assert exit_.value.code == EXIT_USAGE
 
 
 def test_the_nearest_pyproject_with_a_sqlassert_table_wins(project, capsys, monkeypatch):
-    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unknown-assertion"]\n')
+    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unproved-many-to-one-join"]\n')
     (project / "inner").mkdir()
     (project / "inner" / "pyproject.toml").write_text('[project]\nname = "inner"\n')
     (project / "inner" / "q.sql").write_text(UNKNOWN)
@@ -287,7 +316,7 @@ def test_sarif_is_a_structurally_valid_2_1_0_log(project, capsys):
         assert region["startLine"] >= 1
         assert all(region[key] >= 1 for key in ("startColumn", "endLine", "endColumn") if key in region)
     by_rule = {result["ruleId"]: result for result in run_["results"]}
-    assert by_rule["unknown-assertion"]["locations"][0]["physicalLocation"]["region"] == {
+    assert by_rule["unproved-many-to-one-join"]["locations"][0]["physicalLocation"]["region"] == {
         "startLine": 4, "startColumn": 3, "endLine": 4, "endColumn": 27,
     }
     assert by_rule["undeclared-table"]["level"] == "warning"
@@ -303,8 +332,8 @@ def test_github_annotations_land_on_the_marker(project, capsys):
     assert code == EXIT_FINDINGS
     unknown, warning = out.splitlines()
     assert unknown.startswith(
-        "::error file=q.sql,line=4,endLine=4,col=3,endColumn=27,title=sqlassert unknown-assertion::"
-        "/**ASSERT MANY TO ONE**/ is UNKNOWN%0A#1 UNKNOWN: many_to_one_join"
+        "::error file=q.sql,line=4,endLine=4,col=3,endColumn=27,title=sqlassert unproved-many-to-one-join::"
+        "/**ASSERT MANY TO ONE**/ is not proved (UNKNOWN)%0A#1 UNKNOWN: many_to_one_join"
     )
     assert warning.startswith("::warning file=w.sql,title=sqlassert undeclared-table::table events has no CREATE TABLE")
 
@@ -316,7 +345,7 @@ def test_github_annotations_drop_columns_for_a_marker_across_lines(project, caps
 
     _, out, _ = run(capsys, "q.sql", "--format", "github")
 
-    assert out.startswith("::error file=q.sql,line=2,endLine=3,title=sqlassert unknown-assertion::")
+    assert out.startswith("::error file=q.sql,line=2,endLine=3,title=sqlassert unproved-unique::")
 
 
 # Spans -------------------------------------------------------------------------

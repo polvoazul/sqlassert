@@ -105,8 +105,11 @@ class DbtReport:
         )
 
 
-def exit_code(report: DbtReport) -> int:
-    return EXIT_FINDINGS if report.failed else EXIT_OK
+def exit_code(report: DbtReport, *, require_proved: bool = False) -> int:
+    """`EXIT_FINDINGS` when the report failed or, under `require_proved`, a
+    test is not proved: for a project whose every test the SQL must back."""
+    unproved = require_proved and any(test.kind == "test" and test.status is Status.NOT_PROVED for test in report.tests)
+    return EXIT_FINDINGS if report.failed or unproved else EXIT_OK
 
 
 def format_text(report: DbtReport, *, explain: bool = False) -> str:

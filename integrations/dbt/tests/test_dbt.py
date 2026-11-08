@@ -17,12 +17,16 @@ from sqlassert_dbt.jinja import Unrenderable, render
 from sqlassert_dbt.manifest import load_manifest
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
-from sqlassert_dbt.__main__ import main
+from dbt.cli.main import dbtRunner
+from dbt_runs import copy_source
+
+from sqlassert_dbt import __main__ as dbt_command
+from sqlassert_dbt.__main__ import main, proved_tests
 
 
 @pytest.fixture(scope="module")
 def report(compiled: Path) -> DbtReport:
-    return analyze_project(compiled)
+    return analyze_project(compiled, trust_upstream_tests=True)
 
 
 def statuses(report: DbtReport) -> dict[str, tuple[Status, str]]:
@@ -64,6 +68,16 @@ def test_a_test_is_proved_from_upstream_tests_that_are_facts(report):
     assert found["not_null_customers_n_orders"][0] is Status.PROVED
 
 
+def test_upstream_tests_are_facts_only_when_trusted(compiled):
+    report = analyze_project(compiled)
+    found = statuses(report)
+    assert found["unique_stg_customers_customer_id"][0] is Status.NOT_PROVED
+    assert found["not_null_stg_customers_customer_id"][0] is Status.NOT_PROVED
+    assert [problem.code for problem in report.problems if problem.code == "dbt-untrusted-upstream-tests"] == [
+        "dbt-untrusted-upstream-tests"
+    ]
+
+
 def test_a_test_is_never_its_own_declaration(report):
     status, reason = statuses(report)["unique_stg_customers_first_name"]
     assert status is Status.NOT_PROVED
@@ -78,13 +92,13 @@ def test_a_warn_severity_test_is_no_fact_downstream(report):
 def test_an_error_severity_test_is_a_fact_downstream(copy_project):
     project = copy_project()
     edit_manifest(project, lambda m: node_named(m, "source_accepted_values_raw_orders_status__placed__shipped__returned")["config"].update(severity="ERROR"))
-    assert statuses(analyze_project(project))["accepted_values_stg_orders_status__placed__shipped__returned"][0] is Status.PROVED
+    assert statuses(analyze_project(project, trust_upstream_tests=True))["accepted_values_stg_orders_status__placed__shipped__returned"][0] is Status.PROVED
 
 
 def test_a_where_config_makes_a_test_no_fact(copy_project):
     project = copy_project()
     edit_manifest(project, lambda m: node_named(m, "source_unique_raw_customers_id")["config"].update(where="id > 0"))
-    assert statuses(analyze_project(project))["unique_stg_customers_customer_id"][0] is Status.NOT_PROVED
+    assert statuses(analyze_project(project, trust_upstream_tests=True))["unique_stg_customers_customer_id"][0] is Status.NOT_PROVED
 
 
 def test_tables_and_relationships_are_left_to_the_warehouse(report):
@@ -129,7 +143,7 @@ def test_an_unrenderable_branch_leaves_its_model_unproved(copy_project):
         node["raw_code"] = node["raw_code"].replace("{{ this }}", "{{ this }} where {{ var('x') }}")
 
     edit_manifest(project, edit)
-    report = analyze_project(project)
+    report = analyze_project(project, trust_upstream_tests=True)
     assert statuses(report)["unique_orders_incremental_order_id"][0] is Status.NOT_PROVED
     marker = next(m for m in report.markers if m.model == "orders_incremental")
     assert marker.outcome is Outcome.UNKNOWN and "is_incremental() branch was not analyzed" in marker.explanation
@@ -206,7 +220,7 @@ def test_a_missing_manifest_is_a_project_error(tmp_path):
 
 
 def test_command_exits_1_on_an_unproved_marker(compiled, capsys):
-    assert main([str(compiled)]) == 1
+    assert main(["check", str(compiled)]) == 1
     out = capsys.readouterr().out
     assert "models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/" in out
     assert "Proved statically" in out and "schema.yml additions" in out
@@ -222,12 +236,97 @@ def test_command_exits_0_when_every_marker_is_proved(copy_project, capsys):
             node["raw_code"] = node["raw_code"].replace(text, "")
 
     edit_manifest(project, edit)
-    assert main([str(project)]) == 0
+    assert main(["check", str(project), "--trust-upstream-tests"]) == 0
+
+
+def test_require_proved_fails_on_an_unproved_test(copy_project, capsys):
+    project = copy_project()
+
+    def edit(manifest):
+        node = node_named(manifest, "customers")
+        for text in ("/**ASSERT MANY TO ONE**/ ", "\n/**ASSERT NOT NULL(first_name)**/"):
+            node["compiled_code"] = node["compiled_code"].replace(text, "")
+            node["raw_code"] = node["raw_code"].replace(text, "")
+
+    edit_manifest(project, edit)
+    assert main(["check", str(project), "--trust-upstream-tests"]) == 0
+    assert main(["check", str(project), "--trust-upstream-tests", "--require-proved"]) == 1
 
 
 def test_command_exits_2_without_a_manifest(tmp_path, capsys):
-    assert main([str(tmp_path)]) == 2
+    assert main(["check", str(tmp_path)]) == 2
     assert "manifest" in capsys.readouterr().err
+
+
+def fake_dbt(monkeypatch) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str]) -> int:
+        calls.append(arguments)
+        return 0
+
+    monkeypatch.setattr(dbt_command, "run_dbt", run)
+    return calls
+
+
+def test_build_compiles_checks_then_builds_without_the_proved_tests(copy_project, monkeypatch, capsys):
+    project = copy_project()
+    calls = fake_dbt(monkeypatch)
+
+    code = main(["build", str(project), "--", "--target", "dev"])
+
+    assert code == 1  # dbt passed; a marker is UNKNOWN
+    assert "models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/" in capsys.readouterr().out
+    compile_, build = calls
+    assert compile_ == ["compile", "--target", "dev", "--project-dir", str(project)]
+    excluded = build[build.index("--exclude") + 1:]
+    assert build[:4] == ["build", "--target", "dev", "--project-dir"]
+    # Upstream tests run in the same invocation, so they are facts.
+    assert excluded == proved_tests(analyze_project(project, trust_upstream_tests=True))
+    assert "unique_stg_customers_customer_id" in excluded
+
+
+def test_a_selection_makes_upstream_tests_no_facts(copy_project, monkeypatch, capsys):
+    project = copy_project()
+    calls = fake_dbt(monkeypatch)
+
+    main(["test", str(project), "--", "--select", "customers"])
+
+    test = calls[1]
+    assert test[0] == "test"
+    excluded = test[test.index("--exclude") + 1:] if "--exclude" in test else []
+    assert excluded == proved_tests(analyze_project(project))
+    assert "unique_stg_customers_customer_id" not in excluded
+
+
+def test_a_failing_dbt_run_is_the_exit_status(copy_project, monkeypatch, capsys):
+    project = copy_project()
+    monkeypatch.setattr(dbt_command, "run_dbt", lambda arguments: 0 if arguments[0] == "compile" else 7)
+
+    assert main(["build", str(project)]) == 7
+
+
+def test_dbt_takes_the_proved_tests_as_excluded(tmp_path, monkeypatch, capsys):
+    """A real dbt build: the project has no raw data, so models fail, but every
+    test dbt selected appears in run_results, and no excluded one does."""
+    project = copy_source(tmp_path)
+    log = str(project / "logs")
+    excluded: list[str] = []
+
+    def run(arguments: list[str]) -> int:
+        if "--exclude" in arguments:
+            excluded.extend(arguments[arguments.index("--exclude") + 1:])
+        invoked = dbtRunner().invoke(["--quiet", "--no-send-anonymous-usage-stats", "--log-path", log, *arguments])
+        return 0 if invoked.success else 1
+
+    monkeypatch.setattr(dbt_command, "run_dbt", run)
+
+    main(["build", str(project), "--", "--profiles-dir", str(project)])
+
+    results = json.loads((project / "target" / "run_results.json").read_text())["results"]
+    ran = {result["unique_id"].split(".")[2] for result in results if result["unique_id"].startswith("test.")}
+    assert "unique_stg_customers_customer_id" in excluded
+    assert ran and not ran & set(excluded)
 
 
 # Expectations

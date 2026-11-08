@@ -39,17 +39,22 @@ UNANALYZED_MODEL = "dbt-unanalyzed-model"
 UNANALYZED_BRANCH = "dbt-unanalyzed-branch"
 UNKNOWN_COLUMNS = "dbt-unknown-columns"
 EPHEMERAL_NOT_LOCATED = "dbt-ephemeral-not-located"
+UNTRUSTED_UPSTREAM_TESTS = "dbt-untrusted-upstream-tests"
 
 
 class ProjectError(Exception):
     """The project cannot be analyzed at all: no manifest, or an unreadable one."""
 
 
-def analyze_project(project_dir: Path, *, manifest_path: Path | None = None, dialect: str | None = None) -> DbtReport:
+def analyze_project(
+    project_dir: Path, *, manifest_path: Path | None = None, dialect: str | None = None, trust_upstream_tests: bool = False,
+) -> DbtReport:
     """Every test and marker of the dbt project at `project_dir`.
 
     `dialect` overrides the one the manifest's adapter names; without it, an
     adapter sqlassert does not support leaves every model unanalyzed.
+    `trust_upstream_tests` makes the passing tests of what a model reads facts
+    about it, which holds when they run before it, as under `dbt build`.
     """
     from sqlassert_dbt.manifest import ManifestError
 
@@ -58,13 +63,14 @@ def analyze_project(project_dir: Path, *, manifest_path: Path | None = None, dia
         manifest = load_manifest(path)
     except ManifestError as error:
         raise ProjectError(f"{error}; run `dbt compile` (or `dbt build`) first") from error
-    return _Analysis(manifest, tuple(expectations(manifest))).run(dialect)
+    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests).run(dialect)
 
 
 @dataclass
 class _Analysis:
     manifest: Manifest
     expectations: tuple[Expectation, ...]
+    trust_upstream_tests: bool = False
 
     def run(self, requested: str | None) -> DbtReport:
         problems: list[Problem] = []
@@ -73,7 +79,10 @@ class _Analysis:
         markers: list[MarkerOutcome] = []
         untested: list[Untested] = []
         undeclared: set[str] = set()
-        builder = Builder(self.manifest.relations, self.expectations, dialect) if dialect is not None else None
+        builder = (
+            Builder(self.manifest.relations, self.expectations, dialect, self.trust_upstream_tests)
+            if dialect is not None else None
+        )
         for relation in sorted(self.manifest.relations.values(), key=lambda relation: relation.unique_id):
             own = [e for e in self.expectations if e.node == relation.unique_id]
             if builder is None:
@@ -85,6 +94,14 @@ class _Analysis:
             untested.extend(outcome.untested)
             problems.extend(outcome.problems)
             undeclared |= outcome.undeclared
+        if builder is not None and builder.untrusted:
+            problems.append(Problem(
+                UNTRUSTED_UPSTREAM_TESTS,
+                f"{len(builder.untrusted)} passing test(s) of the relations models read were not used as facts, since nothing "
+                "says they ran before those models were built: pass --trust-upstream-tests when they do (dbt build), "
+                "or run through `sqlassert-dbt build`",
+                "warning",
+            ))
         for node in sorted(undeclared):
             relation = self.manifest.relations[node]
             supply = (

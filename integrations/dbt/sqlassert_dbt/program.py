@@ -275,10 +275,20 @@ class Builder:
     relations: Mapping[str, Relation]
     expectations: tuple[Expectation, ...]
     dialect: str
+    # Whether the tests of what a model reads passed before it was built, as
+    # under `dbt build`. Plain `dbt run` runs no test, so by default only
+    # enforced contract constraints are facts.
+    trust_upstream_tests: bool = False
+    # The upstream tests that would have been facts had they been trusted.
+    untrusted: set[str] = field(default_factory=set)
     _usable: dict[str, bool] = field(default_factory=dict)
 
     def facts(self, node: str) -> list[Expectation]:
-        return [e for e in self.expectations if e.node == node and e.is_fact]
+        found = [e for e in self.expectations if e.node == node and e.is_fact]
+        if self.trust_upstream_tests:
+            return found
+        self.untrusted.update(e.unique_id for e in found if e.kind == "test")
+        return [e for e in found if e.kind == "constraint"]
 
     def is_view(self, relation: Relation) -> bool:
         """Whether `relation` enters a Program as its query rather than as a table."""
