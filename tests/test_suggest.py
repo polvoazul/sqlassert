@@ -6,7 +6,9 @@ import io
 
 import pytest
 
-from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest
+from sqlassert import (
+    ExactlyOneJoin, ManyToOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, UniqueJoin, UniqueSet, analyze, suggest,
+)
 from sqlassert.__main__ import main
 from sqlassert.properties import EnumeratedDomain, ExhaustiveCase
 from sqlassert.ir.convert import IrParser
@@ -23,11 +25,11 @@ def markers(sql: str, **kwargs) -> list[tuple[str, str]]:
     return [(s.site.label, s.marker) for s in suggest(sql, **kwargs).suggestions]
 
 
-def test_a_provable_join_is_suggested_as_a_unique_join():
+def test_a_provable_join_is_suggested_in_its_most_specific_form():
     report = suggest(SCHEMA + "SELECT * FROM sessions\nLEFT JOIN users ON sessions.user_id = users.id")
 
-    join, = (s for s in report.suggestions if isinstance(s.property, UniqueJoin))
-    assert (join.site.label, join.site.line, join.marker) == ("LEFT JOIN users", 5, "/**ASSERT UNIQUE**/")
+    join, = (s for s in report.suggestions if isinstance(s.property, ManyToOneJoin))
+    assert (join.site.label, join.site.line, join.marker) == ("LEFT JOIN users", 5, "/**ASSERT MANY TO ONE**/")
     assert join.evidence.value
 
 
@@ -43,15 +45,20 @@ def test_a_join_that_matches_exactly_one_row_is_suggested_in_that_stronger_form(
 def test_a_join_already_marked_is_not_suggested_again():
     sql = SCHEMA + """
     CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id));
-    SELECT orders.id, users.name FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id
+    SELECT orders.id, users.name FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id
     """
     assert "JOIN users" not in [s.site.label for s in suggest(sql).suggestions]
 
 
-def test_an_unprovable_join_is_not_suggested():
+def test_a_join_whose_left_input_is_unique_is_suggested_as_one_to_many():
     report = suggest(SCHEMA + "SELECT * FROM users JOIN sessions ON sessions.user_id = users.id")
     # The inner join's ON equality rejects a NULL user_id.
-    assert [s.marker for s in report.suggestions] == ["/**ASSERT NOT NULL(id, name, user_id)**/"]
+    assert [s.marker for s in report.suggestions] == ["/**ASSERT ONE TO MANY**/", "/**ASSERT NOT NULL(id, name, user_id)**/"]
+
+
+def test_a_many_to_many_join_is_not_suggested():
+    sql = SCHEMA + "SELECT s.user_id FROM sessions AS s JOIN sessions AS t ON t.user_id = s.user_id"
+    assert not any(s.site.label.startswith("JOIN") for s in suggest(sql).suggestions)
 
 
 def test_only_the_strongest_form_of_each_minimal_unique_set_is_suggested():
@@ -95,7 +102,7 @@ def test_every_select_expression_is_an_attachment_site():
         ("view active_users", "/**ASSERT NOT NULL UNIQUE(id)**/"),
         ("CTE recent", "/**ASSERT UNIQUE(user_id)**/"),
         ("subquery s", "/**ASSERT NOT NULL UNIQUE(user_id)**/"),
-        ("JOIN recent", "/**ASSERT UNIQUE**/"),
+        ("JOIN recent", "/**ASSERT ONE TO ONE**/"),
         ("Root Select", "/**ASSERT NOT NULL UNIQUE(user_id)**/"),
     ]
 
@@ -274,7 +281,7 @@ def test_the_cli_prints_one_line_per_suggestion(tmp_path, capsys):
     assert main(["suggest", str(path)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["mid", "line", "5", "JOIN", "users", "Unique", "Join", "/**ASSERT", "UNIQUE**/"]
+    assert lines[0].split() == ["mid", "line", "5", "JOIN", "users", "Many", "To", "One", "Join", "/**ASSERT", "MANY", "TO", "ONE**/"]
     assert len(lines) == len(suggest(path.read_text()).suggestions)
 
 

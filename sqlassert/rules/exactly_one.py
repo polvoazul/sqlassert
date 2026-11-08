@@ -17,16 +17,16 @@ from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, analysis, all_of, unknown
 from sqlassert.rules.foreign_key import referential_coverage
 from sqlassert.rules.nullability import non_null_columns
-from sqlassert.rules.unique_join import unique_join
+from sqlassert.rules.join_cardinality import many_to_one_join
 
 
 @analysis(Stratum.UNIQUE_JOIN)
 def exactly_one_join(join: ir.Join) -> Result[bool]:
-    # As for a Unique Join, the left row's matches decide it, except that an
+    # As for a Many To One Join, the left row's matches decide it, except that an
     # anti join drops every matched row.
     if join.kind == "anti":
         return unknown("An anti join drops the rows it matches", join)
-    at_most_one = _half("At most one match: the right predicate columns cover a Unique Set", (join,), unique_join(join))
+    at_most_one = _half("At most one match: the right predicate columns cover a Unique Set", (join,), many_to_one_join(join))
     pairs, others = _cross_equalities(join)
     if not pairs:
         return at_most_one & unknown(

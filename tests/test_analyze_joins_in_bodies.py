@@ -26,17 +26,17 @@ def outcomes(sql: str) -> list[Outcome]:
 
 
 @pytest.mark.parametrize("sql", [
-    pytest.param("WITH c AS (SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id) SELECT * FROM c", id="cte"),
+    pytest.param("WITH c AS (SELECT * FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) SELECT * FROM c", id="cte"),
     pytest.param(
-        "CREATE VIEW v AS SELECT orders.id FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id;"
+        "CREATE VIEW v AS SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id;"
         " SELECT * FROM v", id="view",
     ),
     pytest.param(
-        "SELECT * FROM (SELECT orders.id FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id) AS s",
+        "SELECT * FROM (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) AS s",
         id="from subquery",
     ),
     pytest.param(
-        "SELECT * FROM items JOIN (SELECT orders.id FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id) AS s"
+        "SELECT * FROM items JOIN (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) AS s"
         " ON s.id = items.order_id", id="joined subquery",
     ),
     pytest.param(
@@ -50,13 +50,13 @@ def test_a_join_marker_inside_a_body_is_proved(sql):
 
 def test_an_unprovable_join_marker_inside_a_cte_is_unknown():
     assert outcomes(
-        "WITH c AS (SELECT * FROM users /**ASSERT UNIQUE**/ JOIN orders ON users.id = orders.user_id) SELECT * FROM c"
+        "WITH c AS (SELECT * FROM users /**ASSERT MANY TO ONE**/ JOIN orders ON users.id = orders.user_id) SELECT * FROM c"
     ) == [Outcome.UNKNOWN]
 
 
 def test_a_cte_referenced_twice_states_its_assertion_once():
     assert outcomes(
-        "WITH c AS (SELECT orders.id FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id) "
+        "WITH c AS (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) "
         "SELECT * FROM c AS a JOIN c AS b ON a.id = b.id"
     ) == [Outcome.PROVED]
 
@@ -65,10 +65,10 @@ def test_nested_ctes_with_joins_are_lowered():
     assert outcomes(
         """
         WITH outer_cte AS (
-            WITH inner_cte AS (SELECT orders.id FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id)
-            SELECT inner_cte.id FROM inner_cte /**ASSERT UNIQUE**/ JOIN orders ON orders.id = inner_cte.id
+            WITH inner_cte AS (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id)
+            SELECT inner_cte.id FROM inner_cte /**ASSERT MANY TO ONE**/ JOIN orders ON orders.id = inner_cte.id
         ),
-        later AS (SELECT items.order_id FROM items /**ASSERT UNIQUE**/ JOIN outer_cte ON outer_cte.id = items.order_id)
+        later AS (SELECT items.order_id FROM items /**ASSERT MANY TO ONE**/ JOIN outer_cte ON outer_cte.id = items.order_id)
         SELECT * FROM later
         """
     ) == [Outcome.PROVED, Outcome.PROVED, Outcome.PROVED]
@@ -77,7 +77,7 @@ def test_nested_ctes_with_joins_are_lowered():
 def test_a_view_joining_orders_to_users_by_key_keeps_the_orders_key():
     assert outcomes(
         "CREATE VIEW v AS SELECT orders.id, users.name FROM orders JOIN users ON users.id = orders.user_id;"
-        " SELECT * FROM items /**ASSERT UNIQUE**/ JOIN v ON v.id = items.order_id;"
+        " SELECT * FROM items /**ASSERT MANY TO ONE**/ JOIN v ON v.id = items.order_id;"
     ) == [Outcome.PROVED]
 
 
@@ -118,7 +118,7 @@ def test_a_set_operation_in_a_from_subquery_is_lowered():
 def test_a_join_marker_in_an_unreferenced_cte_is_still_reported():
     """An unreferenced CTE is not lowered, like an unreferenced view."""
     report = analyze(
-        SCHEMA + "WITH c AS (SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN users ON users.id = orders.user_id) SELECT 1 AS one"
+        SCHEMA + "WITH c AS (SELECT * FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) SELECT 1 AS one"
     )
 
     assert report.assertions == ()

@@ -27,7 +27,7 @@ FORBIDDEN_IMPORTS = {
     "rules/exactly_one.py": ("sqlglot",),
     "rules/foreign_key.py": ("sqlglot",),
     "rules/nullability.py": ("sqlglot",),
-    "rules/unique_join.py": ("sqlglot",),
+    "rules/join_cardinality.py": ("sqlglot",),
     "rules/uniqueness.py": ("sqlglot",),
     "reporting.py": ("sqlglot",),
 }

@@ -1,9 +1,9 @@
 # 41. Join cardinality markers and the fan-trap smell
 
-- **State:** open
+- **State:** done (2026-11-08)
 - **Labels:** markers, suggestions
 - **Created:** 2026-11-08
-- **Related:** [15: suggestions and smells](0015-suggest-provable-properties-for-unannotated-sql.md), [21](done/0021-assert-simple-exactly-one-joins.md) and [22](done/0022-complete-exactly-one-reasoning.md): Exactly One
+- **Related:** [15: suggestions and smells](../0015-suggest-provable-properties-for-unannotated-sql.md), [21](0021-assert-simple-exactly-one-joins.md) and [22](0022-complete-exactly-one-reasoning.md): Exactly One
 
 ## Why
 
@@ -114,16 +114,35 @@ claim is checked on data, not only reasoned.
 
 ## Acceptance criteria
 
-- [ ] `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE`, `NOT MANY TO MANY` parse,
+- [x] `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE`, `NOT MANY TO MANY` parse,
   attach before a join, and are proved by `unique_join` and its mirror.
-- [ ] `UNIQUE` means `NOT MANY TO MANY`; tests use the most specific marker,
+- [x] `UNIQUE` means `NOT MANY TO MANY`; tests use the most specific marker,
   plus end-to-end `UNIQUE` / `NOT MANY TO MANY` tests for right only, left
   only, both (PROVED) and neither (UNKNOWN); README, CONTEXT.md and
   suggestions updated.
-- [ ] A cardinality marker on a SEMI or ANTI join is rejected with a diagnostic.
-- [ ] Explanations of `NOT MANY TO MANY` name the unique side.
-- [ ] The fan-trap/chasm-trap smell fires on both examples, stays silent on
+- [x] A cardinality marker on a SEMI or ANTI join is rejected with a diagnostic.
+- [x] Explanations of `NOT MANY TO MANY` name the unique side.
+- [x] The fan-trap/chasm-trap smell fires on both examples, stays silent on
   `sum(o.amount)` over `customers JOIN orders` and on relations without a
   known key; it fires on `min`, `max` and `DISTINCT` aggregates too, and on
   `count(*)` over a many-to-many join.
-- [ ] `pytest --soundness-oracle` passes; the oracle judges the new markers.
+- [x] `pytest --soundness-oracle` passes; the oracle judges the new markers.
+
+## Done
+
+- Markers parse as their own tokens (`NOT MANY TO MANY` is the same token as
+  `UNIQUE`); `rules/join_cardinality.py` proves `many_to_one_join` (today's
+  rule), `one_to_many_join` (the same, with the other input matched),
+  `one_to_one_join` and `unique_join` (their disjunction, whose explanation
+  names the unique input). Internal callers (Exactly One, FDs, improvements)
+  use `many_to_one_join`.
+- A cardinality marker on a SEMI or ANTI join gets
+  `cardinality-on-filtering-join` and no assertion.
+- Tests use the most specific marker; `test_analyze_join_cardinality.py`
+  covers the disjunction's four cases. The oracle checks each direction by
+  counting each input's rows against the join made LEFT or RIGHT.
+- `Aggregate.calls` keeps each aggregate call's lowered arguments (a side
+  effect: an `EXHAUSTIVE` CASE inside an aggregate is now analyzed). The
+  Fan Trap and Chasm Trap smells in `smells.py` follow the argument's
+  columns down through joins; `test_smells.py` shows each total doubled on
+  DuckDB.

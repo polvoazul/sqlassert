@@ -82,7 +82,7 @@ ORDERS = table("orders", "id", "user_id", nullable=("user_id",), primary_key=("i
 UNIQUE_JOIN = """
 SELECT *
 FROM orders
-/**ASSERT UNIQUE**/ JOIN users ON orders.user_id = users.id
+/**ASSERT MANY TO ONE**/ JOIN users ON orders.user_id = users.id
 """
 
 
@@ -121,7 +121,7 @@ def test_repeated_references_fetch_once_but_keep_distinct_aliases():
     sql = """
     SELECT *
     FROM users AS a
-    /**ASSERT UNIQUE**/ JOIN users AS b ON a.id = b.id
+    /**ASSERT MANY TO ONE**/ JOIN users AS b ON a.id = b.id
     """
 
     hydration = fetcher.hydrate(SqlParser("duckdb").parse(sql), dialect="duckdb")
@@ -146,7 +146,7 @@ def test_catalog_views_expand_recursively_through_the_parser_and_linker():
         """
         SELECT *
         FROM orders
-        /**ASSERT UNIQUE**/ JOIN active_users ON orders.user_id = active_users.id
+        /**ASSERT MANY TO ONE**/ JOIN active_users ON orders.user_id = active_users.id
         """,
         fetcher,
     )
@@ -166,7 +166,7 @@ def test_a_view_body_resolves_names_in_the_view_schema():
         """
         SELECT *
         FROM orders
-        /**ASSERT UNIQUE**/ JOIN s.v ON orders.user_id = v.id
+        /**ASSERT MANY TO ONE**/ JOIN s.v ON orders.user_id = v.id
         """,
         fetcher,
     )
@@ -187,7 +187,7 @@ def test_recursive_catalog_views_terminate_with_a_diagnostic():
         """
         SELECT *
         FROM orders
-        /**ASSERT UNIQUE**/ JOIN a ON orders.user_id = a.id
+        /**ASSERT MANY TO ONE**/ JOIN a ON orders.user_id = a.id
         """,
         fetcher,
     )

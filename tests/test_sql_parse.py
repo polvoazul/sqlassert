@@ -106,7 +106,7 @@ def test_parsing_registers_no_dialect_beyond_the_one_it_needs():
     before = set(Dialect.classes)
     parser = SqlParser("duckdb")
 
-    parser.parse("SELECT * FROM a /**ASSERT UNIQUE**/ JOIN b ON a.x = b.x")
+    parser.parse("SELECT * FROM a /**ASSERT MANY TO ONE**/ JOIN b ON a.x = b.x")
     parser.parse("SELEC * FROM")  # the failure path re-tokenizes
 
     assert set(Dialect.classes) - before <= {"sqlassertduckdb"}
@@ -121,7 +121,7 @@ def test_a_marker_the_dialect_did_not_recognize_is_reported():
     produce it without breaking SQLGlot — and without this guard the program
     would report as proved.
     """
-    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT UNIQUE**/ JOIN u ON s.id = u.id"
+    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT MANY TO ONE**/ JOIN u ON s.id = u.id"
     unrecognized = [statement for statement in sqlglot.parse(sql, read="duckdb") if statement]
 
     diagnostics = _unresolved_markers(sql, unrecognized)
@@ -133,7 +133,7 @@ def test_a_marker_the_dialect_did_not_recognize_is_reported():
 
 
 def test_recognized_markers_leave_the_reconciliation_quiet():
-    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT UNIQUE**/ JOIN u ON s.id = u.id"
+    sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT MANY TO ONE**/ JOIN u ON s.id = u.id"
     parser = SqlParser("duckdb")
     statements = [statement for statement in sqlglot.parse(sql, read=parser.dialect_class) if statement]
 

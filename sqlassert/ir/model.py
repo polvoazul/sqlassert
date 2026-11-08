@@ -494,9 +494,19 @@ class Limit(RelationExpr):
     count: int | None = None
 
 
+class AggregateCall(Node):
+    """One aggregate function call in a grouped Select's list: its SQL, and its
+    arguments lowered against the Aggregate's input (none for `count(*)`).
+    Only smells read it; an aggregate's value is opaque to every proof."""
+
+    description: str
+    arguments: tuple[ScalarExpr, ...]
+
+
 class Aggregate(RelationExpr):
     input: RelationExpr
     grouping_outputs: tuple[OutputColumn, ...]
+    calls: tuple[AggregateCall, ...] = ()
 
 
 class Distinct(RelationExpr):

@@ -83,7 +83,7 @@ def _cases(contexts: dict[str, str], markers: list[str]):
 @pytest.mark.parametrize(
     "sql",
     _cases(SELECT_CONTEXTS, COLUMN_MARKERS)
-    + _cases(JOIN_CONTEXTS, ["/**ASSERT UNIQUE**/", "/**ASSERT EXACTLY ONE**/"])
+    + _cases(JOIN_CONTEXTS, ["/**ASSERT MANY TO ONE**/", "/**ASSERT EXACTLY ONE**/"])
     + _cases(CASE_CONTEXTS, ["/**ASSERT EXHAUSTIVE**/"]),
 )
 def test_every_marker_states_something_or_is_diagnosed(sql: str):
@@ -111,8 +111,8 @@ def test_markers_sharing_a_line_are_accounted_for_separately():
 def test_join_markers_sharing_a_line_are_accounted_for_separately():
     sql = (
         "CREATE TABLE t (id INT PRIMARY KEY); CREATE TABLE u (id INT PRIMARY KEY); "
-        "SELECT t.id FROM t /**ASSERT UNIQUE**/ JOIN u ON t.id = u.id "
-        "WHERE t.id IN (SELECT u.id FROM u /**ASSERT UNIQUE**/ JOIN t ON t.id = u.id)"
+        "SELECT t.id FROM t /**ASSERT MANY TO ONE**/ JOIN u ON t.id = u.id "
+        "WHERE t.id IN (SELECT u.id FROM u /**ASSERT MANY TO ONE**/ JOIN t ON t.id = u.id)"
     )
     report = analyze(sql)
     assert len(report.assertions) + len(report.diagnostics) == 2

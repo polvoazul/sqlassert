@@ -5,7 +5,7 @@ kind: RIGHT and FULL joins pad right rows on but never repeat a left row more
 than its matches do, so the right side's Unique Set proves them as it proves
 INNER and LEFT joins. A CROSS join is an ON with no conjuncts: unique only when
 the right input has at most one row. SEMI and ANTI joins keep or drop each
-left row whole; the same proof applies to them, unchanged.
+left row whole and output no right row: no cardinality marker applies to them.
 """
 
 from __future__ import annotations
@@ -37,12 +37,10 @@ def outcomes(sql: str) -> list[Outcome]:
         "FULL JOIN users ON sessions.user_id = users.id",
         "FULL OUTER JOIN users ON sessions.user_id = users.id",
         "CROSS JOIN (SELECT count(*) AS n FROM users) AS c",
-        "SEMI JOIN users ON sessions.user_id = users.id",
-        "ANTI JOIN users ON sessions.user_id = users.id",
     ],
 )
 def test_a_join_against_a_primary_key_is_proved_whatever_its_kind(join: str):
-    assert outcomes(f"SELECT * FROM sessions /**ASSERT UNIQUE**/ {join}") == [Outcome.PROVED]
+    assert outcomes(f"SELECT * FROM sessions /**ASSERT MANY TO ONE**/ {join}") == [Outcome.PROVED]
 
 
 @pytest.mark.parametrize(
@@ -52,12 +50,18 @@ def test_a_join_against_a_primary_key_is_proved_whatever_its_kind(join: str):
         ("full without a key", "FULL JOIN sessions AS s2 ON sessions.user_id = s2.user_id"),
         ("cross onto many rows", "CROSS JOIN users"),
         ("positional", "POSITIONAL JOIN users"),
-        ("right semi", "RIGHT SEMI JOIN users ON sessions.user_id = users.id"),
-        ("right anti", "RIGHT ANTI JOIN users ON sessions.user_id = users.id"),
     ],
 )
 def test_unproved_joins_stay_unknown(label: str, join: str):
-    assert outcomes(f"SELECT * FROM sessions /**ASSERT UNIQUE**/ {join}") == [Outcome.UNKNOWN], label
+    assert outcomes(f"SELECT * FROM sessions /**ASSERT MANY TO ONE**/ {join}") == [Outcome.UNKNOWN], label
+
+
+@pytest.mark.parametrize("join", ["SEMI JOIN", "ANTI JOIN", "RIGHT SEMI JOIN", "RIGHT ANTI JOIN"])
+@pytest.mark.parametrize("marker", ["UNIQUE", "MANY TO ONE", "ONE TO MANY", "ONE TO ONE"])
+def test_a_cardinality_marker_on_a_semi_or_anti_join_is_rejected(join: str, marker: str):
+    report = analyze(USERS_AND_SESSIONS + f"SELECT * FROM sessions /**ASSERT {marker}**/ {join} users ON sessions.user_id = users.id")
+    assert report.assertions == ()
+    assert [diagnostic.code for diagnostic in report.diagnostics] == ["cardinality-on-filtering-join"]
 
 
 def test_a_cross_join_onto_one_row_keeps_the_left_key():
@@ -106,7 +110,7 @@ def test_a_clickhouse_inner_join_is_an_inner_join():
 
 
 def test_an_unknown_join_kind_is_opaque_and_its_marker_unanalyzed():
-    sql = "CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);\nSELECT t.id FROM t /**ASSERT UNIQUE**/ ARRAY JOIN arr /**ASSERT NOT NULL(id)**/"
+    sql = "CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);\nSELECT t.id FROM t /**ASSERT MANY TO ONE**/ ARRAY JOIN arr /**ASSERT NOT NULL(id)**/"
     report = analyze(sql, dialect="clickhouse")
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
     assert [diagnostic.code for diagnostic in report.diagnostics] == ["unanalyzed-assertion"]

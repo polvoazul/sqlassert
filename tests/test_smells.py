@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from sqlassert import suggest
@@ -63,3 +64,80 @@ def test_the_cli_lists_smells_last_at_the_low_level(tmp_path, capsys):
     last = capsys.readouterr().out.splitlines()[-1]
     assert last.split()[:2] == ["low", "line"]
     assert "Arbitrary LIMIT" in last
+
+
+# Join traps (issue 41) --------------------------------------------------------
+
+TRAPS = """
+CREATE TABLE customers (id INTEGER PRIMARY KEY, credit INTEGER);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount INTEGER);
+CREATE TABLE payments (id INTEGER PRIMARY KEY, customer_id INTEGER, amount INTEGER);
+CREATE TABLE logs (customer_id INTEGER, amount INTEGER);
+"""
+
+# One customer with two orders and two payments.
+ROWS = """
+INSERT INTO customers VALUES (1, 100);
+INSERT INTO orders VALUES (10, 1, 5), (11, 1, 7);
+INSERT INTO payments VALUES (20, 1, 3), (21, 1, 4);
+"""
+
+FAN = "SELECT o.customer_id, sum(p.amount) AS s FROM orders o JOIN payments p ON p.customer_id = o.customer_id GROUP BY o.customer_id"
+CHASM = "SELECT c.id, sum(c.credit) AS s FROM customers c JOIN orders o ON o.customer_id = c.id GROUP BY c.id"
+
+
+def concerns(sql: str) -> list[Concern]:
+    return [smell.concern for smell in suggest(TRAPS + sql).smells]
+
+
+@pytest.mark.parametrize(
+    ("sql", "true_total", "concern"),
+    [(FAN, 7, Concern.FAN_TRAP), (CHASM, 100, Concern.CHASM_TRAP)],
+    ids=["fan", "chasm"],
+)
+def test_a_trap_is_a_smell_and_multiplies_the_total_on_data(sql: str, true_total: int, concern: Concern):
+    assert concerns(sql) == [concern]
+    connection = duckdb.connect()
+    connection.execute(TRAPS + ROWS)
+    (_, total), = connection.execute(sql).fetchall()
+    assert total == 2 * true_total  # Each row was counted twice.
+
+
+@pytest.mark.parametrize(
+    ("sql", "concern"),
+    [
+        # Every aggregate: the join is wrong either way.
+        ("SELECT max(c.credit) AS m FROM customers c JOIN orders o ON o.customer_id = c.id", Concern.CHASM_TRAP),
+        ("SELECT count(DISTINCT p.amount) AS n FROM orders o JOIN payments p ON p.customer_id = o.customer_id", Concern.FAN_TRAP),
+        # count(*) counts the join's rows: only a many-to-many join is a trap for it.
+        ("SELECT count(*) AS n FROM orders o JOIN payments p ON p.customer_id = o.customer_id", Concern.FAN_TRAP),
+        # Through a CTE that does the join.
+        ("WITH j AS (SELECT c.credit FROM customers c JOIN orders o ON o.customer_id = c.id) SELECT sum(credit) AS s FROM j", Concern.CHASM_TRAP),
+        # Through a chain: customers joined to orders is not unique on customers.id.
+        (
+            "SELECT c.id, sum(o.amount) AS s FROM customers c JOIN orders o ON o.customer_id = c.id "
+            "JOIN payments p ON p.customer_id = c.id GROUP BY c.id",
+            Concern.FAN_TRAP,
+        ),
+    ],
+)
+def test_more_traps(sql: str, concern: Concern):
+    assert concerns(sql) == [concern]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # The many side's rows are never repeated.
+        "SELECT c.id, sum(o.amount) AS s FROM customers c JOIN orders o ON o.customer_id = c.id GROUP BY c.id",
+        "SELECT count(*) AS n FROM customers c JOIN orders o ON o.customer_id = c.id",
+        # A semi join never repeats a row.
+        "SELECT sum(c.credit) AS s FROM customers c SEMI JOIN orders o ON o.customer_id = c.id",
+        # No known Unique Set on the repeated input: nothing to lose.
+        "SELECT sum(l.amount) AS s FROM orders o JOIN logs l ON l.customer_id = o.customer_id",
+        # An argument reading both inputs is not traced.
+        "SELECT sum(o.amount * p.amount) AS s FROM orders o JOIN payments p ON p.customer_id = o.customer_id",
+    ],
+)
+def test_an_aggregate_over_rows_no_join_repeats_is_not_a_trap(sql: str):
+    assert concerns(sql) == []

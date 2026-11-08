@@ -58,7 +58,7 @@ def test_a_right_semi_join_keeps_right_rows():
 
 
 def test_a_join_marker_inside_an_exists_subquery_is_analyzed():
-    sql = "SELECT e.id FROM events e WHERE EXISTS (SELECT 1 FROM events x /**ASSERT UNIQUE**/ JOIN users u ON u.id = x.user_id WHERE x.id = e.id)"
+    sql = "SELECT e.id FROM events e WHERE EXISTS (SELECT 1 FROM events x /**ASSERT MANY TO ONE**/ JOIN users u ON u.id = x.user_id WHERE x.id = e.id)"
     report = analyze(SCHEMA + sql)
 
     assert not report.diagnostics, report.diagnostics

@@ -18,7 +18,8 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage, UniqueJoin,
+    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet,
+    OneToManyJoin, OneToOneJoin, Property, ReferentialCoverage, UniqueJoin,
     UniqueSet,
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
@@ -666,9 +667,19 @@ class IrParser:
         kind = join_marker_kind(join)
         if kind is not None:
             self._handled_joins.add(id(join))
+        cardinality = {"unique-join": UniqueJoin, "many-to-one-join": ManyToOneJoin, "one-to-many-join": OneToManyJoin, "one-to-one-join": OneToOneJoin}
+        if kind in cardinality and relation.kind in {"semi", "anti"}:
+            # It keeps or drops left rows whole and outputs no right row: cardinality does not apply.
+            self._diagnostics.append(Diagnostic(
+                diag.CARDINALITY_ON_FILTERING_JOIN,
+                f"the {JOIN_MARKER_NOUNS[kind]} marker on line {assertion_line(join)} is on a {relation.kind} join, "
+                "which outputs no right rows: join cardinality does not apply to it",
+                join_origin(join, self.dialect),
+            ))
+            return
         match kind:
-            case "unique-join":
-                self._assertions.append(ir.Assertion(origin=join_origin(join, self.dialect), property=UniqueJoin(join=relation)))
+            case "unique-join" | "many-to-one-join" | "one-to-many-join" | "one-to-one-join":
+                self._assertions.append(ir.Assertion(origin=join_origin(join, self.dialect), property=cardinality[kind](join=relation)))
             case "exactly-one-join":
                 self._assertions.append(
                     ir.Assertion(origin=join_origin(join, self.dialect), property=ExactlyOneJoin(join=relation))
@@ -839,9 +850,20 @@ class IrParser:
         for group_expression in group.expressions:
             item = _matching_grouping_output(group_expression, select.expressions)
             grouping_outputs.append(output_columns[select.expressions.index(item)])
+        calls = tuple(
+            ir.AggregateCall(
+                origin=self._origin(call), description=call.sql(dialect=self.dialect),
+                arguments=tuple(
+                    self._lower_expression(argument, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
+                    for argument in _aggregate_arguments(call)
+                ),
+            )
+            for item in select.expressions for call in item.find_all(exp.AggFunc)
+            if call.find_ancestor(exp.Window, exp.Select) is select
+        )
         return ir.Aggregate(
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
-            grouping_outputs=tuple(grouping_outputs),
+            grouping_outputs=tuple(grouping_outputs), calls=calls,
         )
 
     def _lower_distinct(self, lowered: _Lowered, select: exp.Select) -> ir.Distinct | None:
@@ -1601,6 +1623,17 @@ def _enum_type_values(definition: exp.ColumnDef) -> frozenset[ir.LiteralValue] |
     if any(value is None or value.type != "string" for value in values):
         return None
     return frozenset(value for value in values if value is not None)
+
+
+def _aggregate_arguments(call: exp.AggFunc) -> list[exp.Expression]:
+    """The value arguments of an aggregate call: none for `count(*)`, the
+    listed ones under DISTINCT."""
+    this = call.this
+    if this is None or isinstance(this, exp.Star):
+        return []
+    if isinstance(this, exp.Distinct):
+        return list(this.expressions)
+    return [this, *call.expressions]
 
 
 def _is_scalar_aggregate(select: exp.Select) -> bool:

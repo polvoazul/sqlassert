@@ -486,7 +486,7 @@ def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[i
 
 
 def _join_dependencies(join: ir.Join):
-    from sqlassert.rules.unique_join import unique_join
+    from sqlassert.rules.join_cardinality import many_to_one_join
 
     outputs = _join_outputs(join)
     if join.kind == "semi":
@@ -501,7 +501,7 @@ def _join_dependencies(join: ir.Join):
     yield (left, right), identity, True, Result(True, "A joined row is one row of each input", (join,))
     # Not for a right or full join: its padded rows share one null left row.
     if join.kind in {"inner", "left", "cross"}:
-        proof = unique_join(join)
+        proof = many_to_one_join(join)
         if proof.value:
             yield (left,), identity, True, proof
             yield (left,), right, True, proof

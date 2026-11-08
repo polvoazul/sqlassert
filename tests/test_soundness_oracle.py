@@ -31,7 +31,7 @@ def test_a_true_unique_join_proof_has_no_counterexample():
     sql = """
         CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
         CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN users ON sessions.user_id = users.id
     """
     report = analyze(sql)
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
@@ -47,7 +47,7 @@ def test_a_false_unique_join_claim_gets_a_two_row_counterexample():
     judgement = judged(*claimed_proved("""
         CREATE TABLE users (id INTEGER PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
-        SELECT * FROM users /**ASSERT UNIQUE**/ JOIN sessions ON users.id = sessions.user_id
+        SELECT * FROM users /**ASSERT MANY TO ONE**/ JOIN sessions ON users.id = sessions.user_id
     """))
 
     counterexample, = judgement.counterexamples
@@ -63,10 +63,49 @@ def test_a_false_unique_join_claim_over_a_cte_is_refuted_with_its_context():
         CREATE TABLE users (id INTEGER PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
         WITH active AS (SELECT id FROM users WHERE id > 0)
-        SELECT * FROM active /**ASSERT UNIQUE**/ JOIN sessions ON active.id = sessions.user_id
+        SELECT * FROM active /**ASSERT MANY TO ONE**/ JOIN sessions ON active.id = sessions.user_id
     """))
 
     assert len(judgement.counterexamples) == 1
+
+
+@pytest.mark.parametrize(
+    ("marker", "left", "right"),
+    [
+        # A false one-to-many claim: two users share one session's user_id.
+        ("ONE TO MANY", "sessions", "users_by_name"),
+        # A false not-many-to-many claim: neither side is unique on user_id.
+        ("UNIQUE", "sessions", "sessions AS other"),
+        ("ONE TO ONE", "sessions", "users_by_name"),
+    ],
+)
+def test_a_false_cardinality_claim_is_refuted(marker: str, left: str, right: str):
+    on = "sessions.user_id = users_by_name.user_id" if right == "users_by_name" else "sessions.user_id = other.user_id"
+    judgement = judged(*claimed_proved(f"""
+        CREATE TABLE users_by_name (user_id INTEGER, name VARCHAR PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT * FROM {left} /**ASSERT {marker}**/ JOIN {right} ON {on}
+    """))
+
+    assert len(judgement.counterexamples) == 1
+
+
+def test_true_cardinality_proofs_have_no_counterexample():
+    sql = """
+        CREATE TABLE users (id INTEGER PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+        CREATE TABLE profiles (user_id INTEGER PRIMARY KEY);
+        SELECT * FROM users
+        /**ASSERT ONE TO MANY**/ LEFT JOIN sessions ON sessions.user_id = users.id
+        /**ASSERT UNIQUE**/ RIGHT JOIN profiles ON profiles.user_id = users.id
+    """
+    report = analyze(sql)
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED, Outcome.PROVED]
+
+    judgement = judged(sql, report)
+
+    assert judgement.checked == 2
+    assert judgement.counterexamples == ()
 
 
 def test_a_false_claim_on_a_cte_is_refuted_with_the_ctes_before_it():
@@ -416,7 +455,7 @@ def test_instances_that_break_a_property_declaration_are_rejected():
         CREATE TABLE orders (user_id INTEGER);
         CREATE TABLE sessions (user_id INTEGER);
         CREATE VIEW latest AS SELECT user_id FROM sessions /**DECLARE UNIQUE(user_id)**/;
-        SELECT * FROM orders /**ASSERT UNIQUE**/ JOIN latest ON orders.user_id = latest.user_id
+        SELECT * FROM orders /**ASSERT MANY TO ONE**/ JOIN latest ON orders.user_id = latest.user_id
     """
     report = analyze(sql)
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
@@ -439,7 +478,7 @@ def test_a_view_may_read_a_table_created_after_it():
 
 def test_programs_reading_a_table_without_create_are_skipped():
     judgement = judged(*claimed_proved("""
-        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN users ON sessions.user_id = users.id
     """))
 
     assert judgement.checked == 0

@@ -118,7 +118,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   relation's Equality Groups; `nullability.py` computes each column's Null
   Sources; `uniqueness.py` holds functional dependencies, their
   closure, and the Unique Set and Functional Dependency evaluators built on it;
-  `unique_join.py`, `foreign_key.py`, and `exactly_one.py` build on those.
+  `join_cardinality.py`, `foreign_key.py`, and `exactly_one.py` build on those.
   `domain.py` computes Enumerated Domains, intersected across Equality Groups,
   and proves exhaustive simple CASEs from their operand's domain. The
   design and its soundness arguments are in `docs/functional-dependencies.md`.

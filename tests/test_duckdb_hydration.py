@@ -41,7 +41,7 @@ def test_a_unique_join_proves_against_a_live_primary_key(connection):
     sql = """
     SELECT *
     FROM orders
-    /**ASSERT UNIQUE**/ JOIN main.users ON orders.user_id = users.id
+    /**ASSERT MANY TO ONE**/ JOIN main.users ON orders.user_id = users.id
     """
 
     assert analyze_with(connection, sql).proved
@@ -54,7 +54,7 @@ def test_a_composite_nullable_unique_set_behaves_as_if_declared_in_sql(connectio
 
     SELECT *
     FROM seats
-    /**ASSERT UNIQUE**/ JOIN memberships
+    /**ASSERT MANY TO ONE**/ JOIN memberships
         ON seats.org_id = memberships.org_id AND seats.user_id = memberships.user_id
     """
     declared = analyze(
@@ -86,7 +86,7 @@ def test_views_expand_recursively_from_the_catalog(connection):
         """
         SELECT *
         FROM orders
-        /**ASSERT UNIQUE**/ JOIN active_users ON orders.user_id = active_users.id
+        /**ASSERT MANY TO ONE**/ JOIN active_users ON orders.user_id = active_users.id
         """,
     )
 

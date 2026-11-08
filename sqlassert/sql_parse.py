@@ -49,6 +49,9 @@ class SqlassertToken(enum.Enum):
     """
 
     SQLASSERT_UNIQUE = enum.auto()
+    SQLASSERT_MANY_TO_ONE = enum.auto()
+    SQLASSERT_ONE_TO_MANY = enum.auto()
+    SQLASSERT_ONE_TO_ONE = enum.auto()
     SQLASSERT_EXACTLY_ONE = enum.auto()
     SQLASSERT_EXHAUSTIVE = enum.auto()
     SQLASSERT_UNIQUE_SET_OPEN = enum.auto()
@@ -88,6 +91,10 @@ class SqlassertToken(enum.Enum):
 # before the simple `CASE` it marks.
 MARKERS = {
     "/**ASSERT UNIQUE**/": SqlassertToken.SQLASSERT_UNIQUE,
+    "/**ASSERT NOT MANY TO MANY**/": SqlassertToken.SQLASSERT_UNIQUE,
+    "/**ASSERT MANY TO ONE**/": SqlassertToken.SQLASSERT_MANY_TO_ONE,
+    "/**ASSERT ONE TO MANY**/": SqlassertToken.SQLASSERT_ONE_TO_MANY,
+    "/**ASSERT ONE TO ONE**/": SqlassertToken.SQLASSERT_ONE_TO_ONE,
     "/**ASSERT EXACTLY ONE**/": SqlassertToken.SQLASSERT_EXACTLY_ONE,
     "/**ASSERT EXHAUSTIVE**/": SqlassertToken.SQLASSERT_EXHAUSTIVE,
     "/**ASSERT UNIQUE(": SqlassertToken.SQLASSERT_UNIQUE_SET_OPEN,
@@ -109,21 +116,31 @@ MARKERS = {
     "**/": SqlassertToken.SQLASSERT_MARKER_CLOSE,
 }
 
-type JoinMarkerKind = Literal["unique-join", "exactly-one-join"]
+type JoinMarkerKind = Literal["unique-join", "many-to-one-join", "one-to-many-join", "one-to-one-join", "exactly-one-join"]
 type ColumnMarkerKind = Literal[
     "unique", "key", "not-null", "foreign-key", "determines", "enum",
     "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines", "declared-enum",
 ]
 
-# The join markers, written immediately before a JOIN, and the kind each states:
-# "unique-join" a Unique Join, "exactly-one-join" an Exactly One Join.
+# The join markers, written immediately before a JOIN, and the kind each states.
+# The cardinality words read in FROM order: the left input is everything
+# before the join, the right its joined source. "unique-join" (`UNIQUE`, or
+# `NOT MANY TO MANY`) repeats rows of at most one input; "many-to-one-join"
+# none of the left's, "one-to-many-join" none of the right's, "one-to-one-join"
+# neither's; "exactly-one-join" matches every left row exactly once.
 JOIN_MARKER_KINDS: dict[SqlassertToken, JoinMarkerKind] = {
     SqlassertToken.SQLASSERT_UNIQUE: "unique-join",
+    SqlassertToken.SQLASSERT_MANY_TO_ONE: "many-to-one-join",
+    SqlassertToken.SQLASSERT_ONE_TO_MANY: "one-to-many-join",
+    SqlassertToken.SQLASSERT_ONE_TO_ONE: "one-to-one-join",
     SqlassertToken.SQLASSERT_EXACTLY_ONE: "exactly-one-join",
 }
 
 # How diagnostics name each join marker kind.
-JOIN_MARKER_NOUNS: dict[JoinMarkerKind, str] = {"unique-join": "unique join", "exactly-one-join": "exactly one join"}
+JOIN_MARKER_NOUNS: dict[JoinMarkerKind, str] = {
+    "unique-join": "unique join", "many-to-one-join": "many to one join", "one-to-many-join": "one to many join",
+    "one-to-one-join": "one to one join", "exactly-one-join": "exactly one join",
+}
 
 # The markers written as one fixed literal: the join markers and the case marker.
 _FIXED_MARKER_TOKENS = frozenset({*JOIN_MARKER_KINDS, SqlassertToken.SQLASSERT_EXHAUSTIVE})

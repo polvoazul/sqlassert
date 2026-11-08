@@ -47,7 +47,7 @@ PROVED = [
     (
         "ADD PRIMARY KEY makes a join unique",
         "ALTER TABLE users ADD PRIMARY KEY (id);",
-        "SELECT s.user_id FROM sessions s /**ASSERT UNIQUE**/ JOIN users u ON s.user_id = u.id",
+        "SELECT s.user_id FROM sessions s /**ASSERT MANY TO ONE**/ JOIN users u ON s.user_id = u.id",
     ),
 ]
 

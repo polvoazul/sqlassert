@@ -35,7 +35,7 @@ from typing import ClassVar
 from sqlglot import exp
 
 from sqlassert import ir
-from sqlassert.properties import ExactlyOneJoin, UniqueJoin
+from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
 from sqlassert.rules.column_set import RowIdentity
@@ -221,7 +221,7 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
     source = node.this.sql(dialect=dialect)
     unused = f"no column of {source} is used outside its ON"
     if join.kind == "left":
-        unique = arena.prove(UniqueJoin(join=join))
+        unique = arena.prove(ManyToOneJoin(join=join))
         if unique.value:
             message = f"at most one match per row and {unused}: delete the join"
             return Improvement(site, Rewrite.REDUNDANT_JOIN, message, unique)
@@ -230,7 +230,7 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
     if exactly_one.value:
         message = f"exactly one match per row and {unused}: delete the join"
         return Improvement(site, Rewrite.REDUNDANT_JOIN, message, exactly_one)
-    unique = arena.prove(UniqueJoin(join=join))
+    unique = arena.prove(ManyToOneJoin(join=join))
     if not unique.value or _right_or_full_join_follows(node):
         # A filter moved to WHERE would act after a later RIGHT or FULL JOIN,
         # which then no longer pads the rows this join used to drop first.

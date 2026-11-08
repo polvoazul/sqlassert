@@ -16,6 +16,7 @@ from sqlassert.provenance import Origin
 
 CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
 AMBIGUOUS_COLUMN = "ambiguous-column"
+CARDINALITY_ON_FILTERING_JOIN = "cardinality-on-filtering-join"
 CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
 CONSTRAINT_WITHOUT_TABLE = "constraint-without-table"
 DUPLICATE_DECLARATION = "duplicate-declaration"

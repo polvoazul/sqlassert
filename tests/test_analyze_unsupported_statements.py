@@ -32,7 +32,7 @@ def test_a_plain_index_is_understood_and_states_nothing():
 
         SELECT *
         FROM sessions
-        /**ASSERT UNIQUE**/ JOIN users
+        /**ASSERT MANY TO ONE**/ JOIN users
             ON sessions.user_id = users.id
         """
     )

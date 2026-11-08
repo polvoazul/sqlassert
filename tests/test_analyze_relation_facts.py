@@ -1,6 +1,6 @@
 """`Report.facts`: Unique Sets proved for named relations, queryable directly.
 
-Unlike `report.assertions`, which only covers `/**ASSERT UNIQUE**/`-marked joins,
+Unlike `report.assertions`, which only covers `/**ASSERT MANY TO ONE**/`-marked joins,
 `report.facts` answers "is this column set unique on this relation" for any
 named relation -- a table or a view -- that the analysis actually reasoned
 about. It lists the minimal Unique Sets, decided by the same closure that

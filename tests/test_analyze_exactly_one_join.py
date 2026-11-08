@@ -167,7 +167,7 @@ def test_the_assertion_locates_its_join():
 def test_exactly_one_and_unique_markers_mark_separate_joins():
     assert outcomes(
         "SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id = users.id "
-        "/**ASSERT UNIQUE**/ JOIN accounts ON orders.plain = accounts.user_id"
+        "/**ASSERT MANY TO ONE**/ JOIN accounts ON orders.plain = accounts.user_id"
     ) == [Outcome.PROVED, Outcome.PROVED]
 
 

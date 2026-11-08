@@ -4,9 +4,9 @@ import pytest
 
 from sqlassert import analyze, ir, python_engine
 from sqlassert.ir.convert import IrParser
-from sqlassert.properties import NonNullColumn, Property, UniqueJoin, UniqueSet
+from sqlassert.properties import ManyToOneJoin, NonNullColumn, Property, UniqueSet
 from sqlassert.python_engine import Engine, Result, Stratum, all_of, analysis, any_of, cache, current_arena, unknown
-from sqlassert.rules.unique_join import _multiplicity_columns_rhs, unique_join
+from sqlassert.rules.join_cardinality import _bound_columns, many_to_one_join
 from sqlassert.rules.nullability import non_null_column
 from sqlassert.rules.uniqueness import unique_set
 from sqlassert.sql_parse import SqlParser
@@ -15,7 +15,7 @@ from sqlassert.sql_parse import SqlParser
 SQL = """
 CREATE TABLE users(id INTEGER PRIMARY KEY);
 CREATE TABLE events(user_id INTEGER);
-SELECT events.user_id FROM events /**ASSERT UNIQUE**/ JOIN users ON events.user_id = users.id
+SELECT events.user_id FROM events /**ASSERT MANY TO ONE**/ JOIN users ON events.user_id = users.id
 """
 
 
@@ -145,26 +145,26 @@ def test_declared_unique_join_preserves_left_keys_without_an_inferred_proof():
     conversion = convert("""
         CREATE TABLE users(id INTEGER PRIMARY KEY);
         CREATE TABLE events(user_id INTEGER);
-        SELECT users.id FROM users /**ASSERT UNIQUE**/ JOIN events ON users.id = events.user_id /**ASSERT UNIQUE(id)**/
+        SELECT users.id FROM users /**ASSERT MANY TO ONE**/ JOIN events ON users.id = events.user_id /**ASSERT UNIQUE(id)**/
     """)
     join = conversion.program.assertions[0].property.join
-    program = replace(conversion.program, declarations=(UniqueJoin(join=join),))
+    program = replace(conversion.program, declarations=(ManyToOneJoin(join=join),))
     report = Engine().run(program, conversion.knowledge)
     assert report.proved
     assert all(a.evidence is not None and a.evidence.value for a in report.assertions)
     evidence = report.assertions[1].evidence
     assert evidence is not None
-    assert "Declared UniqueJoin" in evidence.explain()
+    assert "Declared ManyToOneJoin" in evidence.explain()
 
 
 def test_join_proof_retains_schema_and_equality_sources_and_reuses_cached_claims():
     conversion = convert()
     join = conversion.program.assertions[0].property.join
     with Engine().session(conversion.program, conversion.knowledge) as arena:
-        proof = unique_join(join)
-        assert proof is arena.prove(UniqueJoin(join=join))
-        assert _multiplicity_columns_rhs(join) is _multiplicity_columns_rhs(join)
-        columns = _multiplicity_columns_rhs(join)
+        proof = many_to_one_join(join)
+        assert proof is arena.prove(ManyToOneJoin(join=join))
+        assert _bound_columns(join, "right") is _bound_columns(join, "right")
+        columns = _bound_columns(join, "right")
         assert type(columns) is Result
         assert columns.value.relation is join.right
         assert columns.value.columns == set(join.right.output_columns)
@@ -173,16 +173,16 @@ def test_join_proof_retains_schema_and_equality_sources_and_reuses_cached_claims
         assert any(node.kind == "accepted" for node in nodes)
         assert any(join.conjuncts[0] in node.subjects for node in nodes)
         text = proof.explain()
-        assert "PROVED: unique_join" in text
+        assert "PROVED: many_to_one_join" in text
         assert "line" in text
-        assert "Equality fixes RHS" in text
+        assert "Equality fixes the matched column" in text
 
 
 def test_missing_composite_key_column_is_retained_as_unknown_evidence():
     conversion = convert("""
         CREATE TABLE users(id INTEGER, region INTEGER, PRIMARY KEY(id, region));
         CREATE TABLE events(user_id INTEGER);
-        SELECT * FROM events /**ASSERT UNIQUE**/ JOIN users ON events.user_id = users.id
+        SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN users ON events.user_id = users.id
     """)
     proof = Engine().run(conversion.program, conversion.knowledge).assertions[0].evidence
     assert proof is not None
@@ -196,7 +196,7 @@ def test_two_covering_keys_retain_both_justifications():
     conversion = convert("""
         CREATE TABLE users(id INTEGER UNIQUE, email VARCHAR UNIQUE);
         CREATE TABLE events(user_id INTEGER, email VARCHAR);
-        SELECT * FROM events /**ASSERT UNIQUE**/ JOIN users
+        SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN users
         ON events.user_id = users.id AND events.email = users.email
     """)
     proof = Engine().run(conversion.program, conversion.knowledge).assertions[0].evidence

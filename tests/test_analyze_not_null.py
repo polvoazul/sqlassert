@@ -158,7 +158,7 @@ def test_a_primary_key_assertion_needs_uniqueness_and_non_nullness():
 def test_a_primary_key_survives_a_unique_join_on_its_preserved_side():
     distinct_sessions = "(SELECT DISTINCT user_id FROM sessions) s ON s.user_id = u.id"
     assert outcomes(
-        f"SELECT u.id FROM users u /**ASSERT UNIQUE**/ JOIN {distinct_sessions} /**ASSERT PRIMARY KEY(id)**/"
+        f"SELECT u.id FROM users u /**ASSERT MANY TO ONE**/ JOIN {distinct_sessions} /**ASSERT PRIMARY KEY(id)**/"
     ) == [Outcome.PROVED, Outcome.PROVED]
     assert outcomes(
         f"SELECT u.id FROM users u LEFT JOIN {distinct_sessions} /**ASSERT PRIMARY KEY(id)**/"
@@ -191,7 +191,7 @@ def test_a_primary_key_declaration_proves_a_unique_join():
     assert outcomes(
         """
         WITH c AS (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/)
-        SELECT * FROM sessions s /**ASSERT UNIQUE**/ JOIN c ON s.ts = c.nickname
+        SELECT * FROM sessions s /**ASSERT MANY TO ONE**/ JOIN c ON s.ts = c.nickname
         """
     ) == [Outcome.PROVED]
 

@@ -5,7 +5,7 @@ from case_conversion import snake
 
 from sqlassert.properties import Property
 from sqlassert.python_engine import analysis_functions
-from sqlassert.rules import exactly_one, foreign_key, nullability, unique_join, uniqueness  # noqa: F401 — register the rule functions
+from sqlassert.rules import exactly_one, foreign_key, join_cardinality, nullability, uniqueness  # noqa: F401 — register the rule functions
 
 
 def test_every_property_has_exactly_one_matching_evaluator():

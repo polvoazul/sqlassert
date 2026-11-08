@@ -11,24 +11,21 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [38. Lower ORDER BY and scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
 - [40. Audit inference against Calcite and adapt targeted regressions](0040-audit-inference-against-calcite.md) — open
-- [41. Join cardinality markers and the fan-trap smell](0041-join-cardinality-markers-and-fan-trap-smell.md) — open
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 41, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
 
-- **P1:** #41 (join cardinality markers, `UNIQUE` becomes `NOT MANY TO MANY`;
-  markers, then the fan-trap smell); #38 (scalar subqueries as left joins,
-  then ORDER BY; unblocks three of #15's Low smells).
+- **P1:** #38 (scalar subqueries as left joins, then ORDER BY; unblocks
+  three of #15's Low smells). #41 is done.
 - **P2:** #40 (Calcite audit, first: an audit finds unsound rules cheaply,
   and its missing rules fold into #37); #37 (Paulley audit's missing rules);
   #15's remaining Low smells (after #38) and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
-- **P3:** #39 (smaller lowering gaps); #36 (test refactor review, after #41,
-  with the corpus work).
+- **P3:** #39 (smaller lowering gaps); #36 (test refactor review, with the corpus work).
 - **Not planned (not covered by Paulley), listed in #23:** window functions
   (and #33's CTE part, which needs them), recursive CTEs, column lineage,
   LATERAL and UNNEST, ADD COLUMN.
@@ -66,3 +63,4 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [33. INNER JOIN suggestion across join chains and CTEs](done/0033-inner-join-suggestion-across-join-chains-and-ctes.md)
 - [34. Close the soundness oracle's blind spots](done/0034-close-soundness-oracle-blind-spots.md)
 - [35. Audit FD propagation against Paulley](done/0035-audit-fd-propagation-against-paulley.md)
+- [41. Join cardinality markers and the fan-trap smell](done/0041-join-cardinality-markers-and-fan-trap-smell.md)

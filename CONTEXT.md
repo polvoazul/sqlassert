@@ -17,9 +17,23 @@ contributes Knowledge without requiring proof, and does not produce an
 assertion result.
 _Avoid_: Assertion, Proof, Create Statement
 
-**Unique Join Assertion**:
-An assertion that a join cannot increase the number of rows contributed by its left-hand input.
-_Avoid_: Unique join marker, duplicate check
+**Join Cardinality**:
+Which inputs' rows a join can repeat, read in FROM order (the left input is
+everything before the join, the right its joined source). A row of one input
+appears once per matching row of the other, or once padded.
+- **Many To One Join**: no left row is repeated: each matches at most one right row.
+- **One To Many Join**: no right row is repeated.
+- **One To One Join**: neither.
+- **Unique Join** (`UNIQUE`, `NOT MANY TO MANY`): rows of at most one input
+  are repeated; the join is not many to many.
+A SEMI or ANTI join has no Join Cardinality: it outputs no right rows.
+_Avoid_: Unique join marker, duplicate check, 1:N
+
+**Fan Trap**, **Chasm Trap**:
+An aggregate whose argument's rows a join may repeat (a Smell). A Fan Trap
+is through a join that is not proved to be a Unique Join; a Chasm Trap through
+a One To Many (or Many To One) Join whose argument is on the side with one row
+per key.
 
 **Exactly One Join Assertion**:
 An assertion that every row of a join's left-hand input matches exactly one

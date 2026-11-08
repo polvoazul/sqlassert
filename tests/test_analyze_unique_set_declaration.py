@@ -44,7 +44,7 @@ def test_a_declaration_proves_a_unique_join():
         {SCHEMA}
         CREATE TABLE s (tid INTEGER);
         WITH c AS (SELECT id FROM t /**DECLARE UNIQUE(id)**/)
-        SELECT * FROM s /**ASSERT UNIQUE**/ JOIN c ON s.tid = c.id
+        SELECT * FROM s /**ASSERT MANY TO ONE**/ JOIN c ON s.tid = c.id
         """
     )
 

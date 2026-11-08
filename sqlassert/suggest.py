@@ -32,8 +32,8 @@ from sqlassert.ir.convert import IrParser
 from sqlassert.smells import Concern, Smell, smells
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import (
-    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property,
-    UniqueJoin, UniqueSet,
+    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet,
+    OneToManyJoin, OneToOneJoin, Property, UniqueJoin, UniqueSet,
 )
 from sqlassert.python_engine import Arena, Engine, Result
 from sqlassert.provenance import AttachmentSite
@@ -130,7 +130,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
             (item.column,) if isinstance(item, NonNullColumn) else item.columns if isinstance(item, NonNullColumns) else ()
         )
     }
-    marked_joins = {item.join for item in present if isinstance(item, (UniqueJoin, ExactlyOneJoin))}
+    marked_joins = {item.join for item in present if isinstance(item, _JOIN_PROPERTIES)}
     marked_cases = {item.case for item in present if isinstance(item, ExhaustiveCase)}
     reachable = set(program.nodes())
     suggestions: list[Suggestion] = []
@@ -140,10 +140,13 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
         for site, relation in program.attachment_sites:
             match relation:
                 case ir.Join() if not site.trailing and relation not in marked_joins and relation in reachable:
-                    suggestions.extend(
-                        _proved(arena, site, ExactlyOneJoin(join=relation), (), dialect)
-                        or _proved(arena, site, UniqueJoin(join=relation), (), dialect)
-                    )
+                    # The strongest proved form. Not many to many is implied by each
+                    # cardinality, so it is never suggested on its own; a semi or
+                    # anti join outputs no right rows, so no cardinality applies.
+                    kinds = (ExactlyOneJoin,) if relation.kind in {"semi", "anti"} else _JOIN_PROPERTIES[:4]
+                    suggestions.extend(next(
+                        (proved for kind in kinds if (proved := _proved(arena, site, kind(join=relation), (), dialect))), []
+                    ))
                 case ir.Join() if not site.trailing:
                     # Already marked, or unreachable: lowered inside a Select that is
                     # opaque as a whole (one with HAVING, say), so nothing is known about it.
@@ -164,6 +167,9 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
     return SuggestionReport(sql, kept, diagnostics, tuple(found), conversion.warnings, tuple(concerns))
 
 
+# The join Properties, strongest first.
+_JOIN_PROPERTIES = (ExactlyOneJoin, OneToOneJoin, ManyToOneJoin, OneToManyJoin, UniqueJoin)
+
 # A parse failure leaves nothing to suggest on; duplicate declarations make
 # `analyze` refuse every proof, so nothing suggested could round-trip.
 _BLOCKING = {diag.SQL_PARSE_FAILED, diag.UNATTACHED_MARKER, diag.DUPLICATE_DECLARATION, diag.UNSUPPORTED_NATURAL_JOIN}
@@ -174,7 +180,7 @@ def candidates(
 ) -> Iterator[Candidate]:
     """Every candidate Property at every Attachment Site of `program`, proved or not.
 
-    Per JOIN: Unique Join. Per markable simple CASE: Exhaustive Case. Per
+    Per JOIN but a semi or anti one: Unique Join. Per markable simple CASE: Exhaustive Case. Per
     Select Expression: each output column non-null, and each set of up to
     `max_size` output columns, plus the set of all of them, as a Unique Set
     and as a Non-Null Unique Set. Only columns a marker can name
@@ -183,8 +189,10 @@ def candidates(
     """
     for site, relation in program.attachment_sites:
         match relation:
-            case ir.Join() if not site.trailing:
+            case ir.Join() if not site.trailing and relation.kind not in {"semi", "anti"}:
                 yield _candidate(site, UniqueJoin(join=relation), (), dialect)
+            case ir.Join() if not site.trailing:
+                pass  # No cardinality applies to a semi or anti join.
             case ir.SimpleCase() if _markable(relation):
                 yield _candidate(site, ExhaustiveCase(case=relation), (), dialect)
             case ir.SimpleCase():
@@ -303,6 +311,12 @@ def _candidate(site: AttachmentSite, property: Property, order: tuple[ir.OutputC
     match property:
         case ExactlyOneJoin():
             return Candidate(site, property, "/**ASSERT EXACTLY ONE**/")
+        case OneToOneJoin():
+            return Candidate(site, property, "/**ASSERT ONE TO ONE**/")
+        case ManyToOneJoin():
+            return Candidate(site, property, "/**ASSERT MANY TO ONE**/")
+        case OneToManyJoin():
+            return Candidate(site, property, "/**ASSERT ONE TO MANY**/")
         case UniqueJoin():
             return Candidate(site, property, "/**ASSERT UNIQUE**/")
         case ExhaustiveCase():

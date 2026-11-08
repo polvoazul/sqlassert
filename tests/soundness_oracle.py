@@ -34,7 +34,9 @@ from sqlglot import exp
 
 import sqlassert
 import sqlassert.main
-from sqlassert import ExactlyOneJoin, NonNullColumns, NonNullUniqueSet, Outcome, Report, UniqueJoin, UniqueSet
+from sqlassert import (
+    ExactlyOneJoin, ManyToOneJoin, NonNullColumns, NonNullUniqueSet, OneToManyJoin, OneToOneJoin, Outcome, Report, UniqueJoin, UniqueSet,
+)
 from sqlassert.properties import EnumeratedDomain, ExhaustiveCase, ForeignKey, FunctionalDependency
 from sqlassert.ir import LiteralValue
 from sqlassert.ir.convert import IrParser
@@ -202,12 +204,12 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
     """A query that returns rows exactly when `property` is violated."""
     statements = [statement for statement in (*parsed.create_statements, parsed.root_select) if statement is not None]
     match property:
-        case UniqueJoin(join=_) | ExactlyOneJoin(join=_):
+        case UniqueJoin(join=_) | ManyToOneJoin(join=_) | OneToManyJoin(join=_) | OneToOneJoin(join=_) | ExactlyOneJoin(join=_):
             join, = (
                 join for statement in statements for join in statement.find_all(exp.Join)
                 if assertion_line(join) is not None and join_origin(join, dialect) == origin
             )
-            return _join_violation(join, exactly_one=isinstance(property, ExactlyOneJoin))
+            return _join_violation(join, property)
         case (
             ForeignKey(columns=asserted) | UniqueSet(columns=asserted) | NonNullColumns(columns=asserted)
             | FunctionalDependency(determinant=asserted)
@@ -325,39 +327,63 @@ def _quoted(name: str) -> str:
     return exp.to_identifier(name, quoted=True).sql(dialect="duckdb")
 
 
-def _join_violation(join: exp.Join, *, exactly_one: bool) -> str:
-    """Rows of the join's left input against rows of the join made LEFT.
+def _join_violation(join: exp.Join, property: Property) -> str:
+    """Counts of each input's rows against the join made LEFT (for the left
+    input) or RIGHT (for the right input).
 
-    As a LEFT join every left row contributes max(1, matches) rows, so the
-    counts differ exactly when some left row matches more than once. For
-    exactly one match, the right input also carries a flag that is null
-    exactly on the row a left row with no match is null-extended with.
+    Made LEFT, every left row contributes max(1, matches) rows, so the counts
+    differ exactly when some left row matches more than once (it is repeated);
+    made RIGHT, likewise for right rows. For exactly one match, the right
+    input also carries a flag that is null exactly on the row a left row with
+    no match is null-extended with.
     """
     select = join.parent
     assert isinstance(select, exp.Select), "an asserted join is one of a Select's joins"
     joins = select.args["joins"]
     position = next(index for index, candidate in enumerate(joins) if candidate is join)
     source = (select.args.get("from_") or select.args["from"]).this
+    exactly_one = isinstance(property, ExactlyOneJoin)
 
     def from_joins(chosen: list[exp.Join]) -> str:
         query = exp.select("*").from_(source.copy())
         query.set("joins", chosen)
         return query.sql(dialect="duckdb")
 
-    as_left = join.copy()
-    as_left.set("side", "LEFT")
-    as_left.set("kind", None)
-    if not (as_left.args.get("on") or as_left.args.get("using") or as_left.args.get("method")):
-        as_left.set("on", exp.true())
+    def made(side: str) -> exp.Join:
+        outer = join.copy()
+        outer.set("side", side)
+        outer.set("kind", None)
+        if not (outer.args.get("on") or outer.args.get("using") or outer.args.get("method")):
+            outer.set("on", exp.true())
+        return outer
+
+    as_left, as_right = made("LEFT"), made("RIGHT")
     if exactly_one:
         # The flagged right input keeps its name, so the predicate still reads its columns.
         right = as_left.this
         flagged = exp.select("*", f"1 AS {_MATCHED}").from_(right.copy()).subquery(exp.to_identifier(right.alias_or_name))
         as_left.set("this", flagged)
-    left = from_joins([earlier.copy() for earlier in joins[:position]])
-    joined = from_joins([*(earlier.copy() for earlier in joins[:position]), as_left])
-    counts = f"(SELECT count(*) FROM ({left})) AS left_rows, (SELECT count(*) FROM ({joined})) AS joined_rows"
-    violated = "joined_rows > left_rows"
+    earlier = [previous.copy() for previous in joins[:position]]
+    left = from_joins(earlier)
+    joined = from_joins([*earlier, as_left])
+    right_rows = exp.select("*").from_(join.this.copy()).sql(dialect="duckdb")
+    joined_right = from_joins([*(previous.copy() for previous in joins[:position]), as_right])
+    counts = (
+        f"(SELECT count(*) FROM ({left})) AS left_rows, (SELECT count(*) FROM ({joined})) AS joined_rows, "
+        f"(SELECT count(*) FROM ({right_rows})) AS right_rows, (SELECT count(*) FROM ({joined_right})) AS joined_right_rows"
+    )
+    left_repeated, right_repeated = "joined_rows > left_rows", "joined_right_rows > right_rows"
+    match property:
+        case ManyToOneJoin() | ExactlyOneJoin():
+            violated = left_repeated
+        case OneToManyJoin():
+            violated = right_repeated
+        case OneToOneJoin():
+            violated = f"{left_repeated} OR {right_repeated}"
+        case UniqueJoin():
+            violated = f"{left_repeated} AND {right_repeated}"
+        case _:
+            raise TypeError(f"Not a join Property: {type(property).__name__}")
     if exactly_one:
         counts += f", (SELECT count(*) FROM ({joined}) WHERE {_MATCHED} IS NULL) AS unmatched_rows"
         violated += " OR unmatched_rows > 0"

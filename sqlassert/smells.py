@@ -8,6 +8,12 @@ the proof that would have pinned it, which failed:
   selected column (or that has no `ORDER BY`): rows tied on the sort keys come
   in an arbitrary order, so which rows are kept may change from run to run
   (Kossmann's "unstable sorting", read the other way round).
+- An aggregate over a join that can repeat the rows its argument comes from
+  (issue 41): a fan trap when the join is many to many, a chasm trap when it
+  is one to many and the argument is on the side with one row per key. Every
+  aggregate counts, `min` and `max` included: the join is wrong either way.
+  `count(*)` has no argument, so only a many-to-many join is a trap for it.
+  Silent when the input whose rows are repeated has no known Unique Set.
 
 A smell is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
@@ -25,12 +31,15 @@ from sqlassert import ir
 from sqlassert.improvements import Level, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
-from sqlassert.rules.uniqueness import _closure
+from sqlassert.rules.join_cardinality import many_to_one_join, one_to_many_join, unique_join
+from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 from sqlassert.sql_parse import ParsedProgram
 
 
 class Concern(Enum):
     ARBITRARY_LIMIT = "Arbitrary LIMIT"
+    FAN_TRAP = "Fan trap"
+    CHASM_TRAP = "Chasm trap"
 
 
 @dataclass(frozen=True)
@@ -49,11 +58,125 @@ def smells(ast: ParsedProgram, program: ir.Program, arena: Arena) -> list[Smell]
     syntax = _syntax_at_sites(ast)
     reachable = set(program.nodes())
     found: list[Smell] = []
+    join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
     for site, relation in program.attachment_sites:
         node = syntax.get((site.offset, site.trailing))
         if isinstance(relation, ir.Limit) and relation in reachable and isinstance(node, exp.Select):
             found.extend(_arbitrary_limit(site, relation, node))
+        aggregate = relation.input if isinstance(relation, ir.Limit) else relation
+        if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
+            found.extend(_traps(site, aggregate, join_labels))
     return sorted(found, key=lambda item: item.site.offset)
+
+
+# Join traps ------------------------------------------------------------------
+
+
+def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.Join, str]) -> list[Smell]:
+    """Each aggregate call whose input rows a join may repeat."""
+    found: list[Smell] = []
+    for call in aggregate.calls:
+        inputs = [ir.determinants(argument) for argument in call.arguments]
+        if any(columns is None for columns in inputs):
+            continue  # An argument whose columns are unknown.
+        columns = frozenset(column for columns in inputs if columns is not None for column in columns)
+        if not columns:
+            # `count(*)`, or a constant: it counts the input's rows.
+            for join, proof in _many_to_many_joins(aggregate.input):
+                message = (
+                    f"{call.description} counts the rows of {_label(join, join_labels)}, which is not proved "
+                    "to repeat rows of only one input (a fan trap): rows may be counted more than once"
+                )
+                found.append(Smell(site, Concern.FAN_TRAP, message, proof))
+            continue
+        repeated = _repeating_join(aggregate.input, columns)
+        if repeated is None:
+            continue
+        join, proof = repeated
+        if unique_join(join).value:
+            concern, why = Concern.CHASM_TRAP, "is one to many, and the argument is on the side with one row per key"
+        else:
+            concern, why = Concern.FAN_TRAP, "is not proved to repeat rows of only one input"
+        message = (
+            f"{call.description} reads rows that {_label(join, join_labels)} may repeat: the join {why} "
+            f"({concern.value.lower()}), so a value may be counted more than once"
+        )
+        found.append(Smell(site, concern, message, proof))
+    return found
+
+
+def _repeating_join(relation: ir.RelationExpr, columns: frozenset[ir.OutputColumn]) -> tuple[ir.Join, Result] | None:
+    """The first join, from `relation` down to the input `columns` come from,
+    not proved to keep that input's rows unrepeated, with the failed proof.
+    None when every join on the way is proved, or the columns cannot be traced
+    to one input of a join."""
+    while True:
+        match relation:
+            case ir.Join(kind="semi" | "anti"):
+                side = relation.left  # It never repeats a row.
+            case ir.Join():
+                upstream = _upstream(relation, columns)
+                if upstream is None:
+                    return None
+                if upstream <= set(relation.left.output_columns):
+                    side, proof = relation.left, many_to_one_join(relation)
+                elif upstream <= set(relation.right.output_columns):
+                    side, proof = relation.right, one_to_many_join(relation)
+                else:
+                    return None  # The argument reads both inputs.
+                if not proof.value and _has_unique_set(side):
+                    return relation, proof
+            case ir.Filter(input=side) | ir.Alias(source=side) | ir.Project(input=side) | ir.Limit(input=side):
+                pass
+            case ir.NamedRelation(body=ir.RelationExpr() as side):
+                pass
+            case _:
+                return None  # A base table, or a stage that drops or merges rows.
+        upstream = _upstream(relation, columns)
+        if upstream is None or not upstream <= set(side.output_columns):
+            return None
+        relation, columns = side, upstream
+
+
+def _many_to_many_joins(relation: ir.RelationExpr):
+    """Each join under `relation` not proved to repeat rows of at most one
+    input, both of whose inputs have a known Unique Set, with the failed proof."""
+    match relation:
+        case ir.Join(kind="semi" | "anti", left=left):
+            yield from _many_to_many_joins(left)
+        case ir.Join(left=left, right=right):
+            proof = unique_join(relation)
+            if not proof.value and _has_unique_set(left) and _has_unique_set(right):
+                yield relation, proof
+            yield from _many_to_many_joins(left)
+            yield from _many_to_many_joins(right)
+        case ir.Filter(input=source) | ir.Alias(source=source) | ir.Project(input=source) | ir.Limit(input=source):
+            yield from _many_to_many_joins(source)
+        case ir.NamedRelation(body=ir.RelationExpr() as source):
+            yield from _many_to_many_joins(source)
+        case _:
+            pass
+
+
+def _upstream(relation: ir.RelationExpr, columns: frozenset[ir.OutputColumn]) -> frozenset[ir.OutputColumn] | None:
+    """The input columns `columns` of `relation` are computed from, if known."""
+    found: set[ir.OutputColumn] = set()
+    for column in columns:
+        inputs = ir.determinants(column.scalar_expr)
+        if inputs is None:
+            return None
+        found.update(inputs)
+    return frozenset(found)
+
+
+def _has_unique_set(relation: ir.RelationExpr) -> bool:
+    """Some set of `relation`'s columns is a Unique Set: its rows are distinct."""
+    columns = frozenset(relation.output_columns)
+    return bool(columns) and _reaches_row_identity(_closure(relation, columns, columns)).value
+
+
+def _label(join: ir.Join, join_labels: dict[ir.Join, str]) -> str:
+    return join_labels.get(join, "a join")
 
 
 def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, select: exp.Select) -> list[Smell]:

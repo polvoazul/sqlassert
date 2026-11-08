@@ -12,6 +12,9 @@ from sqlassert.suggest import DEFAULT_MAX_SIZE, suggest
 # How each suggested Property reads in the listing.
 _KINDS = {
     "ExactlyOneJoin": "Exactly One Join",
+    "OneToOneJoin": "One To One Join",
+    "ManyToOneJoin": "Many To One Join",
+    "OneToManyJoin": "One To Many Join",
     "UniqueJoin": "Unique Join",
     "UniqueSet": "Unique Set",
     "NonNullUniqueSet": "Non-Null Unique Set",

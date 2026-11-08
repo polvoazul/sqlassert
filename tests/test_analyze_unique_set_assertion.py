@@ -140,7 +140,7 @@ def test_a_proved_assertion_on_a_view_feeds_forward_to_a_later_statement():
         CREATE VIEW dedup AS SELECT id FROM raw GROUP BY id /**ASSERT UNIQUE(id)**/;
         CREATE TABLE sessions (user_id INTEGER);
 
-        SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN dedup ON sessions.user_id = dedup.id
+        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN dedup ON sessions.user_id = dedup.id
         """
     )
 
@@ -159,7 +159,7 @@ def test_a_root_select_with_its_own_join_and_projection_can_be_asserted():
 
         SELECT sessions.user_id
         FROM sessions
-        /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+        /**ASSERT MANY TO ONE**/ JOIN users ON sessions.user_id = users.id
         /**ASSERT UNIQUE(user_id)**/
         """
     )

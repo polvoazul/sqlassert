@@ -58,8 +58,29 @@ class ExhaustiveCase(Property):
     case: SimpleCase
 
 
+class ManyToOneJoin(Property):
+    """A join that cannot repeat a row of its left input: each left row
+    matches at most one right row (`MANY TO ONE`)."""
+
+    join: Join
+
+
+class OneToManyJoin(Property):
+    """A join that cannot repeat a row of its right input: each right row
+    matches at most one left row (`ONE TO MANY`)."""
+
+    join: Join
+
+
+class OneToOneJoin(Property):
+    """A join that repeats a row of neither input (`ONE TO ONE`)."""
+
+    join: Join
+
+
 class UniqueJoin(Property):
-    """A join that cannot multiply rows from its left input."""
+    """A join that repeats rows of at most one input: it is not many to many
+    (`UNIQUE`, `NOT MANY TO MANY`)."""
 
     join: Join
 

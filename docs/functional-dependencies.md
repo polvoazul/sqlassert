@@ -255,7 +255,7 @@ through only with definite determinants.
 | P3 | Distinct projection: selected attributes → ι | Claim 18, p.75 | implemented | `uniqueness._functional_dependencies` (Distinct: output columns → ι) | `test_paulley_audit.py` P3 |
 | C1 | Cartesian product keeps both inputs' FDs and equivalences | Claim 19, p.75 | implemented | `uniqueness._join_side` delegations for `cross` | `test_paulley_audit.py` C1 |
 | C2 | Cartesian product: ι(S) ∪ ι(T) ↔ ι | Claim 19, p.76 | implemented | `uniqueness._join_dependencies` (`(ι(left), ι(right)) → ι`) | `test_paulley_audit.py` C2, C2- |
-| C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | implemented | `unique_join` with no conjuncts: the right input's empty set reaches its Row Identity; a scalar aggregate is grouped by nothing (issue 23) | `test_paulley_audit.py` C3 |
+| C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | implemented | `many_to_one_join` with no conjuncts: the right input's empty set reaches its Row Identity; a scalar aggregate is grouped by nothing (issue 23) | `test_paulley_audit.py` C3 |
 | R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | implemented | `uniqueness._row_preserving` (Filter delegates to its input) | `test_paulley_audit.py` R1 |
 | R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | implemented | `uniqueness._definite` reads `non_null_column` of the Filter's output, so a lax step through a column the WHERE makes non-null fires | `test_paulley_audit.py` R2 |
 | R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | missing | see E4 |  |

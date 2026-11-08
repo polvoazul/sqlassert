@@ -9,24 +9,33 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports Unique Join Assertions, Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is only tested with the DuckDB SQL dialect._
+_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is only tested with the DuckDB SQL dialect._
 
 ## Features
 
-### Unique Join
+### Join cardinality
 
-Joins often accidentally multiply rows. A query may look correct against today’s data but silently break when the RHS relation later contains multiple matching rows.
+Joins often accidentally multiply rows. A query may look correct against today’s data but silently break when a relation later contains multiple matching rows.
 
-`sqlassert` lets you mark joins that are expected to be unique. That is, the result of the join must never 'grow' the number of rows with respect to the LHS.
+`sqlassert` lets you mark the cardinality a join is expected to have. The words read in FROM order: the left input is everything before the join, the right its joined source.
+
+| Marker | Proved when | Rows the join may repeat |
+|---|---|---|
+| `/**ASSERT UNIQUE**/` (or `NOT MANY TO MANY`) | either input is unique on the join key | one input's at most |
+| `/**ASSERT MANY TO ONE**/` | the right input is unique on the join key | the right input's only |
+| `/**ASSERT ONE TO MANY**/` | the left input is unique on the join key | the left input's only |
+| `/**ASSERT ONE TO ONE**/` | both are | none |
 
 ```sql
 select *
-from sessions
-/**ASSERT UNIQUE**/ join users
-  on sessions.user_id = users.id;
+from customers
+/**ASSERT ONE TO MANY**/ join orders
+  on orders.customer_id = customers.id;
 ```
 
-The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `sqlassert` reads the query separately and validates that the RHS is provably unique for the join keys.
+`UNIQUE` catches the fan trap, a many-to-many join that multiplies both sides. A direction says which side is safe to aggregate: after `customers JOIN orders`, `sum(orders.amount)` is right but `sum(customers.credit)` counts each customer once per order. When `UNIQUE` is proved, its explanation names the input that was unique.
+
+The marker is just a SQL comment. Your SQL remains valid SQL and can still run normally. `sqlassert` reads the query separately and validates that the input is provably unique for the join keys. A SEMI or ANTI join outputs no right rows, so no cardinality marker applies to it (`cardinality-on-filtering-join`).
 
 ### Unique Set and Non-Null Unique Set
 
@@ -107,7 +116,7 @@ select * from orders
 
 It is supported on `INNER` and `LEFT` joins whose predicate is a single column-to-column equality (`ON` or a one-column `USING`). It needs three things, and an `UNKNOWN` explanation names each one that is missing:
 
-- At most one match: the right predicate column covers a Unique Set, as for `/**ASSERT UNIQUE**/`.
+- At most one match: the right predicate column covers a Unique Set, as for `/**ASSERT MANY TO ONE**/`.
 - At least one match: Referential Coverage from the left column onto that exact right column, as for a Foreign Key. Coverage onto a table is not coverage onto a filtered view or CTE of it.
 - A non-null left column, since a null matches nothing.
 
@@ -177,7 +186,7 @@ with latest as (
   /**DECLARE UNIQUE(user_id)**/
 )
 select * from orders
-/**ASSERT UNIQUE**/ join latest on orders.user_id = latest.user_id;
+/**ASSERT MANY TO ONE**/ join latest on orders.user_id = latest.user_id;
 ```
 
 A declaration is an assumption, not a proof. It produces no assertion result, and it is trusted evidence for later proofs; explanations show it as `Declared UniqueSet`. Every column marker has a `DECLARE` form -- `DECLARE UNIQUE`, `DECLARE NOT NULL`, `DECLARE NOT NULL UNIQUE`, `DECLARE DETERMINES`, and `DECLARE ENUM` -- attached wherever its `ASSERT` form can be. `DECLARE NOT NULL UNIQUE(a, b)` declares the Unique Set and also each column non-null, so `a` stays non-null after `b` is projected away.
@@ -195,7 +204,7 @@ create table sessions (user_id integer);
 
 select *
 from sessions
-/**ASSERT UNIQUE**/ join users
+/**ASSERT MANY TO ONE**/ join users
   on sessions.user_id = users.id
 """
 
@@ -212,7 +221,7 @@ for assertion in report.assertions:
     print(assertion.evidence.explain())
 ```
 
-The rules are in `rules/unique_join.py`, `rules/uniqueness.py`,
+The rules are in `rules/join_cardinality.py`, `rules/uniqueness.py`,
 `rules/nullability.py`, and `rules/foreign_key.py`; shared proof composition, declaration lookup, and
 per-analysis caching live in `python_engine.py`.
 
@@ -263,12 +272,12 @@ $ sqlassert suggest query.sql        # or: python -m sqlassert suggest query.sql
 line 7   view active_users       Non-Null Unique Set  /**ASSERT NOT NULL UNIQUE(id)**/
 line 7   view active_users       Unique Set           /**ASSERT UNIQUE(email)**/
 line 7   view active_users       Not Null             /**ASSERT NOT NULL(name)**/
-line 11  JOIN active_users AS u  Unique Join          /**ASSERT UNIQUE**/
+line 11  JOIN active_users AS u  Many To One Join     /**ASSERT MANY TO ONE**/
 ```
 
 A column marker goes at the end of the Select Expression on that line; a join marker goes right before the join. Pick the facts you want locked in: a later change that breaks one turns it `UNKNOWN`. `--explain` prints each proof; `--annotate` pastes every suggested marker into the file (for `-`, it prints the annotated SQL).
 
-From Python, `suggest(sql)` returns the same suggestions, each with its `site`, `property`, `marker`, and `evidence`; `report.annotated()` returns the SQL with every marker pasted in. Only proved properties are suggested, each Unique Set in its strongest form (`NOT NULL UNIQUE` over `UNIQUE`) and minimal (no superset of another suggestion), and each join as `EXACTLY ONE` when that holds, else `UNIQUE`. Unique Sets are searched exhaustively up to `max_size` columns (default 3); a wider one is still found when no smaller one exists. Properties the SQL already asserts or declares are not suggested again.
+From Python, `suggest(sql)` returns the same suggestions, each with its `site`, `property`, `marker`, and `evidence`; `report.annotated()` returns the SQL with every marker pasted in. Only proved properties are suggested, each Unique Set in its strongest form (`NOT NULL UNIQUE` over `UNIQUE`) and minimal (no superset of another suggestion), and each join in its most specific proved form: `EXACTLY ONE`, then `ONE TO ONE`, then `MANY TO ONE` or `ONE TO MANY`. Unique Sets are searched exhaustively up to `max_size` columns (default 3); a wider one is still found when no smaller one exists. Properties the SQL already asserts or declares are not suggested again.
 
 #### Improvements
 
@@ -301,14 +310,16 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 | Smell | When |
 |---|---|
 | Arbitrary LIMIT | A `LIMIT` or `OFFSET` whose `ORDER BY` (if any) does not determine every selected column, NULL equal to NULL: rows tied on the sort keys may come in any order, so which rows are kept can change between runs. Silent when an `ORDER BY` key is an expression or a name sqlassert cannot map to one column. |
+| Fan Trap | An aggregate over a join that is not proved to repeat rows of only one input, when its argument (or, for `count(*)`, either input) comes from rows the join may repeat: `sum(p.amount)` over `orders JOIN payments USING (customer_id)`. |
+| Chasm Trap | An aggregate over a one-to-many join whose argument is on the side with one row per key: `sum(c.credit)` over `customers JOIN orders`. Every aggregate counts, `min` and `max` included. Silent when the repeated input has no known Unique Set, or the argument reads both inputs. |
 
 `NATURAL JOIN` is unsupported: its presence anywhere in the program produces an `unsupported-natural-join` diagnostic, and `suggest` returns no suggestions. Write explicit `ON` or `USING` conditions instead.
 
 ## Details
 
-### Unique Join Syntax
+### Join Cardinality Syntax
 
-Place `/**ASSERT UNIQUE**/` immediately before the join that should be uniqueness-checked:
+Place a cardinality marker (`UNIQUE`, `NOT MANY TO MANY`, `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE`) immediately before the join it checks:
 
 ```sql
 select *
@@ -337,9 +348,9 @@ Instead, it proves uniqueness using information available from the SQL Program a
 Supported uniqueness proofs today:
 
 - `PRIMARY KEY` and `UNIQUE` constraints from `CREATE TABLE` declarations or IR-linked Knowledge.
-- RHS `GROUP BY` subqueries, when the join covers the grouping keys.
-- RHS `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
-- RHS `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
+- `GROUP BY` subqueries, when the join covers the grouping keys.
+- `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
+- `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
 - Views, CTEs, and subqueries that preserve one of the proofs above, including through their own joins.
 
 A view, CTE, or FROM subquery is lowered like the Root Select, joins and markers included, so its facts flow to every query that reads it. A marker in a CTE or view that nothing reads is reported as unanalyzed. Computed expressions and arbitrary subquery semantics are not guessed.
@@ -350,7 +361,7 @@ Examples:
 -- Proved by primary key.
 select *
 from sessions
-/**ASSERT UNIQUE**/ join users
+/**ASSERT MANY TO ONE**/ join users
   on sessions.user_id = users.id;
 ```
 
@@ -358,13 +369,13 @@ from sessions
 -- Proved by composite primary key plus RHS-only filter.
 select *
 from sessions
-/**ASSERT UNIQUE**/ join orders
+/**ASSERT MANY TO ONE**/ join orders
   on sessions.user_id = orders.user_id
  and orders.order_id = 1;
 ```
 
 ```sql
--- Proved by GROUP BY.
+-- Proved by GROUP BY on one side and the primary key on the other.
 with latest_session as (
   select user_id, max(ts) as max_ts
   from sessions
@@ -372,7 +383,7 @@ with latest_session as (
 )
 select *
 from users
-/**ASSERT UNIQUE**/ join latest_session
+/**ASSERT ONE TO ONE**/ join latest_session
   on users.id = latest_session.user_id;
 ```
 
@@ -385,7 +396,7 @@ with sessions_ranked as (
 )
 select *
 from users
-/**ASSERT UNIQUE**/ join sessions_ranked
+/**ASSERT ONE TO ONE**/ join sessions_ranked
   on users.id = sessions_ranked.user_id;
 ```
 

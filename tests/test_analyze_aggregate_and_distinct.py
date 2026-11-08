@@ -36,7 +36,7 @@ def test_a_group_by_subquery_joined_on_its_full_grouping_key_is_proved(orders_an
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.customer_id
         """
     )
@@ -53,7 +53,7 @@ def test_a_group_by_subquery_joined_on_part_of_a_composite_grouping_key_is_unkno
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer_region
+        /**ASSERT MANY TO ONE**/ JOIN per_customer_region
             ON customers.id = per_customer_region.customer_id
         """
     )
@@ -72,7 +72,7 @@ def test_a_group_by_subquery_joined_on_its_full_composite_grouping_key_is_proved
         )
         SELECT *
         FROM customer_regions
-        /**ASSERT UNIQUE**/ JOIN per_customer_region
+        /**ASSERT MANY TO ONE**/ JOIN per_customer_region
             ON customer_regions.customer_id = per_customer_region.customer_id
             AND customer_regions.region = per_customer_region.region
         """
@@ -90,7 +90,7 @@ def test_an_aliased_grouping_key_maps_the_unique_set_to_the_outer_column(orders_
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.cid
         """
     )
@@ -109,7 +109,7 @@ def test_joining_on_an_aggregate_expression_instead_of_a_grouping_key_is_unknown
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.n
         """
     )
@@ -129,7 +129,7 @@ def test_a_where_clause_before_group_by_does_not_block_the_proof(orders_and_cust
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.customer_id
         """
     )
@@ -146,7 +146,7 @@ def test_a_grouping_key_absent_from_the_select_list_is_unsupported_and_unknown(o
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.n
         """
     )
@@ -170,7 +170,7 @@ def test_a_computed_grouping_key_maps_the_unique_set_to_the_outer_column():
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.ucid
         """
     )
@@ -187,7 +187,7 @@ def test_rollup_is_unsupported_and_unknown(orders_and_customers):
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.customer_id
         """
     )
@@ -204,7 +204,7 @@ def test_grouping_sets_is_unsupported_and_unknown(orders_and_customers):
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.customer_id
         """
     )
@@ -224,7 +224,7 @@ def test_having_is_unsupported_and_unknown(orders_and_customers):
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN per_customer
+        /**ASSERT MANY TO ONE**/ JOIN per_customer
             ON customers.id = per_customer.customer_id
         """
     )
@@ -244,7 +244,7 @@ def test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_prove
             SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY user_id
         );
 
-        SELECT * FROM per_user AS a /**ASSERT UNIQUE**/ JOIN per_user AS b USING (user_id)
+        SELECT * FROM per_user AS a /**ASSERT MANY TO ONE**/ JOIN per_user AS b USING (user_id)
         """
     )
 
@@ -259,7 +259,7 @@ def test_a_positional_grouping_key_maps_to_its_selected_output():
             SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY 1
         );
 
-        SELECT * FROM per_user AS a /**ASSERT UNIQUE**/ JOIN per_user AS b USING (user_id)
+        SELECT * FROM per_user AS a /**ASSERT MANY TO ONE**/ JOIN per_user AS b USING (user_id)
         """
     )
 
@@ -278,7 +278,7 @@ def test_a_distinct_subquery_joined_on_its_full_output_set_is_proved(orders_and_
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN distinct_customers
+        /**ASSERT MANY TO ONE**/ JOIN distinct_customers
             ON customers.id = distinct_customers.customer_id
         """
     )
@@ -295,7 +295,7 @@ def test_a_distinct_subquery_joined_on_part_of_its_output_set_is_unknown(orders_
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN distinct_pairs
+        /**ASSERT MANY TO ONE**/ JOIN distinct_pairs
             ON customers.id = distinct_pairs.customer_id
         """
     )
@@ -314,7 +314,7 @@ def test_a_distinct_subquery_joined_on_its_full_composite_output_set_is_proved()
         )
         SELECT *
         FROM customer_regions
-        /**ASSERT UNIQUE**/ JOIN distinct_pairs
+        /**ASSERT MANY TO ONE**/ JOIN distinct_pairs
             ON customer_regions.customer_id = distinct_pairs.customer_id
             AND customer_regions.region = distinct_pairs.region
         """
@@ -334,7 +334,7 @@ def test_distinct_star_is_unsupported_and_unknown():
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN distinct_star
+        /**ASSERT MANY TO ONE**/ JOIN distinct_star
             ON customers.id = distinct_star.customer_id
         """
     )
@@ -359,7 +359,7 @@ def test_a_distinct_on_subquery_joined_on_its_full_on_key_is_proved(orders_and_c
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN first_per_customer
+        /**ASSERT MANY TO ONE**/ JOIN first_per_customer
             ON customers.id = first_per_customer.customer_id
         """,
         dialect=dialect,
@@ -377,7 +377,7 @@ def test_a_distinct_on_subquery_joined_on_part_of_a_composite_on_key_is_unknown(
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN first_per_customer_region
+        /**ASSERT MANY TO ONE**/ JOIN first_per_customer_region
             ON customers.id = first_per_customer_region.customer_id
         """,
         dialect="postgres",
@@ -410,7 +410,7 @@ def test_a_distinct_on_key_absent_from_the_select_list_is_unknown(orders_and_cus
         )
         SELECT *
         FROM customers
-        /**ASSERT UNIQUE**/ JOIN first_per_region
+        /**ASSERT MANY TO ONE**/ JOIN first_per_region
             ON customers.id = first_per_region.customer_id
         """,
         dialect="postgres",

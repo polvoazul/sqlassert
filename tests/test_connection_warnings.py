@@ -77,7 +77,7 @@ def test_a_qualified_column_does_not_warn_ambiguous():
 SAME_SQL = [
     "SELECT id FROM accounts a JOIN regions r ON a.region = r.code /**ASSERT UNIQUE(id)**/",
     "SELECT a.id FROM accounts a JOIN regions r ON a.region = r.code /**ASSERT UNIQUE(id)**/",
-    "SELECT * FROM accounts a /**ASSERT UNIQUE**/ JOIN regions r ON a.region = r.code",
+    "SELECT * FROM accounts a /**ASSERT MANY TO ONE**/ JOIN regions r ON a.region = r.code",
     "SELECT id FROM accounts /**ASSERT NOT NULL UNIQUE(id)**/",
 ]
 
