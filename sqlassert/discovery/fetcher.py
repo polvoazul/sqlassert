@@ -11,7 +11,10 @@ cycle among views is left to the linker, which reports it.
 
 Catalog constraints never pass through those declarations. `bind` turns them
 into Properties over the final IR's own Output Columns, so the engine sees
-Knowledge only, never a name, a catalog row, or a connection.
+Properties only, never a name, a catalog row, or a connection: Knowledge for
+what the dialect enforces, Property Declarations for unenforced keys the
+caller trusts (`trust_unenforced_keys`), as `ir/convert.py` decides for keys
+written in SQL.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from sqlglot.optimizer.scope import traverse_scope
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
+from sqlassert.dialects import semantics
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.properties import NonNullColumn, Property, ReferentialCoverage, UniqueSet
 from sqlassert.provenance import Origin
@@ -105,6 +109,19 @@ class DatabaseHydration:
     conversion: IrConversionResult
     tables: Mapping[str, DatabaseRelationMetadata] = field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
+    dialect: str = "duckdb"
+    trust_unenforced_keys: bool = False
+
+
+@dataclass(frozen=True)
+class CatalogFacts:
+    """What `bind` makes of the catalog: Knowledge the database enforces,
+    Property Declarations it does not but the caller trusts, and a warning
+    for each key left out."""
+
+    knowledge: tuple[Property, ...] = ()
+    declarations: tuple[Property, ...] = ()
+    warnings: tuple[Diagnostic, ...] = ()
 
 
 class DatabaseKnowledgeFetcher(ABC):
@@ -116,24 +133,49 @@ class DatabaseKnowledgeFetcher(ABC):
     def hydrate(self, ast: ParsedProgram, *, dialect: str, trust_unenforced_keys: bool = False) -> DatabaseHydration:
         return _Hydration(self, ast, dialect, trust_unenforced_keys).run()
 
-    def bind(self, program: ir.Program, hydration: DatabaseHydration) -> tuple[Property, ...]:
+    def bind(self, program: ir.Program, hydration: DatabaseHydration) -> CatalogFacts:
         """Catalog facts as Properties over ``program``'s Output Columns.
 
-        A foreign key binds only when the Program reaches its referenced Relation.
+        NOT NULL columns are Knowledge. Keys and foreign keys are Knowledge
+        where the dialect enforces them; elsewhere, as for SQL declarations,
+        they are Property Declarations under `trust_unenforced_keys`, and
+        otherwise left out with a warning (`docs/dialects.md`). A foreign key
+        binds only when the Program reaches its referenced Relation.
         """
-        facts: list[Property] = []
+        meaning = semantics(hydration.dialect)
+        knowledge: list[Property] = []
+        declarations: list[Property] = []
+        warnings: list[Diagnostic] = []
+
+        def place(facts: list[Property], enforced: bool, kind: str, columns: tuple[str, ...], metadata: DatabaseRelationMetadata) -> None:
+            if enforced:
+                knowledge.extend(facts)
+            elif hydration.trust_unenforced_keys:
+                declarations.extend(facts)
+            else:
+                warnings.append(Diagnostic(
+                    diag.UNENFORCED_CONSTRAINT,
+                    f"the {kind} ({', '.join(columns)}) of {metadata.identity} is not Knowledge, since {hydration.dialect} "
+                    "does not enforce it: if the data satisfies it, analyze with trust_unenforced_keys=True",
+                    _origin(metadata),
+                ))
+
         tables = {
             metadata.identity.lower(): (relation, metadata)
             for relation in program.named_relations
             if relation.role is ir.RelationRole.TABLE and (metadata := hydration.tables.get(relation.name.lower())) is not None
         }
+        keys_enforced = meaning.unique_keys == "enforced"
         for relation, metadata in tables.values():
             columns = {column.name.lower(): column for column in relation.output_columns}
-            non_null = {column.name.lower() for column in metadata.columns if not column.nullable}
-            non_null.update(name.lower() for name in metadata.primary_key)
-            facts.extend(NonNullColumn(column=columns[name]) for name in sorted(non_null) if name in columns)
-            for unique_set in _unique_sets(metadata):
-                facts.append(UniqueSet(columns=frozenset(columns[name.lower()] for name in unique_set)))
+            non_null = sorted({column.name.lower() for column in metadata.columns if not column.nullable})
+            knowledge.extend(NonNullColumn(column=columns[name]) for name in non_null if name in columns)
+            for position, unique_set in enumerate(_unique_sets(metadata)):
+                facts: list[Property] = [UniqueSet(columns=frozenset(columns[name.lower()] for name in unique_set))]
+                primary = position == 0 and bool(metadata.primary_key)
+                if primary and (meaning.primary_key_not_null or not keys_enforced):
+                    facts.extend(NonNullColumn(column=columns[name.lower()]) for name in unique_set if name.lower() not in non_null)
+                place(facts, keys_enforced, "primary key" if primary else "unique key", unique_set, metadata)
             for foreign_key in metadata.foreign_keys:
                 if foreign_key.referenced.lower() not in tables:
                     continue
@@ -141,11 +183,11 @@ class DatabaseKnowledgeFetcher(ABC):
                 if _incomplete_reference(foreign_key, target_metadata):
                     continue  # Never seen from a consistent catalog; no fact is safer than a wrong one.
                 referenced = {column.name.lower(): column for column in target.output_columns}
-                facts.append(ReferentialCoverage(
+                place([ReferentialCoverage(
                     columns=tuple(columns[name.lower()] for name in foreign_key.columns),
                     referenced_columns=tuple(referenced[name.lower()] for name in foreign_key.referenced_columns),
-                ))
-        return tuple(facts)
+                )], meaning.foreign_keys == "enforced", "foreign key", foreign_key.columns, metadata)
+        return CatalogFacts(tuple(knowledge), tuple(declarations), tuple(dict.fromkeys(warnings)))
 
     @abstractmethod
     def fetch_relation_metadata(
@@ -211,7 +253,9 @@ class _Hydration:
                 relation.name for relation in conversion.program.named_relations if self._is_external(relation)
             ))
             if not pending:
-                return DatabaseHydration(conversion, dict(self.tables), tuple(dict.fromkeys(self.diagnostics)))
+                return DatabaseHydration(
+                    conversion, dict(self.tables), tuple(dict.fromkeys(self.diagnostics)), self.dialect, self.trust_unenforced_keys,
+                )
             self.resolved.update(self._resolve(tuple(name for name in pending if name.lower() not in self.resolved), None))
             for name in pending:
                 self._declare(name, self.resolved[name.lower()])

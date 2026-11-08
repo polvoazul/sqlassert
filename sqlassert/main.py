@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from sqlassert.ir.convert import IrParser
@@ -40,11 +41,13 @@ def analyze_database(
 
     The fetcher reads catalog metadata only, never rows, and binds it to the
     final IR before the engine runs once. No connection warnings: a relation
-    the catalog lacks is already a diagnostic.
+    the catalog lacks is already a diagnostic. A catalog key the dialect does
+    not enforce warns, unless `trust_unenforced_keys` declares it.
     """
     ast = SqlParser(dialect).parse(sql)
     hydration = fetcher.hydrate(ast, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
     conversion = hydration.conversion
-    knowledge = conversion.knowledge + fetcher.bind(conversion.program, hydration)
+    facts = fetcher.bind(conversion.program, hydration)
+    program = replace(conversion.program, declarations=conversion.program.declarations + facts.declarations)
     diagnostics = ast.diagnostics + hydration.diagnostics + conversion.diagnostics
-    return Engine().run(conversion.program, knowledge, diagnostics)
+    return Engine().run(program, conversion.knowledge + facts.knowledge, diagnostics, facts.warnings)

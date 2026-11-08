@@ -263,8 +263,9 @@ unique constraints, foreign keys, view definitions), never table rows. A
 catalog foreign key is used when the SQL reaches both of its tables. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
 
-PostgreSQL and MySQL have fetchers too. They take any DB-API connection
-(psycopg, psycopg2, PyMySQL, mysqlclient, mysql-connector), so sqlassert
+PostgreSQL, MySQL, Snowflake, BigQuery, Databricks and Redshift have
+fetchers too, in `sqlassert.discovery.<dialect>`. They take any DB-API
+connection (psycopg, PyMySQL, snowflake-connector-python, ...), so sqlassert
 depends on no driver:
 
 ```python
@@ -274,7 +275,9 @@ from sqlassert.discovery.postgres import PostgresKnowledgeFetcher
 report = analyze_database(sql, PostgresKnowledgeFetcher(psycopg.connect(dsn)), dialect="postgres")
 ```
 
-`sqlassert.discovery.mysql.MySQLKnowledgeFetcher` is the MySQL one.
+Warehouse keys are not enforced, so catalog keys there prove only with
+`trust_unenforced_keys=True` (see Dialects below). `BigQueryKnowledgeFetcher`
+also takes the project and default dataset.
 
 ### Dialects
 

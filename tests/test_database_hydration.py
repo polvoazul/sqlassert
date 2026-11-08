@@ -263,10 +263,10 @@ def test_bound_knowledge_holds_only_properties_over_final_ir_nodes():
     hydration = fetcher.hydrate(SqlParser("duckdb").parse(UNIQUE_JOIN), dialect="duckdb")
     program = hydration.conversion.program
 
-    knowledge = fetcher.bind(program, hydration)
+    facts = fetcher.bind(program, hydration)
 
-    assert knowledge
-    for fact in knowledge:
+    assert facts.knowledge and not facts.declarations
+    for fact in facts.knowledge:
         assert isinstance(fact, Property)
         for value in vars(fact).values():
             members = value if isinstance(value, frozenset) else {value}

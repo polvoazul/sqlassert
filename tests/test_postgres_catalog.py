@@ -21,17 +21,24 @@ from sqlassert import Outcome, analyze_database
 from sqlassert.discovery.postgres import PostgresKnowledgeFetcher
 
 PSQL = os.environ.get("SQLASSERT_PSQL")
+# One schema per pytest-xdist worker, so workers never drop each other's.
+CATALOG_SCHEMA = f"sqlassert_catalog_{os.environ.get('PYTEST_XDIST_WORKER', 'main')}"
 
-SCHEMA = """
-DROP SCHEMA IF EXISTS sqlassert_catalog CASCADE;
-CREATE SCHEMA sqlassert_catalog;
-SET search_path TO sqlassert_catalog;
+SCHEMA = f"""
+DROP SCHEMA IF EXISTS {CATALOG_SCHEMA} CASCADE;
+CREATE SCHEMA {CATALOG_SCHEMA};
+SET search_path TO {CATALOG_SCHEMA};
 CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT COLLATE "C", amount NUMERIC);
 CREATE TABLE orders (
     id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers (id), code TEXT, note TEXT,
     UNIQUE (code) DEFERRABLE
 );
 CREATE UNIQUE INDEX orders_note ON orders (note) INCLUDE (code);
+CREATE UNIQUE INDEX customers_partial ON customers (name) WHERE amount > 0;
+CREATE UNIQUE INDEX customers_lower ON customers (lower(name));
+CREATE TABLE secret (id INTEGER PRIMARY KEY);
+ALTER TABLE secret ENABLE ROW LEVEL SECURITY;
+CREATE TABLE refs (secret_id INTEGER REFERENCES secret (id));
 CREATE TABLE shadow (id INTEGER, customer_id INTEGER);
 ALTER TABLE shadow ADD CONSTRAINT shadow_customer FOREIGN KEY (customer_id) REFERENCES customers (id) NOT VALID;
 CREATE TABLE unenforced (id INTEGER, customer_id INTEGER REFERENCES customers (id) NOT ENFORCED);
@@ -48,7 +55,7 @@ class _PsqlCursor:
 
     def execute(self, operation: str, parameters: Any = (), /) -> None:
         sql = operation % tuple(_literal(value) for value in parameters)
-        query = f"SET search_path TO sqlassert_catalog, public; SELECT coalesce(json_agg(q), '[]') FROM ({sql}) q"
+        query = f"SET search_path TO {CATALOG_SCHEMA}, public; SELECT coalesce(json_agg(q), '[]') FROM ({sql}) q"
         output = subprocess.run(self.command + ["-At", "-c", query], capture_output=True, text=True, check=True).stdout
         # Each row is a JSON object in column order, whose names may repeat.
         rows = json.loads(output.split("\n", 1)[1], object_pairs_hook=lambda pairs: tuple(value for _, value in pairs))
@@ -82,14 +89,15 @@ def fetcher() -> Iterator[PostgresKnowledgeFetcher]:
     command = shlex.split(PSQL)
     subprocess.run(command + ["-v", "ON_ERROR_STOP=1", "-q", "-c", SCHEMA], capture_output=True, text=True, check=True)
     yield PostgresKnowledgeFetcher(_PsqlConnection(PSQL))
-    subprocess.run(command + ["-q", "-c", "DROP SCHEMA sqlassert_catalog CASCADE"], capture_output=True, check=True)
+    subprocess.run(command + ["-q", "-c", f"DROP SCHEMA {CATALOG_SCHEMA} CASCADE"], capture_output=True, check=True)
 
 
 def test_tables_have_their_columns_types_and_enforced_keys(fetcher: PostgresKnowledgeFetcher):
-    found = fetcher.fetch_relation_metadata(("customers", "orders", "sqlassert_catalog.shadow", "unenforced", "parent", "missing"))
+    found = fetcher.fetch_relation_metadata(("customers", "orders", f"{CATALOG_SCHEMA}.shadow", "unenforced", "parent", "refs", "missing"))
 
     customers, orders = found["customers"], found["orders"]
-    assert customers.schema == "sqlassert_catalog" and customers.primary_key == ("id",) and customers.unique_sets == (("email",),)
+    # The partial and the expression unique index are not keys.
+    assert customers.schema == CATALOG_SCHEMA and customers.primary_key == ("id",) and customers.unique_sets == (("email",),)
     assert [(column.name, column.nullable, column.data_type, column.collation) for column in customers.columns] == [
         ("id", False, "integer", None), ("email", False, "text", None), ("name", True, "text", None), ("amount", True, "numeric", None),
     ]
@@ -97,9 +105,10 @@ def test_tables_have_their_columns_types_and_enforced_keys(fetcher: PostgresKnow
     assert orders.unique_sets == (("note",),)
     reference, = orders.foreign_keys
     assert reference.columns == ("customer_id",) and reference.referenced_columns == ("id",)
-    assert reference.referenced.endswith(".sqlassert_catalog.customers")
-    assert found["sqlassert_catalog.shadow"].foreign_keys == ()  # NOT VALID
+    assert reference.referenced.endswith(f".{CATALOG_SCHEMA}.customers")
+    assert found[f"{CATALOG_SCHEMA}.shadow"].foreign_keys == ()  # NOT VALID
     assert found["unenforced"].foreign_keys == ()  # NOT ENFORCED
+    assert found["refs"].foreign_keys == ()  # Onto a table with row-level security.
     assert found["parent"].primary_key == () and all(column.nullable for column in found["parent"].columns)  # Inherited.
     assert "missing" not in found
 
@@ -140,23 +149,25 @@ class _ScriptedCursor:
     `customers` table, a `parent` other tables inherit from, and a foreign
     table `remote`, so the mapping is tested without a server."""
 
-    ANSWERS: dict[str, list[tuple[Any, ...]]] = {
-        "SELECT current_database()": [("shop", ["pg_catalog", "public"], 180003)],
-        "SELECT n.nspname, c.relname, c.relkind": [
-            ("public", "customers", "r", False), ("public", "parent", "r", True), ("public", "remote", "f", False),
-        ],
-        "SELECT n.nspname, c.relname, a.attname": [
-            ("public", "customers", "id", False, "integer", None),
-            ("public", "customers", "name", True, "text", "und-ci"),
-            ("public", "parent", "id", False, "integer", None),
-            ("public", "remote", "id", False, "integer", None),
-        ],
-        "SELECT n.nspname, c.relname, k.contype": [
-            ("public", "customers", "p", ["id"], None, None, []), ("public", "parent", "p", ["id"], None, None, []),
-            ("public", "remote", "u", ["id"], None, None, []),
-        ],
-        "SELECT n.nspname, c.relname, ARRAY": [],
-    }
+    ANSWERS: list[tuple[str, list[tuple[Any, ...]]]] = [
+        ("current_schemas(true)", [("shop", ["pg_catalog", "public"], 180003)]),
+        ("c.relhassubclass", [
+            ("shop", "public", "customers", "r", False), ("shop", "public", "parent", "r", True),
+            ("shop", "public", "remote", "f", False),
+        ]),
+        ("a.attname,", [
+            ("customers", "id", False, "integer", None),
+            ("customers", "name", True, "text", "und-ci"),
+            ("parent", "id", False, "integer", None),
+            ("remote", "id", False, "integer", None),
+        ]),
+        ("k.contype IN ('p', 'u')", [
+            ("customers", "p", ["id"], "shop", None, None, []), ("parent", "p", ["id"], "shop", None, None, []),
+            ("remote", "u", ["id"], "shop", None, None, []),
+        ]),
+        ("k.contype IN ('f')", []),
+        ("pg_catalog.pg_index", []),
+    ]
 
     def __init__(self, log: list[str]):
         self.log = log
@@ -164,7 +175,7 @@ class _ScriptedCursor:
 
     def execute(self, operation: str, parameters: Any = (), /) -> None:
         self.log.append(operation)
-        self.rows = next(rows for prefix, rows in self.ANSWERS.items() if operation.strip().startswith(prefix))
+        self.rows = next(rows for marker, rows in self.ANSWERS if marker in operation)
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         return self.rows

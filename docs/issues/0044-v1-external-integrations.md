@@ -34,10 +34,10 @@ only. For each dialect:
   injective flags as that dialect defines them.
 - [x] NULL, type and comparison semantics the rules depend on: implicit casts,
   default collation (ENUM narrowing), and arithmetic that can return NULL.
-- [ ] Catalog fetcher (columns, nullability, keys, Foreign Keys, views).
-  Done for Postgres (live-tested) and MySQL (scripted fakes only); the
-  warehouses need a per-constraint trust (`RELY`) field on
-  `DatabaseRelationMetadata` first.
+- [x] Catalog fetcher (columns, nullability, keys, Foreign Keys, views).
+  Postgres (live-tested) and MySQL; Snowflake, BigQuery, Databricks and
+  Redshift (scripted fakes only) since [47](done/0047-discovery-base-class.md),
+  whose catalog keys hold only under `trust_unenforced_keys`.
 - [x] Test cases in that dialect, and a way to judge soundness without DuckDB
   (a real engine in CI, or an argued mapping onto DuckDB semantics).
 
