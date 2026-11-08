@@ -16,8 +16,11 @@ sources:
             tests:
               - not_null
               - accepted_values:
-                  values: [placed, shipped, returned]
+                  arguments:
+                    values: [placed, shipped, returned]
                   config: {severity: warn}
+      # No tests: only customer_keys' contract makes its key a fact.
+      - name: signups
 
 seeds:
   - name: raw_payments
@@ -40,10 +43,13 @@ models:
         tests: [unique]
       - name: customer_id
         tests:
-          - relationships: {to: ref('stg_customers'), field: customer_id}
+          - relationships:
+              arguments: {to: ref('stg_customers'), field: customer_id}
       - name: status
         tests:
-          - accepted_values: {values: [placed, shipped, returned]}
+          - accepted_values:
+              arguments:
+                values: [placed, shipped, returned]
   - name: customers
     columns:
       - name: customer_id
@@ -58,3 +64,22 @@ models:
     columns:
       - name: order_id
         tests: [unique]
+  - name: customer_keys
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: customer_id
+        data_type: integer
+        constraints:
+          - type: primary_key
+      - name: signup_code
+        data_type: varchar
+        constraints:
+          - type: not_null
+          - type: unique
+  - name: customer_signups
+    columns:
+      - name: customer_id
+        tests: [unique, not_null]
+      - name: signup_code
+        tests: [unique, not_null]

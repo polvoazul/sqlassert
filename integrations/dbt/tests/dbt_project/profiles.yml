@@ -1,0 +1,7 @@
+jaffle:
+  target: test
+  outputs:
+    test:
+      type: duckdb
+      path: ":memory:"
+      threads: 1

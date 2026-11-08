@@ -30,9 +30,9 @@ from sqlglot.tokens import TokenType
 
 from sqlassert import diagnostics as diag
 from sqlassert import ir
-from sqlassert.dbt.expectations import Expectation, PropertyKind
-from sqlassert.dbt.jinja import Rendered, Unrenderable, has_incremental_branch, render
-from sqlassert.dbt.manifest import Relation
+from sqlassert_dbt.expectations import Expectation, PropertyKind
+from sqlassert_dbt.jinja import Rendered, Unrenderable, has_incremental_branch, render
+from sqlassert_dbt.manifest import Relation
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import (
@@ -191,7 +191,7 @@ def _inject(rendered: Rendered, joined: str, raw_code: str) -> Body:
 
 
 def _resolver(model: Relation, relations: Mapping[str, Relation]):
-    from sqlassert.dbt.expectations import resolve
+    from sqlassert_dbt.expectations import resolve
 
     def resolved(function: str, arguments: tuple[object, ...], options: dict[str, object]) -> str:
         if function == "this":

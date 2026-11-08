@@ -84,7 +84,7 @@ warning ([docs/dialects.md](../dialects.md)).
   numbers don't: map each finding back to the model's source file and line.
 - [x] Ephemeral models are inlined as CTEs; incremental models have two
   `is_incremental()` branches, and both must be analyzed.
-- [ ] A command (`sqlassert dbt [project dir]`) that reuses `check`'s exit codes,
+- [ ] A command (`sqlassert-dbt [project dir]`, the plugin of #48) that reuses `check`'s exit codes,
   config and output formats, for CI. Exit codes shared; text output only, no
   `[tool.sqlassert]` config yet.
 

@@ -2,11 +2,12 @@
 
 This is a small structural guard rather than a complete import analysis: it
 catches the boundary crossings that would let SQLGlot nodes into the IR or
-property reasoning.
+property reasoning, and the package depending on its dbt plugin.
 """
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -42,4 +43,17 @@ def test_module_does_not_cross_its_boundary(module: str, forbidden: tuple[str, .
         if line.startswith(("import ", "from "))
     }
     assert not imported & set(forbidden), f"{module} imports across its boundary: {sorted(imported & set(forbidden))}"
+
+
+def test_the_package_never_imports_dbt_or_its_plugin():
+    # The dbt plugin (integrations/dbt) depends on sqlassert, never the reverse.
+    for path in PACKAGE.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            assert not any(name.split(".")[0] in {"dbt", "sqlassert_dbt"} for name in names), path
 

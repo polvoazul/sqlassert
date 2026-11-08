@@ -197,8 +197,12 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   NATURAL joins are diagnosed syntactically, including unused bodies, and
   their Select Expressions remain opaque. `suggest` emits no suggestions for
   a program containing one.
-- `dbt/` checks a dbt project from its `manifest.json`, without dbt.
-  `expectations.py` reads each test and contract constraint as the Property
+- The dbt plugin is not in this package: `integrations/dbt/` is its own
+  package, `sqlassert-dbt` (import `sqlassert_dbt`, command `sqlassert-dbt`),
+  which depends on `sqlassert`; `sqlassert` never imports it or dbt
+  (`tests/test_module_boundaries.py`). It checks a dbt project from its
+  `manifest.json` without importing dbt, and uses sqlassert internals freely
+  (alpha), so a change to them runs its tests too. `expectations.py` reads each test and contract constraint as the Property
   that proves it (`asserted`) and the one it guarantees once it passed
   (`declared`, None when it is no fact). `program.py` builds one Program per
   model and branch: the model's compiled SQL as a FROM subquery of a Root
@@ -257,3 +261,14 @@ an annotation goes on its own line when inline it would pass 88 columns.
 Tests stay in Python when they need Evidence structure, origins beyond the
 line, mocking, fixtures, `analyze_database`, suggestions, parsing or IR
 internals, or a large generated matrix (marker accounting).
+
+The dbt plugin's tests live in `integrations/dbt/tests` and need dbt
+(`pip install -e . -e "integrations/dbt[test]"`); run them from that folder
+(`cd integrations/dbt && python -m pytest`, `ty check`). The root `pytest`
+and `ty check sqlassert tests` never see them. Every plugin test reads a
+manifest written by a real `dbt compile` of its `tests/dbt_project` (dbt-duckdb,
+in memory: no warehouse), compiled once per session (`conftest.py`); a test
+that needs another manifest edits a copy of that one, or recompiles an
+edited copy of the project (`dbt_runs.py`). There is no hand-written
+manifest. CI (`.github/workflows/ci.yml`) runs the package without dbt and
+the plugin with it as separate jobs.

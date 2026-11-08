@@ -21,7 +21,7 @@ from typing import Literal
 import sqlglot
 from sqlglot.errors import SqlglotError
 
-from sqlassert.dbt.manifest import Constraint, Manifest, Relation, Test
+from sqlassert_dbt.manifest import Constraint, Manifest, Relation, Test
 from sqlassert.ir.model import LiteralValue
 from sqlassert.sql_parse import literal_value
 

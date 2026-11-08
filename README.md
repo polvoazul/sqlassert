@@ -407,17 +407,18 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 
 ### dbt
 
-`sqlassert dbt [project dir]` checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). dbt itself is not needed.
+The `sqlassert-dbt` plugin, a separate package in this repository (`integrations/dbt/`), checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). It reads only the manifest, so dbt itself is not needed where it runs.
 
 ```bash
-$ sqlassert dbt .
+$ pip install ./integrations/dbt   # depends on sqlassert; sqlassert does not depend on it
+$ sqlassert-dbt .
 models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/ (customers)
 
 Proved statically (a test here can be skipped):
   models/schema.yml  unique_stg_customers_customer_id  (test on stg_customers)
 
 Not proved (the warehouse run still checks these):
-  models/schema.yml  accepted_values_stg_orders_status  (test on stg_orders): its Property is not proved from the SQL
+  models/schema.yml  accepted_values_stg_orders_status__placed__shipped__returned  (test on stg_orders): its Property is not proved from the SQL
 
 Proved but untested (schema.yml additions):
   models/schema.yml  customers.customer_id: not_null
