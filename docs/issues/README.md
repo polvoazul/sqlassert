@@ -68,4 +68,5 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [35. Audit FD propagation against Paulley](done/0035-audit-fd-propagation-against-paulley.md)
 - [38. Lower ORDER BY and scalar subqueries](done/0038-lower-order-by-and-select-list-subqueries.md)
 - [41. Join cardinality markers and the fan-trap smell](done/0041-join-cardinality-markers-and-fan-trap-smell.md)
+- [47. Discovery: one base fetcher, a subclass per dialect](done/0047-discovery-base-class.md)
 - [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)
