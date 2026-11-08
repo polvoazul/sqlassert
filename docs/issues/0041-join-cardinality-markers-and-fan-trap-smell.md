@@ -42,10 +42,12 @@ padding sides swapped), so no rule changes are needed. Unique on any subset of
 the equated columns suffices, through the closure, as today. Padding never
 repeats a row, so LEFT, RIGHT and FULL joins take the same proofs; NULL keys
 match nothing. Whether the join drops rows is a separate question that
-`EXACTLY ONE` answers. Semi and anti joins never repeat left rows, so for them
-`MANY TO ONE`, and with it `NOT MANY TO MANY`, holds trivially; `ONE TO MANY`
-and `ONE TO ONE` should be rejected there, since a semi join keeps no right
-rows.
+`EXACTLY ONE` answers.
+
+Semi and anti joins don't participate: they keep or drop left rows whole and
+output no right rows, so cardinality says nothing about them. Every
+cardinality marker on one, `UNIQUE` included, is rejected with a diagnostic
+(today `UNIQUE` on a SEMI or ANTI join is PROVED).
 
 When `NOT MANY TO MANY` (or `UNIQUE`) is proved, the explanation names the
 side that was unique, so the author gets the direction without asserting it.
@@ -59,9 +61,10 @@ though `sum(o.total)` over it is multiplied. That is the intended change; the
 directional markers and the smell below cover the aggregate case. Alpha, so
 no compatibility path:
 
-- Tests that rely on the directional meaning (a `UNIQUE` expected UNKNOWN
-  because only the left side is unique, the oracle's join checks) switch to
-  `MANY TO ONE`. Tests that stay PROVED keep `UNIQUE`.
+- Tests keep `UNIQUE`. Only those that fail after the change switch to
+  `MANY TO ONE` (a `UNIQUE` expected UNKNOWN because only the left side is
+  unique), or to the new diagnostic (SEMI and ANTI joins, e.g. in
+  `test_analyze_join_kinds.py`).
 - README "Unique Join Syntax", the CONTEXT.md glossary (Unique Join
   Assertion; add the cardinality terms), and `JOIN_MARKER_NOUNS` in
   `sql_parse.py`.
@@ -71,8 +74,8 @@ no compatibility path:
 
 ## The fan-trap smell (Low, issue 15)
 
-With no marker, flag a duplicate-sensitive aggregate whose input repeats the
-rows its argument comes from:
+With no marker, flag an aggregate whose input repeats the rows its argument
+comes from:
 
 - **Fan trap:** `sum(p.amount)` over `orders JOIN payments USING (c_id)`;
   the join is many to many.
@@ -87,10 +90,11 @@ is "R's rows may be repeated before they are summed".
 
 Decide while implementing:
 
-- **Which aggregates:** duplicate-sensitive ones (`sum`, `avg`, `count(x)`,
-  `string_agg`, `array_agg`). Not `min`, `max`, `bool_and`/`bool_or`, or any
-  `DISTINCT` aggregate. Skip `count(*)`: it counts the input's rows, usually
-  on purpose.
+- **Which aggregates:** all of them. `min`, `max` and `DISTINCT` aggregates
+  happen to return the right value over repeated rows, but the join is
+  wrong either way. `count(*)` has no argument relation, so it fires on the
+  fan trap only: no input relation keeps its rows unrepeated.
+- **Semi and anti joins** never repeat rows, so they never cause the smell.
 - **Silence on unknowns:** fire only when R has a known Unique Set (declared,
   a key, or proved). With no known key there is nothing to lose, and firing
   would be noise.
@@ -109,10 +113,13 @@ claim is checked on data, not only reasoned.
 
 - [ ] `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE`, `NOT MANY TO MANY` parse,
   attach before a join, and are proved by `unique_join` and its mirror.
-- [ ] `UNIQUE` means `NOT MANY TO MANY`; tests relying on the old meaning
-  use `MANY TO ONE`; README, CONTEXT.md and suggestions updated.
+- [ ] `UNIQUE` means `NOT MANY TO MANY`; tests keep `UNIQUE` except those
+  that fail, which use `MANY TO ONE`; README, CONTEXT.md and suggestions
+  updated.
+- [ ] A cardinality marker on a SEMI or ANTI join is rejected with a diagnostic.
 - [ ] Explanations of `NOT MANY TO MANY` name the unique side.
 - [ ] The fan-trap/chasm-trap smell fires on both examples, stays silent on
-  `sum(o.amount)` over `customers JOIN orders`, on `min`/`max`/`DISTINCT`
-  aggregates and on relations without a known key.
+  `sum(o.amount)` over `customers JOIN orders` and on relations without a
+  known key; it fires on `min`, `max` and `DISTINCT` aggregates too, and on
+  `count(*)` over a many-to-many join.
 - [ ] `pytest --soundness-oracle` passes; the oracle judges the new markers.
