@@ -29,6 +29,11 @@ Keep this suite opt-in / separate from the default fast run (a dedicated marker 
 
 ## Related
 
+- [0040](0040-audit-inference-against-calcite.md) — a targeted Calcite audit
+  and pilot adaptations. [Calcite source notes](../calcite-notes.md) identify
+  metadata/expression tests, `.iq` SQL, catalog fixtures and reuse requirements
+  for an additional corpus source. Preserve fixture assumptions when adapting
+  Java tests; `.iq` files include script directives as well as SQL.
 - [0027](0027-soundness-oracle-against-duckdb.md) — the soundness oracle, split
   out of this issue. It judges `PROVED` outcomes on real data; this issue only
   checks that `analyze()` never crashes. The corpus here can feed the oracle

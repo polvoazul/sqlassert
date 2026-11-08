@@ -1,9 +1,15 @@
 # Literature Notes
 
-What sqlassert can take from the papers in `papers/`. Companion to
+What sqlassert can take from the papers in `papers/` and external implementation
+sources. Companion to
 [`functional-dependencies.md`](functional-dependencies.md), which holds the
 rules themselves. Page and section
 numbers refer to each paper's printed numbering.
+
+Apache Calcite is an additional implementation and test source, not yet an
+audited baseline. [Calcite notes](calcite-notes.md) pin the surveyed revision,
+identify relevant code and tests, and describe how to adapt cases without
+assuming Calcite's answers establish our Properties.
 
 ## How our goal differs
 

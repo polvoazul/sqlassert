@@ -10,6 +10,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
 - [38. Lower ORDER BY and scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
+- [40. Audit inference against Calcite and adapt targeted regressions](0040-audit-inference-against-calcite.md) — open
 
 ## Order
 
