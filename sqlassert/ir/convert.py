@@ -1306,7 +1306,7 @@ class IrParser:
             return ir.NullLiteral(origin=origin)
         if value is not None or isinstance(expression, exp.Literal):
             return ir.Constant(origin=origin, value=value)
-        builtin = _builtins(self.dialect).get(type(expression))
+        builtin = dialect_builtins(self.semantics).get(type(expression))
         if builtin is not None and not quantified:
             function, keys = builtin
             values = [value for key in keys for value in _as_list(expression.args[key])]
@@ -1669,11 +1669,12 @@ def _subquery_conjunct(conjunct: exp.Expression) -> tuple[ir.JoinKind, exp.Selec
 
 
 @cache
-def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]]:
+def dialect_builtins(meaning: DialectSemantics) -> dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]]:
     """Each modelled Builtin, by the SQLGlot node it lowers from (exactly that
     type: TRY_CAST, a subclass of CAST, may be NULL for a value), with the
     argument keys its parameters come from, a list key in place of a variadic
-    Builtin's repeated parameter, as the dialect defines it (`dialects.py`).
+    Builtin's repeated parameter, as a dialect's semantics define it
+    (`dialects.py`; `scripts/certify_dialects.py` probes each Builtin fact).
 
     Comparisons, LIKE, NOT, BETWEEN and the bitwise operators are never NULL
     for non-null arguments where a failed implicit cast raises (`casts_raise`;
@@ -1682,9 +1683,9 @@ def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tupl
     SQLite turns a NaN into NULL, MySQL a bad date CAST), and division and
     remainder only where division by zero raises too (`checked_division`).
     `+`, `-` and negation are injective where exact arithmetic overflows into
-    an error. `||` and `concat()` as each dialect treats NULL; `||` not at all
-    where a setting decides what it means (MySQL: OR, or concatenation)."""
-    meaning = semantics(dialect)
+    an error. `||`, `concat()` and `concat_ws()` as each dialect treats NULL;
+    `||` not at all where a setting decides what it means (MySQL: OR, or
+    concatenation)."""
     checked = meaning.checked_arithmetic
     casts = meaning.casts_raise
 
@@ -1707,11 +1708,6 @@ def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tupl
         exp.Cast: (builtin("CAST", 1, total=checked), ("this",)),
         # `1 BETWEEN NULL AND 0` is FALSE.
         exp.Between: (ir.Builtin(name="BETWEEN", strict=(True, False, False), total=(True, True, True) if casts else None, injective=False), ("this", "low", "high")),
-        # NULL values are skipped: `concat_ws(',', NULL)` is ''.
-        exp.ConcatWs: (
-            ir.BuiltinVariadic(name="concat_ws", strict=(True,), total=(True,), injective=False, repeated_strict=False, repeated_total=False),
-            ("expressions",),
-        ),
     }
     match meaning.pipes:
         case "strict":
@@ -1736,6 +1732,22 @@ def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tupl
             pass
         case _:
             assert_never(meaning.concat)
+    match meaning.concat_ws:
+        case "strict":
+            builtins[exp.ConcatWs] = (
+                ir.BuiltinVariadic(name="concat_ws", strict=(True,), total=(True,), injective=False, repeated_strict=True, repeated_total=True),
+                ("expressions",),
+            )
+        case "skips-null":
+            # NULL values are skipped: `concat_ws(',', NULL)` is ''.
+            builtins[exp.ConcatWs] = (
+                ir.BuiltinVariadic(name="concat_ws", strict=(True,), total=(True,), injective=False, repeated_strict=False, repeated_total=False),
+                ("expressions",),
+            )
+        case None:
+            pass
+        case _:
+            assert_never(meaning.concat_ws)
     return builtins
 
 

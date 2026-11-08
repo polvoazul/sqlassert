@@ -135,3 +135,29 @@ SELECT code FROM t /**ASSERT NOT NULL(code)**/  --~ UNKNOWN
 -- dialect: sqlite
 CREATE TABLE t (code TEXT PRIMARY KEY);
 SELECT code FROM t /**ASSERT UNIQUE(code)**/  --~ PROVED
+
+-- case: snowflake_concat_ws_is_null_when_a_value_is
+-- Unlike Spark's and Postgres's, Snowflake's concat_ws does not skip NULL.
+-- dialect: snowflake
+CREATE TABLE t (s VARCHAR);
+SELECT concat_ws(',', s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: snowflake_concat_ws_of_non_null_arguments_is_non_null
+-- dialect: snowflake
+CREATE TABLE t (s VARCHAR NOT NULL);
+SELECT concat_ws(',', s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: clickhouse_concat_ws_is_null_when_a_value_is
+-- dialect: clickhouse
+CREATE TABLE t (s Nullable(String)) ENGINE = Memory;
+SELECT concat_ws(',', s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: databricks_concat_ws_skips_null
+-- dialect: databricks
+CREATE TABLE t (s STRING);
+SELECT concat_ws(',', s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: bigquery_has_no_concat_ws
+-- dialect: bigquery
+CREATE TABLE t (s STRING NOT NULL);
+SELECT concat_ws(',', s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
