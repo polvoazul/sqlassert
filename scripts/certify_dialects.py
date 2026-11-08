@@ -16,8 +16,8 @@ provenance of each fact that passed (`engine`) or was vacuous (`undefined`),
 and removes it from each that failed; it never adds or strengthens a fact. A FAIL names
 the weaker setting to apply by hand in `dialects.py`. A dialect's flags hold
 under all its settings, so a fact must pass under the engine's defaults and
-again after `PERMISSIVE` statements (MySQL `sql_mode = ''`, Spark ANSI
-off). A setting that changes the default collation is out of scope
+again after `PERMISSIVE` statements (Spark ANSI off). MySQL is certified
+under its default strict `sql_mode` only: a looser one is out of scope. A setting that changes the default collation is out of scope
 (docs/dialects.md). Weak settings claim nothing;
 the runner only reports, as STRONGER, an engine that would also satisfy the
 strong one (never acted on).
@@ -61,7 +61,6 @@ PROVENANCE = ROOT / "docs" / "dialect-provenance.json"
 # Statements after which every fact must still hold: the dialect's settings
 # that weaken what its SQL means.
 PERMISSIVE: dict[str, tuple[str, ...]] = {
-    "mysql": ("SET SESSION sql_mode = ''",),
     "spark": ("SET spark.sql.ansi.enabled = false",),
     "spark2": ("SET spark.sql.ansi.enabled = false",),
     "databricks": ("SET ANSI_MODE = false",),
@@ -381,15 +380,16 @@ def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
         for engine in sorted(meaning.foreign_key_engines or ()):
             check = _foreign_key_check(dialect, ", FOREIGN KEY (pid) REFERENCES sqlassert_probe_parent (id)", f" ENGINE = {engine}")
             yield Fact(f"foreign_key_engines:{engine}", f"drop {engine!r} from foreign_key_engines", (check,))
-    if not meaning.enum_error_value:
-        table = "sqlassert_probe_enum"
-        check = Check(
-            _query(f"SELECT CASE WHEN count(*) = 0 THEN 1 ELSE 0 END FROM {table} WHERE a NOT IN ('x', 'y ')", dialect), "true",
-            guard=(_table(dialect, table, "a ENUM('x', 'y ')"),),
-            attempts=tuple(f"INSERT INTO {table} (a) VALUES ('{value}')" for value in ("z", "", "y")),
-            tables=(table,),
-        )
-        yield Fact("enum_error_value=False", "enum_error_value=True", (check,))
+    # An ENUM holds only its members (as the dialect stores them), whatever is inserted.
+    table = "sqlassert_probe_enum"
+    stored = "'x', 'y'" if meaning.enum_strips_trailing_spaces else "'x', 'y '"
+    check = Check(
+        _query(f"SELECT CASE WHEN count(*) = 0 THEN 1 ELSE 0 END FROM {table} WHERE a NOT IN ({stored})", dialect), "true",
+        guard=(_table(dialect, table, "a ENUM('x', 'y ')"),),
+        attempts=tuple(f"INSERT INTO {table} (a) VALUES ('{value}')" for value in ("z", "", "y ", "y")),
+        tables=(table,),
+    )
+    yield Fact("enum_members_only", "an ENUM holds a value outside its members (or keeps trailing spaces): model it", (check,))
     empty = meaning.empty_string_is_null
     check = Check(_is_null("''") if empty else _is_not_null("''"), "true")
     yield Fact(f"empty_string_is_null={empty}", f"empty_string_is_null={not empty}", (check,))
