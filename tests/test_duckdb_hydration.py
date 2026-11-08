@@ -168,11 +168,11 @@ CREATE TABLE typed (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLAT
     [
         ("enum type", "SELECT status FROM typed /**ASSERT ENUM(status IN ('new', 'paid'))**/", Outcome.PROVED, Outcome.UNKNOWN),
         ("enum type, value missing", "SELECT status FROM typed /**ASSERT ENUM(status IN ('new'))**/", Outcome.UNKNOWN, Outcome.UNKNOWN),
-        # Binary text: distinct strings are distinct values, so two IN lists meet.
-        ("plain text", "SELECT plain FROM typed WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/", Outcome.PROVED, Outcome.UNKNOWN),
+        # Text with no COLLATE is not known binary: the fetcher reports no
+        # collation under an empty default_collation (issue 46).
+        ("plain text", "SELECT plain FROM typed WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/", Outcome.UNKNOWN, Outcome.UNKNOWN),
         ("collated text", "SELECT folded FROM typed WHERE folded IN ('x', 'y') AND folded IN ('x', 'z') /**ASSERT ENUM(folded IN ('x'))**/", Outcome.UNKNOWN, Outcome.UNKNOWN),
-        # Identity comparison: a function of a column it determines.
-        ("function of text", "SELECT plain, upper(plain) AS u, count(*) AS n FROM typed GROUP BY plain, upper(plain) /**ASSERT UNIQUE(plain)**/", Outcome.PROVED, Outcome.UNKNOWN),
+        ("function of text", "SELECT plain, upper(plain) AS u, count(*) AS n FROM typed GROUP BY plain, upper(plain) /**ASSERT UNIQUE(plain)**/", Outcome.UNKNOWN, Outcome.UNKNOWN),
         ("function of a double", "SELECT ratio, CAST(ratio AS VARCHAR) AS r, count(*) AS n FROM typed GROUP BY ratio, CAST(ratio AS VARCHAR) /**ASSERT UNIQUE(ratio)**/", Outcome.UNKNOWN, Outcome.UNKNOWN),
     ],
 )

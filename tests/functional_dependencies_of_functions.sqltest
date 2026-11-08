@@ -7,7 +7,7 @@
 -- PROVED case here is also judged by the soundness oracle; every UNKNOWN case
 -- is a known counterexample to a plausible but unsound rule.
 
-CREATE TABLE f (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, s VARCHAR, n VARCHAR COLLATE NOCASE, d DOUBLE);
+CREATE TABLE f (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, s VARCHAR COLLATE c, n VARCHAR COLLATE NOCASE, d DOUBLE);
 
 -- case: a_deterministic_function_is_determined_by_its_arguments__arithmetic
 SELECT a, a + 1 AS k, count(*) AS c FROM f GROUP BY a, a + 1 /**ASSERT UNIQUE(a)**/

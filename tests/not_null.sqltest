@@ -4,7 +4,7 @@
 -- `DECLARE NOT NULL(...)` and `DECLARE PRIMARY KEY(...)` state trusted
 -- facts and produce no assertion result of their own.
 
-CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL, nickname VARCHAR);
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR COLLATE c NOT NULL, nickname VARCHAR COLLATE c);
 CREATE TABLE sessions (user_id INTEGER NOT NULL, ts TIMESTAMP);
 
 -- case: not_null_is_proved__union

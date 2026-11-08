@@ -8,18 +8,18 @@
 -- referencing component is exempt, so nullable referencing columns never weaken
 -- a Foreign Key.
 
-CREATE TABLE users (id INTEGER PRIMARY KEY, org INTEGER, name VARCHAR, UNIQUE (org, name));
+CREATE TABLE users (id INTEGER PRIMARY KEY, org INTEGER, name VARCHAR COLLATE c, UNIQUE (org, name));
 CREATE TABLE plain (id INTEGER);
 CREATE TABLE orders (
     id INTEGER,
     user_id INTEGER REFERENCES users(id),
     buyer INTEGER REFERENCES users,
     org INTEGER,
-    owner VARCHAR,
+    owner VARCHAR COLLATE c,
     FOREIGN KEY (org, owner) REFERENCES users(org, name)
 );
 CREATE TABLE events (user_id INTEGER, ts TIMESTAMP);
-CREATE TABLE notes (org INTEGER, author VARCHAR, body VARCHAR);
+CREATE TABLE notes (org INTEGER, author VARCHAR COLLATE c, body VARCHAR COLLATE c);
 
 -- case: a_direct_foreign_key_is_proved__column_level_constraint
 SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED

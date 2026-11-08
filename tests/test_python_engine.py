@@ -194,8 +194,8 @@ def test_missing_composite_key_column_is_retained_as_unknown_evidence():
 
 def test_two_covering_keys_retain_both_justifications():
     conversion = convert("""
-        CREATE TABLE users(id INTEGER UNIQUE, email VARCHAR UNIQUE);
-        CREATE TABLE events(user_id INTEGER, email VARCHAR);
+        CREATE TABLE users(id INTEGER UNIQUE, email VARCHAR COLLATE c UNIQUE);
+        CREATE TABLE events(user_id INTEGER, email VARCHAR COLLATE c);
         SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN users
         ON events.user_id = users.id AND events.email = users.email
     """)

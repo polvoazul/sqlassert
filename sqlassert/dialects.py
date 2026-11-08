@@ -88,7 +88,9 @@ _SPARK = DialectSemantics(
 _SEMANTICS: dict[str, DialectSemantics] = {
     "duckdb": DialectSemantics(
         checked_arithmetic=True,
-        binary_default_collation=True,
+        # Not `binary_default_collation`: `SET default_collation = 'nocase'`
+        # makes every column without a COLLATE ignore case.
+        binary_collations=frozenset({"binary", "c", "posix"}),
         pipes="strict",
         concat="skips-null",
     ),
