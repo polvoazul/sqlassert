@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from sqlassert import ir
+from sqlassert.properties import NonNullElements
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 
 
@@ -151,10 +152,64 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             return {}, [Result(True, reason, (expression,), premises)]
         case ir.OpaqueExpression(description=description) | ir.OpaquePureFunction(description=description) | ir.Call(description=description):
             return {ORGANIC: unknown(f"Nullability of {description} is not known", expression)}, []
+        case ir.Elements(operand=operand):
+            elements = _expression_elements(operand)
+            if elements.value:
+                return {}, [Result(True, "No element is NULL", (expression,), [elements])]
+            return {ORGANIC: Result(False, "An element may be NULL", (expression,), [elements], kind="unknown")}, []
         case ir.Equality() | ir.IsNull() | ir.IsNotNull() | ir.InList() | ir.And() | ir.Or():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []
         case ir.SimpleCase():
             return _case_sources(expression)
+        case _:
+            assert_never(expression)
+
+
+@analysis(Stratum.NON_NULL)
+def non_null_elements(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
+    relation = current_arena().program.relation_of(columns)
+    if relation is None:
+        return unknown("Columns with non-null elements must belong to one relation", *columns)
+    return all_of(_column_elements(column) for column in relation.output_columns if column in columns)
+
+
+@analysis(Stratum.NON_NULL)
+def _column_elements(column: ir.OutputColumn) -> Result[bool]:
+    """Whether no element of `column`'s value is NULL: declared, or so in
+    every value it passes on (a set operation's from each input)."""
+    arena = current_arena()
+    declared = arena.accepted_evidence(NonNullElements(columns=frozenset({column})))
+    if declared:
+        return Result(True, "Declared non-null elements", (column,), [any_of(declared)])
+    relation = column.get_relation(arena.program)
+    if isinstance(relation, ir.SetOperation):
+        arms = relation.arms(column)
+        if arms is None:
+            return unknown("The set operation's inputs are not paired by position", relation, column)
+        return all_of(_column_elements(arm) for arm in arms if arm is not None)
+    if isinstance(column.scalar_expr.closed, ir.OpaqueExpression):
+        return unknown(f"{column.name} may hold a NULL element (DECLARE NOT NULL ELEMENTS({column.name}) states it does not)", column)
+    return _expression_elements(column.scalar_expr)
+
+
+def _expression_elements(expression: ir.ScalarExpr) -> Result[bool]:
+    expression = expression.closed
+    match expression:
+        case ir.ColumnRef(column=column):
+            return _column_elements(column)
+        case ir.NullLiteral():
+            return Result(True, "NULL has no elements", (expression,))
+        case ir.AnyAggregate(input=value):
+            return _expression_elements(value)
+        case ir.Coalesce(arguments=arguments):
+            return all_of(_expression_elements(argument) for argument in arguments)
+        case ir.SimpleCase(thens=thens, default=default):
+            return all_of(_expression_elements(arm) for arm in (*thens, default))
+        case (
+            ir.Constant() | ir.Count() | ir.Call() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Elements()
+            | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
+        ):
+            return unknown("Its elements may be NULL", expression)
         case _:
             assert_never(expression)
 

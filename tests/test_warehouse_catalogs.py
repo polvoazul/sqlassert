@@ -1,4 +1,4 @@
-"""The warehouse fetchers (Snowflake, BigQuery, Databricks, Redshift) over
+"""The warehouse fetchers (Snowflake, BigQuery, Databricks, Redshift, Trino) over
 scripted DB-API connections. No warehouse runs here: each catalog query is
 answered with the rows that warehouse returns for a `customers` table and an
 `orders` table whose foreign key references it, so what is tested is the
@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from sqlassert import Outcome, analyze_database
 from sqlassert.diagnostics import UNENFORCED_CONSTRAINT
-from sqlassert.discovery import DatabaseKnowledgeFetcher, DatabaseRelationKind
+from sqlassert.discovery import DatabaseKnowledgeFetcher, DatabaseMetadataError, DatabaseRelationKind
 from sqlassert.discovery.bigquery import BigQueryKnowledgeFetcher
 from sqlassert.discovery.databricks import DatabricksKnowledgeFetcher
 from sqlassert.discovery.information_schema import InformationSchemaKnowledgeFetcher
 from sqlassert.discovery.redshift import RedshiftKnowledgeFetcher
 from sqlassert.discovery.snowflake import SnowflakeKnowledgeFetcher
+from sqlassert.discovery.trino import TrinoKnowledgeFetcher
 
 type Answers = list[tuple[str, list[tuple[Any, ...]]]]
 
@@ -206,6 +209,26 @@ def test_redshift_reads_view_text_from_pg_get_viewdef():
     assert _outcomes(RedshiftKnowledgeFetcher(_Connection(connection.answers)), "redshift", trust=True) == [Outcome.PROVED]
 
 
+def test_trino_reads_each_catalogs_own_information_schema_and_no_keys():
+    connection = _Connection([
+        ("CURRENT_CATALOG", [("memory", "shop")]),
+        ("information_schema.TABLES", [("memory", "shop", "customers", "BASE TABLE"), ("memory", "shop", "orders", "BASE TABLE"), ("other", "shop", "customers", "BASE TABLE")]),
+        *_standard("memory", "shop"),
+    ])
+    fetcher = TrinoKnowledgeFetcher(connection)
+
+    found = fetcher.fetch_relation_metadata(("customers", "orders", "other.shop.customers"))
+
+    assert found["customers"].identity == "memory.shop.customers" and found["customers"].primary_key == ()
+    assert found["orders"].foreign_keys == ()
+    assert found["other.shop.customers"].identity == "other.shop.customers"
+    assert any('"memory".information_schema.TABLES' in operation for operation, _ in connection.log)
+    assert any('"other".information_schema.TABLES' in operation for operation, _ in connection.log)
+    assert not any("CONSTRAINT" in operation for operation, _ in connection.log)
+    assert all("%s" not in operation for operation, _ in connection.log)
+    assert _outcomes(TrinoKnowledgeFetcher(_Connection(connection.answers)), "trino", trust=True) == [Outcome.UNKNOWN]
+
+
 def test_names_that_differ_only_in_case_do_not_resolve():
     class Standard(InformationSchemaKnowledgeFetcher):
         pass
@@ -231,3 +254,25 @@ def test_a_key_with_an_expression_part_is_not_a_key():
         pass
 
     assert Standard(_Connection(answers)).fetch_relation_metadata(("t",))["t"].unique_sets == ()
+
+
+def test_a_trino_session_without_a_catalog_is_a_metadata_error():
+    fetcher = TrinoKnowledgeFetcher(_Connection([("CURRENT_CATALOG", [(None, None)])]))
+
+    with pytest.raises(DatabaseMetadataError, match="no current catalog"):
+        fetcher.fetch_relation_metadata(("customers",))
+
+
+def test_a_catalog_keeps_the_warnings_about_the_sql_itself():
+    connection = _Connection([
+        ("CURRENT_CATALOG", [("memory", "shop")]),
+        ("information_schema.TABLES", [("memory", "shop", "events", "BASE TABLE")]),
+        ("IS_NULLABLE, DATA_TYPE", [("events", "id", "NO", "BIGINT"), ("events", "at", "YES", "TIMESTAMP(3) WITH TIME ZONE")]),
+        ("VIEW_DEFINITION", []),
+    ])
+    sql = "SELECT id FROM events WHERE CAST(at AS VARCHAR) = '2024-01-01 00:00:00.000 UTC' /**ASSERT NOT NULL(id)**/"
+
+    report = analyze_database(sql, TrinoKnowledgeFetcher(connection), dialect="trino")
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+    assert [warning.code for warning in report.warnings] == ["zoned-timestamp-cast"]

@@ -22,17 +22,18 @@ before dialects were listed; see "Not done").
 
 ## Semantics by dialect
 
-| | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift |
-|---|---|---|---|---|---|---|---|
-| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | yes | yes | no (ANSI off) | yes |
-| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes |
-| comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes |
-| text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) |
-| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict |
-| `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled |
-| `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none |
-| primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced |
-| foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced |
+| | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift | Trino |
+|---|---|---|---|---|---|---|---|---|
+| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | yes | yes | no (ANSI off) | yes | yes |
+| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes | yes |
+| comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
+| text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
+| zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
+| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
+| `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
+| `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
+| primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
+| foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 
 Also: SQLite foreign keys are unenforced (`PRAGMA foreign_keys` is off by
 default) and its primary keys may be NULL (only an `INTEGER PRIMARY KEY` may
@@ -40,13 +41,56 @@ not, and SQLGlot reads `INT` and `INTEGER` alike, so none is taken to be
 non-null). A ClickHouse primary key never rejects a duplicate, and its
 `concat_ws` is NULL for a NULL value, as Snowflake's. Hive has neither checked
 arithmetic nor enforced keys, and its `concat_ws` is not modelled.
+A CAST from JSON (or a VARIANT) may be NULL in every dialect: JSON `null` is
+a value, and `CAST(JSON 'null' AS BIGINT)` is NULL (DuckDB, Trino, Snowflake's
+`PARSE_JSON('null')::INT`). So a CAST is never taken to be non-null when its
+operand is known to be JSON: a column declared `JSON`, `JSONB`, `VARIANT` or
+`OBJECT`, a CAST to one, a JSON function, or a `COALESCE` or `CASE` of one. A
+column of unknown type is taken not to be JSON.
+A comparison (`<>`, `<`, `BETWEEN`, ...) of composites, ARRAYs, ROWs or MAPs,
+is taken to be non-null only when no element of either operand is NULL
+either, in every dialect: Trino's `ARRAY[1, NULL] <> ARRAY[1, NULL]` and
+PostgreSQL's `ROW(1, NULL) = ROW(1, NULL)` are NULL (DuckDB's lists and
+PostgreSQL's arrays compare NULL elements as equal, but are not singled out).
+An operand is composite when declared or cast so, or built by `ARRAY[...]`,
+`ROW(...)` or `MAP(...)` (whose elements are not modelled); a column of
+unknown type is taken to be a scalar.
+`NOT NULL ELEMENTS` declares its elements non-null, and a comparison of a
+composite column or CAST without one warns (`composite-comparison`).
 `concat_ws()` is modelled only where it is listed: a NULL separator makes it
 NULL everywhere, but whether a NULL value is skipped differs.
+
+Trino has no key constraints: its `CREATE TABLE` rejects `PRIMARY KEY`,
+`UNIQUE` and `REFERENCES`, so a key in SQL read as Trino's describes a table
+held elsewhere, and is unenforced (trusted only under
+`trust_unenforced_keys`); `NOT NULL` is enforced where a connector accepts
+it. Its VARCHAR compares by code point and it has no collations; its
+connectors keep that by not pushing text predicates down where the source
+compares differently (MySQL: none; SQL Server: only on case-sensitive CHAR,
+otherwise re-checked in Trino; PostgreSQL: `=` and `<>`, not ranges, unless
+the experimental `enable_string_pushdown_with_collate` is on, which is out
+of scope like DuckDB's `default_collation`). `CHAR` pads, as everywhere. Trino
+spells no integer division (`//`, `DIV`), `ILIKE` or shift operator, and
+SQLGlot reads `bitwise_left_shift()` as an opaque function: those Builtins
+never occur in Trino SQL. `DOUBLE` division by zero is `Infinity` and `%`
+is `NaN`, both non-null; `NaN = NaN` is false (DuckDB and PostgreSQL: true).
 
 PostgreSQL `NUMERIC` with no scale (`unscaled_decimal`) keeps each value's own
 scale: `1.0 = 1.00`, but their text differs, so such a column is neither
 compared by identity nor exact; `NUMERIC(10, 2)` is both. DuckDB, MySQL,
 Snowflake, BigQuery and Redshift give a bare `DECIMAL` a fixed scale.
+
+A TIMESTAMP WITH TIME ZONE (`zoned_timestamp_is_instant`; SQLGlot reads
+MySQL's, BigQuery's and Spark's `TIMESTAMP` as one) holds an instant in
+DuckDB, PostgreSQL, MySQL, BigQuery, Spark and Redshift: the zone it was
+given only converts it, so equal values are identical and their text, in the
+session's zone, is equal too. Trino, Snowflake's `TIMESTAMP_TZ` and Oracle
+keep the zone: `TIMESTAMP '2024-01-01 01:00 +01:00'` equals
+`TIMESTAMP '2024-01-01 00:00 UTC'`, yet the two cast to different `VARCHAR`,
+`DATE` or local `TIMESTAMP` values. There a zoned timestamp is not compared by
+identity, and a comparison with a `CAST` of a zoned column warns
+(`zoned-timestamp-cast`): its result depends on the zone each row was given.
+A dialect not listed is taken to keep the zone.
 
 MySQL ENUMs (`enum_error_value`): MySQL stores `''` for a value outside the
 members outside strict mode and under `INSERT IGNORE` in any mode, and strips
@@ -126,6 +170,10 @@ the hooks whose standard view is missing or incomplete there:
   `CONSTRAINT_COLUMN_USAGE`, which does not order columns, so only
   single-column ones are read.
 - Databricks: the standard views, with `?` parameters.
+- Trino: each catalog's own `catalog.information_schema`, with `?`
+  parameters; a name may be qualified by any catalog. It has no constraint
+  views, and does not surface keys a connector's source enforces, so it
+  reports NOT NULLs and no keys.
 
 Collation is the dialect's default: per-table collations are not read, and
 of per-column ones only DuckDB's declared `COLLATE`s and Postgres's
@@ -173,7 +221,7 @@ derives from them, has a provenance in `docs/dialect-provenance.json`:
 version or date}` otherwise. A weak setting (unchecked arithmetic, text not
 compared by identity, unenforced keys) claims nothing and has none.
 `tests/test_dialect_certification.py` checks that every fact has one, that
-every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse)
+every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse, Trino)
 is certified on an engine, and reruns the DuckDB and SQLite probes.
 
 `scripts/certify_dialects.py` (not part of the package) generates one probe
@@ -188,9 +236,12 @@ permissive settings (`PERMISSIVE`: MySQL `sql_mode = ''`, Spark ANSI off; a sett
 changes the default collation is out of scope). It prints PASS, FAIL (with
 the weaker setting to apply by hand), ERROR (the probe could not run) or
 VACUOUS per fact, and STRONGER for a weak setting the engine would also
-satisfy (never acted on). Unless `--dry-run`, it adds the engine version to
-each passing fact and removes it from each failing one; it never adds a fact
-or strengthens one. `--list` prints the probes without a connection.
+satisfy (never acted on). Unless `--dry-run`, it files the engine version
+under each passing fact's `engine` versions and each vacuous fact's
+`undefined` ones, and removes it from each failing one; it never adds a fact
+or strengthens one. An undefined fact claims nothing on that version, so
+when a later version supports the construct its probe runs there and
+decides. `--list` prints the probes without a connection.
 
 Certification is one-off: rerun it when adding a dialect, changing a fact, or
 supporting a new major version. The engines it was run on:
@@ -207,9 +258,16 @@ python scripts/certify_dialects.py mysql --driver pymysql \
 docker run -d --rm --name sqlassert-clickhouse -e CLICKHOUSE_PASSWORD=probe -p 58123:8123 clickhouse/clickhouse-server
 python scripts/certify_dialects.py clickhouse --driver clickhouse_connect.dbapi \
     --connect '{"host": "127.0.0.1", "port": 58123, "username": "default", "password": "probe"}'
+docker run -d --rm --name sqlassert-trino -p 58080:8080 trinodb/trino
+python scripts/certify_dialects.py trino --driver trino.dbapi \
+    --connect '{"host": "127.0.0.1", "port": 58080, "user": "probe", "catalog": "memory", "schema": "default"}'
 ```
 
-The drivers (`psycopg[binary]`, `pymysql`, `clickhouse-connect`) are not
+`tests/test_trino_catalog.py` runs the Trino fetcher against the same
+server when `SQLASSERT_TRINO` holds its connect arguments
+(`{"host": "127.0.0.1", "port": 58080, "user": "probe"}`).
+
+The drivers (`psycopg[binary]`, `pymysql`, `clickhouse-connect`, `trino`) are not
 dependencies; install them where the script runs (MySQL is reached at its
 port, so MySQL server 8.0, 8.4 and 9 images all work the same way). Wait for a
 container to accept connections before probing. Not certified on an engine:
@@ -220,7 +278,7 @@ when credentials do.
 ## Not done
 
 - A dialect not listed keeps enforced keys and total comparisons, as before
-  (T-SQL, Oracle, Trino, ...). Oracle's `||` reads NULL as `''`, and `''` is
+  (T-SQL, Oracle, Presto, Athena, ...). Oracle's `||` reads NULL as `''`, and `''` is
   NULL there, so it is left unmodelled.
 - MySQL compares a number with a string as DOUBLE, so an integer column above
   2^53 (or a DECIMAL with more than 15 significant digits) is not pinned by a

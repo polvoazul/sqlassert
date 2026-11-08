@@ -19,6 +19,15 @@ class NonNullColumns(Property):
     columns: frozenset[OutputColumn]
 
 
+class NonNullElements(Property):
+    """No listed column's value has a NULL element: an ARRAY's elements, a
+    ROW's fields, a MAP's values, nested ones included (`NOT NULL ELEMENTS`).
+    Says nothing of the value itself, which may be NULL. No catalog states it,
+    so it is only asserted or declared."""
+
+    columns: frozenset[OutputColumn]
+
+
 class UniqueSet(Property):
     columns: frozenset[OutputColumn]
 

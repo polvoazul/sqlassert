@@ -38,7 +38,7 @@ supporting a new major version.
 
 - [ ] Local engines in docker, certified: Postgres, MySQL (and MariaDB if
   supported), DuckDB (in process), SQLite (in process), Spark (local),
-  Trino if added.
+  Trino (484, done).
 - [x] Cloud warehouses (Snowflake, BigQuery, Databricks SQL, Redshift):
   `doc` provenance for now. The probes exist so they can be certified later
   with credentials.
@@ -49,8 +49,7 @@ Done: provenance for every fact (`docs/dialect-provenance.json`), probes
 generated from the facts and the runner (`docs/dialects.md`, "Certifying
 facts"), `tests/test_dialect_certification.py`. Certified on engines: DuckDB
 1.5.2, SQLite 3.50.4, PostgreSQL 16.15, 17.11, 18.6, MySQL 8.0.46, 8.4.13,
-9.7.4, ClickHouse 26.10.3.7. MariaDB is not a modelled dialect; Trino is not
-added.
+9.7.4, ClickHouse 26.10.3.7, Trino 484. MariaDB is not a modelled dialect.
 
 Found and fixed (now the weaker setting, with `.sqltest` cases):
 DuckDB's text is not compared by identity without a COLLATE

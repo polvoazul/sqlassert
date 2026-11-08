@@ -70,7 +70,7 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[ColumnSet]:
                 case ir.ColumnRef(column=column):
                     if column not in relation.output_columns:
                         continue
-                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Elements() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
                     assert_never(bound)
@@ -83,7 +83,7 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[ColumnSet]:
                 case ir.ColumnRef(column=other_column):
                     if other_column not in other.output_columns or not _pins(column, value):
                         continue
-                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Elements() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
                     assert_never(value)

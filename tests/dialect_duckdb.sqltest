@@ -4,6 +4,7 @@
 -- collation (`SET default_collation` is out of scope). Text with any COLLATE,
 -- binary or not, is not taken to compare by identity (issue 49).
 -- `concat()` and `concat_ws()` skip NULL; `||` does not.
+-- A CAST from JSON may be NULL: JSON `null` casts to NULL.
 
 CREATE TABLE t (id INTEGER PRIMARY KEY, plain VARCHAR, exact VARCHAR COLLATE c, folded VARCHAR COLLATE nocase);
 
@@ -22,3 +23,35 @@ SELECT plain, upper(plain) AS u, count(*) AS n FROM t GROUP BY plain, upper(plai
 
 -- case: a_function_of_collated_text_is_not_determined
 SELECT folded, upper(folded) AS u, count(*) AS n FROM t GROUP BY folded, upper(folded) /**ASSERT UNIQUE(folded)**/  --~ UNKNOWN
+
+-- case: a_cast_from_json_may_be_null
+-- JSON `null` is a value, which casts to NULL: `CAST('null'::JSON AS BIGINT)`.
+CREATE TABLE j (id INTEGER NOT NULL, doc JSON NOT NULL, s VARCHAR NOT NULL);
+SELECT CAST(doc AS BIGINT) AS v FROM j /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_cast_from_a_json_literal_may_be_null
+SELECT CAST('null'::JSON AS BIGINT) AS v /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_cast_from_a_coalesce_of_json_may_be_null
+CREATE TABLE j (id INTEGER NOT NULL, doc JSON);
+SELECT CAST(COALESCE(doc, '1'::JSON) AS BIGINT) AS v FROM j /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_cast_from_text_is_still_non_null
+CREATE TABLE j (id INTEGER NOT NULL, s VARCHAR NOT NULL);
+SELECT CAST(s AS BIGINT) AS v FROM j /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_comparison_of_lists_needs_non_null_elements
+-- Not singled out: DuckDB's `[1, NULL] <> [1, NULL]` is false, but Trino's is NULL.
+CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
+SELECT x <> x AS v FROM l /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ composite-comparison
+
+-- case: declared_list_elements_pass_through
+CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
+WITH d AS (SELECT id, x FROM l /**DECLARE NOT NULL ELEMENTS(x)**/)
+SELECT x FROM d /**ASSERT NOT NULL ELEMENTS(x)**/  --~ PROVED
+
+-- case: a_comparison_of_lists_with_declared_elements_is_non_null
+CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
+WITH d AS (SELECT id, x FROM l /**DECLARE NOT NULL ELEMENTS(x)**/)
+SELECT x <> x AS v FROM d /**ASSERT NOT NULL(v)**/  --~ PROVED

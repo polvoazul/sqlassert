@@ -18,7 +18,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "certify_dialects.
 
 # The dialects whose engine runs locally (in process or in docker): each of
 # their facts is certified on an engine, never only documented.
-LOCAL_ENGINES = {"duckdb", "sqlite", "postgres", "mysql", "clickhouse"}
+LOCAL_ENGINES = {"duckdb", "sqlite", "postgres", "mysql", "clickhouse", "trino"}
 # Facts of a local engine that no local engine can run: MySQL Cluster's NDB.
 DOCUMENTED_ONLY = {("mysql", "foreign_key_engines:ndb"), ("mysql", "foreign_key_engines:ndbcluster")}
 
@@ -42,12 +42,13 @@ def test_every_fact_has_a_provenance(dialect: str):
 
     assert set(provenance) == names
     for name, entry in provenance.items():
-        if "engine" in entry:
-            assert entry.keys() == {"engine"} and entry["engine"], name
+        probed = bool(entry.keys() & {"engine", "undefined"})
+        if probed:
+            assert entry.keys() <= {"engine", "undefined"} and all(entry.values()), name
         else:
             assert entry.keys() == {"doc", "read"} and entry["doc"].startswith("https://"), name
         local = dialect in LOCAL_ENGINES and (dialect, name) not in DOCUMENTED_ONLY
-        assert ("engine" in entry) == local, name
+        assert probed == local, name
 
 
 @pytest.mark.parametrize(("dialect", "connect"), [("duckdb", lambda: duckdb.connect()), ("sqlite", lambda: sqlite3.connect(":memory:"))])
@@ -65,6 +66,16 @@ def test_a_probe_finds_a_wrong_fact():
     result, = certify.run(sqlite3.connect(":memory:").cursor(), "sqlite", [fact])
 
     assert result.outcome == "FAIL"
+
+
+def test_a_vacuous_fact_is_undefined_on_that_version_not_certified():
+    fact = certify.Fact("total(//)", "checked_division=False", ())
+    provenance = {"trino": {"total(//)": {"engine": ["trino 484"]}}}
+
+    certify.record(provenance, "trino", "trino 484", [certify.Result(fact, "VACUOUS")])
+    assert provenance == {"trino": {"total(//)": {"undefined": ["trino 484"]}}}
+    certify.record(provenance, "trino", "trino 490", [certify.Result(fact, "PASS")])
+    assert provenance == {"trino": {"total(//)": {"engine": ["trino 490"], "undefined": ["trino 484"]}}}
 
 
 def test_recording_only_removes_a_failing_engine_and_never_adds_a_fact():

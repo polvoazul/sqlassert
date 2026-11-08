@@ -55,6 +55,11 @@ class DialectSemantics:
     # A DECIMAL declared without a scale keeps each value's own scale, so
     # equal values (1.0, 1.00) may differ: neither identity nor exact.
     unscaled_decimal: bool = False
+    # A TIMESTAMP WITH TIME ZONE (SQLGlot's TIMESTAMPTZ: MySQL's, BigQuery's
+    # and Spark's TIMESTAMP too) holds an instant only, so equal values are
+    # identical. Not where it keeps the zone it was given (Trino, Snowflake's
+    # TIMESTAMP_TZ, Oracle): equal instants in two zones differ as text.
+    zoned_timestamp_is_instant: bool = False
     pipes: PipesMeaning = None
     concat: ConcatMeaning = None
     # What `concat_ws(sep, a, ...)` does with a NULL value (a NULL separator
@@ -84,6 +89,7 @@ _SPARK = DialectSemantics(
     # ANSI mode decides whether overflow, division by zero and a bad cast
     # raise or return NULL; it is on by default only in recent versions.
     casts_raise=False,
+    zoned_timestamp_is_instant=True,
     pipes="strict",
     concat="strict",
     concat_ws="skips-null",
@@ -95,6 +101,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "duckdb": DialectSemantics(
         checked_arithmetic=True,
         text_is_binary=True,
+        zoned_timestamp_is_instant=True,
         pipes="strict",
         concat="skips-null",
         concat_ws="skips-null",
@@ -104,6 +111,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         checked_division=True,
         text_is_binary=True,
         unscaled_decimal=True,
+        zoned_timestamp_is_instant=True,
         pipes="lenient",  # `ARRAY[1] || NULL` is `{1}`.
         concat="skips-null",
         concat_ws="skips-null",
@@ -114,6 +122,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         casts_raise=False,
         # Not `text_is_binary`: the default collations ignore case (and
         # accents, and some trailing spaces).
+        zoned_timestamp_is_instant=True,  # TIMESTAMP is converted to UTC.
         pipes="ambiguous",
         concat="strict",
         concat_ws="skips-null",
@@ -133,6 +142,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
+        zoned_timestamp_is_instant=True,
         pipes="strict",
         concat="strict",
         unique_keys="unenforced",
@@ -141,6 +151,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "redshift": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
+        zoned_timestamp_is_instant=True,
         pipes="strict",
         unique_keys="unenforced",
         foreign_keys="unenforced",
@@ -160,6 +171,23 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
     "clickhouse": DialectSemantics(concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced"),
     "oracle": DialectSemantics(empty_string_is_null=True),
+    # Trino has no constraint but NOT NULL: its CREATE TABLE rejects a key, so
+    # one in the SQL describes a table some other engine holds.
+    "trino": DialectSemantics(
+        checked_arithmetic=True,
+        checked_division=True,
+        # VARCHAR compares by code point and Trino has no collations.
+        text_is_binary=True,
+        # Not `zoned_timestamp_is_instant`: a TIMESTAMP WITH TIME ZONE keeps
+        # its zone, and `CAST(ts AS VARCHAR)` writes it.
+        # Unlike Postgres, a NULL array or element operand makes `||` NULL too.
+        pipes="strict",
+        concat="strict",
+        # Not modelled: it skips a NULL VARCHAR, but its ARRAY(VARCHAR)
+        # overload is NULL for a NULL array, and SQLGlot parses both alike.
+        unique_keys="unenforced",
+        foreign_keys="unenforced",
+    ),
 }
 
 

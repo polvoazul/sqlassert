@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark and Redshift SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
+_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark, Redshift and Trino SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
 
 ## Features
 
@@ -69,6 +69,20 @@ Uniqueness is proved through functional dependencies, so a key does not have to 
 ### Not Null
 
 `/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, `coalesce`/`ifnull`/`nvl` with at least one non-null argument, and null-rejecting conditions: a `WHERE` or inner-join `ON` conjunct `col = ...` or `col IS NOT NULL`. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. The null-extended side of a `LEFT`, `RIGHT`, or `FULL` join is padded with NULLs, and a null-rejecting `WHERE` conjunct on any padded column (`where u.id = 5`) proves that join matched, so every column it padded is non-null again unless it is nullable for its own reasons. An `UNKNOWN` explanation names each source, such as "nickname is nullable in users" and "nickname is padded by the LEFT JOIN". Non-nullness is never guessed for other computed expressions or for set operations.
+
+### Not Null Elements
+
+`/**ASSERT NOT NULL ELEMENTS(col, ...)**/` proves that no listed column's value (an ARRAY, ROW or MAP) holds a NULL element, nested ones included; the value itself may still be NULL. No catalog states it, so it comes only from `/**DECLARE NOT NULL ELEMENTS(col, ...)**/`, followed through pass-through columns, `coalesce` and `CASE`. It matters for comparisons: `ARRAY[1, NULL] <> ARRAY[1, NULL]` and `ROW(1, NULL) = ROW(1, NULL)` are NULL in Trino, so a comparison of composites is non-null only when no element is NULL either. A comparison of a composite column or `CAST` warns (`composite-comparison`) unless its elements are declared. To declare them for a table, select it in a CTE or view that carries the declaration:
+
+```sql
+create table posts (id integer, tags array(varchar) not null, old_tags array(varchar) not null);
+with tagged as (select id, tags, old_tags from posts /**DECLARE NOT NULL ELEMENTS(tags, old_tags)**/)
+select id, tags <> old_tags as retagged from tagged /**ASSERT NOT NULL(retagged)**/
+```
+
+A column of unknown type is taken to be a scalar, not a composite. A
+constructor (`ARRAY[...]`, `ROW(...)`) is not modelled, so a comparison with
+one is never proved non-null.
 
 ### Foreign Key
 
@@ -263,7 +277,7 @@ unique constraints, foreign keys, view definitions), never table rows. A
 catalog foreign key is used when the SQL reaches both of its tables. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
 
-PostgreSQL, MySQL, Snowflake, BigQuery, Databricks and Redshift have
+PostgreSQL, MySQL, Snowflake, BigQuery, Databricks, Redshift and Trino have
 fetchers too, in `sqlassert.discovery.<dialect>`. They take any DB-API
 connection (psycopg, PyMySQL, snowflake-connector-python, ...), so sqlassert
 depends on no driver:
@@ -277,7 +291,8 @@ report = analyze_database(sql, PostgresKnowledgeFetcher(psycopg.connect(dsn)), d
 
 Warehouse keys are not enforced, so catalog keys there prove only with
 `trust_unenforced_keys=True` (see Dialects below). `BigQueryKnowledgeFetcher`
-also takes the project and default dataset.
+also takes the project and default dataset. Trino's catalog has no keys, so
+`TrinoKnowledgeFetcher` reports NOT NULLs only.
 
 ### Dialects
 
@@ -286,8 +301,8 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
 `sqlassert/dialects.py`, argued in [docs/dialects.md](docs/dialects.md):
 
 - **Keys.** DuckDB, PostgreSQL and MySQL enforce primary, unique and foreign
-  keys. Snowflake, BigQuery, Databricks / Spark and Redshift do not, so a key
-  there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
+  keys. Snowflake, BigQuery, Databricks / Spark, Redshift and Trino (which has
+  no key constraints) do not, so a key there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
   becomes a Property Declaration, and `trust_unenforced_keys=True` makes every
   unenforced key one. Any other is ignored, with an `unenforced-constraint`
   warning. So are a PostgreSQL foreign key added `NOT VALID`, any constraint
@@ -295,16 +310,22 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   (ignored before MySQL 9.0), a foreign key of a MySQL table whose `ENGINE`
   does not enforce them, and SQLite foreign keys.
 - **Text.** `VARCHAR` and `TEXT` with no `COLLATE` are taken to compare by
-  identity in DuckDB and PostgreSQL, whose shipped default collation is
-  binary; a setting that changes it (DuckDB's `SET default_collation`) is out
-  of scope. MySQL's default collations ignore case, and the warehouses are
+  identity in DuckDB, PostgreSQL and Trino, whose shipped default collation is
+  binary (Trino has no collations); a setting that changes it (DuckDB's
+  `SET default_collation`) is out of scope. MySQL's default collations ignore case, and the warehouses are
   not yet certified, so their text is not. Text with any `COLLATE` is never
   taken to compare by identity.
+- **Zoned timestamps.** A TIMESTAMP WITH TIME ZONE compares by identity where
+  it holds an instant only (DuckDB, PostgreSQL, MySQL, BigQuery, Spark,
+  Redshift). Trino and Snowflake keep the zone it was given, so equal instants
+  cast to different text: there it does not, and comparing a `CAST` of one
+  warns (`zoned-timestamp-cast`).
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
   operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
-  BigQuery, Redshift); division likewise, except in DuckDB. MySQL (outside
+  BigQuery, Redshift, Trino); division likewise, except in DuckDB. MySQL (outside
   strict mode) and Spark (outside ANSI mode) may return NULL even from a
-  comparison. `||` and `concat()` follow each dialect's NULL handling.
+  comparison. A CAST from JSON may be NULL everywhere (JSON `null`). `||` and
+  `concat()` follow each dialect's NULL handling.
 - **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
   which also groups its operands differently, so it is an unknown function of
   its operands, with an `ambiguous-operator` warning: write `OR` or `CONCAT()`.

@@ -5,7 +5,7 @@ views (`TABLES`, `COLUMNS`, `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE`,
 `REFERENTIAL_CONSTRAINTS`, `VIEWS`) through any DB-API 2.0 connection; it
 never imports a driver and never scans a table. A subclass per dialect
 (`discovery/postgres.py`, `mysql.py`, `redshift.py`, `snowflake.py`,
-`bigquery.py`, `databricks.py`) overrides only the hooks whose standard view
+`bigquery.py`, `databricks.py`, `trino.py`) overrides only the hooks whose standard view
 is missing or incomplete there, and the parameter style.
 
 What it reports, and what it leaves out:
