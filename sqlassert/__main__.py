@@ -1,5 +1,6 @@
 """Command line: `sqlassert check PATH...` checks the assertions in SQL Programs for CI (`check.py`);
-`sqlassert suggest FILE` prints the improvements and markers sqlassert can prove."""
+`sqlassert suggest FILE` prints the improvements and markers sqlassert can prove;
+`sqlassert dbt [PROJECT]` checks a dbt project's tests and markers."""
 
 from __future__ import annotations
 
@@ -60,9 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     check_command.add_argument("--format", choices=sorted(check.FORMATS), default="text")
     check_command.add_argument("--explain", action="store_true", help="print each UNKNOWN assertion's evidence")
+    dbt_command = commands.add_parser("dbt", help="check a dbt project's tests and markers from its target/manifest.json")
+    dbt_command.add_argument("project", nargs="?", default=".", help="dbt project directory (default: .)")
+    dbt_command.add_argument("--manifest", help="manifest.json to read (default: PROJECT/target/manifest.json)")
+    dbt_command.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
+    dbt_command.add_argument("--explain", action="store_true", help="print each proof and failed proof")
     arguments = parser.parse_args(argv)
     if arguments.command == "check":
         return _check(arguments)
+    if arguments.command == "dbt":
+        from sqlassert.dbt import command
+
+        return command(arguments.project, manifest=arguments.manifest, dialect=arguments.dialect, explain=arguments.explain)
 
     try:
         sql = check.read_sql(Path(arguments.file))
