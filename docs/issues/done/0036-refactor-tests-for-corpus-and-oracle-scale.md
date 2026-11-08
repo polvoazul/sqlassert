@@ -183,7 +183,11 @@ Done alongside:
   off, and marker accounting no longer reports it. Six cases in
   `marker_accounting.sqltest` cover comments, strings, escaped quotes and
   multi-line strings.
-- `test_a_false_cardinality_claim_is_refuted` missed its counterexample in 3
-  of 100 runs at 50 examples (none at 200 or 500). It is marked
-  `@pytest.mark.slow`, which gives a test 500 examples through the `examples`
-  fixture in `test_soundness_oracle.py`; 30 serial runs of that file passed.
+- `test_a_false_cardinality_claim_is_refuted` missed its counterexample in
+  about 3 of 200 runs: the oracle sampled randomly and favored small tables,
+  which cannot violate a cardinality claim. The oracle now checks a fixed set
+  of edge-case instances before the random search (empty tables, a duplicate
+  row, rows differing everywhere or in one column, NULLs, blank values), so a
+  counterexample of those shapes is found every run: 0 misses in 200. The
+  suite-wide oracle evaluates about 35% more samples and still finds 0
+  counterexamples.

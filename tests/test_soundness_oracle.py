@@ -5,24 +5,14 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from hypothesis import assume
 
-from soundness_oracle import Judgement, SearchResult, _Database, judge
+from soundness_oracle import Judgement, SearchResult, _Database, _Invalid, judge
 from sqlassert import Outcome, Report, analyze
 from sqlassert.sql_parse import SqlParser
 
 # Few examples: these programs are tiny, and the counterexamples they need
 # are found almost at once.
 EXAMPLES = 50
-# For a test marked `slow`: a counterexample that EXAMPLES finds only most of
-# the time (ONE TO MANY below missed 3 in 100 runs at 50, none at 200 or 500).
-SLOW_EXAMPLES = 500
-
-
-@pytest.fixture
-def examples(request: pytest.FixtureRequest) -> int:
-    """The search budget for this test: larger when it is marked `slow`."""
-    return SLOW_EXAMPLES if request.node.get_closest_marker("slow") else EXAMPLES
 
 
 def claimed_proved(sql: str) -> tuple[str, Report]:
@@ -32,8 +22,8 @@ def claimed_proved(sql: str) -> tuple[str, Report]:
     return sql, replace(report, assertions=tuple(replace(assertion, outcome=Outcome.PROVED) for assertion in report.assertions))
 
 
-def judged(sql: str, report: Report, examples: int = EXAMPLES) -> Judgement:
-    return judge(sql, report, max_examples=examples)
+def judged(sql: str, report: Report) -> Judgement:
+    return judge(sql, report, max_examples=EXAMPLES)
 
 
 def test_a_true_unique_join_proof_has_no_counterexample():
@@ -81,23 +71,35 @@ def test_a_false_unique_join_claim_over_a_cte_is_refuted_with_its_context():
 @pytest.mark.parametrize(
     ("marker", "left", "right"),
     [
-        # A false one-to-many claim: two users share one session's user_id.
+        # A false one-to-many claim: two sessions share one user's user_id, so that user row repeats.
         ("ONE TO MANY", "sessions", "users_by_name"),
         # A false not-many-to-many claim: neither side is unique on user_id.
         ("UNIQUE", "sessions", "sessions AS other"),
         ("ONE TO ONE", "sessions", "users_by_name"),
     ],
 )
-@pytest.mark.slow
-def test_a_false_cardinality_claim_is_refuted(marker: str, left: str, right: str, examples: int):
+def test_a_false_cardinality_claim_is_refuted(marker: str, left: str, right: str):
     on = "sessions.user_id = users_by_name.user_id" if right == "users_by_name" else "sessions.user_id = other.user_id"
     judgement = judged(*claimed_proved(f"""
         CREATE TABLE users_by_name (user_id INTEGER, name VARCHAR PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
         SELECT * FROM {left} /**ASSERT {marker}**/ JOIN {right} ON {on}
-    """), examples)
+    """))
 
     assert len(judgement.counterexamples) == 1
+
+
+def test_an_edge_case_counterexample_needs_no_random_search():
+    # Two sessions sharing a user's user_id is an edge case (a duplicate row),
+    # checked before any random example: one example of budget still finds it.
+    judgement = judge(*claimed_proved("""
+        CREATE TABLE users_by_name (user_id INTEGER, name VARCHAR PRIMARY KEY);
+        CREATE TABLE sessions (user_id INTEGER);
+        SELECT * FROM sessions /**ASSERT ONE TO MANY**/ JOIN users_by_name ON sessions.user_id = users_by_name.user_id
+    """), max_examples=1)
+
+    counterexample, = judgement.counterexamples
+    assert len(counterexample.instance["sessions"]) == 2
 
 
 def test_true_cardinality_proofs_have_no_counterexample():
@@ -589,8 +591,7 @@ def test_search_reports_insufficient_data_when_all_samples_are_rejected():
     database = _Database(SqlParser("duckdb").parse("CREATE TABLE t (id INTEGER); SELECT * FROM t"))
 
     def rejected(_) -> bool:
-        assume(False)
-        return False
+        raise _Invalid
 
     search = database.search(rejected, max_examples=EXAMPLES)
     assert search.status == "insufficient-data"

@@ -3,7 +3,10 @@
 For each PROVED assertion, Hypothesis generates table contents that satisfy
 the program's DDL, DuckDB runs the program unchanged, and the asserted
 Property is checked on the real result. A violation is a soundness bug in the
-rules; Hypothesis shrinks it to a minimal instance. For select-project-join
+rules; Hypothesis shrinks it to a minimal instance. Before the random search,
+a fixed set of edge-case instances is checked (empty tables, duplicates, rows
+differing in one column, NULLs, blank values), so a counterexample of those
+shapes is found every time. For select-project-join
 queries two rows per table suffice for any uniqueness counterexample (Paulley
 2000, Thm 11 and 12); beyond that fragment this is a random search. See
 docs/issues/0027-soundness-oracle-against-duckdb.md.
@@ -21,7 +24,8 @@ reason. Rendering SQL for DuckDB is best-effort and may change its meaning.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import itertools
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, assert_never
 
@@ -479,6 +483,10 @@ class _Table:
     keys: tuple[tuple[int, ...], ...]
 
 
+class _Invalid(Exception):
+    """An instance the program's constraints or declarations rule out."""
+
+
 class _Database:
     """One in-memory DuckDB holding the program's DDL, refilled per example."""
 
@@ -581,17 +589,33 @@ class _Database:
             try:
                 self.load(instance)
                 for check in self.foreign_keys:
-                    assume(not self.connection.execute(check).fetchall())
+                    if self.connection.execute(check).fetchall():
+                        raise _Invalid
                 result = violated(instance)
-            except duckdb.Error:
+            except duckdb.Error as error:
                 # Other DDL constraints or query casts may reject this data.
-                assume(False)
-                raise
+                raise _Invalid from error
             valid += 1
             return result
 
+        def searched(instance: Instance) -> bool:
+            try:
+                return checked(instance)
+            except _Invalid:
+                assume(False)
+                raise
+
+        # Edge cases first, deterministically: a random search can miss the
+        # one shape a counterexample needs (two rows sharing a value, say).
+        for instance in _edge_instances(self.tables):
+            try:
+                if checked(instance):
+                    return SearchResult("counterexample", instance, attempted, valid)
+            except _Invalid:
+                continue
+
         try:
-            instance = find(strategy, checked, settings=settings(
+            instance = find(strategy, searched, settings=settings(
                 max_examples=max_examples, database=None, deadline=None, suppress_health_check=list(HealthCheck),
             ))
         except NoSuchExample:
@@ -602,7 +626,8 @@ class _Database:
 
     def violated(self, declarations: list[str], check: str) -> bool:
         for declaration in declarations:
-            assume(not self.connection.execute(declaration).fetchall())
+            if self.connection.execute(declaration).fetchall():
+                raise _Invalid
         return bool(self.connection.execute(check).fetchall())
 
     def load(self, instance: Instance) -> None:
@@ -653,6 +678,73 @@ def _unique_indexes(alter: exp.Alter) -> list[str] | None:
             columns = ", ".join(column.sql(dialect="duckdb") for column in constraint.this.expressions)
             indexes.append(f"CREATE UNIQUE INDEX sqlassert_unique_{id(constraint)} ON {table} ({columns})")
     return indexes or None
+
+
+# More combinations than this and the edge cases vary one table at a time.
+EDGE_LIMIT = 400
+
+
+def _edge_rows(table: _Table) -> list[list[tuple]]:
+    """Row sets that tend to break a Property: no rows, one row, a duplicate,
+    two rows that differ everywhere, two that differ in one column only, NULLs,
+    and blank values (0, '', FALSE). Key-violating rows are dropped, as in the
+    random search."""
+    first = tuple(domain[0] for domain in table.domains)
+    second = tuple(domain[1] if len(domain) > 1 else domain[0] for domain in table.domains)
+    nulls = tuple(None if None in domain else domain[0] for domain in table.domains)
+    blank = tuple(_blank(domain[0]) for domain in table.domains)
+    one_column_differs = [
+        [first, first[:index] + (second[index],) + first[index + 1:]] for index in range(len(first))
+    ]
+    shapes = [[], [first], [first, first], [first, second], *one_column_differs, [nulls], [first, nulls], [blank]]
+    unique: list[list[tuple]] = []
+    for rows in shapes:
+        rows = _respecting_keys(rows, table.keys)
+        if rows not in unique:
+            unique.append(rows)
+    return unique
+
+
+def _blank(value: object) -> object:
+    """The type's empty value: 0, '', or FALSE (a date column keeps its value)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return 0
+    if isinstance(value, str) and not _is_date(value):
+        return ""
+    return value
+
+
+def _is_date(value: str) -> bool:
+    return len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+
+def _edge_instances(tables: Sequence[_Table]) -> list[Instance]:
+    """Every combination of each table's edge row sets, or, when that is more
+    than EDGE_LIMIT, each table's edge sets with every other table held at one
+    of a few base sets (one row, a duplicate, two differing rows)."""
+    per_table = [_edge_rows(table) for table in tables]
+    total = 1
+    for rows in per_table:
+        total *= len(rows)
+    if total <= EDGE_LIMIT:
+        combinations = list(itertools.product(*per_table))
+    else:
+        combinations = []
+        for index, own in enumerate(per_table):
+            for base in (1, 2, 3):
+                for rows in own:
+                    combinations.append(tuple(
+                        rows if other == index else others[min(base, len(others) - 1)]
+                        for other, others in enumerate(per_table)
+                    ))
+    instances: list[Instance] = []
+    for combination in combinations:
+        instance = {table.name: list(rows) for table, rows in zip(tables, combination)}
+        if instance not in instances:
+            instances.append(instance)
+    return instances
 
 
 def _respecting_keys(rows: list[tuple], keys: tuple[tuple[int, ...], ...]) -> list[tuple]:

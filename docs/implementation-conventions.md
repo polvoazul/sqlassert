@@ -224,7 +224,3 @@ an annotation goes on its own line when inline it would pass 88 columns.
 Tests stay in Python when they need Evidence structure, origins beyond the
 line, mocking, fixtures, `analyze_database`, suggestions, parsing or IR
 internals, or a large generated matrix (marker accounting).
-
-A randomized search that needs a larger budget to be reliable is marked
-`@pytest.mark.slow` and takes its budget from the `examples` fixture
-(`tests/test_soundness_oracle.py`).
