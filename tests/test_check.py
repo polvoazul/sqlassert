@@ -156,15 +156,44 @@ def test_pyproject_configures_paths_dialect_and_ignored_codes_from_a_subdirector
     assert document["summary"]["unknown"] == 1
 
 
-def test_flags_replace_the_configured_values(project, capsys):
+def test_paths_and_only_ignore_replace_the_configured_values(project, capsys):
     (project / "pyproject.toml").write_text('[tool.sqlassert]\npaths = ["ok.sql"]\nignore = ["unknown-assertion"]\n')
     (project / "ok.sql").write_text(PROVED)
     (project / "q.sql").write_text(UNKNOWN)
 
-    code, out, _ = run(capsys, "q.sql", "--ignore", "undeclared-table")
+    code, out, _ = run(capsys, "q.sql", "--only-ignore", "undeclared-table")
 
     assert code == EXIT_FINDINGS
     assert out.startswith("q.sql:4:3: error unknown-assertion")
+
+
+def test_ignore_adds_to_the_configured_codes(project, capsys):
+    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unknown-assertion"]\n')
+    (project / "q.sql").write_text(UNKNOWN)
+    (project / "m.sql").write_text(MISTYPED)
+
+    code, out, _ = run(capsys, "q.sql", "m.sql", "--ignore", "unrecognized-marker")
+
+    assert code == EXIT_OK
+    assert "unknown-assertion" not in out and "unrecognized-marker" not in out
+
+
+def test_only_ignore_empty_ignores_nothing(project, capsys):
+    (project / "pyproject.toml").write_text('[tool.sqlassert]\nignore = ["unknown-assertion"]\n')
+    (project / "q.sql").write_text(UNKNOWN)
+
+    code, _, _ = run(capsys, "q.sql", "--only-ignore", "")
+
+    assert code == EXIT_FINDINGS
+
+
+def test_ignore_and_only_ignore_are_exclusive(project, capsys):
+    (project / "q.sql").write_text(UNKNOWN)
+
+    with pytest.raises(SystemExit) as exit_:
+        main(["check", "q.sql", "--ignore", "unknown-assertion", "--only-ignore", "unknown-assertion"])
+
+    assert exit_.value.code == EXIT_USAGE
 
 
 def test_the_nearest_pyproject_with_a_sqlassert_table_wins(project, capsys, monkeypatch):

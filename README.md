@@ -332,10 +332,11 @@ Options:
 
 - `--format text|json|sarif|github`: `text` (default) is `path:line:column: severity code: message` plus a summary; `json` lists every assertion's outcome and every Finding with its span; `sarif` is a SARIF 2.1.0 log for GitHub code scanning; `github` prints `::error`/`::warning` workflow commands, which GitHub Actions shows as annotations on the marker.
 - `--explain`: print each `UNKNOWN` assertion's evidence (in `json` and `sarif` too), as `suggest --explain` does.
-- `--ignore CODE`: drop Findings with this code (repeatable, or comma-separated). The codes are the Diagnostic codes plus `unknown-assertion`.
+- `--ignore CODE`: also drop Findings with this code, on top of the configured `ignore` (repeatable, or comma-separated). The codes are the Diagnostic codes plus `unknown-assertion`.
+- `--only-ignore CODE`: drop Findings with these codes instead of the configured `ignore`; `--only-ignore ''` ignores nothing.
 - `--dialect NAME`: the SQLGlot dialect (default `duckdb`).
 
-Defaults live in `pyproject.toml`; `check` reads the nearest one with a `[tool.sqlassert]` table, searching up from the working directory. Each flag, when given, replaces its setting, and paths given on the command line replace `paths`:
+Defaults live in `pyproject.toml`; `check` reads the nearest one with a `[tool.sqlassert]` table, searching up from the working directory. Each flag, when given, replaces its setting (`--ignore` adds to `ignore`; `--only-ignore` replaces it), and paths given on the command line replace `paths`:
 
 ```toml
 [tool.sqlassert]

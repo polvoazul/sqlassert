@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from sqlassert import check
@@ -47,17 +48,23 @@ def main(argv: list[str] | None = None) -> int:
         description="Analyze each SQL Program from its SQL alone. Exit status: "
         f"{check.EXIT_OK} every assertion PROVED (warnings allowed), {check.EXIT_FINDINGS} an assertion UNKNOWN "
         f"or a Diagnostic reported, {check.EXIT_USAGE} bad arguments, configuration, or unreadable SQL. "
-        "Defaults come from [tool.sqlassert] in the nearest pyproject.toml; flags replace them.",
+        "Defaults come from [tool.sqlassert] in the nearest pyproject.toml; flags replace them, except --ignore, which adds to them.",
     )
     check_command.add_argument(
         "paths", nargs="*", metavar="PATH",
         help="SQL files, directories (every *.sql under them), or globs; - for stdin (default: [tool.sqlassert] paths)",
     )
     check_command.add_argument("--dialect", help=f"SQL dialect (default: [tool.sqlassert] dialect, else {DEFAULT_DIALECT})")
-    check_command.add_argument(
+    ignoring = check_command.add_mutually_exclusive_group()
+    ignoring.add_argument(
         "--ignore", action="append", metavar="CODE",
-        help="drop Findings with this code, e.g. undeclared-table; repeatable or comma-separated "
-        "(default: [tool.sqlassert] ignore)",
+        help="also drop Findings with this code, e.g. undeclared-table, besides [tool.sqlassert] ignore; "
+        "repeatable or comma-separated",
+    )
+    ignoring.add_argument(
+        "--only-ignore", action="append", metavar="CODE",
+        help="drop Findings with these codes instead of [tool.sqlassert] ignore; repeatable or comma-separated "
+        "(--only-ignore '' ignores nothing)",
     )
     check_command.add_argument("--format", choices=sorted(check.FORMATS), default="text")
     check_command.add_argument("--explain", action="store_true", help="print each UNKNOWN assertion's evidence")
@@ -103,8 +110,8 @@ def _check(arguments: argparse.Namespace) -> int:
         config = check.load_config(Path.cwd())
         dialect = arguments.dialect or config.dialect
         ignore = (
-            frozenset(code.strip() for codes in arguments.ignore for code in codes.split(",") if code.strip())
-            if arguments.ignore is not None else config.ignore
+            _codes(arguments.only_ignore) if arguments.only_ignore is not None
+            else config.ignore | _codes(arguments.ignore or ())
         )
         check.validate(dialect, ignore)
         if arguments.paths:
@@ -120,6 +127,11 @@ def _check(arguments: argparse.Namespace) -> int:
     checked = [check.check(path, sql, dialect=dialect, ignore=ignore) for path, sql in programs]
     sys.stdout.write(check.FORMATS[arguments.format](checked, explain=arguments.explain))
     return check.exit_code(checked)
+
+
+def _codes(values: Iterable[str]) -> frozenset[str]:
+    """The codes of repeated, comma-separated flag values."""
+    return frozenset(code.strip() for value in values for code in value.split(",") if code.strip())
 
 
 if __name__ == "__main__":
