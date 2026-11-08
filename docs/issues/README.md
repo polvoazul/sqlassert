@@ -20,12 +20,15 @@ Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33,
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
 
-- **P1:** none open. #23 R11 is done: every comparison but the IS family rejects
-  NULL, through null-propagating operators.
-- **P2:** #41 (join cardinality markers, `UNIQUE` becomes `NOT MANY TO MANY`, fan-trap smell); #37 (Paulley audit's missing rules); #15's remaining Low smells
-  and High rewrites from the Kossmann triage, most of which need #38.
+- **P1:** #41 (join cardinality markers, `UNIQUE` becomes `NOT MANY TO MANY`;
+  markers, then the fan-trap smell); #38 (scalar subqueries as left joins,
+  then ORDER BY; unblocks three of #15's Low smells).
+- **P2:** #40 (Calcite audit, first: an audit finds unsound rules cheaply,
+  and its missing rules fold into #37); #37 (Paulley audit's missing rules);
+  #15's remaining Low smells (after #38) and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
-- **P3:** #39 (smaller lowering gaps).
+- **P3:** #39 (smaller lowering gaps); #36 (test refactor review, after #41,
+  with the corpus work).
 - **Not planned (not covered by Paulley), listed in #23:** window functions
   (and #33's CTE part, which needs them), recursive CTEs, column lineage,
   LATERAL and UNNEST, ADD COLUMN.
