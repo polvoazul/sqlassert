@@ -2035,9 +2035,8 @@ _NOT_A_FUNCTION_OF_ITS_COLUMNS = (
 
 
 def _enum_type_values(definition: exp.ColumnDef, meaning: DialectSemantics) -> frozenset[ir.LiteralValue] | None:
-    """The values of a column declared `ENUM('a', ...)`: its members, and in
-    MySQL '', which it stores for a value outside them (out of strict mode, or
-    under INSERT IGNORE), with members' trailing spaces removed as MySQL does."""
+    """The values of a column declared `ENUM('a', ...)`: its members, with
+    their trailing spaces removed where the dialect does (MySQL)."""
     kind = definition.args.get("kind")
     if not (isinstance(kind, exp.DataType) and kind.this == exp.DataType.Type.ENUM and kind.expressions):
         return None
@@ -2045,8 +2044,8 @@ def _enum_type_values(definition: exp.ColumnDef, meaning: DialectSemantics) -> f
     if any(value is None or value.type != "string" for value in values):
         return None
     members = {value for value in values if value is not None}
-    if meaning.enum_error_value:
-        members = {replace(value, text=value.text.rstrip(" ")) for value in members} | {ir.LiteralValue(type="string", text="")}
+    if meaning.enum_strips_trailing_spaces:
+        members = {replace(value, text=value.text.rstrip(" ")) for value in members}
     return frozenset(members)
 
 

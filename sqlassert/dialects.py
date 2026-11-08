@@ -68,9 +68,10 @@ class DialectSemantics:
     inline_references: bool = True
     # The table ENGINEs that enforce foreign keys (lower-cased), None for every table.
     foreign_key_engines: frozenset[str] | None = None
-    # An ENUM column holds '' for a value outside its members (MySQL, outside
-    # strict mode or under INSERT IGNORE), and its members lose trailing spaces.
-    enum_error_value: bool = False
+    # An ENUM's members lose their trailing spaces (MySQL). An ENUM holds only
+    # its members: MySQL's '' for any other value, outside strict mode or
+    # under INSERT IGNORE, is out of scope (docs/dialects.md).
+    enum_strips_trailing_spaces: bool = False
     # A zero-length string is NULL (Oracle): the literal '' is NULL.
     empty_string_is_null: bool = False
 
@@ -109,9 +110,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat_ws="skips-null",
     ),
     "mysql": DialectSemantics(
-        # Out of strict mode, a bad CAST or a bad date is NULL with a warning,
-        # and division by zero is NULL in any mode.
-        casts_raise=False,
+        # MySQL under its default strict sql_mode only (docs/dialects.md):
+        # overflow and a bad CAST raise. Division by zero is NULL in any mode.
+        checked_arithmetic=True,
         # Not `text_is_binary`: the default collations ignore case (and
         # accents, and some trailing spaces).
         pipes="ambiguous",
@@ -119,7 +120,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat_ws="skips-null",
         inline_references=False,
         foreign_key_engines=frozenset({"innodb", "ndb", "ndbcluster"}),
-        enum_error_value=True,
+        enum_strips_trailing_spaces=True,
     ),
     "snowflake": DialectSemantics(
         # Not `checked_arithmetic`: its docs never say integer overflow raises.
