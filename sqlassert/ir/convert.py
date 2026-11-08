@@ -128,6 +128,10 @@ class IrParser:
     # A scalar subquery's columns, each bound to the scope that owns it.
     _scoped_columns: dict[int, ir.OutputColumn] = field(default_factory=dict)
     _absent: set[ir.OutputColumn] = field(default_factory=set)
+    # Each declared table column's type, as its CREATE TABLE writes it.
+    _declared_types: dict[ir.OutputColumn, exp.DataType] = field(default_factory=dict)
+    # The comparisons already checked for a zoned timestamp's text, by id.
+    _zone_checked: set[int] = field(default_factory=set)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
@@ -587,7 +591,7 @@ class IrParser:
         by_name = {definition.name: definition for definition in definitions}
         if symbol.statement is not None:
             self._absent.update(column for column in columns if column.name not in by_name)
-        return tuple(
+        typed = tuple(
             replace(
                 column, binary_text=self._is_binary_text(by_name[column.name]),
                 comparison_type=self._comparison_type(by_name[column.name]),
@@ -595,7 +599,12 @@ class IrParser:
                 exact_numeric=self._exact_numeric(by_name[column.name]),
             )
             if column.name in by_name else column for column in columns
-        ), complete
+        )
+        for column in typed:
+            kind = by_name[column.name].args.get("kind") if column.name in by_name else None
+            if isinstance(kind, exp.DataType):
+                self._declared_types[column] = kind
+        return typed, complete
 
     def _comparison_type(self, definition: exp.ColumnDef) -> str | None:
         kind = definition.args.get("kind")
@@ -611,7 +620,11 @@ class IrParser:
         """Declared with a type whose equal values are identical (text only
         when compared by identity, which `_comparison_type` already checks)."""
         kind = definition.args.get("kind")
-        return self._comparison_type(definition) is not None and isinstance(kind, exp.DataType) and kind.this in _IDENTITY_TYPES
+        if not (self._comparison_type(definition) is not None and isinstance(kind, exp.DataType)):
+            return False
+        if kind.this == exp.DataType.Type.TIMESTAMPTZ:
+            return self.semantics.zoned_timestamp_is_instant
+        return kind.this in _IDENTITY_TYPES
 
     def _exact_numeric(self, definition: exp.ColumnDef) -> bool:
         kind = definition.args.get("kind")
@@ -1261,6 +1274,8 @@ class IrParser:
             if len(matches) == 1:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)
             return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
+        if isinstance(expression, _COMPARISONS):
+            self._check_zoned_text(expression, bindings, origin)
         description = expression.sql(dialect=self.dialect)
         quantified = isinstance(expression, exp.Binary) and any(
             isinstance(operand, (exp.Any, exp.All)) for operand in (expression.this, expression.expression)
@@ -1316,6 +1331,42 @@ class IrParser:
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             return ir.OpaqueExpression(origin=origin, description=description)
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
+
+    def _check_zoned_text(self, comparison: exp.Expression, bindings: tuple[_Binding, ...], origin: Origin) -> None:
+        """Warn of a comparison with a CAST of a zoned timestamp, where it keeps
+        its zone: equal instants cast to different text (or dates, or local
+        times), so the comparison depends on the zone each value was given."""
+        if self.semantics.zoned_timestamp_is_instant or id(comparison) in self._zone_checked:
+            return
+        self._zone_checked.add(id(comparison))
+        operands = [comparison.this, *_as_list(comparison.args.get("expression") or []), *comparison.expressions]
+        operands += [comparison.args[key] for key in ("low", "high") if comparison.args.get(key) is not None]
+        for operand in operands:
+            while isinstance(operand, exp.Paren):
+                operand = operand.this
+            if not isinstance(operand, exp.Cast) or operand.to.this in _ZONED_TYPES or not isinstance(operand.this, exp.Column):
+                continue
+            kind = self._declared_type(self._lower_expression(operand.this, bindings))
+            if kind is None or kind.this not in _ZONED_TYPES:
+                continue
+            cast = operand.sql(dialect=self.dialect)
+            self._warnings.append(Diagnostic(
+                diag.ZONED_TIMESTAMP_CAST,
+                f"{cast} is compared, but a {kind.sql(dialect=self.dialect)} keeps the zone it was given in {self.dialect}, "
+                "so equal instants cast to different values and the comparison depends on each value's zone: "
+                "compare the timestamps themselves, or convert to one zone first (AT TIME ZONE 'UTC')",
+                origin,
+            ))
+
+    def _declared_type(self, expression: ir.ScalarExpr) -> exp.DataType | None:
+        """The type a CREATE TABLE declares for the column `expression` reads,
+        through every column that passes it on."""
+        while isinstance(expression, ir.ColumnRef):
+            column = expression.column
+            if column in self._declared_types:
+                return self._declared_types[column]
+            expression = column.scalar_expr
+        return None
 
     def _lower_case(self, case: exp.Case, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.SimpleCase:
         """A simple CASE, and the assertion its marker states, once per CASE."""
@@ -2016,8 +2067,16 @@ _SET_OPERATORS: dict[type[exp.Expression], ir.SetOperator] = {exp.Union: "union"
 _IDENTITY_TYPES = {
     *exp.DataType.INTEGER_TYPES, *exp.DataType.TEXT_TYPES,
     exp.DataType.Type.DECIMAL, exp.DataType.Type.BOOLEAN, exp.DataType.Type.DATE, exp.DataType.Type.TIME,
-    exp.DataType.Type.TIMESTAMP, exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.UUID,
+    exp.DataType.Type.TIMESTAMP, exp.DataType.Type.UUID,
 }
+# TIMESTAMPTZ is too, where it holds an instant only (`zoned_timestamp_is_instant`).
+
+# Types whose values keep the zone they were given, where a TIMESTAMP WITH
+# TIME ZONE is not an instant only: a CAST to another type reads that zone.
+_ZONED_TYPES = {exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMETZ}
+
+# Comparisons, whose operands a zoned timestamp's text may be.
+_COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Like, exp.ILike, exp.Between)
 
 _EXACT_NUMERIC_TYPES = {*exp.DataType.INTEGER_TYPES, exp.DataType.Type.DECIMAL}
 

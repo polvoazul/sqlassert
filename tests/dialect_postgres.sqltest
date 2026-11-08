@@ -71,3 +71,8 @@ SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
 CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER, FOREIGN KEY (t_id) REFERENCES t (id) DEFERRABLE INITIALLY DEFERRED);
 --~ unenforced-constraint "DEFERRABLE"
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: a_timestamptz_is_compared_by_identity
+-- It holds an instant only, written in the session's zone.
+CREATE TABLE z (ts TIMESTAMPTZ);
+SELECT ts, CAST(ts AS TEXT) AS x FROM z /**ASSERT DETERMINES(ts -> x)**/  --~ PROVED

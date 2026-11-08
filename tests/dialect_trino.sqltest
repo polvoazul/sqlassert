@@ -3,12 +3,16 @@
 -- Arithmetic, CAST and division raise rather than return NULL, and Trino
 -- never casts implicitly between text and numbers. `||` and `concat()` are
 -- NULL when an operand is, arrays included; `concat_ws()` is not modelled.
--- VARCHAR compares by code point: Trino has no collations. Trino has no key
+-- VARCHAR compares by code point: Trino has no collations. A TIMESTAMP WITH
+-- TIME ZONE keeps its zone, so equal instants differ as text. Trino has no key
 -- constraints (its CREATE TABLE rejects them), so a key written in Trino SQL
 -- is unenforced; NOT NULL is enforced.
 
 -- dialect: trino
-CREATE TABLE t (id INTEGER NOT NULL, n INTEGER NOT NULL, m INTEGER, s VARCHAR NOT NULL, r VARCHAR, c CHAR(3), d DECIMAL);
+CREATE TABLE t (
+    id INTEGER NOT NULL, n INTEGER NOT NULL, m INTEGER, s VARCHAR NOT NULL, r VARCHAR, c CHAR(3), d DECIMAL,
+    ts TIMESTAMP WITH TIME ZONE, lt TIMESTAMP
+);
 
 -- case: arithmetic_of_non_null_operands_is_non_null
 SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
@@ -57,6 +61,21 @@ SELECT c FROM t WHERE c IN ('a', 'b') AND c = 'B' /**ASSERT ENUM(c IN ('a'))**/
 -- case: a_decimal_without_a_scale_is_compared_by_identity
 -- A bare DECIMAL is DECIMAL(38, 0).
 SELECT d, CAST(d AS VARCHAR) AS x FROM t /**ASSERT DETERMINES(d -> x)**/  --~ PROVED
+
+-- case: a_zoned_timestamp_is_not_compared_by_identity
+-- `TIMESTAMP '2024-01-01 01:00 +01:00' = TIMESTAMP '2024-01-01 00:00 UTC'`,
+-- yet they cast to different text.
+SELECT ts, CAST(ts AS VARCHAR) AS x FROM t /**ASSERT DETERMINES(ts -> x)**/  --~ UNKNOWN
+
+-- case: a_timestamp_without_a_zone_is_compared_by_identity
+SELECT lt, CAST(lt AS VARCHAR) AS x FROM t /**ASSERT DETERMINES(lt -> x)**/  --~ PROVED
+
+-- case: comparing_a_cast_of_a_zoned_timestamp_warns
+SELECT id FROM t WHERE CAST(ts AS DATE) = DATE '2024-01-01' /**ASSERT NOT NULL(id)**/  --~ PROVED
+--~ zoned-timestamp-cast "CAST(ts AS DATE) is compared"
+
+-- case: comparing_the_zoned_timestamp_itself_does_not_warn
+SELECT id FROM t WHERE ts > TIMESTAMP '2024-01-01 00:00:00 UTC' /**ASSERT NOT NULL(id)**/  --~ PROVED
 
 -- case: a_primary_key_is_not_knowledge
 CREATE TABLE k (id INTEGER PRIMARY KEY);

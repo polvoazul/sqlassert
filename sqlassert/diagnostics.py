@@ -6,7 +6,9 @@ Disproof and never an inference: it says that analysis stopped short, and why.
 A warning is a Diagnostic too, reported apart (`Report.warnings`): the program
 is supported, but a fact a connection would supply is missing, so analysis
 treats it as unknown (ADR 0005). So are a constraint the dialect does not
-enforce and an operator whose meaning a setting decides (`dialects.py`).
+enforce, and, about the SQL itself (`SQL_WARNINGS`), an operator whose
+meaning a setting decides and a comparison that depends on something the
+values do not show, like a zoned timestamp's zone (`dialects.py`).
 Warnings never make a Report fail.
 """
 
@@ -39,6 +41,7 @@ UNRECOGNIZED_MARKER = "unrecognized-marker"
 UNSUPPORTED_CREATE_STATEMENT = "unsupported-create-statement"
 UNSUPPORTED_NATURAL_JOIN = "unsupported-natural-join"
 UNSUPPORTED_STATEMENT = "unsupported-statement"
+ZONED_TIMESTAMP_CAST = "zoned-timestamp-cast"
 
 
 @dataclass(frozen=True)
@@ -46,3 +49,7 @@ class Diagnostic:
     code: str
     message: str
     origin: Origin | None = None
+
+
+# Warnings about the SQL itself, which no connection answers: `analyze_database` keeps them.
+SQL_WARNINGS = frozenset({AMBIGUOUS_OPERATOR, ZONED_TIMESTAMP_CAST})

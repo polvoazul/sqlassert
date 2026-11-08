@@ -55,7 +55,8 @@
     "total(|)": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/conversion_functions", "read": "read 2026-11-08"},
     "total(||)": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/string_functions#concat", "read": "read 2026-11-08"},
     "total(~)": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/conversion_functions", "read": "read 2026-11-08"},
-    "unscaled_decimal=False": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types", "read": "cited 2026-11-08, not fetched"}
+    "unscaled_decimal=False": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types", "read": "cited 2026-11-08, not fetched"},
+    "zoned_timestamp_is_instant": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types", "read": "read 2026-11-08"}
   },
   "clickhouse": {
     "empty_string_is_null=False": {"engine": ["clickhouse 26.10.3.7"]},
@@ -134,7 +135,8 @@
     "total(concat)": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-null-semantics", "read": "updated 2026-09-11"},
     "total(concat_ws)": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/functions/concat_ws", "read": "updated 2026-09-11"},
     "total(||)": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-null-semantics", "read": "updated 2026-09-11"},
-    "unscaled_decimal=False": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-datatypes", "read": "cited 2026-11-08, not fetched"}
+    "unscaled_decimal=False": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-datatypes", "read": "cited 2026-11-08, not fetched"},
+    "zoned_timestamp_is_instant": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/data-types/timestamp-type", "read": "read 2026-11-08"}
   },
   "duckdb": {
     "empty_string_is_null=False": {"engine": ["duckdb 1.5.2"]},
@@ -195,7 +197,8 @@
     "total(||)": {"engine": ["duckdb 1.5.2"]},
     "total(~)": {"engine": ["duckdb 1.5.2"]},
     "unique_keys=enforced": {"engine": ["duckdb 1.5.2"]},
-    "unscaled_decimal=False": {"engine": ["duckdb 1.5.2"]}
+    "unscaled_decimal=False": {"engine": ["duckdb 1.5.2"]},
+    "zoned_timestamp_is_instant": {"engine": ["duckdb 1.5.2"]}
   },
   "hive": {
     "empty_string_is_null=False": {"doc": "https://cwiki.apache.org/confluence/display/Hive/LanguageManual+UDF", "read": "updated 2023-09-15"},
@@ -264,7 +267,8 @@
     "total(concat)": {"engine": ["mysql 8.0.46", "mysql 8.4.13", "mysql 9.7.4"]},
     "total(concat_ws)": {"engine": ["mysql 8.0.46", "mysql 8.4.13", "mysql 9.7.4"]},
     "unique_keys=enforced": {"engine": ["mysql 8.0.46", "mysql 8.4.13", "mysql 9.7.4"]},
-    "unscaled_decimal=False": {"engine": ["mysql 8.0.46", "mysql 8.4.13", "mysql 9.7.4"]}
+    "unscaled_decimal=False": {"engine": ["mysql 8.0.46", "mysql 8.4.13", "mysql 9.7.4"]},
+    "zoned_timestamp_is_instant": {"engine": ["mysql 8.4.13"]}
   },
   "oracle": {
     "empty_string_is_null=True": {"doc": "https://docs.oracle.com/en/database/oracle/oracle-database/26/sqlrf/Nulls.html", "read": "Oracle AI Database 26, G57157-09"},
@@ -373,7 +377,8 @@
     "total(|)": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
     "total(||)": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
     "total(~)": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
-    "unique_keys=enforced": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]}
+    "unique_keys=enforced": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
+    "zoned_timestamp_is_instant": {"engine": ["postgres 18.6"]}
   },
   "redshift": {
     "empty_string_is_null=False": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_Nulls.html", "read": "read 2026-11-08"},
@@ -429,7 +434,8 @@
     "total(|)": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_CAST_function.html", "read": "cited 2026-11-08, not fetched"},
     "total(||)": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_concat_op.html", "read": "read 2026-11-08"},
     "total(~)": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_CAST_function.html", "read": "cited 2026-11-08, not fetched"},
-    "unscaled_decimal=False": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/c_Supported_data_types.html", "read": "cited 2026-11-08, not fetched"}
+    "unscaled_decimal=False": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/c_Supported_data_types.html", "read": "cited 2026-11-08, not fetched"},
+    "zoned_timestamp_is_instant": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_Datetime_types.html", "read": "read 2026-11-08"}
   },
   "snowflake": {
     "empty_string_is_null=False": {"doc": "https://docs.snowflake.com/en/sql-reference/ternary-logic", "read": "read 2026-11-08"},
@@ -523,7 +529,8 @@
     "total(concat)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "total(concat_ws)": {"doc": "https://spark.apache.org/docs/latest/api/sql/string-functions/", "read": "Spark 4.3.0"},
     "total(||)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
-    "unscaled_decimal=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"}
+    "unscaled_decimal=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"},
+    "zoned_timestamp_is_instant": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "read 2026-11-08"}
   },
   "spark2": {
     "empty_string_is_null=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
@@ -557,7 +564,8 @@
     "total(concat)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "total(concat_ws)": {"doc": "https://spark.apache.org/docs/latest/api/sql/string-functions/", "read": "Spark 4.3.0"},
     "total(||)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
-    "unscaled_decimal=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"}
+    "unscaled_decimal=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"},
+    "zoned_timestamp_is_instant": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "read 2026-11-08"}
   },
   "sqlite": {
     "empty_string_is_null=False": {"engine": ["sqlite 3.50.4"]},

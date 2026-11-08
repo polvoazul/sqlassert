@@ -130,6 +130,7 @@ def candidate_facts(dialect: str) -> tuple[Fact, ...]:
     meaning = semantics(dialect)
     strong = replace(
         meaning, checked_arithmetic=True, checked_division=True, casts_raise=True, text_is_binary=True, unscaled_decimal=False,
+        zoned_timestamp_is_instant=True,
     )
     claimed = {fact.name for fact in facts(dialect, meaning)}
     return tuple(fact for fact in facts(dialect, strong) if fact.name not in claimed)
@@ -345,6 +346,15 @@ def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
             setup=(_table(dialect, table, "d DECIMAL"), f"INSERT INTO {table} (d) VALUES (1.0), (1.00)"), tables=(table,),
         )
         yield Fact("unscaled_decimal=False", "unscaled_decimal=True", (check,))
+    if meaning.zoned_timestamp_is_instant:
+        table = "sqlassert_probe_zoned"
+        zoned = exp.DataType.build("TIMESTAMPTZ").sql(dialect=dialect)
+        rows = "('2024-01-01 00:00:00+00:00'), ('2024-01-01 01:00:00+01:00')"
+        check = Check(
+            _query(f"SELECT CASE WHEN count(DISTINCT CAST(t AS VARCHAR(60))) = 1 AND count(DISTINCT t) = 1 THEN 1 ELSE 0 END FROM {table}", dialect),
+            "true", setup=(_table(dialect, table, f"t {zoned}"), f"INSERT INTO {table} (t) VALUES {rows}"), tables=(table,),
+        )
+        yield Fact("zoned_timestamp_is_instant", "zoned_timestamp_is_instant=False", (check,))
     if meaning.unique_keys == "enforced":
         table = "sqlassert_probe_key"
         check = Check(

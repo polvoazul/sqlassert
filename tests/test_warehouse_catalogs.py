@@ -261,3 +261,18 @@ def test_a_trino_session_without_a_catalog_is_a_metadata_error():
 
     with pytest.raises(DatabaseMetadataError, match="no current catalog"):
         fetcher.fetch_relation_metadata(("customers",))
+
+
+def test_a_catalog_keeps_the_warnings_about_the_sql_itself():
+    connection = _Connection([
+        ("CURRENT_CATALOG", [("memory", "shop")]),
+        ("information_schema.TABLES", [("memory", "shop", "events", "BASE TABLE")]),
+        ("IS_NULLABLE, DATA_TYPE", [("events", "id", "NO", "BIGINT"), ("events", "at", "YES", "TIMESTAMP(3) WITH TIME ZONE")]),
+        ("VIEW_DEFINITION", []),
+    ])
+    sql = "SELECT id FROM events WHERE CAST(at AS VARCHAR) = '2024-01-01 00:00:00.000 UTC' /**ASSERT NOT NULL(id)**/"
+
+    report = analyze_database(sql, TrinoKnowledgeFetcher(connection), dialect="trino")
+
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
+    assert [warning.code for warning in report.warnings] == ["zoned-timestamp-cast"]

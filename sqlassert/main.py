@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from sqlassert import diagnostics as diag
 from sqlassert.ir.convert import IrParser
 from sqlassert.python_engine import Engine
 from sqlassert.reporting import Report
@@ -42,7 +43,8 @@ def analyze_database(
     The fetcher reads catalog metadata only, never rows, and binds it to the
     final IR before the engine runs once. No connection warnings: a relation
     the catalog lacks is already a diagnostic. A catalog key the dialect does
-    not enforce warns, unless `trust_unenforced_keys` declares it.
+    not enforce warns, unless `trust_unenforced_keys` declares it, and so do
+    the SQL's own warnings (`diagnostics.SQL_WARNINGS`).
     """
     ast = SqlParser(dialect).parse(sql)
     hydration = fetcher.hydrate(ast, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
@@ -50,4 +52,5 @@ def analyze_database(
     facts = fetcher.bind(conversion.program, hydration)
     program = replace(conversion.program, declarations=conversion.program.declarations + facts.declarations)
     diagnostics = ast.diagnostics + hydration.diagnostics + conversion.diagnostics
-    return Engine().run(program, conversion.knowledge + facts.knowledge, diagnostics, facts.warnings)
+    warnings = (*facts.warnings, *(warning for warning in conversion.warnings if warning.code in diag.SQL_WARNINGS))
+    return Engine().run(program, conversion.knowledge + facts.knowledge, diagnostics, warnings)

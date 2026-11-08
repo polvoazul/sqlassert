@@ -28,6 +28,7 @@ before dialects were listed; see "Not done").
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
+| zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
@@ -62,6 +63,18 @@ PostgreSQL `NUMERIC` with no scale (`unscaled_decimal`) keeps each value's own
 scale: `1.0 = 1.00`, but their text differs, so such a column is neither
 compared by identity nor exact; `NUMERIC(10, 2)` is both. DuckDB, MySQL,
 Snowflake, BigQuery and Redshift give a bare `DECIMAL` a fixed scale.
+
+A TIMESTAMP WITH TIME ZONE (`zoned_timestamp_is_instant`; SQLGlot reads
+MySQL's, BigQuery's and Spark's `TIMESTAMP` as one) holds an instant in
+DuckDB, PostgreSQL, MySQL, BigQuery, Spark and Redshift: the zone it was
+given only converts it, so equal values are identical and their text, in the
+session's zone, is equal too. Trino, Snowflake's `TIMESTAMP_TZ` and Oracle
+keep the zone: `TIMESTAMP '2024-01-01 01:00 +01:00'` equals
+`TIMESTAMP '2024-01-01 00:00 UTC'`, yet the two cast to different `VARCHAR`,
+`DATE` or local `TIMESTAMP` values. There a zoned timestamp is not compared by
+identity, and a comparison with a `CAST` of a zoned column warns
+(`zoned-timestamp-cast`): its result depends on the zone each row was given.
+A dialect not listed is taken to keep the zone.
 
 MySQL ENUMs (`enum_error_value`): MySQL stores `''` for a value outside the
 members outside strict mode and under `INSERT IGNORE` in any mode, and strips

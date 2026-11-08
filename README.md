@@ -301,6 +301,11 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   `SET default_collation`) is out of scope. MySQL's default collations ignore case, and the warehouses are
   not yet certified, so their text is not. Text with any `COLLATE` is never
   taken to compare by identity.
+- **Zoned timestamps.** A TIMESTAMP WITH TIME ZONE compares by identity where
+  it holds an instant only (DuckDB, PostgreSQL, MySQL, BigQuery, Spark,
+  Redshift). Trino and Snowflake keep the zone it was given, so equal instants
+  cast to different text: there it does not, and comparing a `CAST` of one
+  warns (`zoned-timestamp-cast`).
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
   operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
   BigQuery, Redshift, Trino); division likewise, except in DuckDB. MySQL (outside
