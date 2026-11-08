@@ -147,21 +147,24 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   new Relation is reached. Names inside a fetched view are rewritten to
   canonical identities first, because they resolve in the view's own schema.
   Catalog constraints never enter those declarations: `bind` turns them into
-  Properties over the final IR, passed to `Engine.run` as `Accepted`
-  Knowledge. SQL declarations win over catalog objects of the same name and
+  Properties over the final IR: `Accepted` Knowledge where the dialect
+  enforces them, Property Declarations for unenforced keys under
+  `trust_unenforced_keys`, otherwise an `unenforced-constraint` warning. SQL declarations win over catalog objects of the same name and
   are never fetched. A missing object, an unreadable catalog, or incomplete
   metadata is a Diagnostic, and the Relation stays opaque. Subclasses own one
   database's catalog boundary: name resolution and metadata queries.
   `discovery/duckdb.py` is the DuckDB adapter, behind the optional `duckdb`
-  extra. `discovery/postgres.py` and `discovery/mysql.py` read `pg_catalog`
-  and `information_schema` through any DB-API connection
-  (`discovery/dbapi.py`), importing no driver. `analyze_database(sql, fetcher,
+  extra. `discovery/information_schema.py` reads the standard
+  `INFORMATION_SCHEMA` views through any DB-API connection, importing no
+  driver; one subclass per dialect (`postgres.py`, `mysql.py`, `redshift.py`,
+  `snowflake.py`, `bigquery.py`, `databricks.py`) overrides only the hooks
+  whose standard view is missing or incomplete there. `analyze_database(sql, fetcher,
   *, dialect=...)` in `main.py` composes it; `analyze` stays pure.
 - `dialects.py` is what each SQL dialect means by the constructs the rules
   depend on (`DialectSemantics`): which Builtins raise rather than return
   NULL, which text compares by identity, `||` and `concat()`, and which keys
-  are enforced. Only `ir/convert.py` reads it; the rules see its effect in the
-  IR. A flag claims only what holds under every setting of the dialect, and a
+  are enforced. Only `ir/convert.py` reads it, and `discovery/` for catalog
+  keys; the rules see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
   dialect not listed gets cautious defaults. An unenforced key is never
   Knowledge: `RELY` (where the dialect has it) or `trust_unenforced_keys`
   makes it a Property Declaration, otherwise an `unenforced-constraint`

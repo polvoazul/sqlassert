@@ -91,27 +91,48 @@ added by `ALTER TABLE ... NOT VALID`, a MySQL column-level `REFERENCES`
 
 ## Catalog fetchers
 
-`discovery/postgres.py` and `discovery/mysql.py` read `pg_catalog` and
-`information_schema` through any DB-API connection; no driver is a
-dependency. What they keep, beyond the DuckDB fetcher's:
+`discovery/information_schema.py` is one fetcher over any DB-API connection
+(no driver is a dependency) that reads the standard `INFORMATION_SCHEMA`
+views: `TABLES`, `COLUMNS`, `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE`,
+`REFERENTIAL_CONSTRAINTS`, `VIEWS`. A subclass per dialect overrides only
+the hooks whose standard view is missing or incomplete there:
 
-- Postgres: only validated, enforced (PostgreSQL 18), non-deferrable
-  constraints, unique indexes over plain key columns (not `INCLUDE` ones, no
-  `WHERE`), no foreign key onto a table with row-level security (it may hide
-  the referenced row), a column's collation only when nondeterministic. A
+- Postgres: every hook reads `pg_catalog`, since `information_schema` shows a
+  constraint only to a role with a privilege on its table other than SELECT,
+  and a view's text only to its owner. It keeps only validated, enforced
+  (PostgreSQL 18), non-deferrable constraints, unique indexes over plain key
+  columns (not `INCLUDE` ones, no `WHERE`, no expression), no foreign key
+  onto a table with row-level security (it may hide the referenced row). A
   table others inherit from returns their rows, which its keys and NOT NULLs
   do not cover, so it is columns only; so is a foreign table. A NOT NULL
-  added `NOT VALID` does not count.
-- MySQL: every text column's collation (`utf8mb4_0900_bin` alone compares by
-  identity), unique indexes with no functional key part, the foreign keys the
-  catalog lists (only enforcing engines keep them). A view's stored
-  definition qualifies columns by schema and table; hydration requalifies
-  them by the table's alias.
+  added `NOT VALID` does not count. A nondeterministic column collation is
+  reported, since the default compares by identity and it does not.
+- MySQL: `COLUMN_TYPE` (an ENUM's members), unique indexes from `STATISTICS`
+  with no functional key part, foreign keys from `KEY_COLUMN_USAGE`'s
+  `REFERENCED_*` columns (only enforcing engines keep them).
+- Redshift: `current_schema()` only, and view text from `pg_get_viewdef`.
+  Redshift has no indexes.
+- Snowflake: key columns from `SHOW PRIMARY / UNIQUE / IMPORTED KEYS`, as
+  Snowflake has no `KEY_COLUMN_USAGE`; `VIEW_DEFINITION` is a whole
+  `CREATE VIEW`.
+- BigQuery: each dataset's own `project.dataset.INFORMATION_SCHEMA`; the
+  fetcher is given the project and default dataset. Foreign keys come from
+  `CONSTRAINT_COLUMN_USAGE`, which does not order columns, so only
+  single-column ones are read.
+- Databricks: the standard views, with `?` parameters.
 
-Warehouse fetchers are not written: their `information_schema` lists
-unenforced keys with `RELY` flags (Snowflake `SHOW PRIMARY KEYS`, Databricks
-`information_schema.table_constraints`), which `DatabaseRelationMetadata`
-would need a trust field to carry.
+Collation is the dialect's default: per-column and per-table collations are
+not read (beyond Postgres's nondeterministic ones). That is sound because
+only DuckDB's and PostgreSQL's default is taken to compare by identity.
+
+Keys are reported as declared: there is no per-constraint trust field, and
+`RELY` in a warehouse catalog is not read. Whether a catalog key is
+Knowledge is the dialect's `unique_keys` / `foreign_keys` flag, applied by
+`DatabaseKnowledgeFetcher.bind` as `ir/convert.py` applies it to keys
+written in SQL: Knowledge where enforced, a Property Declaration under
+`trust_unenforced_keys`, otherwise an `unenforced-constraint` warning. So a
+warehouse key proves something only when the caller trusts every unenforced
+key; if one is violated, proofs that depend on it are wrong.
 
 ## Judging soundness without DuckDB
 

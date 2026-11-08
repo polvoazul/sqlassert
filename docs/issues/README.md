@@ -13,11 +13,10 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44; backlog of CLI, editor, framework, data quality and agent integrations)
 - [44. v1 external integrations](0044-v1-external-integrations.md) — open (child of 43: `check` CLI; analytical dialects, Postgres, MySQL; dbt)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes per fact; docker for local engines, doc provenance for warehouses)
-- [47. Discovery: one base fetcher, a subclass per dialect](0047-discovery-base-class.md) — open (INFORMATION_SCHEMA base; keys taken as enforced; partial indexes skipped)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 48, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 47, 48, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):

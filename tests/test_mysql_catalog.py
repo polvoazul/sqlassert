@@ -1,6 +1,6 @@
 """`MySQLKnowledgeFetcher` over a scripted DB-API connection: each catalog
 query is answered with the rows MySQL 8's information_schema returns for
-`SCHEMA` below. No MySQL runs here; the queries' SQL is not checked, only how
+the schema below. No MySQL runs here; the queries' SQL is not checked, only how
 their rows become metadata and proofs."""
 
 from __future__ import annotations
@@ -13,31 +13,33 @@ from sqlassert.discovery.mysql import MySQLKnowledgeFetcher
 
 # CREATE TABLE customers (id INT PRIMARY KEY, email VARCHAR(50) NOT NULL UNIQUE,
 #     status ENUM('new', 'paid') NOT NULL, code VARCHAR(10) COLLATE utf8mb4_0900_bin,
-#     UNIQUE KEY lower_email ((lower(email))));
+#     UNIQUE KEY lower_email ((lower(email))), UNIQUE KEY lower_code (code, (lower(email))));
 # CREATE TABLE orders (id INT PRIMARY KEY, customer_id INT NOT NULL,
 #     FOREIGN KEY (customer_id) REFERENCES customers (id));
 # CREATE VIEW paid AS SELECT id, email FROM customers WHERE status = 'paid';
 ANSWERS: dict[str, list[tuple[Any, ...]]] = {
-    "SELECT DATABASE()": [("shop",)],
-    "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE": [
-        ("shop", "customers", "BASE TABLE"), ("shop", "orders", "BASE TABLE"), ("shop", "paid", "VIEW"), ("archive", "orders", "BASE TABLE"),
+    "SELECT 'def', DATABASE()": [("def", "shop")],
+    "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE": [
+        ("def", "shop", "customers", "BASE TABLE"), ("def", "shop", "orders", "BASE TABLE"), ("def", "shop", "paid", "VIEW"),
     ],
-    "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME": [
-        ("shop", "customers", "id", "NO", "int", None),
-        ("shop", "customers", "email", "NO", "varchar(50)", "utf8mb4_0900_ai_ci"),
-        ("shop", "customers", "status", "NO", "enum('new','paid')", "utf8mb4_0900_ai_ci"),
-        ("shop", "customers", "code", "YES", "varchar(10)", "utf8mb4_0900_bin"),
-        ("shop", "orders", "id", "NO", "int", None),
-        ("shop", "orders", "customer_id", "NO", "int", None),
+    "SELECT TABLE_NAME, COLUMN_NAME, IS_NULLABLE, COLUMN_TYPE": [
+        ("customers", "id", "NO", "int"),
+        ("customers", "email", "NO", "varchar(50)"),
+        ("customers", "status", "NO", "enum('new','paid')"),
+        ("customers", "code", "YES", "varchar(10)"),
+        ("orders", "id", "NO", "int"),
+        ("orders", "customer_id", "NO", "int"),
     ],
-    "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME": [
-        ("shop", "customers", "PRIMARY", "id"),
-        ("shop", "customers", "email", "email"),
-        ("shop", "customers", "lower_email", None),
-        ("shop", "orders", "PRIMARY", "id"),
+    "SELECT TABLE_NAME, INDEX_NAME": [
+        ("customers", "PRIMARY", "id"),
+        ("customers", "email", "email"),
+        ("customers", "lower_email", None),
+        ("customers", "lower_code", "code"),
+        ("customers", "lower_code", None),
+        ("orders", "PRIMARY", "id"),
     ],
-    "SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME": [
-        ("shop", "orders", "orders_ibfk_1", "customer_id", "shop", "customers", "id"),
+    "SELECT TABLE_NAME, CONSTRAINT_NAME": [
+        ("orders", "orders_ibfk_1", "customer_id", "def", "shop", "customers", "id"),
     ],
     "SELECT VIEW_DEFINITION": [
         ("select `shop`.`customers`.`id` AS `id`,`shop`.`customers`.`email` AS `email` from `shop`.`customers` "
@@ -70,15 +72,18 @@ class _Connection:
         return _Cursor(self.log)
 
 
-def test_tables_have_columns_collations_and_keys_over_plain_columns():
+def test_tables_have_columns_and_keys_over_plain_columns():
     connection = _Connection()
     found = MySQLKnowledgeFetcher(connection).fetch_relation_metadata(("customers", "shop.orders", "missing"))
 
     customers, orders = found["customers"], found["shop.orders"]
     assert customers.identity == "def.shop.customers" and customers.kind is DatabaseRelationKind.TABLE
-    assert customers.primary_key == ("id",) and customers.unique_sets == (("email",),)  # Not the functional index.
-    assert [(column.name, column.nullable, column.collation) for column in customers.columns] == [
-        ("id", False, None), ("email", False, "utf8mb4_0900_ai_ci"), ("status", False, "utf8mb4_0900_ai_ci"), ("code", True, "utf8mb4_0900_bin"),
+    # Neither index with a functional key part is a key, nor its plain columns alone.
+    assert customers.primary_key == ("id",) and customers.unique_sets == (("email",),)
+    # Columns have the dialect's default collation: per-column ones are not read.
+    assert [(column.name, column.nullable, column.data_type, column.collation) for column in customers.columns] == [
+        ("id", False, "int", None), ("email", False, "varchar(50)", None), ("status", False, "enum('new','paid')", None),
+        ("code", True, "varchar(10)", None),
     ]
     reference, = orders.foreign_keys
     assert (reference.columns, reference.referenced, reference.referenced_columns) == (("customer_id",), "def.shop.customers", ("id",))
@@ -103,14 +108,13 @@ def test_a_view_hydrates_through_its_definition():
     assert report.diagnostics == ()
 
 
-def test_collations_from_the_catalog_decide_identity():
-    def outcome(column: str) -> Outcome:
-        sql = f"SELECT {column} FROM customers WHERE {column} IN ('a', 'b') AND {column} = 'B' /**ASSERT ENUM({column} IN ('a'))**/"
-        assertion, = analyze_database(sql, MySQLKnowledgeFetcher(_Connection()), dialect="mysql").assertions
-        return assertion.outcome
+def test_text_from_the_catalog_has_the_default_collation():
+    """MySQL's default collations ignore case, so equal text is not identical
+    text, even for a column declared with a binary collation."""
+    sql = "SELECT code FROM customers WHERE code IN ('a', 'b') AND code = 'B' /**ASSERT ENUM(code IN ('a'))**/"
+    assertion, = analyze_database(sql, MySQLKnowledgeFetcher(_Connection()), dialect="mysql").assertions
 
-    assert outcome("email") is Outcome.UNKNOWN  # Case-insensitive.
-    assert outcome("code") is Outcome.PROVED  # Binary, NO PAD.
+    assert assertion.outcome is Outcome.UNKNOWN
 
 
 def test_an_enum_from_the_catalog_may_hold_the_empty_string():
