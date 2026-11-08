@@ -603,7 +603,7 @@ class IrParser:
             return None
         if kind.this in exp.DataType.TEXT_TYPES:
             return kind.sql(dialect=self.dialect) if self._is_binary_text(definition) else None
-        if _collation(definition) is not None or self._unscaled_decimal(kind):
+        if _collated(definition) or self._unscaled_decimal(kind):
             return None
         return kind.sql(dialect=self.dialect)
 
@@ -622,15 +622,16 @@ class IrParser:
         return self.semantics.unscaled_decimal and kind.this == exp.DataType.Type.DECIMAL and not kind.expressions
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
-        """Declared VARCHAR or TEXT compared by identity: under the dialect's
-        binary default collation, or a COLLATE it knows to be binary.
+        """Declared VARCHAR or TEXT, with no COLLATE, in a dialect whose
+        default collation is binary: compared by identity.
 
-        CHAR is not: it ignores trailing spaces when compared."""
+        CHAR is not: it ignores trailing spaces when compared. Any COLLATE,
+        even a binary one, is not modelled (issue 49)."""
         kind = definition.args.get("kind")
-        if not (isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES):
-            return False
-        collation = _collation(definition)
-        return self.semantics.binary_default_collation if collation is None else collation in self.semantics.binary_collations
+        return (
+            isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES
+            and not _collated(definition) and self.semantics.text_is_binary
+        )
 
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
@@ -1892,13 +1893,9 @@ _SUPPORTED_CREATE_KINDS = {"TABLE", "VIEW"}
 _TEXT_TYPES = {exp.DataType.Type.VARCHAR, exp.DataType.Type.TEXT}
 
 
-def _collation(definition: exp.ColumnDef) -> str | None:
-    """The collation a column is declared with (`COLLATE name`), lower-cased."""
-    for constraint in definition.constraints:
-        kind = constraint.args.get("kind")
-        if isinstance(kind, exp.CollateColumnConstraint):
-            return kind.this.name.lower()
-    return None
+def _collated(definition: exp.ColumnDef) -> bool:
+    """Whether a column is declared with a `COLLATE`."""
+    return any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints)
 
 
 def _created_table(statement: exp.Create) -> exp.Table | None:

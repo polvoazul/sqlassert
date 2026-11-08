@@ -154,7 +154,7 @@ select status from o where status <> 'void' and status in ('new', 'paid')
 
 Domains come from `DECLARE ENUM` and external Knowledge, literals, `coalesce` of enumerated arguments, and simple `CASE` expressions (see below), and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated.
 
-A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` compared by identity: with no `COLLATE` in PostgreSQL (whose default collation is binary), or under a collation known to be binary (DuckDB's `c`, PostgreSQL's `"C"`, MySQL's `utf8mb4_0900_bin`). A column of unknown type is not narrowed that way. A MySQL `ENUM` column may also hold `''`, which MySQL stores for a value outside its members outside strict mode or under `INSERT IGNORE`, so its domain includes `''`.
+A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` compared by identity: with no `COLLATE`, in DuckDB or PostgreSQL (whose default collation is binary). A column of unknown type is not narrowed that way. A MySQL `ENUM` column may also hold `''`, which MySQL stores for a value outside its members outside strict mode or under `INSERT IGNORE`, so its domain includes `''`.
 
 ### Exhaustive CASE
 
@@ -294,10 +294,12 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   declared `NOT ENFORCED` or `DEFERRABLE`, a MySQL column-level `REFERENCES`
   (ignored before MySQL 9.0), a foreign key of a MySQL table whose `ENGINE`
   does not enforce them, and SQLite foreign keys.
-- **Text.** Distinct strings compare equal under MySQL's default collations,
-  and DuckDB's (`SET default_collation`) and the warehouses' default
-  collation can be changed, so only PostgreSQL's default is taken to compare
-  by identity; in DuckDB, declare `COLLATE binary`, `c` or `posix`.
+- **Text.** `VARCHAR` and `TEXT` with no `COLLATE` are taken to compare by
+  identity in DuckDB and PostgreSQL, whose shipped default collation is
+  binary; a setting that changes it (DuckDB's `SET default_collation`) is out
+  of scope. MySQL's default collations ignore case, and the warehouses are
+  not yet certified, so their text is not. Text with any `COLLATE` is never
+  taken to compare by identity.
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
   operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
   BigQuery, Redshift); division likewise, except in DuckDB. MySQL (outside

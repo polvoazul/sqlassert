@@ -392,7 +392,7 @@ class OutputColumn(Node):
 
     `binary_text` marks a table column declared as text compared by identity:
     VARCHAR or TEXT, with no COLLATE, in a dialect whose default collation is
-    binary. Equal to such a column, distinct strings are distinct values.
+    binary (`DialectSemantics.text_is_binary`). Equal to such a column, distinct strings are distinct values.
 
     `identity_comparison` marks a table column whose equal values are
     identical: an integer, decimal, boolean, date, time, timestamp or UUID

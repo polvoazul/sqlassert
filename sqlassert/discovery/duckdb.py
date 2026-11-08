@@ -134,12 +134,9 @@ class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
         return {name: metadata[path] for name, (path, _) in resolved.items()}
 
     def _collations(self, paths: list[list[str]]) -> dict[_Path, dict[str, str]]:
-        """Each table's text columns by name, with the collation their
-        comparisons use: their own COLLATE, else the session's
-        `default_collation` (as set now: a session that runs the query with
-        another one compares differently)."""
-        row = self.connection.execute("SELECT current_setting('default_collation')").fetchone()
-        default = row[0] if row is not None and row[0] else None
+        """Each table's columns declared with a COLLATE, by name. The
+        session's `default_collation` is not read: text without a COLLATE has
+        the engine's shipped (binary) default (docs/dialects.md)."""
         collations: dict[_Path, dict[str, str]] = {}
         for database, schema, table, sql in self.connection.execute(_TABLE_SQL, {"paths": paths}).fetchall():
             try:
@@ -152,11 +149,8 @@ class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
                     constraint.args["kind"] for constraint in definition.constraints
                     if isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint)
                 ), None)
-                kind = definition.args.get("kind")
-                text = isinstance(kind, exp.DataType) and kind.this in exp.DataType.TEXT_TYPES
-                collation = collate.this.name if collate is not None else default if text else None
-                if collation:
-                    own[definition.name.lower()] = collation
+                if collate is not None:
+                    own[definition.name.lower()] = collate.this.name
             collations[(database, schema, table)] = own
         return collations
 

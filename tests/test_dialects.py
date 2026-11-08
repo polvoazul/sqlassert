@@ -63,5 +63,5 @@ def test_pipes_are_concatenation_elsewhere():
 
 def test_a_dialect_not_listed_gets_cautious_semantics_and_enforced_keys():
     assert semantics("tsql") == DialectSemantics()
-    assert not DialectSemantics().checked_arithmetic and not DialectSemantics().binary_default_collation
+    assert not DialectSemantics().checked_arithmetic and not DialectSemantics().text_is_binary
     assert DialectSemantics().pipes is None and DialectSemantics().unique_keys == "enforced"

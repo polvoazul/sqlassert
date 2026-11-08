@@ -40,8 +40,9 @@ SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 -- case: text_under_the_default_collation_may_equal_distinct_strings
 SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
 
--- case: text_under_a_no_pad_binary_collation_is_compared_by_identity
-SELECT b FROM t WHERE b IN ('a', 'b') AND b = 'B' /**ASSERT ENUM(b IN ('a'))**/  --~ PROVED
+-- case: text_under_a_binary_collation_is_not_modelled
+-- Any COLLATE, binary or not, is not taken to compare by identity (issue 49).
+SELECT b FROM t WHERE b IN ('a', 'b') AND b = 'B' /**ASSERT ENUM(b IN ('a'))**/  --~ UNKNOWN
 
 -- case: an_enum_column_may_hold_the_empty_string
 SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b'))**/  --~ UNKNOWN

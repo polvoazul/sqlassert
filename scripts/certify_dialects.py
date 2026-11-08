@@ -12,8 +12,9 @@ the engine version into the provenance of each fact that passed, and removes
 it from each that failed; it never adds or strengthens a fact. A FAIL names
 the weaker setting to apply by hand in `dialects.py`. A dialect's flags hold
 under all its settings, so a fact must pass under the engine's defaults and
-again after `PERMISSIVE` statements (MySQL `sql_mode = ''`, DuckDB
-`default_collation = 'nocase'`, Spark ANSI off). Weak settings claim nothing;
+again after `PERMISSIVE` statements (MySQL `sql_mode = ''`, Spark ANSI
+off). A setting that changes the default collation is out of scope
+(docs/dialects.md). Weak settings claim nothing;
 the runner only reports, as STRONGER, an engine that would also satisfy the
 strong one (never acted on).
 
@@ -56,7 +57,6 @@ PROVENANCE = ROOT / "docs" / "dialect-provenance.json"
 # Statements after which every fact must still hold: the dialect's settings
 # that weaken what its SQL means.
 PERMISSIVE: dict[str, tuple[str, ...]] = {
-    "duckdb": ("SET default_collation = 'nocase'",),
     "mysql": ("SET SESSION sql_mode = ''",),
     "spark": ("SET spark.sql.ansi.enabled = false",),
     "spark2": ("SET spark.sql.ansi.enabled = false",),
@@ -80,9 +80,6 @@ VERSION_SQL: dict[str, str] = {
 
 # Appended to each probe table's CREATE: ClickHouse needs a table engine.
 TABLE_SUFFIX: dict[str, str] = {"clickhouse": " ENGINE = Memory"}
-
-# Collation names as each engine spells them; `dialects.py` lower-cases them.
-COLLATION_SPELLING: dict[str, dict[str, str]] = {"postgres": {"c": "C", "posix": "POSIX"}}
 
 type Expect = Literal["true", "error", "error or true"]
 type Outcome = Literal["PASS", "VACUOUS", "FAIL", "ERROR"]
@@ -131,7 +128,7 @@ def candidate_facts(dialect: str) -> tuple[Fact, ...]:
     """The facts the strong reading of each weak flag would add: probed only to report."""
     meaning = semantics(dialect)
     strong = replace(
-        meaning, checked_arithmetic=True, checked_division=True, casts_raise=True, binary_default_collation=True, unscaled_decimal=False,
+        meaning, checked_arithmetic=True, checked_division=True, casts_raise=True, text_is_binary=True, unscaled_decimal=False,
     )
     claimed = {fact.name for fact in facts(dialect, meaning)}
     return tuple(fact for fact in facts(dialect, strong) if fact.name not in claimed)
@@ -309,11 +306,6 @@ def _identity_check(dialect: str, column: str) -> Check:
     )
 
 
-def _collation(dialect: str, name: str) -> str:
-    spelled = COLLATION_SPELLING.get(dialect, {}).get(name, name)
-    return exp.to_identifier(spelled, quoted=dialect != "mysql").sql(dialect=dialect)
-
-
 def _foreign_key_check(dialect: str, reference: str, suffix: str = "") -> Check:
     """No child row survives without its parent: an orphan insert and a parent delete are rejected."""
     parent, child = "sqlassert_probe_parent", "sqlassert_probe_child"
@@ -343,11 +335,8 @@ def _not_null_key_check(dialect: str, columns: str, attempts: tuple[str, ...]) -
 
 
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
-    if meaning.binary_default_collation:
-        yield Fact("binary_default_collation", "binary_default_collation=False", (_identity_check(dialect, "VARCHAR(10)"),))
-    for name in sorted(meaning.binary_collations):
-        check = _identity_check(dialect, f"VARCHAR(10) COLLATE {_collation(dialect, name)}")
-        yield Fact(f"binary_collations:{name}", f"drop {name!r} from binary_collations", (check,))
+    if meaning.text_is_binary:
+        yield Fact("text_is_binary", "text_is_binary=False", (_identity_check(dialect, "VARCHAR(10)"),))
     if not meaning.unscaled_decimal:
         table = "sqlassert_probe_decimal"
         check = Check(

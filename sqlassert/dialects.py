@@ -47,11 +47,11 @@ class DialectSemantics:
     # An implicit cast that fails raises an error, so a comparison, LIKE,
     # BETWEEN, NOT or bitwise operator of non-null operands is never NULL.
     casts_raise: bool = True
-    # VARCHAR and TEXT with no COLLATE compare by identity, whatever the
-    # database's or session's settings.
-    binary_default_collation: bool = False
-    # Collations (lower-cased) under which equal text is identical text.
-    binary_collations: frozenset[str] = frozenset()
+    # VARCHAR and TEXT with no COLLATE compare by identity under the engine's
+    # shipped default collation. A setting that changes that default (DuckDB's
+    # `default_collation`) is out of scope; text with any COLLATE is never
+    # taken to compare by identity (docs/dialects.md).
+    text_is_binary: bool = False
     # A DECIMAL declared without a scale keeps each value's own scale, so
     # equal values (1.0, 1.00) may differ: neither identity nor exact.
     unscaled_decimal: bool = False
@@ -94,9 +94,7 @@ _SPARK = DialectSemantics(
 _SEMANTICS: dict[str, DialectSemantics] = {
     "duckdb": DialectSemantics(
         checked_arithmetic=True,
-        # Not `binary_default_collation`: `SET default_collation = 'nocase'`
-        # makes every column without a COLLATE ignore case.
-        binary_collations=frozenset({"binary", "c", "posix"}),
+        text_is_binary=True,
         pipes="strict",
         concat="skips-null",
         concat_ws="skips-null",
@@ -104,9 +102,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "postgres": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
-        binary_default_collation=True,
-        # Deterministic collations, which compare equal only identical strings.
-        binary_collations=frozenset({"c", "posix", "ucs_basic", "default", "pg_c_utf8"}),
+        text_is_binary=True,
         unscaled_decimal=True,
         pipes="lenient",  # `ARRAY[1] || NULL` is `{1}`.
         concat="skips-null",
@@ -116,8 +112,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Out of strict mode, a bad CAST or a bad date is NULL with a warning,
         # and division by zero is NULL in any mode.
         casts_raise=False,
-        # The default collations ignore case (and accents, and some trailing spaces).
-        binary_collations=frozenset({"utf8mb4_0900_bin", "binary"}),
+        # Not `text_is_binary`: the default collations ignore case (and
+        # accents, and some trailing spaces).
         pipes="ambiguous",
         concat="strict",
         concat_ws="skips-null",

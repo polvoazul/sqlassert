@@ -10,7 +10,7 @@ from sqlassert.__main__ import main
 from sqlassert.smells import Concern
 
 SCHEMA = """
-CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR COLLATE c, score INTEGER);
+CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);
 CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER);
 """
 
@@ -148,7 +148,7 @@ def test_an_aggregate_over_rows_no_join_repeats_is_not_a_trap(sql: str):
 # Implicit cast -------------------------------------------------------------------
 
 CASTS = """
-CREATE TABLE codes (code VARCHAR COLLATE c PRIMARY KEY, n INTEGER);
+CREATE TABLE codes (code VARCHAR PRIMARY KEY, n INTEGER);
 CREATE TABLE nums (v INTEGER);
 """
 

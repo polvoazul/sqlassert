@@ -1,27 +1,24 @@
 -- DuckDB semantics the rules depend on (`sqlassert/dialects.py`).
 --
--- `SET default_collation = 'nocase'` makes every column without a COLLATE
--- compare ignoring case, and the SQL does not say whether it is set, so only
--- a column declared `COLLATE binary`, `c` or `posix` compares by identity.
+-- Text with no COLLATE compares by identity under DuckDB's shipped default
+-- collation (`SET default_collation` is out of scope). Text with any COLLATE,
+-- binary or not, is not taken to compare by identity (issue 49).
 -- `concat()` and `concat_ws()` skip NULL; `||` does not.
 
-CREATE TABLE t (id INTEGER PRIMARY KEY, plain VARCHAR, exact VARCHAR COLLATE c, raw VARCHAR COLLATE "binary", folded VARCHAR COLLATE nocase);
+CREATE TABLE t (id INTEGER PRIMARY KEY, plain VARCHAR, exact VARCHAR COLLATE c, folded VARCHAR COLLATE nocase);
 
--- case: text_without_a_collate_is_not_compared_by_identity
-SELECT plain FROM t WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/  --~ UNKNOWN
+-- case: text_without_a_collate_is_compared_by_identity
+SELECT plain FROM t WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/  --~ PROVED
 
--- case: text_under_a_binary_collate_is_compared_by_identity
-SELECT exact FROM t WHERE exact IN ('x', 'y') AND exact IN ('x', 'z') /**ASSERT ENUM(exact IN ('x'))**/  --~ PROVED
-
--- case: text_under_the_binary_collation_is_compared_by_identity
-SELECT raw FROM t WHERE raw IN ('x', 'y') AND raw IN ('x', 'z') /**ASSERT ENUM(raw IN ('x'))**/  --~ PROVED
+-- case: text_under_a_binary_collate_is_not_modelled
+SELECT exact FROM t WHERE exact IN ('x', 'y') AND exact IN ('x', 'z') /**ASSERT ENUM(exact IN ('x'))**/  --~ UNKNOWN
 
 -- case: text_under_nocase_is_not_compared_by_identity
 SELECT folded FROM t WHERE folded IN ('x', 'y') AND folded IN ('x', 'z') /**ASSERT ENUM(folded IN ('x'))**/
 --~ UNKNOWN
 
--- case: a_function_of_text_without_a_collate_is_not_determined
-SELECT plain, upper(plain) AS u, count(*) AS n FROM t GROUP BY plain, upper(plain) /**ASSERT UNIQUE(plain)**/  --~ UNKNOWN
+-- case: a_function_of_text_without_a_collate_is_determined
+SELECT plain, upper(plain) AS u, count(*) AS n FROM t GROUP BY plain, upper(plain) /**ASSERT UNIQUE(plain)**/  --~ PROVED
 
--- case: a_function_of_binary_text_is_determined
-SELECT exact, upper(exact) AS u, count(*) AS n FROM t GROUP BY exact, upper(exact) /**ASSERT UNIQUE(exact)**/  --~ PROVED
+-- case: a_function_of_collated_text_is_not_determined
+SELECT folded, upper(folded) AS u, count(*) AS n FROM t GROUP BY folded, upper(folded) /**ASSERT UNIQUE(folded)**/  --~ UNKNOWN

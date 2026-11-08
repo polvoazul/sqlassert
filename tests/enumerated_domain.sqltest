@@ -4,9 +4,9 @@
 -- comes from literals, declarations, external Knowledge, and filters, and
 -- crosses value equalities. NULL is never in a domain: `NOT NULL` governs it.
 
-CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR COLLATE c, channel VARCHAR COLLATE c, kind VARCHAR COLLATE c);
-CREATE TABLE codes (code VARCHAR COLLATE c, label VARCHAR COLLATE c);
-CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR COLLATE c);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, channel VARCHAR, kind VARCHAR);
+CREATE TABLE codes (code VARCHAR, label VARCHAR);
+CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR);
 CREATE TABLE people (name VARCHAR COLLATE NOCASE);
 
 -- case: typed_enum_is_proved__numeric_literal

@@ -58,13 +58,13 @@ def test_in_process_engines_pass_every_probe(dialect, connect):
 
 
 def test_a_probe_finds_a_wrong_fact():
-    # DuckDB's `SET default_collation = 'nocase'` breaks a binary default collation.
-    strong = certify.replace(certify.semantics("duckdb"), binary_default_collation=True)
-    fact, = (fact for fact in certify.facts("duckdb", strong) if fact.name == "binary_default_collation")
+    # SQLite's `1 / 0` is NULL, so `/` is not total there.
+    strong = certify.replace(certify.semantics("sqlite"), checked_division=True)
+    fact, = (fact for fact in certify.facts("sqlite", strong) if fact.name == "total(/)")
 
-    result, = certify.run(duckdb.connect().cursor(), "duckdb", [fact])
+    result, = certify.run(sqlite3.connect(":memory:").cursor(), "sqlite", [fact])
 
-    assert result.outcome == "FAIL" and "default_collation" in result.detail
+    assert result.outcome == "FAIL"
 
 
 def test_recording_only_removes_a_failing_engine_and_never_adds_a_fact():

@@ -33,3 +33,6 @@ is proved through it, and a marker inside it is reported
 - [ ] **Scalar subqueries in a join's `ON`** stay `OpaqueExpression`: the
   conjunct only filters and binds no column. Lowering one would join the
   subquery's body before the join it sits in.
+- [ ] **Collated text** compares by identity only without a `COLLATE`, in a
+  dialect whose default is binary: Properties under a collation are
+  [49](0049-collation-aware-properties.md).

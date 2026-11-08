@@ -11,9 +11,12 @@ for dialects the oracle does not run.
 
 A flag may only claim what holds under *all* of the dialect's settings,
 because the SQL alone does not say which are in force (ADR 0005). Where a
-setting decides (MySQL's `sql_mode`, Spark's ANSI mode, a warehouse's default
-collation), the flag takes the weaker reading: the analysis loses a proof,
-never gains a wrong one. A dialect not listed gets `DialectSemantics()`:
+setting decides (MySQL's `sql_mode`, Spark's ANSI mode), the flag takes the
+weaker reading: the analysis loses a proof, never gains a wrong one. The one
+exception is the default collation: text without a `COLLATE` is taken to
+compare under the engine's shipped default, and a setting that changes it
+(DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`, Oracle's
+`NLS_COMP`) is out of scope, like MySQL's `foreign_key_checks = 0`. A dialect not listed gets `DialectSemantics()`:
 cautious arithmetic, collation and `||`, and enforced keys (the behaviour
 before dialects were listed; see "Not done").
 
@@ -24,8 +27,7 @@ before dialects were listed; see "Not done").
 | `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | yes | yes | no (ANSI off) | yes |
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes |
-| text compared by identity by default | no (`default_collation`) | yes | no (`_ci`) | no (`DEFAULT_DDL_COLLATION`) | no (`DEFAULT COLLATE`) | no (default collation) | no (`CASE_INSENSITIVE` databases) |
-| binary `COLLATE`s | `binary`, `C`, `POSIX` | `C`, `POSIX`, `ucs_basic`, `default`, `pg_c_utf8` | `utf8mb4_0900_bin`, `binary` | | | | |
+| text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none |
@@ -125,9 +127,11 @@ the hooks whose standard view is missing or incomplete there:
   single-column ones are read.
 - Databricks: the standard views, with `?` parameters.
 
-Collation is the dialect's default: per-column and per-table collations are
-not read (beyond Postgres's nondeterministic ones). That is sound because
-only DuckDB's and PostgreSQL's default is taken to compare by identity.
+Collation is the dialect's default: per-table collations are not read, and
+of per-column ones only DuckDB's declared `COLLATE`s and Postgres's
+nondeterministic collations. A column reported with any collation is not
+compared by identity. Text with a `COLLATE` is never taken to compare by
+identity, binary or not: collation-aware Properties are issue 49.
 
 Keys are reported as declared: there is no per-constraint trust field, and
 `RELY` in a warehouse catalog is not read. Whether a catalog key is
@@ -155,7 +159,7 @@ from vendor documentation otherwise (Snowflake, BigQuery and Redshift
 `TRY_`, `SAFE_` and `DIV0` variants are separate functions SQLGlot parses
 apart).
 
-Where a flag is *weaker* than DuckDB's (MySQL, Spark, warehouse collations,
+Where a flag is *weaker* than DuckDB's (MySQL, Spark, warehouse text,
 keys), the dialect proves a subset of what DuckDB would, so the DuckDB
 oracle's judgement of the same rules covers it. The `.sqltest` cases in each dialect
 (`tests/dialect_*.sqltest`) pin each flag's effect.
@@ -166,8 +170,8 @@ Every claim a dialect's flags make, and every Builtin fact
 (`strict(op)`, `total(op)`, `injective(op)`) `ir/convert.dialect_builtins`
 derives from them, has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
-version or date}` otherwise. A weak setting (unchecked arithmetic, no
-binary default collation, unenforced keys) claims nothing and has none.
+version or date}` otherwise. A weak setting (unchecked arithmetic, text not
+compared by identity, unenforced keys) claims nothing and has none.
 `tests/test_dialect_certification.py` checks that every fact has one, that
 every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse)
 is certified on an engine, and reruns the DuckDB and SQLite probes.
@@ -175,13 +179,13 @@ is certified on an engine, and reruns the DuckDB and SQLite probes.
 `scripts/certify_dialects.py` (not part of the package) generates one probe
 per fact from the fact itself: the Builtin called with a typed NULL (strict),
 with overflowing, zero-dividing and badly cast arguments (total, injective),
-or tables whose constraint violations it attempts (keys, collations, ENUMs).
+or tables whose constraint violations it attempts (keys, text identity, ENUMs).
 SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is
 VACUOUS for that engine (`^` in SQLite, an ENUM column in PostgreSQL). Each
 fact runs under the engine's defaults and again after the dialect's
-permissive settings (`PERMISSIVE`: MySQL `sql_mode = ''`, DuckDB
-`default_collation = 'nocase'`, Spark ANSI off). It prints PASS, FAIL (with
+permissive settings (`PERMISSIVE`: MySQL `sql_mode = ''`, Spark ANSI off; a setting that
+changes the default collation is out of scope). It prints PASS, FAIL (with
 the weaker setting to apply by hand), ERROR (the probe could not run) or
 VACUOUS per fact, and STRONGER for a weak setting the engine would also
 satisfy (never acted on). Unless `--dry-run`, it adds the engine version to
