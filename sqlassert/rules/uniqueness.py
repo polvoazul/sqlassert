@@ -353,7 +353,7 @@ def _join_side(join: ir.Join, left: bool) -> _Delegation:
             if attribute == RowIdentity(side) or (attribute in down and is_definite(attribute)):
                 return True
             if attribute in down and isinstance(attribute, ir.OutputColumn):
-                if _null_sources(attribute).value <= {Padding(join)}:
+                if _null_sources(attribute).value <= {Padding(join, left)}:
                     return True
         status = _match_status(join, left)
         return status is not None and status <= set(reached)

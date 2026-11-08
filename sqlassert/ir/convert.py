@@ -1026,7 +1026,8 @@ class IrParser:
             source = _from_source(select)
             if source is None or any(
                 select.args.get(key) for key in ("group", "having", "qualify", "distinct", "limit", "offset", "with", "windows")
-            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()) or _is_scalar_aggregate(select):
+                # A scalar aggregate returns one row whatever its WHERE: EXISTS is always true.
                 return None
             right = self._lower_source(source)
             for join in select.args.get("joins") or ():
@@ -1273,6 +1274,8 @@ class IrParser:
             case _:
                 pass
         value = literal_value(expression)
+        if value == ir.LiteralValue(type="string", text="") and self.dialect in _EMPTY_STRING_IS_NULL_DIALECTS:
+            return ir.NullLiteral(origin=origin)
         if value is not None or isinstance(expression, exp.Literal):
             return ir.Constant(origin=origin, value=value)
         builtin = _builtins(self.dialect).get(type(expression))
@@ -1636,6 +1639,9 @@ def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tupl
 _CHECKED_ARITHMETIC_DIALECTS = {"duckdb", "postgres"}
 # DuckDB's `n % 0` and `n // 0` are NULL.
 _CHECKED_DIVISION_DIALECTS = {"postgres"}
+
+# Dialects where a zero-length string is NULL.
+_EMPTY_STRING_IS_NULL_DIALECTS = frozenset({"oracle"})
 
 
 def _as_list(value: exp.Expression | list[exp.Expression]) -> list[exp.Expression]:

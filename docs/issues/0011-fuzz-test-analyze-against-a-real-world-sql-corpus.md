@@ -29,7 +29,7 @@ Keep this suite opt-in / separate from the default fast run (a dedicated marker 
 
 ## Related
 
-- [0040](0040-audit-inference-against-calcite.md) — a targeted Calcite audit
+- [0040](done/0040-audit-inference-against-calcite.md) — a targeted Calcite audit; [`calcite-audit.md`](../calcite-audit.md) marks the `.iq` files worth taking whole as corpus
   and pilot adaptations. [Calcite source notes](../calcite-notes.md) identify
   metadata/expression tests, `.iq` SQL, catalog fixtures and reuse requirements
   for an additional corpus source. Preserve fixture assumptions when adapting

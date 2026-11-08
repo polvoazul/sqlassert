@@ -1,0 +1,448 @@
+-- Issue 40 pilot: functional dependencies, unique keys and column uniqueness
+-- compared with Apache Calcite at 180f167e65f28c160d4d6ffab35fa37303f0ebe0
+-- (RelMdFunctionalDependency, RelMdUniqueKeys, RelMdColumnUniqueness), read
+-- from source, not executed.
+--
+-- Expectations follow sqlassert's Property contracts, not Calcite's answers:
+-- UNIQUE is a Unique Set (rows with a NULL in the set are exempt, like
+-- Calcite's ignoreNulls = true); NOT NULL UNIQUE also requires every column
+-- non-null; DETERMINES is lax in its determinant and null-equal in its
+-- dependent. Calcite's default areColumnsUnique (ignoreNulls = false) is a
+-- null-equal strict key, which sqlassert has no marker for. A comment
+-- "missing proof" marks an UNKNOWN that is true of every instance.
+--
+-- Fixtures reconstruct testkit MockCatalogReaderSimple (EMP, DEPT, DOUBLE_PK)
+-- and RelMetadataTest.CompositeKeysCatalogReader (composite_keys_table,
+-- passenger): every column NOT NULL except EMP.MGR, keys as registered.
+
+CREATE TABLE emp (
+    empno INTEGER PRIMARY KEY,
+    ename VARCHAR(20) NOT NULL,
+    job VARCHAR(10) NOT NULL,
+    mgr INTEGER,
+    hiredate TIMESTAMP NOT NULL,
+    sal INTEGER NOT NULL,
+    comm INTEGER NOT NULL,
+    deptno INTEGER NOT NULL,
+    slacker BOOLEAN NOT NULL
+);
+CREATE TABLE dept (deptno INTEGER PRIMARY KEY, name VARCHAR(10) NOT NULL);
+CREATE TABLE double_pk (id1 INTEGER PRIMARY KEY, id2 VARCHAR(20) NOT NULL, name VARCHAR(20) NOT NULL, age INTEGER NOT NULL, UNIQUE (id1, id2));
+CREATE TABLE composite_keys_table (key1 VARCHAR NOT NULL, key2 VARCHAR NOT NULL, value1 INTEGER NOT NULL, PRIMARY KEY (key1, key2));
+CREATE TABLE passenger (passport INTEGER PRIMARY KEY, nid INTEGER NOT NULL UNIQUE, ssn INTEGER NOT NULL UNIQUE, fname VARCHAR NOT NULL, age INTEGER NOT NULL);
+-- Not in Calcite's fixtures: nullable columns and nullable UNIQUE constraints, for boundaries.
+CREATE TABLE r (k INTEGER PRIMARY KEY, x INTEGER, u INTEGER UNIQUE, d DOUBLE);
+CREATE TABLE ck (k1 INTEGER NOT NULL, k2 INTEGER NOT NULL, PRIMARY KEY (k1, k2));
+CREATE TABLE ab (a INTEGER, b INTEGER, UNIQUE (a, b));
+
+-- Functional dependencies: projection ------------------------------------
+
+-- case: fd_project_expression
+-- inspired by RelMetadataTest.testFunctionalDependencyProject
+-- d1 -> deptno: `+ 1` over INTEGER is injective (Calcite derives only deptno -> d1).
+SELECT empno, deptno, deptno + 1 AS d1 FROM emp WHERE deptno < 20
+/**ASSERT DETERMINES(deptno -> d1)**/  --~ PROVED
+/**ASSERT DETERMINES(d1 -> deptno)**/  --~ PROVED
+/**ASSERT DETERMINES(deptno -> empno)**/  --~ UNKNOWN
+
+-- case: fd_volatile_function
+-- inspired by RelMetadataTest.testFunctionalDependencyNonDeterministicFunctions
+-- empno is a key, so it determines even random(); Calcite answers false.
+SELECT empno, deptno, random() AS r1, random() AS r2 FROM emp
+/**ASSERT DETERMINES(empno -> r1)**/  --~ PROVED
+/**ASSERT DETERMINES(deptno -> r1)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(r1 -> r2)**/  --~ UNKNOWN
+
+-- case: fd_identical_expressions
+-- inspired by RelMetadataTest.testFunctionalDependencyWithIdenticalExpressions
+-- deptno2 -> deptno: missing proof (one input column passed through twice).
+SELECT deptno, deptno AS deptno2, deptno + 1 AS deptno3 FROM emp
+/**ASSERT DETERMINES(deptno2 -> deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(deptno2 -> deptno3)**/  --~ PROVED
+
+-- case: fd_constants
+-- inspired by RelMetadataTest.testFunctionalDependencyConstants
+SELECT empno, 100 AS constant_col, deptno FROM emp
+/**ASSERT DETERMINES(deptno -> constant_col)**/  --~ PROVED
+
+-- case: fd_complex_expressions
+-- inspired by RelMetadataTest.testFunctionalDependencyComplexExpressions
+SELECT empno, sal, sal * 1.1 AS raised_sal, CASE WHEN sal > 2000 THEN 'high' ELSE 'low' END AS sal_category FROM emp
+/**ASSERT DETERMINES(sal -> raised_sal, sal_category)**/  --~ PROVED
+
+-- case: fd_composite_key_expression
+-- inspired by RelMetadataTest.testFunctionalDependencyMultipleKeys (composite determinant)
+-- Calcite's getProjectionFD relates a computed column only to single input
+-- references, so {key1, key2} -> v2 is lost there.
+SELECT key1, key2, value1 * 2 AS v2 FROM composite_keys_table
+/**ASSERT DETERMINES(key1, key2 -> v2)**/  --~ PROVED
+
+-- case: fd_double_cast_to_text
+-- inspired by RelMetadataTest.testFunctionalDependencyProject (comparison types)
+-- -0.0 = 0.0 as DOUBLE, but their text differs: false; Calcite would derive it.
+SELECT d, CAST(d AS VARCHAR) AS s FROM r
+/**ASSERT DETERMINES(d -> s)**/  --~ UNKNOWN
+
+-- Functional dependencies: aggregation -----------------------------------
+
+-- case: fd_aggregate
+-- inspired by RelMetadataTest.testFunctionalDependencyAggregate
+SELECT deptno, count(*) AS c, sum(sal) AS sum_sal FROM emp GROUP BY deptno
+/**ASSERT DETERMINES(deptno -> c, sum_sal)**/  --~ PROVED
+/**ASSERT DETERMINES(c -> sum_sal)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(sum_sal -> deptno)**/  --~ UNKNOWN
+
+-- case: fd_aggregate_double_pk
+-- inspired by RelMetadataTest.testFunctionalDependencyDoublePK
+SELECT id1, id2, sum(age) AS z FROM double_pk GROUP BY id1, id2
+/**ASSERT DETERMINES(id1 -> id2)**/  --~ PROVED
+/**ASSERT DETERMINES(id2 -> id1)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(z -> id1)**/  --~ UNKNOWN
+
+-- Functional dependencies: joins -----------------------------------------
+
+-- case: fd_inner_join
+-- inspired by RelMetadataTest.testFunctionalDependencyJoin
+SELECT e.empno, e.ename, e.deptno, d.name FROM emp AS e JOIN dept AS d ON e.deptno = d.deptno
+/**ASSERT DETERMINES(empno -> name)**/  --~ PROVED
+/**ASSERT DETERMINES(name -> empno)**/  --~ UNKNOWN
+
+-- case: fd_left_join
+-- inspired by RelMetadataTest.testFunctionalDependencyLeftJoin
+-- d_deptno -> e_deptno is lax only (padded rows: NULL d_deptno, differing
+-- e_deptno); Calcite's shared branch adds it as an unqualified FD, which its
+-- AggregateRemoveDuplicateKeysRule then reads as strict.
+SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno, d.name FROM emp AS e LEFT JOIN dept AS d ON e.deptno = d.deptno
+/**ASSERT DETERMINES(empno -> name)**/  --~ PROVED
+/**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ PROVED
+/**ASSERT DETERMINES(d_deptno -> e_deptno)**/  --~ PROVED
+
+-- case: fd_left_join_extra_conjunct
+-- inspired by RelMetadataTest.testFunctionalDependencyLeftJoin (shared INNER/LEFT/RIGHT branch)
+-- e_deptno -> d_deptno is false (emp 10 with sal 2000 matches, with sal 500
+-- is padded); Calcite derives it from the ON equality. {e_deptno, sal} ->
+-- d_deptno holds (Paulley Lemma 9): missing proof.
+SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp AS e LEFT JOIN dept AS d ON e.deptno = d.deptno AND e.sal > 1000
+/**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(empno -> d_deptno)**/  --~ PROVED
+
+-- case: fd_right_join
+-- inspired by RelMetadataTest.testFunctionalDependencyRightJoin
+SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno, d.name FROM dept AS d RIGHT JOIN emp AS e ON e.deptno = d.deptno
+/**ASSERT DETERMINES(empno -> name)**/  --~ PROVED
+/**ASSERT DETERMINES(d_deptno -> e_deptno)**/  --~ PROVED
+
+-- case: fd_right_join_extra_conjunct
+-- inspired by RelMetadataTest.testFunctionalDependencyRightJoin (shared INNER/LEFT/RIGHT branch)
+-- False, as in fd_left_join_extra_conjunct; Calcite derives it.
+SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno FROM dept AS d RIGHT JOIN emp AS e ON e.deptno = d.deptno AND e.sal > 1000
+/**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ UNKNOWN
+
+-- case: fd_full_join
+-- inspired by RelMetadataTest.testFunctionalDependencyFullOuterJoin
+-- Calcite has no FDs for a FULL join. empno -> name and UNIQUE(empno) hold
+-- (an emp row matches at most one dept; dept-only rows have NULL empno):
+-- missing proofs.
+SELECT e.empno, e.deptno, d.name FROM emp AS e FULL JOIN dept AS d ON e.deptno = d.deptno
+/**ASSERT DETERMINES(empno -> deptno)**/  --~ PROVED
+/**ASSERT DETERMINES(empno -> name)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+
+-- case: fd_equality_conditions
+-- inspired by RelMetadataTest.testFunctionalDependencyFilterEqualityCondition
+-- mgr IS NOT DISTINCT FROM deptno with deptno NOT NULL is mgr = deptno:
+-- missing proofs (IS NOT DISTINCT FROM gives no dependency).
+SELECT e1.empno, e1.sal, e2.mgr, e2.deptno
+FROM emp AS e1
+JOIN emp AS e2
+    ON e2.mgr IS NOT DISTINCT FROM e2.deptno
+WHERE e1.empno = e1.sal
+/**ASSERT DETERMINES(sal -> empno)**/  --~ PROVED
+/**ASSERT DETERMINES(mgr -> deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(deptno -> mgr)**/  --~ UNKNOWN
+
+-- case: fd_union_all
+-- inspired by RelMetadataTest.testFunctionalDependencyUnion
+-- The branches are disjoint (deptno 10 and 20), so empno -> deptno holds:
+-- missing proof (tagged UNION ALL); Calcite has no set-operation FDs either.
+WITH q AS (
+    SELECT empno, deptno FROM emp WHERE deptno = 10
+    UNION ALL
+    SELECT empno, deptno FROM emp WHERE deptno = 20
+)
+SELECT empno, deptno FROM q
+/**ASSERT DETERMINES(empno -> deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(deptno -> empno)**/  --~ UNKNOWN
+
+-- Unique keys and column uniqueness: joins --------------------------------
+
+-- case: uk_self_join_on_key
+-- inspired by RelMetadataTest.testColumnUniquenessForJoin
+SELECT a.empno, b.ename FROM emp AS a JOIN emp AS b ON a.empno = b.empno
+/**ASSERT NOT NULL UNIQUE(empno)**/  --~ PROVED
+/**ASSERT UNIQUE(ename)**/  --~ UNKNOWN
+
+-- case: uk_join_non_key
+-- inspired by RelMetadataTest.testJoinUniqueKeys
+SELECT a.empno, b.empno AS empno2 FROM emp AS a JOIN emp AS b ON a.ename = b.ename
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(empno, empno2)**/  --~ PROVED
+
+-- case: uk_left_join_limit_1
+-- inspired by RelMetadataTest.testColumnUniquenessForLeftJoinOnLimit1
+-- Calcite answers b_empno false (ignoreNulls = false: padded NULLs repeat);
+-- as a Unique Set it holds, as a Non-Null Unique Set it does not.
+SELECT a.empno AS a_empno, a.ename AS a_ename, b.empno AS b_empno, b.ename AS b_ename
+FROM emp AS a
+LEFT JOIN (SELECT * FROM emp LIMIT 1) AS b
+    ON a.empno = b.empno
+/**ASSERT NOT NULL UNIQUE(a_empno)**/  --~ PROVED
+/**ASSERT UNIQUE(a_ename)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(b_empno)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(b_empno)**/  --~ UNKNOWN
+
+-- case: uk_right_join_limit_1
+-- inspired by RelMetadataTest.testColumnUniquenessForRightJoinOnLimit1
+SELECT a.empno AS a_empno, a.ename AS a_ename, b.empno AS b_empno, b.ename AS b_ename
+FROM emp AS a
+RIGHT JOIN (SELECT * FROM emp LIMIT 1) AS b
+    ON a.empno = b.empno
+/**ASSERT UNIQUE(a_empno)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(a_empno)**/  --~ UNKNOWN
+/**ASSERT NOT NULL UNIQUE(b_ename)**/  --~ PROVED
+
+-- case: uk_join_constant_columns
+-- inspired by RelMetadataTest.testColumnUniquenessForJoinWithConstantColumns
+-- Calcite answers {a_deptno, a_sal} false; a_deptno alone is unique (the
+-- join is one to one on deptno once both sal are 1000).
+SELECT a.deptno AS a_deptno, a.sal AS a_sal, b.deptno AS b_deptno, b.sal AS b_sal
+FROM (SELECT DISTINCT deptno, sal FROM emp) AS a
+JOIN (SELECT DISTINCT deptno, sal FROM emp) AS b
+    ON a.deptno = b.deptno AND a.sal = 1000 AND b.sal = 1000
+/**ASSERT UNIQUE(a_deptno, b_deptno)**/  --~ PROVED
+/**ASSERT UNIQUE(a_deptno)**/  --~ PROVED
+
+-- case: uk_join_singleton_aggregate
+-- inspired by RelMetadataTest.testColumnUniquenessForJoinOnAggregation
+SELECT a.ename, b.maxno FROM emp AS a JOIN (SELECT max(empno) AS maxno FROM emp) AS b ON a.empno = b.maxno
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+
+-- case: uk_join_constant_key_inner
+-- inspired by RelMetadataTest.testCompositeKeysTableScanUniqueKeys (join with a one-row input)
+SELECT l.k1, l.k2 FROM ck AS l JOIN (SELECT 5 AS c) AS s ON l.k1 = s.c
+/**ASSERT UNIQUE(k2)**/  --~ PROVED
+
+-- case: uk_join_constant_key_left
+-- inspired by RelMetadataTest.testCompositeKeysTableScanUniqueKeys (RelMdUniqueKeys.getConstantJoinKeys on a LEFT join)
+-- Calcite's getUniqueKeys returns {k2}: false, rows (1, 1) padded and (5, 1) matched.
+SELECT l.k1, l.k2 FROM ck AS l LEFT JOIN (SELECT 5 AS c) AS s ON l.k1 = s.c
+/**ASSERT UNIQUE(k2)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(k1, k2)**/  --~ PROVED
+
+-- case: uk_null_safe_join_on_key
+-- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (IS NOT DISTINCT FROM onto a non-null key)
+-- Each left row matches at most one s row: missing proof.
+SELECT l.k FROM r AS l JOIN r AS s ON l.x IS NOT DISTINCT FROM s.k
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: uk_null_safe_join_on_nullable_unique
+-- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (JoinInfo counts IS NOT DISTINCT FROM as an equi-key)
+-- False: a NULL x matches every row whose u is NULL, which UNIQUE allows.
+SELECT l.k FROM r AS l JOIN r AS s ON l.x IS NOT DISTINCT FROM s.u
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: uk_full_join_one_row_inputs
+-- inspired by RelMetadataTest.testFullOuterJoinUniqueness1
+-- Unmatched, the two rows each have a NULL: a Unique Set, not a Non-Null one
+-- (Calcite answers false with ignoreNulls = false).
+SELECT e.x AS ex, s.u AS su
+FROM (SELECT x FROM r LIMIT 1) AS e
+FULL JOIN (SELECT u FROM r LIMIT 1) AS s
+    ON e.x = s.u
+/**ASSERT UNIQUE(ex, su)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(ex, su)**/  --~ UNKNOWN
+
+-- case: uk_inner_join_left_key_right_not_key
+-- inspired by RelMetadataTest.testUniqueKeysWithLimitOnInnerJoinAndConditionOnLeftKeyRightNotKey
+SELECT t1.passport AS p1, t2.passport AS p2, t2.nid AS n2 FROM passenger AS t1 JOIN passenger AS t2 ON t1.nid = t2.age
+/**ASSERT UNIQUE(p2)**/  --~ PROVED
+/**ASSERT UNIQUE(n2)**/  --~ PROVED
+/**ASSERT UNIQUE(p1)**/  --~ UNKNOWN
+
+-- case: uk_correlate_lateral
+-- inspired by RelMetadataTest.testCorrelateUniqueKeys
+-- True (dept.deptno is a key), but LATERAL is opaque (issue 42): missing proof.
+SELECT e.deptno, d.name
+FROM (SELECT DISTINCT deptno FROM emp) AS e,
+    LATERAL (SELECT * FROM dept WHERE dept.deptno = e.deptno) AS d
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- case: uk_correlate_lateral_many
+-- inspired by RelMetadataTest.testCorrelateUniqueKeys (a lateral side with many rows)
+-- False; Calcite's getUniqueKeys(Correlate) returns the left keys regardless.
+SELECT e.deptno, x.empno
+FROM (SELECT DISTINCT deptno FROM emp) AS e,
+    LATERAL (SELECT empno FROM emp AS e2 WHERE e2.deptno = e.deptno) AS x
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- Unique keys and column uniqueness: aggregation ---------------------------
+
+-- case: uk_scalar_aggregate
+-- inspired by RelMetadataTest.testGroupByEmptyUniqueKeys
+SELECT count(*) AS c FROM emp
+/**ASSERT NOT NULL UNIQUE(c)**/  --~ PROVED
+
+-- case: uk_group_by_precise
+-- inspired by RelMetadataTest.testGroupByPreciseUniqueKeys
+SELECT empno, ename FROM emp GROUP BY empno, ename
+/**ASSERT NOT NULL UNIQUE(empno)**/  --~ PROVED
+
+-- case: uk_group_by_pass_through_aggregate
+-- inspired by RelMetadataTest.testGroupByNonKey
+-- max(empno) is unique: groups are disjoint and empno is a key. Missing proof.
+SELECT sal, max(deptno) AS max_dept, max(empno) AS max_emp FROM emp GROUP BY sal
+/**ASSERT UNIQUE(sal)**/  --~ PROVED
+/**ASSERT UNIQUE(max_dept)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(max_emp)**/  --~ UNKNOWN
+
+-- case: uk_composite_key_pass_through_aggregates
+-- inspired by RelMetadataTest.testCompositeKeysAggregationUniqueKeys
+-- Calcite answers {min_key1, max_key2} unique: false, the two aggregates can
+-- pick different rows (('a','z'), ('b','y')) and (('a','x'), ('c','z')).
+SELECT value1, min(key1) AS min_key1, max(key2) AS max_key2 FROM composite_keys_table GROUP BY value1
+/**ASSERT UNIQUE(value1)**/  --~ PROVED
+/**ASSERT UNIQUE(min_key1, max_key2)**/  --~ UNKNOWN
+
+-- case: uk_grouping_sets
+-- inspired by RelMetadataTest.testUniqueKeysWithConfOnAggregateWithGroupingSets
+-- A Unique Set (subtotal rows have job NULL, data rows never do), but
+-- GROUPING SETS is not lowered: missing proof.
+SELECT ename, job FROM emp GROUP BY GROUPING SETS ((ename), (ename, job))
+/**ASSERT UNIQUE(ename, job)**/  --~ UNKNOWN
+
+-- case: uk_aggregate_constant
+-- inspired by RelMetadataTest.testColumnUniquenessForAggregateWithConstantColumns
+SELECT deptno, ename, sum(sal) AS s FROM emp WHERE deptno = 1010 GROUP BY deptno, ename
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- Unique keys and column uniqueness: filters, constants, set operations ----
+
+-- case: uk_filter_constant
+-- inspired by RelMetadataTest.testColumnUniquenessForFilterWithConstantColumns
+SELECT * FROM (SELECT DISTINCT deptno, sal FROM emp) WHERE sal = 1000
+/**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT UNIQUE(sal)**/  --~ UNKNOWN
+
+-- case: uk_filter_constant_on_nullable_unique
+-- inspired by RelMetadataTest.testColumnUniquenessForFilterWithConstantColumns (lax key)
+SELECT a, b FROM ab WHERE b = 1
+/**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: uk_filter_is_null_on_nullable_unique
+-- inspired by RelMdColumnUniqueness.decorateWithConstantColumnsFromPredicates (IS NULL is a constant)
+-- False: UNIQUE (a, b) allows (1, NULL) twice. Calcite treats `b IS NULL` as
+-- a constant and, with ignoreNulls, drops b from a lax key.
+SELECT a, b FROM ab WHERE b IS NULL
+/**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+
+-- case: uk_filter_is_null_after_group_by
+-- inspired by RelMdColumnUniqueness.decorateWithConstantColumnsFromPredicates (null-equal key)
+SELECT a, b FROM (SELECT a, b FROM ab GROUP BY a, b) WHERE b IS NULL
+/**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: uk_constant_key
+-- inspired by RelMetadataTest.testColumnUniquenessForConstantKey
+SELECT * FROM emp WHERE empno = 1010
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+
+-- case: uk_uncorrelated_scalar_subquery
+-- inspired by RelMetadataTest.testColumnUniquenessForCorrelatedSubquery
+SELECT * FROM emp WHERE empno = (SELECT max(empno) FROM emp)
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+
+-- case: uk_correlated_scalar_subquery
+-- inspired by RelMetadataTest.testColumnUniquenessForSubqueryWithCorrelatingVars
+-- deptno is unique (one max empno per deptno; Calcite's check is commented
+-- out upstream). A correlated aggregate body stays opaque: missing proof.
+SELECT empno, deptno, slacker
+FROM emp AS a
+WHERE empno = (SELECT max(empno) FROM emp AS b WHERE a.deptno = b.deptno)
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(slacker)**/  --~ UNKNOWN
+
+-- case: uk_limit_1
+-- inspired by RelMetadataTest.testColumnUniquenessForLimit1
+SELECT * FROM emp LIMIT 1
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+
+-- case: uk_union_constant
+-- inspired by RelMetadataTest.testColumnUniquenessForUnionWithConstantColumns
+-- sal is 1000 in both branches, so deptno is unique: missing proof (U2, issue 37).
+WITH q AS (
+    SELECT deptno, sal FROM emp WHERE sal = 1000
+    UNION
+    SELECT deptno, sal FROM emp WHERE sal = 1000
+)
+SELECT deptno, sal FROM q
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- case: uk_intersect_all
+-- inspired by RelMetadataTest.testColumnUniquenessForIntersectWithConstantColumns
+WITH q AS (
+    SELECT deptno, sal FROM (SELECT DISTINCT deptno, sal FROM emp) WHERE sal = 1000
+    INTERSECT ALL
+    SELECT deptno, sal FROM emp
+)
+SELECT deptno, sal FROM q
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
+
+-- case: uk_intersect_all_right_key
+-- inspired by RelMetadataTest.testUniqueKeysIntersect (a key on the right input only)
+-- Missing proof (I2, issue 37).
+WITH q AS (
+    SELECT deptno FROM emp
+    INTERSECT ALL
+    SELECT deptno FROM dept
+)
+SELECT deptno FROM q
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- case: uk_except_all
+-- inspired by RelMetadataTest.testColumnUniquenessForMinusWithConstantColumns
+WITH q AS (
+    SELECT deptno, sal FROM (SELECT DISTINCT deptno, sal FROM emp) WHERE sal = 1000
+    EXCEPT ALL
+    SELECT deptno, sal FROM emp
+)
+SELECT deptno, sal FROM q
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
+
+-- Unique keys and column uniqueness: projections, VALUES, scans ------------
+
+-- case: uk_projected_expression
+-- inspired by RelMetadataTest.calcColumnsAreUniqueSimpleCalc and calcColumnsAreNonUniqueCalc
+SELECT empno, empno * 0 AS z FROM emp
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
+/**ASSERT UNIQUE(z)**/  --~ UNKNOWN
+
+-- case: uk_repeated_key_column
+-- inspired by RelMetadataTest.calcMultipleColumnsAreUniqueCalc
+SELECT empno, empno AS empno2 FROM emp
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
+/**ASSERT UNIQUE(empno2)**/  --~ PROVED
+
+-- case: uk_values
+-- inspired by RelMetadataTest.testColumnUniquenessForValues
+-- a is unique, but a VALUES source is opaque: missing proof.
+SELECT * FROM (VALUES (1, 'X'), (2, 'Y'), (3, 'X'), (4, 'X')) AS t (a, b)
+/**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+
+-- case: uk_nullable_unique_column
+-- inspired by RelMdColumnUniqueness.areColumnsUnique(TableScan) (isKey ignores ignoreNulls)
+SELECT u FROM r
+/**ASSERT UNIQUE(u)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(u)**/  --~ UNKNOWN

@@ -117,6 +117,16 @@ def test_a_filter_only_join_followed_by_a_full_join_is_left_alone():
     assert Rewrite.FILTER_JOIN not in rewrites(sql)
 
 
+def test_a_where_on_the_other_side_of_a_chained_full_join_keeps_the_left_join():
+    # Issue 40: the FULL JOIN pads o for the rows the LEFT JOIN pads, but the
+    # WHERE rejects NULL in s.ts, which the FULL JOIN pads on other rows.
+    sql = SCHEMA + (
+        "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "FULL JOIN orders o ON o.total = u.id WHERE s.ts = 1"
+    )
+    assert Rewrite.INNER_JOIN not in rewrites(sql)
+
+
 @pytest.mark.parametrize("query", [
     "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id",
     "SELECT s.ts, name FROM sessions s LEFT JOIN users u ON u.id = s.user_id",

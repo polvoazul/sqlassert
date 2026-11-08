@@ -1,0 +1,70 @@
+-- Issue 40: cases from the audit against Apache Calcite (commit 180f167e).
+--
+-- `docs/calcite-audit.md` holds the comparison table; each row names its cases
+-- here. Every case carries the upstream test or `.iq` case that inspired it.
+-- Expectations come from sqlassert's Property contracts, never from Calcite's
+-- answers. The soundness oracle judges every PROVED case.
+
+CREATE TABLE l (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, a INTEGER NOT NULL);
+CREATE TABLE r (id INTEGER PRIMARY KEY, lid INTEGER, x INTEGER);
+
+-- Soundness regressions: each was PROVED before the audit, with a counterexample.
+
+-- case: case_arm_padding_is_not_null_on_every_padded_row
+-- inspired by Strong.isNull (CASE): a CASE is NULL only when the arm it takes is
+SELECT q.z, q.rid FROM (SELECT CASE l.k WHEN 1 THEN 5 ELSE r.x END AS z, r.id AS rid
+FROM l LEFT JOIN r ON r.lid = l.id) q WHERE q.z > 0 /**ASSERT NOT NULL(rid)**/  --~ UNKNOWN
+
+-- case: case_padding_in_every_arm_still_rejects
+-- inspired by Strong.isNull (CASE): NULL on padded rows when every arm is
+SELECT q.z, q.rid FROM (SELECT CASE l.k WHEN 1 THEN r.x ELSE r.x + 1 END AS z, r.id AS rid
+FROM l LEFT JOIN r ON r.lid = l.id) q WHERE q.z > 0 /**ASSERT NOT NULL(rid)**/  --~ PROVED
+
+-- case: between_bound_padding_is_not_null_on_every_padded_row
+-- inspired by Strong policy map: BETWEEN is total but not strict in its bounds
+SELECT q.b, q.rid FROM (SELECT (l.a BETWEEN r.x AND 10) AS b, r.id AS rid
+FROM l LEFT JOIN r ON r.lid = l.id) q WHERE q.b IS NOT NULL /**ASSERT NOT NULL(rid)**/  --~ UNKNOWN
+
+-- case: strict_argument_padding_still_rejects
+-- inspired by RexProgramTest.testStrong: x + 1 is NULL whenever x is
+SELECT q.y, q.rid FROM (SELECT r.x + 1 AS y, r.id AS rid
+FROM l LEFT JOIN r ON r.lid = l.id) q WHERE q.y > 0 /**ASSERT NOT NULL(rid)**/  --~ PROVED
+
+-- case: full_join_where_rejects_only_its_own_side
+-- inspired by outer.iq, FULL JOIN with a WHERE on one side; RelOptUtil.simplifyJoin
+SELECT l.id AS lid2, r.id AS rid FROM l FULL JOIN r ON r.lid = l.id WHERE r.x > 0
+/**ASSERT NOT NULL(lid2)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(rid)**/  --~ PROVED
+
+-- case: full_join_merge_key_keeps_the_other_side
+-- inspired by RelOptUtil.simplifyJoin: each side's padding is cancelled separately
+SELECT coalesce(l.id, r.id) AS j, l.id AS lid2 FROM l FULL JOIN r ON r.lid = l.id WHERE r.x > 0
+/**ASSERT NOT NULL(j)**/  --~ PROVED
+/**ASSERT NOT NULL(lid2)**/  --~ UNKNOWN
+
+-- case: exists_over_a_scalar_aggregate_filters_nothing
+-- inspired by sub-query.iq, EXISTS over count(*): the body always returns one row
+SELECT r.lid FROM r WHERE EXISTS (SELECT count(*) FROM l WHERE l.id = r.lid)
+/**ASSERT NOT NULL(lid)**/  --~ UNKNOWN
+
+-- case: set_operations_associate_left
+-- inspired by set-op.iq (CALCITE-7901): (t UNION u) UNION ALL v keeps v's duplicates
+WITH q AS (SELECT k FROM l UNION SELECT a FROM l UNION ALL SELECT x FROM r)
+SELECT k FROM q /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: set_operations_associate_left_distinct_last
+-- inspired by set-op.iq (CALCITE-7901): (t UNION ALL u) UNION v is distinct
+WITH q AS (SELECT k FROM l UNION ALL SELECT a FROM l UNION SELECT x FROM r)
+SELECT k FROM q /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: intersect_binds_tighter_than_union_all
+-- inspired by set-op.iq: t UNION ALL (u INTERSECT v) keeps t's duplicates
+WITH q AS (SELECT k FROM l UNION ALL SELECT a FROM l INTERSECT SELECT x FROM r)
+SELECT k FROM q /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: oracle_empty_string_is_null
+-- dialect: oracle
+-- no Calcite counterpart (found probing Strong's dialect assumptions): Oracle reads '' as NULL
+SELECT '' AS e, coalesce(r.x, '') AS c FROM r
+/**ASSERT NOT NULL(e)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ UNKNOWN

@@ -1,21 +1,21 @@
 # 40. Audit inference against Apache Calcite and adapt targeted regression cases
 
-- **State:** open
+- **State:** done
 - **Labels:** check, ready-for-agent
 - **Created:** 2026-11-06
-- **Related:** [11: SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md), [36: `.sqltest` cases](done/0036-refactor-tests-for-corpus-and-oracle-scale.md)
+- **Related:** [11: SQL corpus](../0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md), [27: soundness oracle](../0027-soundness-oracle-against-duckdb.md), [36: `.sqltest` cases](0036-refactor-tests-for-corpus-and-oracle-scale.md)
 
 ## Why
 
 Paulley's rules are our theoretical baseline. Calcite supplies an independent
 implementation and regression corpus for overlapping problems. Use it to find
 missing cases and qualify novelty claims. The initial
-[source survey](../calcite-notes.md) pins commit
+[source survey](../../calcite-notes.md) pins commit
 `180f167e65f28c160d4d6ffab35fa37303f0ebe0` and identifies implementation,
 test and catalog-fixture entry points.
 
 Keep this as a standalone audit issue, following
-[35: the Paulley audit](done/0035-audit-fd-propagation-against-paulley.md).
+[35: the Paulley audit](0035-audit-fd-propagation-against-paulley.md).
 It owns the semantic comparison and targeted regressions. Broad corpus import
 belongs to issue 11, oracle infrastructure to issue 27, and test-harness changes
 to issue 36. File implementation gaps discovered by the audit as follow-up issues.
@@ -84,10 +84,35 @@ expectations from source without claiming Calcite was executed locally.
 
 ## Acceptance criteria
 
-- [ ] A versioned comparison table covers the five inference areas above.
-- [ ] Pilot cases state their schema assumptions in DDL or Property Declarations and carry a provenance comment.
-- [ ] Each covered area has positive and boundary/counterexample cases where applicable.
-- [ ] Relevant tests pass with `pytest --soundness-oracle`; unsupported oracle cases are listed.
-- [ ] Disagreements become reduced regressions or tracked issues.
-- [ ] Each `.iq` file has a migrate / duplicate / irrelevant verdict; migrated cases are `.sqltest` cases.
-- [ ] Source notes distinguish implemented coverage from unverified research claims.
+- [x] A versioned comparison table covers the five inference areas above.
+- [x] Pilot cases state their schema assumptions in DDL or Property Declarations and carry a provenance comment.
+- [x] Each covered area has positive and boundary/counterexample cases where applicable.
+- [x] Relevant tests pass with `pytest --soundness-oracle`; unsupported oracle cases are listed.
+- [x] Disagreements become reduced regressions or tracked issues.
+- [x] Each `.iq` file has a migrate / duplicate / irrelevant verdict; migrated cases are `.sqltest` cases.
+- [x] Source notes distinguish implemented coverage from unverified research claims.
+
+## Done
+
+The comparison is [`docs/calcite-audit.md`](../../calcite-audit.md): FDs,
+unique keys, column uniqueness, predicate inference and null rejection, each
+row naming the pinned Calcite method, its assumptions, our code and our
+cases. 136 cases in `tests/calcite_audit*.sqltest`, each with a provenance
+comment, all passing with `pytest --soundness-oracle` (0 counterexamples).
+
+- **Five soundness bugs in sqlassert, fixed here** with regressions in
+  `tests/calcite_audit.sqltest`: padding through CASE and non-strict
+  operators, EXISTS over a scalar aggregate, FULL JOIN padding shared by both
+  sides (it also reached the INNER JOIN suggestion), Oracle's `''`, and set
+  operation chains parsed right-associatively (now left-associative, with
+  INTERSECT bound first).
+- **Nine soundness problems in Calcite** (C1-C9), among them the shared
+  INNER/LEFT/RIGHT FD branch; sqlassert stays UNKNOWN on each.
+- **24 missing proofs**, filed as [issue 45](../0045-close-the-calcite-audit-missing-proofs.md).
+- **`.iq` files**: mostly irrelevant or duplicate; 25 cases migrated from 10
+  files, every file has a verdict, and the issue-11 corpus candidates are
+  marked.
+
+Unsupported by the oracle: `nullability_of_mod_by_zero_postgres` (the oracle
+runs DuckDB only) and the Oracle-dialect cases; every other PROVED case is
+judged.

@@ -171,12 +171,13 @@ def _inner_join(
     # Joins that pad every row this one pads, each with why (issue 33): a
     # later LEFT or FULL JOIN whose ON rejects NULL in a column one of them
     # pads finds no match for those rows, so it pads them too.
-    chained: dict[ir.Join, list[Result[bool]]] = {join: []}
+    # Keyed by join and the side it pads: a FULL JOIN pads each side on different rows.
+    chained: dict[tuple[ir.Join, bool], list[Result[bool]]] = {(join, join.kind == "right"): []}
 
-    def padded_by(column: ir.OutputColumn) -> ir.Join | None:
+    def padded_by(column: ir.OutputColumn) -> tuple[ir.Join, bool] | None:
         return next((
-            source.join for source in _null_sources(column).value
-            if isinstance(source, Padding) and source.join in chained
+            (source.join, source.left) for source in _null_sources(column).value
+            if isinstance(source, Padding) and (source.join, source.left) in chained
         ), None)
 
     relation: ir.RelationExpr = join
@@ -196,7 +197,7 @@ def _inner_join(
         for column, conjunct in rejected.items():
             via = padded_by(column)
             if via is not None:
-                how = f"is padded by the {keyword}" if via is join else f"is NULL on every row the {keyword} pads"
+                how = f"is padded by the {keyword}" if via[0] is join else f"is NULL on every row the {keyword} pads"
                 padded = Result(True, f"{column.name} {how}", (join, column), chained[via])
                 evidence = Result(
                     True, f"{clause} rejects NULL in {column.name}, so every row the {keyword} pads is removed",
@@ -207,9 +208,10 @@ def _inner_join(
         if isinstance(parent, ir.Join) and parent.kind in {"left", "full"}:
             for column, conjunct in _null_rejected(parent.conjuncts).items():
                 via = padded_by(column)
-                if via is not None and column in parent.left.output_columns and parent not in chained:
+                # The left rows it cannot match keep a padded right side.
+                if via is not None and column in parent.left.output_columns and (parent, False) not in chained:
                     reason = f"its ON rejects NULL in {column.name}, so the later {parent.kind.upper()} JOIN pads every row the {keyword} pads"
-                    chained[parent] = [*chained[via], Result(True, reason, (conjunct, column))]
+                    chained[(parent, False)] = [*chained[via], Result(True, reason, (conjunct, column))]
         if isinstance(parent, ir.Filter):
             return None
         relation = parent

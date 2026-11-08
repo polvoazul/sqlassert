@@ -99,7 +99,8 @@ SELECT n, m FROM t WHERE n IS NULL /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 -- case: a_conjunct_true_on_a_null_rejects_nothing__n_is_distinct_from_1
 SELECT n, m FROM t WHERE n IS DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 
--- case: a_conjunct_true_on_a_null_rejects_nothing__n_is_not_distinct_from_1
+-- case: a_null_safe_equality_to_a_literal_is_not_inferred
+-- NULL IS NOT DISTINCT FROM 1 is FALSE, so this rejects n: a missing proof (issue 45).
 SELECT n, m FROM t WHERE n IS NOT DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 
 -- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_is_not_null
@@ -127,8 +128,10 @@ SELECT n, m FROM t WHERE concat(n, 'a') = 'a' /**ASSERT NOT NULL(n)**/  --~ UNKN
 -- case: a_conjunct_true_on_a_null_rejects_nothing__greatest_n_5_5
 SELECT n, m FROM t WHERE greatest(n, 5) = 5 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 
--- case: a_conjunct_true_on_a_null_rejects_nothing__s_x_ax
-SELECT n, m FROM t WHERE s || 'x' = 'ax' /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+-- case: a_conjunct_true_on_a_null_rejects_nothing__oracle_s_x_x
+-- dialect: oracle
+-- Oracle's || reads NULL as '': NULL || 'x' is 'x'.
+SELECT s, m FROM t WHERE s || 'x' = 'x' /**ASSERT NOT NULL(s)**/  --~ UNKNOWN
 
 -- case: a_conjunct_true_on_a_null_rejects_nothing__n_0_or_m_0
 SELECT n, m FROM t WHERE n > 0 OR m > 0 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN

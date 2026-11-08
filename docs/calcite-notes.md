@@ -6,8 +6,8 @@ challenge our semantics, and ground comparisons with existing systems.
 
 Source survey: 2026-11-06, commit
 [`180f167e65f28c160d4d6ffab35fa37303f0ebe0`](https://github.com/apache/calcite/commit/180f167e65f28c160d4d6ffab35fa37303f0ebe0).
-This records source entry points, not a completed correctness or coverage audit.
-It adds no runtime dependency. [Issue 40](issues/0040-audit-inference-against-calcite.md)
+This records source entry points; the completed audit is [`calcite-audit.md`](calcite-audit.md).
+It adds no runtime dependency. [Issue 40](issues/done/0040-audit-inference-against-calcite.md)
 tracks the audit and first adapted regressions.
 
 ## Implementation entry points

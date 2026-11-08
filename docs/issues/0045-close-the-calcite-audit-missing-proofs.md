@@ -1,0 +1,118 @@
+# 45. Close the Calcite audit's missing proofs
+
+- **State:** open
+- **Labels:** ready-for-agent
+- **Created:** 2026-11-08
+- **Related:** [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [37: Paulley audit gaps](0037-close-the-paulley-audit-missing-rules.md), [42: lowering support v2](0042-lowering-support-v2.md)
+
+## Why
+
+The [Calcite audit](../calcite-audit.md) found Properties that hold on every
+instance but that sqlassert leaves UNKNOWN. None is unsound. Each has a case
+in `tests/calcite_audit_*.sqltest` annotated UNKNOWN with a "missing proof"
+comment. Turn that annotation into PROVED and keep the boundary cases next to
+it UNKNOWN. Gaps already filed elsewhere are not repeated: U2 and I2 (set
+operations), E4 (outer-join ON domains) and F2/F4 (full join ON dependencies)
+are in issue 37. LATERAL is in issue 42.
+
+## What to do
+
+Roughly in this order: the lowering gaps lose proofs on common SQL.
+
+### Lowering
+
+1. **GROUP BY with HAVING** is not lowered, so the grouped query loses its key
+   and its domains. Lower HAVING as a Filter above the Aggregate.
+   `iq: having_keeps_the_grouping_key`, `nulls: pullup_aggregate_having_on_group_key`.
+2. **`GROUP BY ()`** is one row, like a scalar aggregate.
+   `iq: group_by_empty_set_is_one_row`.
+3. **An unqualified USING column** is not resolved: in a RIGHT or FULL join
+   it is `coalesce(left, right)`, and even an INNER join loses its domain.
+   `iq: right_join_using_column_is_the_preserved_side_s`.
+4. **VALUES in FROM** lowers opaque, silently. Its literals give domains,
+   nullability and (null-equal) uniqueness.
+   `keys: uk_values`, `nulls: pullup_values`.
+5. **QUALIFY over GROUP BY** is not recognized as QualifyByPartition.
+   `iq: qualify_over_group_by_keeps_one_row_per_partition`.
+6. **A parenthesized join as a join's right input** gives
+   `unanalyzed-assertion`: `dept d LEFT JOIN (emp e /**ASSERT MANY TO ONE**/ LEFT JOIN emp c USING (empno)) ON ...`.
+7. **A correlated scalar subquery whose body aggregates** stays opaque:
+   `count(*)` of it is never NULL, and `x = (SELECT max(...) ... WHERE corr)`
+   pins one row per correlation key.
+   `iq: correlated_scalar_count_is_never_null`, `keys: uk_correlated_scalar_subquery`.
+8. ROLLUP and GROUPING SETS lower opaque (low priority): their grouping
+   columns keep their domains (NULL is outside a domain).
+   `keys: uk_grouping_sets`, `nulls: pullup_aggregate_rollup`.
+
+### Nullability and null rejection
+
+9. **A whole padded side through OR or COALESCE**: `WHERE e.sal > 0 OR
+   e.comm > 0`, or `coalesce(e.sal, e.comm) > 0`, over two columns the same
+   join pads, proves that join matched. Compute rejection per padding, not
+   only per column. `nulls: strong_or_of_two_padded_columns`,
+   `strong_or_of_is_not_null_on_padded_columns`, `strong_coalesce_of_padded_columns`.
+10. **Comparisons and the IS family in a select list**: `x IS NULL`,
+    `x IS DISTINCT FROM y` and `EXISTS (...)` are never NULL; `a = b` is
+    non-null when `a` and `b` are. `nulls: nullability_of_comparisons_and_is_family`.
+11. **IS NOT DISTINCT FROM**: against a literal it rejects NULL and pins a
+    constant; between two columns it is a strict equality both ways (an
+    Equality Group, FDs); as a join key it reaches a Non-Null Unique Set, and
+    never a nullable one. `nulls: strong_is_not_distinct_from_a_literal`,
+    `keys: fd_equality_conditions`, `uk_null_safe_join_on_key`,
+    `uk_null_safe_join_on_nullable_unique` (boundary);
+    `not_null_rejection: a_null_safe_equality_to_a_literal_is_not_inferred`.
+12. **Never TRUE on NULL, without being strict**: `x > ANY (subquery)` and
+    `(x > 0) IS TRUE` reject x. This is Calcite's `Strong.isNotTrue`, weaker
+    than strictness. `nulls: strong_any_subquery_is_never_true_on_null`, `strong_is_true_rejects`.
+13. **More strict Builtins**: NULLIF (first argument), trim, floor/ceil,
+    upper/lower, abs, length, list indexing. Per dialect: `||` is non-null
+    when its operands are in DuckDB and Postgres (not Oracle, not MySQL), and
+    greatest/least are non-null when any argument is in DuckDB and Postgres.
+    `nulls: strong_nullif_first_argument`, `strong_trim_and_floor`,
+    `strong_item_of_a_list`, `nullability_of_concat_operator`, `nullability_of_greatest_duckdb`.
+14. **Grouped MIN/MAX/SUM of a non-null argument** are non-null (no FILTER);
+    MIN/MAX keep the argument's domain. A scalar one stays nullable.
+    `nulls: nullability_of_grouped_max_and_sum`, `nullability_of_scalar_max` (boundary),
+    `iq: grouped_sum_of_a_non_null_column_is_non_null`.
+15. **Rejection back through a computed column**: `WHERE q.ms > 0` with
+    `ms = mgr + sal` rejects NULL in mgr. `nulls: strong_rejected_computed_column`.
+16. **Domains of strict Calls over literals**: `CAST(NULL AS INTEGER)` has
+    the empty domain, `CAST('1' AS INTEGER)` is `{1}`.
+    `nulls: pullup_union_with_cast_null`, `pullup_project_constants`.
+17. `comm IS NULL` under `comm = 2` is FALSE, a constant.
+    `nulls: pullup_project_is_null_of_constrained_column`.
+
+### Dependencies and keys
+
+18. **One input column projected twice**: `SELECT deptno, deptno AS deptno2`
+    proves `deptno2 -> deptno`. `_row_preserving` and `_grouped` keep one
+    output per input column (`back`). `keys: fd_identical_expressions`.
+19. **MIN/MAX/ANY_VALUE of a one-column Unique Set** grouped by anything is
+    unique, groups being disjoint. Never for a composite key: Calcite's
+    version of this is unsound (see the audit, C4).
+    `keys: uk_group_by_pass_through_aggregate`, `uk_composite_key_pass_through_aggregates` (boundary).
+20. **Pure conjuncts on the preserved side of an outer join's ON** fix the
+    match status by the columns they read (Paulley L6), not the whole row:
+    `ON e.deptno = d.deptno AND e.sal > 1000` proves `e_deptno, sal -> d_deptno`.
+    `keys: fd_left_join_extra_conjunct`, `fd_right_join_extra_conjunct`.
+21. **A FULL join that is Many To One** keeps the left side's key laxly: the
+    left Row Identity determines the right one. Pair with F2/F4 (issue 37).
+    `keys: fd_full_join`.
+22. **UNION ALL with disjoint branches** (`WHERE deptno = 10` / `= 20`) keeps
+    each branch's FDs. Pair with U2 (issue 37). `keys: fd_union_all`.
+23. **Semi joins**: a constant in an EXISTS ON pins the left column
+    (`d.deptno = e.mgr AND d.deptno = 10`); two left columns equal to one
+    right column are equal. `nulls: pullup_semi_join_from_exists_on_constant`,
+    `pullup_semi_join_equates_two_left_columns`.
+24. **EXACTLY ONE onto a scalar aggregate** with ON TRUE or CROSS JOIN.
+    `iq: left_join_on_true_to_a_scalar_aggregate_matches_exactly_once`.
+
+Consider a warning Diagnostic when a construct lowers opaque silently
+(VALUES, GROUPING SETS, LATERAL, correlated aggregate subqueries), so a user
+knows why an assertion stays UNKNOWN.
+
+## Acceptance criteria
+
+- [ ] Each item's cases are PROVED, its boundary cases stay UNKNOWN.
+- [ ] `pytest --soundness-oracle` reports 0 counterexamples.
+- [ ] `docs/calcite-audit.md` rows move from "missing" to "agrees".

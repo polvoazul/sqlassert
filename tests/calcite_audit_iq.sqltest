@@ -1,0 +1,254 @@
+-- Issue 40, step 6: cases adapted from Calcite's Quidem `.iq` tests at
+-- 180f167e65f28c160d4d6ffab35fa37303f0ebe0 (core/src/test/resources/sql).
+--
+-- The .iq files are execution tests (SQL, expected rows, sometimes a plan);
+-- they carry no Property expectations. A case here restates an inference a
+-- plan encodes (a removed aggregate, join or NULL check), or a NULL-semantics
+-- boundary, as an Assertion whose outcome follows sqlassert's Property
+-- contracts. UNKNOWN on a true Property marks a missing proof.
+--
+-- Fixture: the `scott` schema (external scott-data-hsqldb artifact). Keys are
+-- the schema's: EMP.EMPNO and DEPT.DEPTNO primary keys, EMP.DEPTNO a nullable
+-- foreign key to DEPT. Calcite's `scott` is a CloneSchema whose ArrayTable
+-- statistics also make every column with all-distinct data a key (ENAME,
+-- DNAME, LOC, ...); those data-derived keys are not assumed here.
+
+CREATE TABLE dept (deptno INTEGER PRIMARY KEY, dname VARCHAR, loc VARCHAR);
+CREATE TABLE emp (
+    empno INTEGER PRIMARY KEY,
+    ename VARCHAR,
+    job VARCHAR,
+    mgr INTEGER,
+    hiredate DATE,
+    sal DECIMAL(7, 2),
+    comm DECIMAL(7, 2),
+    deptno INTEGER REFERENCES dept (deptno)
+);
+CREATE TABLE bonus (ename VARCHAR, job VARCHAR, sal DECIMAL(7, 2), comm DECIMAL(7, 2));
+
+-- Outer-join padding removed by a later WHERE or ON ------------------------
+
+-- case: right_join_where_on_padded_side_rejects_padding
+-- inspired by outer.iq, "select * from emp right join dept on emp.deptno = dept.deptno where emp.gender = 'F'"
+SELECT e.empno, d.deptno
+FROM emp AS e
+RIGHT JOIN dept AS d
+    ON e.deptno = d.deptno
+WHERE e.job = 'CLERK'
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
+
+-- case: full_join_where_on_one_side_rejects_that_side_s_padding
+-- inspired by outer.iq, "select * from emp full join dept on emp.deptno = dept.deptno where emp.gender = 'F'"
+SELECT e.empno, d.deptno
+FROM emp AS e
+FULL JOIN dept AS d
+    ON e.deptno = d.deptno
+WHERE e.job = 'CLERK'
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
+
+-- case: full_join_where_on_both_sides_rejects_all_padding
+-- inspired by outer.iq, "full join ... where emp.gender = 'F'" with a dept condition too
+SELECT e.empno, d.deptno
+FROM emp AS e
+FULL JOIN dept AS d
+    ON e.deptno = d.deptno
+WHERE e.job = 'CLERK' AND d.loc = 'DALLAS'
+/**ASSERT NOT NULL(empno, deptno)**/  --~ PROVED
+
+-- case: inner_join_on_rejects_an_earlier_left_join_s_padding
+-- inspired by join.iq, "left join (select 7934 as ono ...) c ... inner join (select 7566 as ono ...) c1 on c.ono = c1.ono"
+SELECT e.empno, c.ono
+FROM emp AS e
+LEFT JOIN (SELECT 7934 AS ono) AS c
+    ON e.empno = c.ono
+JOIN (SELECT 7566 AS ono) AS c1
+    ON c.ono = c1.ono
+/**ASSERT NOT NULL(ono)**/  --~ PROVED
+
+-- WHERE <padded key> IS NULL keeps only padded rows: a left anti join, so the
+-- preserved side is no longer repeated.
+-- case: left_join_is_null_on_a_non_null_column_is_an_anti_join
+-- inspired by planner.iq, "left join ... on l.id = r.id where r.id is null" (CALCITE-7711)
+SELECT d.deptno, d.dname
+FROM dept AS d
+LEFT JOIN emp AS e
+    ON e.deptno = d.deptno
+WHERE e.empno IS NULL
+/**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
+
+-- ename is nullable: matched rows with a NULL ename survive, and repeat dept.
+-- case: left_join_is_null_on_a_nullable_column_keeps_matches
+-- inspired by planner.iq, "left join ... where r.id is null" (boundary)
+SELECT d.deptno, d.dname
+FROM dept AS d
+LEFT JOIN emp AS e
+    ON e.deptno = d.deptno
+WHERE e.ename IS NULL
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- A correlated EXISTS whose body RIGHT JOINs the correlated derived table keeps
+-- every dept row, so it holds whatever e.ename is.
+-- case: exists_over_right_join_of_correlated_table_rejects_nothing
+-- inspired by new-decorr.iq, "exists (select 1 from (select * from bonus b where b.ename = e.ename) foo right join dept d on foo.job = d.loc)"
+SELECT e.ename
+FROM emp AS e
+WHERE EXISTS (
+    SELECT 1
+    FROM (SELECT * FROM bonus AS b WHERE b.ename = e.ename) AS foo
+    RIGHT JOIN dept AS d
+        ON foo.job = d.loc
+)
+/**ASSERT NOT NULL(ename)**/  --~ UNKNOWN
+
+-- One-row inputs ------------------------------------------------------------
+
+-- case: join_to_a_one_row_derived_table_on_the_key
+-- inspired by join.iq, "from (select 7369 as empno, 10000 sal) s inner join emp on emp.empno = s.empno"
+SELECT e.empno, s.sal
+FROM (SELECT 7369 AS empno, 10000 AS sal) AS s
+/**ASSERT ONE TO ONE**/ JOIN emp AS e  --~ PROVED
+    ON e.empno = s.empno
+
+-- Calcite removes this join: ono is CASE WHEN empno = 7934 THEN 7934 END.
+-- case: left_join_to_a_one_row_derived_table_is_determined_by_the_left_key
+-- inspired by join.iq, "emp e left join (select 7934 as ono, current_timestamp as t) c on e.empno = c.ono"
+SELECT e.empno, c.ono
+FROM emp AS e
+/**ASSERT MANY TO ONE**/ LEFT JOIN (SELECT 7934 AS ono, current_timestamp AS t) AS c  --~ PROVED
+    ON e.empno = c.ono
+/**ASSERT DETERMINES(empno -> ono)**/  --~ PROVED
+
+-- A scalar aggregate has exactly one row, so ON TRUE matches every left row
+-- exactly once; Calcite removes the join. Missing proof: EXACTLY ONE wants
+-- equalities onto Referential Coverage.
+-- case: left_join_on_true_to_a_scalar_aggregate_matches_exactly_once
+-- inspired by misc.iq, "left join (select count(*) from \"hr\".\"depts\") on true"
+SELECT e.deptno
+FROM emp AS e
+/**ASSERT MANY TO ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS x  --~ PROVED
+    ON TRUE
+/**ASSERT EXACTLY ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS y  --~ UNKNOWN
+    ON TRUE
+
+-- A correlated scalar subquery over count(*) always yields a row, and count is
+-- never NULL; Calcite plans it as CASE WHEN c IS NULL THEN 0. Missing proof.
+-- case: correlated_scalar_count_is_never_null
+-- inspired by scalar.iq, "select deptno, (select count(*) from emp where deptno = dept.deptno) as x from dept"
+SELECT deptno, (SELECT count(*) FROM emp WHERE emp.deptno = dept.deptno) AS x
+FROM dept
+/**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- Grouping ------------------------------------------------------------------
+
+-- `GROUP BY ()` is one group, like a query without GROUP BY. Missing proof.
+-- case: group_by_empty_set_is_one_row
+-- inspired by agg.iq, "select count(*) from emp where deptno = 20 group by ()"
+SELECT count(*) AS c FROM emp WHERE deptno = 20 GROUP BY ()
+/**ASSERT UNIQUE(c)**/  --~ UNKNOWN
+
+-- case: group_by_constant_expression_is_one_row
+-- inspired by agg.iq, "select deptno + 1, count(*) from emp where deptno = 20 group by distinct deptno + 1"
+SELECT deptno + 1 AS d1, count(*) AS c FROM emp WHERE deptno = 20 GROUP BY deptno + 1
+/**ASSERT UNIQUE(c)**/  --~ PROVED
+
+-- After the join, emp.deptno = dept.deptno: either grouping column is a key.
+-- case: grouping_by_both_join_keys_is_grouping_by_one
+-- inspired by agg.iq, "from emp join dept using (deptno) group by emp.deptno, dept.deptno"
+SELECT e.deptno AS ed, d.deptno AS dd, sum(e.sal) AS s
+FROM emp AS e
+JOIN dept AS d
+    ON e.deptno = d.deptno
+GROUP BY e.deptno, d.deptno
+/**ASSERT NOT NULL UNIQUE(ed)**/  --~ PROVED
+/**ASSERT DETERMINES(dd -> ed)**/  --~ PROVED
+
+-- HAVING only drops groups, so the grouping keys stay a key. Missing proof:
+-- a GROUP BY with HAVING is not lowered.
+-- case: having_keeps_the_grouping_key
+-- inspired by agg.iq, "select deptno + 1 as d1, count(*) as c from emp group by rollup(deptno) having count(*) > 3"
+SELECT deptno, count(*) AS c FROM emp GROUP BY deptno HAVING count(*) > 1
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- A grouping key left out of the select list leaves the rest unproved.
+-- case: distinct_needed_when_a_grouping_key_is_not_selected
+-- inspired by misc.iq, "select distinct gender, sum(deptno) as s from emp group by gender, deptno" (DERBY-3616)
+SELECT job, sum(sal) AS s FROM emp GROUP BY job, deptno
+/**ASSERT UNIQUE(job, s)**/  --~ UNKNOWN
+
+-- A repeated grouping set outputs each of its groups twice.
+-- case: repeated_grouping_set_repeats_rows
+-- inspired by agg.iq, "group by grouping sets ((deptno, job), (deptno, sal), (deptno, job))"
+SELECT deptno, job, sal, sum(comm) AS s
+FROM emp
+GROUP BY GROUPING SETS ((deptno, job), (deptno, sal), (deptno, job))
+/**ASSERT UNIQUE(deptno, job, sal)**/  --~ UNKNOWN
+
+-- ROLLUP adds a total row whose deptno is NULL (CALCITE-5296).
+-- case: rollup_key_is_nullable
+-- inspired by agg.iq, "select deptno, deptno + 1 as d1 from emp group by rollup(deptno)"
+SELECT deptno FROM emp WHERE deptno IS NOT NULL GROUP BY ROLLUP (deptno)
+/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
+
+-- SUM over a non-null column is non-null in every (non-empty) group; Calcite
+-- types it NOT NULL. Missing proof.
+-- case: grouped_sum_of_a_non_null_column_is_non_null
+-- inspired by agg.iq, "select sum(deptno) as deptno from dept group by dname" (CALCITE-6557)
+SELECT dname, sum(deptno) AS s FROM dept GROUP BY dname
+/**ASSERT NOT NULL(s)**/  --~ UNKNOWN
+
+-- QUALIFY over a grouped query keeps one row per partition. Missing proof.
+-- case: qualify_over_group_by_keeps_one_row_per_partition
+-- inspired by qualify.iq, "group by deptno, job qualify row_number() over (partition by deptno order by count(*) desc) = 1"
+SELECT deptno
+FROM emp
+GROUP BY deptno, job
+QUALIFY row_number() OVER (PARTITION BY deptno ORDER BY count(*) DESC) = 1
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- Set operations --------------------------------------------------------------
+
+-- Set operations are left-associative: (emp EXCEPT ALL dept) EXCEPT bonus
+-- removes duplicates last (CALCITE-7901).
+-- case: except_all_then_except_is_distinct
+-- inspired by set-op.iq, "select x from t except all select x from t2 except select x from t3"
+WITH q AS (
+    SELECT ename FROM emp
+    EXCEPT ALL
+    SELECT dname FROM dept
+    EXCEPT
+    SELECT ename FROM bonus
+)
+SELECT ename FROM q
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+
+-- case: union_all_then_union_is_distinct
+-- inspired by set-op.iq, "union all ... union" (left-associative chain)
+WITH q AS (
+    SELECT ename FROM emp
+    UNION ALL
+    SELECT dname FROM dept
+    UNION
+    SELECT ename FROM bonus
+)
+SELECT ename FROM q
+/**ASSERT UNIQUE(ename)**/  --~ PROVED
+
+-- USING ---------------------------------------------------------------------
+
+-- The USING column of a RIGHT JOIN is COALESCE(emp.deptno, dept.deptno),
+-- which is dept.deptno on every row. Missing proof.
+-- case: right_join_using_column_is_the_preserved_side_s
+-- inspired by join.iq, "select distinct deptno, dept.deptno, emp.deptno from emp right join dept using (deptno)"
+SELECT deptno FROM emp RIGHT JOIN dept USING (deptno)
+/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
+
+-- case: exactly_one_join_through_a_non_null_foreign_key_using
+-- inspired by agg.iq, "select sum(sal) from emp join dept using (deptno)" (join planned as a semi join)
+SELECT e.empno, e.sal
+FROM (SELECT * FROM emp WHERE deptno IS NOT NULL) AS e
+/**ASSERT EXACTLY ONE**/ JOIN dept USING (deptno)  --~ PROVED
+
+-- case: exactly_one_join_needs_a_non_null_foreign_key
+-- inspired by agg.iq, "select count(*) from emp join dept using (deptno)" (boundary: nullable deptno)
+SELECT emp.empno FROM emp /**ASSERT EXACTLY ONE**/ JOIN dept USING (deptno)  --~ UNKNOWN

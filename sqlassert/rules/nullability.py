@@ -2,9 +2,11 @@
 
 A column is NULL organically (a nullable source column, an opaque expression,
 a NULL literal) or because an outer join padded its row. Padding is tracked per
-join, so a null-rejecting conjunct on one padded column proves that join
-matched and removes its padding from every column it padded; organic NULLs are
-removed one column at a time. A column is non-null when no source remains.
+join and side, so a null-rejecting conjunct on one padded column proves that
+side matched and removes its padding from every column it padded; organic
+NULLs are removed one column at a time. A column is non-null when no source
+remains. A padding source means NULL on *every* padded row: an expression that
+may be non-null on some (a CASE arm, a non-strict argument) turns it organic.
 """
 
 from __future__ import annotations
@@ -23,13 +25,15 @@ class Organic:
 
 @dataclass(frozen=True)
 class Padding:
-    """`join` pads the column: it is NULL on every row the join null-extends.
+    """`join` pads the column: it is NULL on every row the join null-extends
+    on its `left` (or right) side. A FULL join pads each side on different rows.
 
     `aliases` are the Aliases the column was seen through, innermost last, so
     two occurrences of one relation never share a padding.
     """
 
     join: ir.Join
+    left: bool
     aliases: tuple[ir.Alias, ...] = ()
 
 
@@ -129,13 +133,17 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             # Groups are never empty, so the value comes from some input row.
             return _expression_sources(value)
         case ir.Call(total_arguments=tuple() as arguments, description=description):
-            # NULL only when an argument it is total in is, so only through theirs.
+            # NULL only when an argument it is total in is, so only through
+            # theirs; NULL on every padded row only through a strict one.
+            strict = {id(argument) for argument in expression.strict_arguments}
             result: _Sources = {}
             premises: list[Result] = []
             for argument in arguments:
                 sources, argument_premises = _expression_sources(argument)
+                if id(argument) not in strict:
+                    sources = _may_be_null(sources, f"{expression.function.name} may be non-null where this argument is NULL", argument)
                 for source, evidence in sources.items():
-                    result.setdefault(source, evidence)
+                    result[source] = result[source] | evidence if source in result else evidence
                 premises.extend(argument_premises)
             if result:
                 return result, []
@@ -159,10 +167,12 @@ def _case_sources(case: ir.SimpleCase) -> tuple[_Sources, list[Result]]:
 
     sources: _Sources = {}
     premises: list[Result] = []
+    arm_paddings: list[set[NullSource]] = []
 
     def add(reason: str, arm: ir.ScalarExpr, *why: Result) -> None:
         arm_sources, arm_premises = _expression_sources(arm)
         premises.extend(arm_premises)
+        arm_paddings.append({source for source in arm_sources if isinstance(source, Padding)})
         for source, evidence in arm_sources.items():
             named = Result(False, reason, (arm,), [evidence, *why], kind="unknown")
             sources[source] = sources[source] | named if source in sources else named
@@ -176,7 +186,24 @@ def _case_sources(case: ir.SimpleCase) -> tuple[_Sources, list[Result]]:
         missing = isinstance(case.default, ir.NullLiteral) and case.default.origin == case.origin
         reason = "With no ELSE, a row no WHEN matches is NULL" if missing else "ELSE may be NULL"
         add(reason, case.default, unreachable)
-    return sources, premises
+    # NULL on a join's padded rows only if every arm it may take is.
+    common = set.intersection(*arm_paddings) if arm_paddings else set()
+    kept = {source: evidence for source, evidence in sources.items() if not isinstance(source, Padding) or source in common}
+    others = {source: evidence for source, evidence in sources.items() if source not in kept}
+    for source, evidence in _may_be_null(others, "Another arm may be non-null on padded rows", case).items():
+        kept[source] = kept[source] | evidence if source in kept else evidence
+    return kept, premises
+
+
+def _may_be_null(sources: _Sources, reason: str, expression: ir.ScalarExpr) -> _Sources:
+    """`sources` where a padding only means "may be NULL": organic."""
+    result: _Sources = {}
+    for source, evidence in sources.items():
+        if isinstance(source, Padding):
+            evidence = Result(False, reason, (expression,), [evidence], kind="unknown")
+            source = ORGANIC
+        result[source] = result[source] | evidence if source in result else evidence
+    return result
 
 
 def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, list[Result]]:
@@ -189,7 +216,7 @@ def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, lis
     sources, removal = _rejected(_on_rejected(join), source, sources, "The ON condition rejects NULL on matched rows")
     left = source in join.left.output_columns
     if left in _padded_sides(join):
-        sources[Padding(join)] = unknown(f"{column.name} is padded by the {join.kind.upper()} JOIN", join, column)
+        sources[Padding(join, left)] = unknown(f"{column.name} is padded by the {join.kind.upper()} JOIN", join, column)
     return sources, premises + removal
 
 
@@ -330,7 +357,7 @@ def _padded_sides(join: ir.Join) -> frozenset[bool]:
 
 def _seen_through(alias: ir.Alias, source: NullSource) -> NullSource:
     match source:
-        case Padding(join=join, aliases=aliases):
-            return Padding(join, (*aliases, alias))
+        case Padding(join=join, left=left, aliases=aliases):
+            return Padding(join, left, (*aliases, alias))
         case Organic():
             return source

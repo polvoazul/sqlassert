@@ -307,6 +307,56 @@ class UnattachedMarker(ParseError):
         self.text = text
 
 
+# Dialects whose set operators share one precedence, read left to right. The
+# others follow the standard: INTERSECT binds tighter than UNION and EXCEPT.
+_FLAT_SET_OPERATION_DIALECTS = frozenset({"oracle"})
+
+
+def _intersect_first(chain: exp.Expression | None) -> exp.Expression | None:
+    """A left-to-right chain of set operations, with INTERSECT bound first.
+
+    SQLGlot reads `a UNION ALL b INTERSECT c` as `(a UNION ALL b) INTERSECT c`;
+    standard SQL (and DuckDB, Postgres) means `a UNION ALL (b INTERSECT c)`.
+    Only the chain's left spine is flattened: a parenthesized operand is a
+    Subquery and keeps its own grouping. ORDER BY and LIMIT stay on the top.
+    """
+    if not isinstance(chain, exp.SetOperation):
+        return chain
+    operations: list[exp.SetOperation] = []
+    node: exp.Expression = chain
+    while isinstance(node, exp.SetOperation):
+        operations.append(node)
+        node = node.this
+    operations.reverse()
+    if not any(isinstance(operation, exp.Intersect) for operation in operations[1:]) or all(
+        isinstance(operation, exp.Intersect) for operation in operations
+    ):
+        return chain
+    modifiers = {key: chain.args[key] for key in chain.args if key not in {"this", "expression", "distinct", "by_name", "side", "kind", "on"} and chain.args[key] is not None}
+    for key in modifiers:
+        chain.set(key, None)
+    # Fold each INTERSECT into its left neighbour's right operand, then chain the rest left to right.
+    terms: list[exp.Expression] = [node]
+    joiners: list[exp.SetOperation] = []
+    for operation in operations:
+        right = operation.expression
+        if isinstance(operation, exp.Intersect):
+            operation.set("this", terms[-1])
+            operation.set("expression", right)
+            terms[-1] = operation
+        else:
+            terms.append(right)
+            joiners.append(operation)
+    result = terms[0]
+    for operation, right in zip(joiners, terms[1:]):
+        operation.set("this", result)
+        operation.set("expression", right)
+        result = operation
+    for key, value in modifiers.items():
+        result.set(key, value)
+    return result
+
+
 @lru_cache(maxsize=None)
 def sqlassert_dialect(base: str) -> type[Dialect]:
     """The named dialect, plus Property Markers as real syntax.
@@ -456,6 +506,9 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             result = super()._parse_select_query(*args, **kwargs)
             if not isinstance(result, exp.Select):
                 return result
+            if not kwargs.get("parse_set_operation", True):
+                # A set operation's right operand: no set operation is tried after it.
+                self._record_marker_position(result)
 
             found: list[ColumnMarker] = []
             while self._curr is not None and self._curr.token_type in _COLUMN_MARKER_OPEN_TOKENS:
@@ -493,18 +546,27 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             # sitting where it looked for a set-operation keyword reads as
             # "no set operation here". Now that the marker is consumed, retry:
             # a no-op if nothing follows, since `_parse_set_operations` only
-            # advances the cursor on an actual match.
+            # advances the cursor on an actual match. Not for the right operand
+            # of a set operation, which the left-associative loop that parses
+            # it attaches the next operator to instead.
+            if not kwargs.get("parse_set_operation", True):
+                return result
             return self._parse_set_operations(result) or result
 
         def _parse_set_operations(self, this, *args, **kwargs):
             """Record where a Select ends: the first time set operations are
             tried after it, before any trailing marker is consumed. This is
             also the only point that sees the left member of a set operation
-            as a Select of its own.
+            as a Select of its own. The chain comes back with INTERSECT bound
+            first, as the dialect reads it.
             """
+            self._record_marker_position(this)
+            result = super()._parse_set_operations(this, *args, **kwargs)
+            return result if base in _FLAT_SET_OPERATION_DIALECTS else _intersect_first(result)
+
+        def _record_marker_position(self, this) -> None:
             if isinstance(this, exp.Select) and _MARKER_POSITION not in this.meta and self._prev is not None:
                 this.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
-            return super()._parse_set_operations(this, *args, **kwargs)
 
         def _parse_marker_columns(self, kind: ColumnMarkerKind, line: int) -> tuple[str, ...]:
             """A marker's column list after its opening parenthesis, through the closing one."""

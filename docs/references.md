@@ -9,7 +9,7 @@ through query operators. Local copies (gitignored) live in `papers/`.
 - **Apache Calcite** — metadata inference for functional dependencies, unique
   keys, predicates and null rejection. Use its implementation and tests as an
   audit source alongside the papers. [Source inventory and corpus notes](calcite-notes.md);
-  [audit work](issues/0040-audit-inference-against-calcite.md).
+  [audit work](issues/done/0040-audit-inference-against-calcite.md).
 - **Begoli, Camacho-Rodríguez, Hyde, Mior & Lemire — *Apache Calcite: A
   Foundational Framework for Optimized Query Processing Over Heterogeneous
   Data Sources*** (SIGMOD 2018). Architecture background, to read:
