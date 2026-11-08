@@ -4,12 +4,16 @@ Every claim `sqlassert/dialects.py` makes about a dialect, and every Builtin
 fact `ir/convert.dialect_builtins` derives from it, is a Fact here, with a
 probe generated from it: SQL whose result confirms or refutes the claim on an
 engine. `docs/dialect-provenance.json` records where each fact comes from:
-`{"engine": [versions it passed on]}` or `{"doc": url, "read": version}`.
+`{"engine": [versions it passed on]}`, `{"undefined": [versions that cannot
+express its construct]}` (both, when versions differ), or `{"doc": url,
+"read": version}`. An undefined fact claims nothing on that version: if a
+later one supports the construct, its probe runs there and decides.
 
-The runner probes one dialect over a DB-API connection and prints PASS, FAIL
-or ERROR (the probe could not run) per fact. Unless `--dry-run`, it records
-the engine version into the provenance of each fact that passed, and removes
-it from each that failed; it never adds or strengthens a fact. A FAIL names
+The runner probes one dialect over a DB-API connection and prints PASS, FAIL,
+VACUOUS (the engine cannot express the construct) or ERROR (the probe could
+not run) per fact. Unless `--dry-run`, it records the engine version into the
+provenance of each fact that passed (`engine`) or was vacuous (`undefined`),
+and removes it from each that failed; it never adds or strengthens a fact. A FAIL names
 the weaker setting to apply by hand in `dialects.py`. A dialect's flags hold
 under all its settings, so a fact must pass under the engine's defaults and
 again after `PERMISSIVE` statements (MySQL `sql_mode = ''`, Spark ANSI
@@ -521,9 +525,10 @@ def write_provenance(provenance: dict[str, dict[str, dict[str, Any]]], path: Pat
 
 
 def record(provenance: dict[str, dict[str, dict[str, Any]]], dialect: str, version: str, results: Sequence[Result]) -> list[str]:
-    """Add `version` to each passing fact's engine provenance (replacing a doc
-    one) and remove it from each failing fact's; drop facts the dialect no
-    longer has. An ERROR changes nothing. Returns what changed."""
+    """File `version` under each passing fact's `engine` versions and each
+    vacuous fact's `undefined` ones (replacing a doc provenance), and remove it
+    from each failing fact's; drop facts the dialect no longer has. An ERROR
+    changes nothing. Returns what changed."""
     entries = provenance.setdefault(dialect, {})
     changes: list[str] = []
     current = {result.fact.name for result in results}
@@ -531,18 +536,27 @@ def record(provenance: dict[str, dict[str, dict[str, Any]]], dialect: str, versi
         del entries[name]
         changes.append(f"dropped {name}: no longer a fact")
     for result in results:
-        name, entry = result.fact.name, entries.get(result.fact.name)
-        versions = list(entry.get("engine", ())) if entry else []
-        if result.outcome in ("PASS", "VACUOUS") and version not in versions:
-            entries[name] = {"engine": sorted([*versions, version])}
-            changes.append(f"{name}: certified on {version}")
-        elif result.outcome == "FAIL" and version in versions:
-            versions.remove(version)
-            if versions:
-                entries[name] = {"engine": versions}
-            else:
-                del entries[name]
-            changes.append(f"{name}: no longer certified on {version}")
+        name, entry = result.fact.name, entries.get(result.fact.name) or {}
+        lists = {key: [each for each in entry.get(key, ()) if each != version] for key in ("engine", "undefined")}
+        match result.outcome:
+            case "PASS":
+                lists["engine"].append(version)
+                change = f"{name}: certified on {version}"
+            case "VACUOUS":
+                lists["undefined"].append(version)
+                change = f"{name}: undefined on {version}"
+            case "FAIL":
+                change = f"{name}: no longer certified on {version}"
+            case "ERROR":
+                continue
+        updated = {key: sorted(versions) for key, versions in lists.items() if versions}
+        if updated == entry:
+            continue
+        if updated:
+            entries[name] = updated
+        elif name in entries:
+            del entries[name]
+        changes.append(change)
     return changes
 
 

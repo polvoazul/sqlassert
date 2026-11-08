@@ -236,9 +236,12 @@ permissive settings (`PERMISSIVE`: MySQL `sql_mode = ''`, Spark ANSI off; a sett
 changes the default collation is out of scope). It prints PASS, FAIL (with
 the weaker setting to apply by hand), ERROR (the probe could not run) or
 VACUOUS per fact, and STRONGER for a weak setting the engine would also
-satisfy (never acted on). Unless `--dry-run`, it adds the engine version to
-each passing fact and removes it from each failing one; it never adds a fact
-or strengthens one. `--list` prints the probes without a connection.
+satisfy (never acted on). Unless `--dry-run`, it files the engine version
+under each passing fact's `engine` versions and each vacuous fact's
+`undefined` ones, and removes it from each failing one; it never adds a fact
+or strengthens one. An undefined fact claims nothing on that version, so
+when a later version supports the construct its probe runs there and
+decides. `--list` prints the probes without a connection.
 
 Certification is one-off: rerun it when adding a dialect, changing a fact, or
 supporting a new major version. The engines it was run on:
