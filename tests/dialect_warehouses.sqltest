@@ -1,0 +1,137 @@
+-- Warehouse semantics the rules depend on (`sqlassert/dialects.py`).
+--
+-- Snowflake, BigQuery, Databricks / Spark and Redshift do not enforce primary,
+-- unique or foreign keys; NOT NULL they do. An unenforced key is never
+-- Knowledge: where the dialect has `RELY` (Snowflake, Databricks / Spark) a
+-- key marked `RELY` is a Property Declaration, and `trust_unenforced_keys`
+-- makes every unenforced one a Property Declaration (`test_dialects.py`).
+-- Otherwise it is reported and ignored. Their default collations can be
+-- changed per database, schema or table, so text is never compared by
+-- identity without a COLLATE sqlassert knows.
+
+-- case: snowflake_a_primary_key_without_rely_is_not_knowledge
+-- dialect: snowflake
+CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL);
+--~ unenforced-constraint "snowflake does not enforce it" "mark it RELY"
+SELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: snowflake_not_null_is_enforced
+-- dialect: snowflake
+CREATE TABLE t (n INT NOT NULL);
+SELECT n FROM t /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: snowflake_a_primary_key_with_rely_is_declared
+-- dialect: snowflake
+CREATE TABLE t (id INT, CONSTRAINT pk PRIMARY KEY (id) RELY);
+SELECT id FROM t /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED "Declared UniqueSet"
+
+-- case: snowflake_a_foreign_key_with_rely_is_declared
+-- dialect: snowflake
+CREATE TABLE t (id INT PRIMARY KEY RELY);
+CREATE TABLE o (id INT PRIMARY KEY RELY, t_id INT, CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id) RELY);
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED "Declared ReferentialCoverage"
+
+-- case: snowflake_a_foreign_key_with_norely_is_not_knowledge
+-- dialect: snowflake
+CREATE TABLE t (id INT PRIMARY KEY RELY);
+CREATE TABLE o (id INT PRIMARY KEY RELY, t_id INT, CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id) NORELY);
+--~ unenforced-constraint "foreign key (t_id)"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: snowflake_pipes_reject_a_null_operand
+-- dialect: snowflake
+CREATE TABLE t (id INT PRIMARY KEY RELY, m INT, r TEXT);
+SELECT o.id AS oid FROM t LEFT JOIN t AS o ON o.id = t.m WHERE o.r || 'x' = 'ax' /**ASSERT NOT NULL(oid)**/
+--~ PROVED
+
+-- case: snowflake_division_by_a_non_null_value_is_non_null
+-- dialect: snowflake
+CREATE TABLE t (n INT NOT NULL);
+SELECT n % 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: snowflake_text_is_not_compared_by_identity
+-- dialect: snowflake
+CREATE TABLE t (s VARCHAR);
+SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
+
+-- case: bigquery_keys_are_not_enforced
+-- dialect: bigquery
+CREATE TABLE t (id INT64 NOT NULL, s STRING, PRIMARY KEY (id) NOT ENFORCED);
+--~ unenforced-constraint "NOT ENFORCED"
+SELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: bigquery_not_null_is_enforced
+-- dialect: bigquery
+CREATE TABLE t (id INT64 NOT NULL);
+SELECT id FROM t /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: bigquery_concat_is_null_when_an_argument_is
+-- dialect: bigquery
+CREATE TABLE t (s STRING);
+SELECT concat(s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: bigquery_concat_of_non_null_arguments_is_non_null
+-- dialect: bigquery
+CREATE TABLE t (n INT64 NOT NULL);
+SELECT concat(CAST(n AS STRING), 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: databricks_a_primary_key_with_rely_is_declared
+-- dialect: databricks
+CREATE TABLE t (id INT NOT NULL, CONSTRAINT pk PRIMARY KEY (id) RELY);
+SELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED "Declared UniqueSet"
+
+-- case: databricks_a_primary_key_without_rely_is_not_knowledge
+-- dialect: databricks
+CREATE TABLE t (id INT NOT NULL, CONSTRAINT pk PRIMARY KEY (id));
+--~ unenforced-constraint "databricks does not enforce it"
+SELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: databricks_arithmetic_may_be_null
+-- Without ANSI mode, overflow and a bad cast are NULL.
+-- dialect: databricks
+CREATE TABLE t (n INT NOT NULL);
+SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: databricks_a_comparison_may_be_null
+-- dialect: databricks
+CREATE TABLE t (n INT NOT NULL);
+SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: spark_a_right_semi_join_keeps_right_rows
+-- dialect: spark
+CREATE TABLE users (id INT NOT NULL, CONSTRAINT pk PRIMARY KEY (id) RELY);
+CREATE TABLE events (id INT, user_id INT);
+SELECT *
+FROM events RIGHT
+SEMI JOIN users
+    ON events.user_id = users.id
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: redshift_keys_are_not_enforced
+-- dialect: redshift
+CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL);
+--~ unenforced-constraint "redshift does not enforce it"
+SELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: redshift_arithmetic_raises
+-- dialect: redshift
+CREATE TABLE t (n INT NOT NULL);
+SELECT n % 2 + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: sqlite_foreign_keys_are_not_enforced_by_default
+-- dialect: sqlite
+CREATE TABLE t (id INTEGER PRIMARY KEY);
+CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER REFERENCES t (id));
+--~ unenforced-constraint "sqlite does not enforce it"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: sqlite_a_primary_key_may_be_null
+-- Only an INTEGER PRIMARY KEY is never NULL, and SQLGlot reads INT as INTEGER.
+-- dialect: sqlite
+CREATE TABLE t (code TEXT PRIMARY KEY);
+SELECT code FROM t /**ASSERT NOT NULL(code)**/  --~ UNKNOWN
+
+-- case: sqlite_a_primary_key_is_unique
+-- dialect: sqlite
+CREATE TABLE t (code TEXT PRIMARY KEY);
+SELECT code FROM t /**ASSERT UNIQUE(code)**/  --~ PROVED

@@ -16,6 +16,7 @@ from sqlglot import exp
 
 from sqlassert import diagnostics as diag
 from sqlassert import ir
+from sqlassert.dialects import DialectSemantics, semantics
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
     EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet,
@@ -25,7 +26,7 @@ from sqlassert.properties import (
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
     JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
-    exhaustive_line, join_marker_kind, join_origin, literal_value, marker_position,
+    exhaustive_line, is_ambiguous_pipes, join_marker_kind, join_origin, literal_value, marker_position,
 )
 
 
@@ -81,6 +82,8 @@ class _ConstraintReference:
     target: _Symbol
     target_columns: tuple[str, ...] | None
     origin: Origin
+    # The `REFERENCES` or `FOREIGN KEY` constraint itself.
+    node: exp.Expression
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,8 @@ class _Lowered:
 @dataclass
 class IrParser:
     dialect: str
+    # Unenforced keys and foreign keys become Property Declarations, as `RELY` makes them.
+    trust_unenforced_keys: bool = False
     _global_symbols: dict[str, _Symbol] = field(default_factory=dict)
     _symbols: list[_Symbol] = field(default_factory=list)
     _query_scopes: dict[int, dict[str, _Symbol]] = field(default_factory=dict)
@@ -126,6 +131,12 @@ class IrParser:
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
+    # Constraints an ALTER TABLE ... NOT VALID added: rows already there were never checked.
+    _unvalidated: set[int] = field(default_factory=set)
+
+    @property
+    def semantics(self) -> DialectSemantics:
+        return semantics(self.dialect)
 
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
         for statement in ast.create_statements:
@@ -261,6 +272,8 @@ class IrParser:
             return
         symbol.constraints.extend(added)
         symbol.not_null.update(not_null)
+        if statement.args.get("not_valid"):
+            self._unvalidated.update(id(constraint) for constraint in added)
 
     def _created_before(self, table: exp.Table, statement: exp.Expression) -> _Symbol | None:
         """The table `statement` amends, which a CREATE TABLE earlier in the
@@ -400,7 +413,7 @@ class IrParser:
                     continue
                 self._require_undeclared(target, target_columns or ())
                 self._constraint_references.append(
-                    _ConstraintReference(symbol, columns, target, target_columns, self._origin(node))
+                    _ConstraintReference(symbol, columns, target, target_columns, self._origin(node.find_ancestor(exp.ColumnDef) or node), node)
                 )
 
     def _require(self, source: exp.Expression, column: str) -> None:
@@ -532,7 +545,7 @@ class IrParser:
                 origin=symbol.origin, output_columns=output_columns, is_schema_complete=complete, name=symbol.name, role=symbol.role
             )
             self._named_relations[symbol] = named
-            self._knowledge.extend(self._table_knowledge(named, symbol))
+            self._table_knowledge(named, symbol)
             return named
 
         self._resolving.add(symbol)
@@ -561,7 +574,7 @@ class IrParser:
         )
         self._named_relations[symbol] = named
         if symbol.role is ir.RelationRole.TABLE:
-            self._knowledge.extend(self._table_knowledge(named, symbol))
+            self._table_knowledge(named, symbol)
         return named
 
     def _table_output_columns(self, symbol: _Symbol) -> tuple[tuple[ir.OutputColumn, ...], bool]:
@@ -588,9 +601,9 @@ class IrParser:
         kind = definition.args.get("kind")
         if not isinstance(kind, exp.DataType):
             return None
-        if any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints):
-            return None
-        if kind.this in exp.DataType.TEXT_TYPES and not self._is_binary_text(definition):
+        if kind.this in exp.DataType.TEXT_TYPES:
+            return kind.sql(dialect=self.dialect) if self._is_binary_text(definition) else None
+        if _collation(definition) is not None or self._unscaled_decimal(kind):
             return None
         return kind.sql(dialect=self.dialect)
 
@@ -602,18 +615,22 @@ class IrParser:
 
     def _exact_numeric(self, definition: exp.ColumnDef) -> bool:
         kind = definition.args.get("kind")
-        return isinstance(kind, exp.DataType) and kind.this in _EXACT_NUMERIC_TYPES
+        return isinstance(kind, exp.DataType) and kind.this in _EXACT_NUMERIC_TYPES and not self._unscaled_decimal(kind)
+
+    def _unscaled_decimal(self, kind: exp.DataType) -> bool:
+        """A Postgres NUMERIC with no scale: 1.0 and 1.00 are equal values that differ."""
+        return self.semantics.unscaled_decimal and kind.this == exp.DataType.Type.DECIMAL and not kind.expressions
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
-        """Declared VARCHAR or TEXT under the dialect's binary default collation.
+        """Declared VARCHAR or TEXT compared by identity: under the dialect's
+        binary default collation, or a COLLATE it knows to be binary.
 
         CHAR is not: it ignores trailing spaces when compared."""
         kind = definition.args.get("kind")
-        return (
-            self.dialect in _BINARY_COLLATION_DIALECTS
-            and isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES
-            and not any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints)
-        )
+        if not (isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES):
+            return False
+        collation = _collation(definition)
+        return self.semantics.binary_default_collation if collation is None else collation in self.semantics.binary_collations
 
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
@@ -1257,6 +1274,15 @@ class IrParser:
                 return self._lower_case(expression, bindings, schema_complete=schema_complete)
             case exp.And():
                 return self._lower_condition(expression, _conjuncts(expression), bindings, schema_complete=schema_complete)
+            case exp.Or() if is_ambiguous_pipes(expression):
+                pipes = f"{expression.this.sql(dialect=self.dialect)} || {expression.expression.sql(dialect=self.dialect)}"
+                self._warnings.append(Diagnostic(
+                    diag.AMBIGUOUS_OPERATOR,
+                    f"`||` is OR in {self.dialect}, or concatenation under sql_mode PIPES_AS_CONCAT, which also groups "
+                    f"its operands differently, so {pipes} is an unknown function of its columns: write OR or CONCAT()",
+                    self._origin(expression, line or _source_line(expression)),
+                ))
+                return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=pipes)
             case exp.Or():
                 return ir.Or(origin=origin, parts=tuple(
                     self._lower_condition(branch, _conjuncts(branch), bindings, schema_complete=schema_complete)
@@ -1462,7 +1488,11 @@ class IrParser:
                     reference.origin,
                 ))
                 continue
-            self._knowledge.append(ReferentialCoverage(columns=columns, referenced_columns=referenced))
+            trust = self._key_trust(reference.node, reference.table, reference.columns)
+            if trust is not None:
+                (self._knowledge if trust == "enforced" else self._declarations).append(
+                    ReferentialCoverage(columns=columns, referenced_columns=referenced)
+                )
 
     def _columns_named(self, relation: ir.RelationExpr, names: Iterable[str]) -> tuple[ir.OutputColumn, ...] | None:
         by_name = {column.name.lower(): column for column in relation.output_columns}
@@ -1520,40 +1550,86 @@ class IrParser:
                     )
                 )
 
-    def _table_knowledge(self, relation: ir.NamedRelation, symbol: _Symbol) -> tuple[Property, ...]:
+    def _table_knowledge(self, relation: ir.NamedRelation, symbol: _Symbol) -> None:
+        """A declared table's ENUM types, NOT NULL columns and keys: Knowledge
+        where the dialect enforces them, Property Declarations where they are
+        trusted (`_key_trust`)."""
         statement = symbol.statement
         if statement is None:
-            return ()
+            return
         columns = {column.name.lower(): column for column in relation.output_columns}
-        facts: list[Property] = []
-        unique_sets: list[tuple[str, ...]] = []
         non_null = {column.lower() for column in symbol.not_null}
+        # Each key's columns, its constraint, and whether it is a primary key.
+        keys: list[tuple[tuple[str, ...], exp.Expression, bool]] = []
         for definition in statement.this.find_all(exp.ColumnDef):
-            domain = _enum_type_values(definition)
+            domain = _enum_type_values(definition, self.semantics)
             if domain is not None and definition.name.lower() in columns:
-                facts.append(EnumeratedDomain(column=columns[definition.name.lower()], values=domain))
-            kinds = [type(constraint.args.get("kind")) for constraint in definition.constraints]
-            primary_key = exp.PrimaryKeyColumnConstraint in kinds
-            unique = exp.UniqueColumnConstraint in kinds
-            not_null = primary_key or exp.NotNullColumnConstraint in kinds
-            if not_null:
-                non_null.add(definition.name.lower())
-            if primary_key or unique:
-                unique_sets.append((definition.name,))
+                self._knowledge.append(EnumeratedDomain(column=columns[definition.name.lower()], values=domain))
+            for constraint in definition.constraints:
+                match constraint.args.get("kind"):
+                    case exp.NotNullColumnConstraint() as not_null if not not_null.args.get("allow_null"):
+                        non_null.add(definition.name.lower())
+                    case exp.PrimaryKeyColumnConstraint() as key:
+                        keys.append(((definition.name,), key, True))
+                    case exp.UniqueColumnConstraint() as key:
+                        keys.append(((definition.name,), key, False))
+                    case _:
+                        pass  # Other column constraints state nothing about keys or NULL.
         for constraint in _table_constraints(symbol):
             constrained = _table_level_unique_columns(constraint)
-            if constrained is None:
-                continue
-            unique_sets.append(constrained)
-            if isinstance(constraint, exp.PrimaryKey):
-                non_null.update(column.lower() for column in constrained)
-        facts.extend(NonNullColumn(column=columns[name]) for name in sorted(non_null) if name in columns)
-        for column_names in unique_sets:
+            if constrained is not None:
+                keys.append((constrained, constraint, isinstance(constraint, exp.PrimaryKey)))
+        self._knowledge.extend(NonNullColumn(column=columns[name]) for name in sorted(non_null) if name in columns)
+        for column_names, constraint, primary in keys:
             members = tuple(columns[name.lower()] for name in column_names if name.lower() in columns)
             if len(members) != len(column_names):
                 continue
-            facts.append(UniqueSet(columns=frozenset(members)))
-        return tuple(facts)
+            trust = self._key_trust(constraint, symbol, column_names)
+            if trust is None:
+                continue
+            facts: list[Property] = [UniqueSet(columns=frozenset(members))]
+            if primary and (trust == "declared" or self.semantics.primary_key_not_null):
+                facts.extend(NonNullColumn(column=member) for member in members if member.name.lower() not in non_null)
+            (self._knowledge if trust == "enforced" else self._declarations).extend(facts)
+
+    def _key_trust(self, constraint: exp.Expression, symbol: _Symbol, columns: tuple[str, ...]) -> Literal["enforced", "declared"] | None:
+        """Whether a key or foreign key constraint holds: enforced by the
+        database (Knowledge), trusted by its author (a Property Declaration:
+        marked `RELY`, or any unenforced one under `trust_unenforced_keys`),
+        or neither, which a warning reports. An unenforced one is never
+        Knowledge, so never proves anything by itself (ADR 0005)."""
+        assert symbol.statement is not None
+        foreign = isinstance(constraint, exp.ForeignKey | exp.Reference)
+        reference = constraint.args.get("reference") if isinstance(constraint, exp.ForeignKey) else constraint
+        options = {str(option).upper() for option in (reference.args.get("options") or ())} if isinstance(reference, exp.Expression) else set()
+        meaning = self.semantics
+        reason = None
+        if "NOT ENFORCED" in options:
+            reason = "it is declared NOT ENFORCED"
+        elif id(constraint) in self._unvalidated:
+            reason = "ALTER TABLE ... NOT VALID added it, so rows already in the table were never checked"
+        elif "DEFERRABLE" in options or "INITIALLY DEFERRED" in options:
+            reason = "it is DEFERRABLE, so a transaction may see it violated"
+        elif (meaning.foreign_keys if foreign else meaning.unique_keys) != "enforced":
+            reason = f"{self.dialect} does not enforce it"
+        elif isinstance(constraint, exp.Reference) and not meaning.inline_references:
+            reason = f"{self.dialect} before 9.0 ignores a column-level REFERENCES"
+        elif foreign and meaning.foreign_key_engines is not None and (engine := _engine(symbol)) is not None and engine not in meaning.foreign_key_engines:
+            reason = f"ENGINE={engine} does not enforce foreign keys"
+        if reason is None:
+            return "enforced"
+        if ("RELY" in options and meaning.rely) or self.trust_unenforced_keys:
+            return "declared"
+        kind = "foreign key" if foreign else "primary key" if isinstance(constraint, exp.PrimaryKey | exp.PrimaryKeyColumnConstraint) else "unique constraint"
+        fixes = ["mark it RELY"] if meaning.rely else []
+        fixes.append("analyze with trust_unenforced_keys=True")
+        self._warnings.append(Diagnostic(
+            diag.UNENFORCED_CONSTRAINT,
+            f"the {kind} ({', '.join(columns)}) of {symbol.name} is not Knowledge, since {reason}: "
+            f"if the data satisfies it, {' or '.join(fixes)}",
+            self._origin(constraint, _source_line(constraint) or _source_line(symbol.statement)),
+        ))
+        return None
 
     def _origin(self, node: exp.Expression, line: int | None = None) -> Origin:
         return Origin(SQL, node.sql(dialect=self.dialect), line)
@@ -1592,16 +1668,20 @@ def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tupl
     """Each modelled Builtin, by the SQLGlot node it lowers from (exactly that
     type: TRY_CAST, a subclass of CAST, may be NULL for a value), with the
     argument keys its parameters come from, a list key in place of a variadic
-    Builtin's repeated parameter. Not `||`: Oracle reads NULL as '' there, and
-    MySQL reads it as OR.
+    Builtin's repeated parameter, as the dialect defines it (`dialects.py`).
 
     Comparisons, LIKE, NOT, BETWEEN and the bitwise operators are never NULL
-    for non-null arguments. Arithmetic and CAST only where they raise an error
-    rather than return NULL (`_CHECKED_ARITHMETIC_DIALECTS`: SQLite turns a
-    NaN into NULL, MySQL a bad date CAST), and division and remainder only
-    where division by zero raises too (`_CHECKED_DIVISION_DIALECTS`). `+`, `-`
-    and negation are injective where exact arithmetic overflows into an error."""
-    checked = dialect in _CHECKED_ARITHMETIC_DIALECTS
+    for non-null arguments where a failed implicit cast raises (`casts_raise`;
+    in Spark without ANSI mode `1 < 'x'` is NULL). Arithmetic and CAST only
+    where they raise an error rather than return NULL (`checked_arithmetic`:
+    SQLite turns a NaN into NULL, MySQL a bad date CAST), and division and
+    remainder only where division by zero raises too (`checked_division`).
+    `+`, `-` and negation are injective where exact arithmetic overflows into
+    an error. `||` and `concat()` as each dialect treats NULL; `||` not at all
+    where a setting decides what it means (MySQL: OR, or concatenation)."""
+    meaning = semantics(dialect)
+    checked = meaning.checked_arithmetic
+    casts = meaning.casts_raise
 
     def builtin(name: str, arity: int, *, total: bool = True, injective: bool = False) -> ir.Builtin:
         return ir.Builtin(name=name, strict=(True,) * arity, total=(True,) * arity if total else None, injective=injective)
@@ -1611,31 +1691,47 @@ def _builtins(dialect: str) -> dict[type[exp.Expression], tuple[ir.Builtin, tupl
         exp.BitwiseAnd: "&", exp.BitwiseOr: "|", exp.BitwiseXor: "^", exp.BitwiseLeftShift: "<<", exp.BitwiseRightShift: ">>",
     }
     division = {exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%"}
-    return {
-        **{node: (builtin(name, 2), ("this", "expression")) for node, name in binary.items()},
+    builtins: dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]] = {
+        **{node: (builtin(name, 2, total=casts), ("this", "expression")) for node, name in binary.items()},
         exp.Mul: (builtin("*", 2, total=checked), ("this", "expression")),
-        **{node: (builtin(name, 2, total=dialect in _CHECKED_DIVISION_DIALECTS), ("this", "expression")) for node, name in division.items()},
+        **{node: (builtin(name, 2, total=meaning.checked_division), ("this", "expression")) for node, name in division.items()},
         **{node: (builtin(name, 2, total=checked, injective=checked), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
         exp.Neg: (builtin("unary -", 1, total=checked, injective=checked), ("this",)),
-        exp.Not: (builtin("NOT", 1), ("this",)),
-        exp.BitwiseNot: (builtin("~", 1), ("this",)),
+        exp.Not: (builtin("NOT", 1, total=casts), ("this",)),
+        exp.BitwiseNot: (builtin("~", 1, total=casts), ("this",)),
         exp.Cast: (builtin("CAST", 1, total=checked), ("this",)),
         # `1 BETWEEN NULL AND 0` is FALSE.
-        exp.Between: (ir.Builtin(name="BETWEEN", strict=(True, False, False), total=(True, True, True), injective=False), ("this", "low", "high")),
+        exp.Between: (ir.Builtin(name="BETWEEN", strict=(True, False, False), total=(True, True, True) if casts else None, injective=False), ("this", "low", "high")),
         # NULL values are skipped: `concat_ws(',', NULL)` is ''.
         exp.ConcatWs: (
             ir.BuiltinVariadic(name="concat_ws", strict=(True,), total=(True,), injective=False, repeated_strict=False, repeated_total=False),
             ("expressions",),
         ),
     }
-
-
-# SQLite turns an overflowing integer into a REAL and a NaN into NULL, and
-# MySQL outside strict mode saturates an integer: there `a + 1` may be equal
-# for two `a`s, or NULL.
-_CHECKED_ARITHMETIC_DIALECTS = {"duckdb", "postgres"}
-# DuckDB's `n % 0` and `n // 0` are NULL.
-_CHECKED_DIVISION_DIALECTS = {"postgres"}
+    match meaning.pipes:
+        case "strict":
+            builtins[exp.DPipe] = (builtin("||", 2), ("this", "expression"))
+        case "lenient":
+            builtins[exp.DPipe] = (ir.Builtin(name="||", strict=(False, False), total=(True, True), injective=False), ("this", "expression"))
+        case "ambiguous" | None:
+            pass
+        case _:
+            assert_never(meaning.pipes)
+    match meaning.concat:
+        case "strict":
+            builtins[exp.Concat] = (
+                ir.BuiltinVariadic(name="concat", strict=(), total=(), injective=False, repeated_strict=True, repeated_total=True), ("expressions",),
+            )
+        case "skips-null":
+            # `concat(NULL)` is ''.
+            builtins[exp.Concat] = (
+                ir.BuiltinVariadic(name="concat", strict=(), total=(), injective=False, repeated_strict=False, repeated_total=False), ("expressions",),
+            )
+        case None:
+            pass
+        case _:
+            assert_never(meaning.concat)
+    return builtins
 
 
 def _as_list(value: exp.Expression | list[exp.Expression]) -> list[exp.Expression]:
@@ -1646,7 +1742,7 @@ def _disjuncts(predicate: exp.Expression) -> list[exp.Expression]:
     """The operands of a predicate's top-level ORs, parentheses removed."""
     while isinstance(predicate, exp.Paren):
         predicate = predicate.this
-    if isinstance(predicate, exp.Or):
+    if isinstance(predicate, exp.Or) and not is_ambiguous_pipes(predicate):
         return _disjuncts(predicate.this) + _disjuncts(predicate.expression)
     return [predicate]
 
@@ -1740,7 +1836,7 @@ def _references(symbol: _Symbol) -> list[tuple[tuple[str, ...], exp.Table, tuple
         for constraint in definition.constraints:
             reference = constraint.args.get("kind")
             if isinstance(reference, exp.Reference):
-                found.append(((definition.name,), *_reference_target(reference), definition))
+                found.append(((definition.name,), *_reference_target(reference), reference))
     for foreign_key in _table_constraints(symbol):
         if not isinstance(foreign_key, exp.ForeignKey):
             continue
@@ -1776,11 +1872,16 @@ def _missing(relation: ir.RelationExpr, names: Iterable[str]) -> list[str]:
 
 _SUPPORTED_CREATE_KINDS = {"TABLE", "VIEW"}
 
-# Dialects whose default collation compares text by identity; MySQL's and
-# SQL Server's ignore case, so distinct strings may compare equal there.
-_BINARY_COLLATION_DIALECTS = {"duckdb", "postgres"}
-
 _TEXT_TYPES = {exp.DataType.Type.VARCHAR, exp.DataType.Type.TEXT}
+
+
+def _collation(definition: exp.ColumnDef) -> str | None:
+    """The collation a column is declared with (`COLLATE name`), lower-cased."""
+    for constraint in definition.constraints:
+        kind = constraint.args.get("kind")
+        if isinstance(kind, exp.CollateColumnConstraint):
+            return kind.this.name.lower()
+    return None
 
 
 def _created_table(statement: exp.Create) -> exp.Table | None:
@@ -1913,15 +2014,27 @@ _NOT_A_FUNCTION_OF_ITS_COLUMNS = (
 )
 
 
-def _enum_type_values(definition: exp.ColumnDef) -> frozenset[ir.LiteralValue] | None:
-    """The members of a column declared `ENUM('a', ...)`: its only non-null values."""
+def _enum_type_values(definition: exp.ColumnDef, meaning: DialectSemantics) -> frozenset[ir.LiteralValue] | None:
+    """The values of a column declared `ENUM('a', ...)`: its members, and in
+    MySQL '', which it stores for a value outside them (out of strict mode, or
+    under INSERT IGNORE), with members' trailing spaces removed as MySQL does."""
     kind = definition.args.get("kind")
     if not (isinstance(kind, exp.DataType) and kind.this == exp.DataType.Type.ENUM and kind.expressions):
         return None
     values = [literal_value(member) for member in kind.expressions]
     if any(value is None or value.type != "string" for value in values):
         return None
-    return frozenset(value for value in values if value is not None)
+    members = {value for value in values if value is not None}
+    if meaning.enum_error_value:
+        members = {replace(value, text=value.text.rstrip(" ")) for value in members} | {ir.LiteralValue(type="string", text="")}
+    return frozenset(members)
+
+
+def _engine(symbol: _Symbol) -> str | None:
+    """The storage ENGINE a CREATE TABLE names (lower-cased), if any."""
+    assert symbol.statement is not None
+    engine = symbol.statement.find(exp.EngineProperty)
+    return engine.name.lower() if engine is not None else None
 
 
 def _aggregate_arguments(call: exp.AggFunc) -> list[exp.Expression]:

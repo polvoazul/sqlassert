@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 DEFAULT_DIALECT = "duckdb"
 
 
-def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT) -> Report:
+def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: bool = False) -> Report:
     """Prove the Unique Join Assertions and Unique Set Assertions in one SQL Program.
 
     Pure: the Program is the only source of Knowledge. `analyze_database`
@@ -23,7 +23,7 @@ def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT) -> Report:
     no `CREATE`, a column only a catalog can resolve), the Report warns.
     """
     sql_parser = SqlParser(dialect)
-    ir_parser = IrParser(dialect)
+    ir_parser = IrParser(dialect, trust_unenforced_keys)
 
     ast = sql_parser.parse(sql)
     conversion = ir_parser.parse(ast)
@@ -31,7 +31,9 @@ def analyze(sql: str, *, dialect: str = DEFAULT_DIALECT) -> Report:
     return Engine().run(conversion.program, conversion.knowledge, diagnostics, conversion.warnings)
 
 
-def analyze_database(sql: str, fetcher: DatabaseKnowledgeFetcher, *, dialect: str = DEFAULT_DIALECT) -> Report:
+def analyze_database(
+    sql: str, fetcher: DatabaseKnowledgeFetcher, *, dialect: str = DEFAULT_DIALECT, trust_unenforced_keys: bool = False,
+) -> Report:
     """`analyze`, with the external Relations the Program reaches hydrated from a catalog.
 
     The fetcher reads catalog metadata only, never rows, and binds it to the
@@ -39,7 +41,7 @@ def analyze_database(sql: str, fetcher: DatabaseKnowledgeFetcher, *, dialect: st
     the catalog lacks is already a diagnostic.
     """
     ast = SqlParser(dialect).parse(sql)
-    hydration = fetcher.hydrate(ast, dialect=dialect)
+    hydration = fetcher.hydrate(ast, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
     conversion = hydration.conversion
     knowledge = conversion.knowledge + fetcher.bind(conversion.program, hydration)
     diagnostics = ast.diagnostics + hydration.diagnostics + conversion.diagnostics

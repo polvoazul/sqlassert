@@ -104,7 +104,9 @@ def annotate(sql: str, items: Iterable[Candidate | Suggestion]) -> str:
     return sql
 
 
-def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE) -> SuggestionReport:
+def suggest(
+    sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE, trust_unenforced_keys: bool = False,
+) -> SuggestionReport:
     """Every Property sqlassert can prove about `sql`, as markers to paste,
     and every Improvement a proof justifies.
 
@@ -118,7 +120,7 @@ def suggest(sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT
     Properties the SQL already asserts or declares are left out.
     """
     ast = SqlParser(dialect).parse(sql)
-    conversion = IrParser(dialect).parse(ast)
+    conversion = IrParser(dialect, trust_unenforced_keys).parse(ast)
     program, diagnostics = conversion.program, ast.diagnostics + conversion.diagnostics
     if any(diagnostic.code in _BLOCKING for diagnostic in diagnostics):
         return SuggestionReport(sql, (), diagnostics, warnings=conversion.warnings)

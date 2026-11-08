@@ -1,0 +1,81 @@
+-- MySQL semantics the rules depend on (`sqlassert/dialects.py`).
+--
+-- The default collations ignore case, so distinct strings may compare equal;
+-- only a NO PAD binary collation compares text by identity. `||` is OR, or
+-- concatenation under sql_mode PIPES_AS_CONCAT, which also groups its
+-- operands differently: it is an unknown function, with a warning. Out of
+-- strict mode a bad CAST or date is NULL, and division by zero is NULL in any
+-- mode, so arithmetic, CAST and comparisons may be NULL. An ENUM column holds
+-- '' for a value outside its members (out of strict mode, or under INSERT
+-- IGNORE), and its members lose trailing spaces. MySQL before 9.0 ignores a
+-- column-level REFERENCES, and only InnoDB (and NDB) enforces foreign keys.
+
+-- dialect: mysql
+CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL, m INT, s VARCHAR(10), b VARCHAR(10) COLLATE utf8mb4_0900_bin, e ENUM('a', 'b ') NOT NULL);
+
+-- case: pipes_are_an_unknown_function
+SELECT n || m AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ ambiguous-operator "n || m is an unknown function"
+
+-- case: pipes_hide_the_conjuncts_around_them
+-- `id = 1 AND n || m` is `(id = 1 AND n) OR m`, or `id = 1 AND (n || m)`.
+SELECT n FROM t WHERE id = 1 AND n || m /**ASSERT UNIQUE(n)**/  --~ UNKNOWN
+--~ ambiguous-operator
+
+-- case: or_is_or
+SELECT n FROM t WHERE id = 1 AND (n = 1 OR m = 2) /**ASSERT UNIQUE(n)**/  --~ PROVED
+
+-- case: concat_is_null_when_an_argument_is
+SELECT concat(s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: concat_of_non_null_arguments_is_non_null
+SELECT concat(n, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_comparison_may_be_null
+SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: addition_may_be_null
+SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: text_under_the_default_collation_may_equal_distinct_strings
+SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
+
+-- case: text_under_a_no_pad_binary_collation_is_compared_by_identity
+SELECT b FROM t WHERE b IN ('a', 'b') AND b = 'B' /**ASSERT ENUM(b IN ('a'))**/  --~ PROVED
+
+-- case: an_enum_column_may_hold_the_empty_string
+SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b'))**/  --~ UNKNOWN
+
+-- case: an_enum_column_holds_its_members_without_trailing_spaces_or_the_empty_string
+SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b', ''))**/  --~ PROVED
+
+-- case: an_enum_case_is_exhaustive_only_with_the_empty_string
+SELECT /**ASSERT EXHAUSTIVE**/ CASE e WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS v FROM t  --~ UNKNOWN
+
+-- case: an_enum_case_with_the_empty_string_is_exhaustive
+SELECT /**ASSERT EXHAUSTIVE**/ CASE e WHEN 'a' THEN 1 WHEN 'b' THEN 2 WHEN '' THEN 3 END AS v FROM t  --~ PROVED
+
+-- case: an_enum_column_compares_without_case
+-- 'A' matches the member 'a'.
+SELECT e FROM t WHERE e = 'A' /**ASSERT ENUM(e IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_column_level_references_is_ignored
+CREATE TABLE o (id INT PRIMARY KEY, t_id INT REFERENCES t (id));
+--~ unenforced-constraint "column-level REFERENCES"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: a_table_level_foreign_key_is_enforced
+CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (id));
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED
+
+-- case: a_myisam_table_ignores_foreign_keys
+CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (id)) ENGINE=MyISAM;
+--~ unenforced-constraint "ENGINE=myisam"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: a_primary_key_is_unique_and_non_null
+SELECT id FROM t /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_loose_group_by_keeps_one_row_per_group
+-- Without ONLY_FULL_GROUP_BY, `s` is some row's value.
+SELECT n, s FROM t GROUP BY n /**ASSERT UNIQUE(n)**/  --~ PROVED

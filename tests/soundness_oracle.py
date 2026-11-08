@@ -88,7 +88,10 @@ def record_analyze_calls() -> None:
     """
     original = sqlassert.main.analyze
 
-    def recording(sql: str, *, dialect: str = sqlassert.main.DEFAULT_DIALECT) -> Report:
+    def recording(sql: str, *, dialect: str = sqlassert.main.DEFAULT_DIALECT, trust_unenforced_keys: bool = False) -> Report:
+        if trust_unenforced_keys:
+            # Keys trusted by the caller, not the SQL, are not the oracle's to judge.
+            return original(sql, dialect=dialect, trust_unenforced_keys=True)
         report = original(sql, dialect=dialect)
         _recorded.setdefault((sql, dialect), RecordedProgram(sql, dialect, report))
         return report

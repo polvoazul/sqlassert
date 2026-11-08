@@ -1,0 +1,69 @@
+-- PostgreSQL semantics the rules depend on (`sqlassert/dialects.py`).
+--
+-- Arithmetic, CAST and division raise rather than return NULL. `||` is
+-- concatenation, NULL for a NULL text operand but not for an array's
+-- (`ARRAY[1] || NULL` is `{1}`); `concat()` skips NULLs. Text compares by
+-- identity by default and under the deterministic built-in collations. A
+-- NUMERIC with no scale keeps each value's own (1.0 and 1.00 are equal and
+-- differ). Keys are enforced, except a foreign key added NOT VALID, one
+-- declared NOT ENFORCED (PostgreSQL 18), and a DEFERRABLE constraint.
+
+-- dialect: postgres
+CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, m INTEGER, s TEXT NOT NULL, r TEXT);
+CREATE TABLE p (id INTEGER PRIMARY KEY, n NUMERIC, d NUMERIC(10, 2));
+CREATE TABLE c (id INTEGER PRIMARY KEY, s TEXT COLLATE "C", u TEXT COLLATE "und-x-icu", v VARCHAR(5) COLLATE "default");
+
+-- case: division_by_a_non_null_value_is_non_null
+SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: pipes_of_non_null_operands_are_non_null
+SELECT s || 'x' AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: pipes_of_a_nullable_operand_may_be_null
+SELECT r || 'x' AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: pipes_do_not_reject_a_null_operand
+-- An array operand's NULL is skipped, so `||` does not prove the join matched.
+SELECT o.id AS oid FROM t LEFT JOIN t AS o ON o.id = t.m WHERE o.r || 'x' = 'ax' /**ASSERT NOT NULL(oid)**/
+--~ UNKNOWN
+
+-- case: concat_skips_nulls
+SELECT concat(r, m) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: an_unscaled_numeric_is_not_compared_by_identity
+-- 1.0 = 1.00, but their text differs.
+SELECT n, CAST(n AS TEXT) AS x FROM p /**ASSERT DETERMINES(n -> x)**/  --~ UNKNOWN
+
+-- case: a_scaled_numeric_is_compared_by_identity
+SELECT d, CAST(d AS TEXT) AS x FROM p /**ASSERT DETERMINES(d -> x)**/  --~ PROVED
+
+-- case: text_under_the_c_collation_is_compared_by_identity
+-- No value equals both 'b' and 'B', so no row is kept.
+SELECT s FROM c WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ PROVED
+
+-- case: text_under_the_default_collation_is_compared_by_identity
+SELECT v FROM c WHERE v IN ('a', 'b') AND v = 'B' /**ASSERT ENUM(v IN ('a'))**/  --~ PROVED
+
+-- case: text_under_another_collation_may_equal_distinct_strings
+SELECT u FROM c WHERE u IN ('a', 'b') AND u = 'B' /**ASSERT ENUM(u IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_foreign_key_added_not_valid_is_not_knowledge
+CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER);
+ALTER TABLE o ADD CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id) NOT VALID;
+--~ unenforced-constraint "NOT VALID"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: a_foreign_key_added_valid_is_knowledge
+CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER);
+ALTER TABLE o ADD CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id);
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED
+
+-- case: a_foreign_key_not_enforced_is_not_knowledge
+CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER REFERENCES t (id) NOT ENFORCED);
+--~ unenforced-constraint "NOT ENFORCED"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
+
+-- case: a_deferrable_foreign_key_is_not_knowledge
+CREATE TABLE o (id INTEGER PRIMARY KEY, t_id INTEGER, FOREIGN KEY (t_id) REFERENCES t (id) DEFERRABLE INITIALLY DEFERRED);
+--~ unenforced-constraint "DEFERRABLE"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
