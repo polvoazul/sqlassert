@@ -13,9 +13,16 @@ from sqlassert.sql_parse import (
     _unresolved_markers,
     sqlassert_dialect,
     column_markers,
-    exhaustive_line,
+    exhaustive_span,
     marker_position,
 )
+from sqlassert.provenance import Span
+
+
+def at(sql: str, marker: str) -> Span:
+    """Where the first `marker` is written in `sql`."""
+    start = sql.index(marker)
+    return Span.of(sql, start, start + len(marker))
 
 
 def test_parsed_program_coercion():
@@ -171,27 +178,32 @@ def test_a_unique_set_assertion_marker_attaches_at_every_select_expression_site(
         if markers
     ]
     assert len(found) == expected_count, label
-    assert found[0] == (ColumnMarker("unique", ("id",), 1),), label
+    assert found[0] == (ColumnMarker("unique", ("id",), at(sql, "/**ASSERT UNIQUE(id)**/")),), label
 
 
 def test_a_primary_key_flavored_marker_is_recognized():
     parser = SqlParser("duckdb")
-    program = parser.parse("SELECT id FROM t /**ASSERT PRIMARY KEY(id)**/")
+    sql = "SELECT id FROM t /**ASSERT PRIMARY KEY(id)**/"
+    program = parser.parse(sql)
 
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert markers == (ColumnMarker("key", ("id",), 1),)
+    assert markers == (ColumnMarker("key", ("id",), Span(1, 18, 1, 46)),)
 
 
 def test_stacked_unique_set_assertion_markers_are_all_recognized():
     parser = SqlParser("duckdb")
-    program = parser.parse("SELECT a, b FROM t /**ASSERT UNIQUE(a)**/ /**ASSERT PRIMARY KEY(a, b)**/")
+    sql = "SELECT a, b FROM t /**ASSERT UNIQUE(a)**/ /**ASSERT PRIMARY KEY(a, b)**/"
+    program = parser.parse(sql)
 
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert markers == (ColumnMarker("unique", ("a",), 1), ColumnMarker("key", ("a", "b"), 1))
+    assert markers == (
+        ColumnMarker("unique", ("a",), at(sql, "/**ASSERT UNIQUE(a)**/")),
+        ColumnMarker("key", ("a", "b"), at(sql, "/**ASSERT PRIMARY KEY(a, b)**/")),
+    )
 
 
 UNIQUE_SET_MARKER_SHAPES = [
@@ -217,12 +229,16 @@ def test_a_unique_set_assertion_marker_does_not_disturb_ordinary_sql_around_it(m
 
 def test_a_declaration_marker_is_recognized_as_a_declared_kind():
     parser = SqlParser("duckdb")
-    program = parser.parse("SELECT a, b FROM t /**DECLARE UNIQUE(a)**/ /**ASSERT UNIQUE(a, b)**/")
+    sql = "SELECT a, b FROM t /**DECLARE UNIQUE(a)**/ /**ASSERT UNIQUE(a, b)**/"
+    program = parser.parse(sql)
 
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
-    assert markers == (ColumnMarker("declared-unique", ("a",), 1), ColumnMarker("unique", ("a", "b"), 1))
+    assert markers == (
+        ColumnMarker("declared-unique", ("a",), at(sql, "/**DECLARE UNIQUE(a)**/")),
+        ColumnMarker("unique", ("a", "b"), at(sql, "/**ASSERT UNIQUE(a, b)**/")),
+    )
 
 
 def test_every_join_and_select_records_where_its_marker_would_be_written():
@@ -240,16 +256,17 @@ def test_every_join_and_select_records_where_its_marker_would_be_written():
 
 def test_a_foreign_key_marker_records_its_referenced_relation_and_columns():
     parser = SqlParser("duckdb")
-    program = parser.parse(
-        "SELECT a, b FROM t /**ASSERT FOREIGN KEY(a, b) REFERENCES app.u(x, y)**/ /**DECLARE FOREIGN KEY(a) REFERENCES u(x)**/"
-    )
+    asserted = "/**ASSERT FOREIGN KEY(a, b) REFERENCES app.u(x, y)**/"
+    declared = "/**DECLARE FOREIGN KEY(a) REFERENCES u(x)**/"
+    sql = f"SELECT a, b FROM t {asserted} {declared}"
+    program = parser.parse(sql)
 
     assert program.diagnostics == ()
     assert program.root_select is not None
     markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
     assert markers == (
-        ColumnMarker("foreign-key", ("a", "b"), 1, "app.u", ("x", "y")),
-        ColumnMarker("declared-foreign-key", ("a",), 1, "u", ("x",)),
+        ColumnMarker("foreign-key", ("a", "b"), at(sql, asserted), "app.u", ("x", "y")),
+        ColumnMarker("declared-foreign-key", ("a",), at(sql, declared), "u", ("x",)),
     )
 
 
@@ -307,7 +324,7 @@ def test_an_unrecognized_marker_lists_the_enum_shape():
         "SELECT coalesce(CASE s WHEN TRUE THEN 'y' END, 'n') FROM t",
     ],
 )
-def test_a_case_marker_records_its_line_and_leaves_the_case_alone(plain: str):
+def test_a_case_marker_records_its_span_and_leaves_the_case_alone(plain: str):
     sql = plain.replace("CASE", "\n/**ASSERT EXHAUSTIVE**/ CASE", 1)
     base = sqlglot.parse_one(plain, read="duckdb").sql(dialect="duckdb")
 
@@ -317,7 +334,7 @@ def test_a_case_marker_records_its_line_and_leaves_the_case_alone(plain: str):
     assert program.root_select is not None
     assert program.root_select.sql(dialect="duckdb") == base
     case, = program.root_select.find_all(exp.Case)
-    assert exhaustive_line(case) == 2
+    assert exhaustive_span(case) == Span(2, 1, 2, 24)
 
 
 def test_an_unrecognized_marker_lists_the_case_marker():

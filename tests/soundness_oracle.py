@@ -45,9 +45,9 @@ from sqlassert.properties import EnumeratedDomain, ExhaustiveCase, ForeignKey, F
 from sqlassert.ir import LiteralValue
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
-from sqlassert.provenance import SQL, Origin
+from sqlassert.provenance import Origin, Span
 from sqlassert.sql_parse import (
-    DECLARED_KINDS, ColumnMarker, ColumnMarkerKind, ParsedProgram, SqlParser, assertion_line, column_markers, exhaustive_line, join_origin,
+    DECLARED_KINDS, ColumnMarker, ColumnMarkerKind, ParsedProgram, SqlParser, assertion_span, column_markers, exhaustive_span, join_origin,
     literal_value,
 )
 
@@ -211,7 +211,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         case UniqueJoin(join=_) | ManyToOneJoin(join=_) | OneToManyJoin(join=_) | OneToOneJoin(join=_) | ExactlyOneJoin(join=_):
             join, = (
                 join for statement in statements for join in statement.find_all(exp.Join)
-                if assertion_line(join) is not None and join_origin(join, dialect) == origin
+                if assertion_span(join) is not None and join_origin(join, dialect) == origin
             )
             return _join_violation(join, property)
         case (
@@ -228,7 +228,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         case ExhaustiveCase(case=_):
             case, = (
                 case for statement in statements for case in statement.find_all(exp.Case)
-                if (line := exhaustive_line(case)) is not None and Origin(SQL, case.sql(dialect=dialect), line) == origin
+                if (span := exhaustive_span(case)) is not None and Origin.marked(case.sql(dialect=dialect), span) == origin
             )
             return _case_violation(case)
         case _:
@@ -240,7 +240,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
         for marker in column_markers(select)
         if marker.kind == kind and {name.lower() for name in marker.columns} == columns
         and (values is None or frozenset(marker.values) == values)
-        and Origin(SQL, select.sql(dialect=dialect), marker.line) == origin
+        and Origin.marked(select.sql(dialect=dialect), marker.span) == origin
     )
     return _violation_query(select, marker, _checked(marker.kind))
 
@@ -527,7 +527,7 @@ class _Database:
                     referenced = tuple(row[0])
                 if len(names) != len(referenced):
                     raise duckdb.CatalogException("A Foreign Key must pair equally many referencing and referenced columns")
-                marker = ColumnMarker("declared-foreign-key", names, 0, target.sql(dialect="duckdb"), referenced)
+                marker = ColumnMarker("declared-foreign-key", names, Span(0, 0, 0, 0), target.sql(dialect="duckdb"), referenced)
                 checks.append(_violation_query(exp.select("*").from_(source.copy()), marker, "coverage"))
         return checks
 

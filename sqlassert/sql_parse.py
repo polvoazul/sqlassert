@@ -6,7 +6,7 @@ onto the simple `CASE` expressions they precede.
 The marker is real syntax, not a comment we go looking for: a custom dialect
 tokenizes `/**ASSERT UNIQUE**/` as a token of its own and the join rule consumes it, so
 the grammar is what requires a marker to sit immediately before its join. The
-line is then recorded on the `Join` node, and nothing downstream re-reads SQL
+span is then recorded on the `Join` node, and nothing downstream re-reads SQL
 text. `/**ASSERT EXHAUSTIVE**/` is likewise a primary expression of its own
 that must continue with `CASE`. SQLGlot objects stop at this boundary; only the IR parser reads them.
 """
@@ -28,7 +28,7 @@ from sqlglot.tokens import Token, TokenType
 from sqlassert import diagnostics as diag
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.ir.model import LiteralValue
-from sqlassert.provenance import SQL, Origin
+from sqlassert.provenance import SQL, Origin, Span
 
 # Where a resolved assertion is recorded on its Join node, and which join marker it was.
 _ASSERTED_AT = "sqlassert.asserted_at"
@@ -179,7 +179,7 @@ JOIN_MARKER_NOUNS: dict[JoinMarkerKind, str] = {
 # The markers written as one fixed literal: the join markers and the case marker.
 _FIXED_MARKER_TOKENS = frozenset({*JOIN_MARKER_KINDS, SqlassertToken.SQLASSERT_EXHAUSTIVE})
 
-# Where a resolved case marker's line is recorded on its `Case` node.
+# Where a resolved case marker's span is recorded on its `Case` node.
 _EXHAUSTIVE_AT = "sqlassert.exhaustive_at"
 
 # The open literals of a column marker, and the kind each one states --
@@ -291,7 +291,7 @@ class ColumnMarker(NamedTuple):
 
     kind: ColumnMarkerKind
     columns: tuple[str, ...]
-    line: int
+    span: Span
     referenced_relation: str | None = None
     referenced_columns: tuple[str, ...] = ()
     dependent: tuple[str, ...] = ()
@@ -301,9 +301,9 @@ class ColumnMarker(NamedTuple):
 class UnattachedMarker(ParseError):
     """A marker that does not mark a join."""
 
-    def __init__(self, message: str, line: int, text: str) -> None:
+    def __init__(self, message: str, span: Span, text: str) -> None:
         super().__init__(message)
-        self.line = line
+        self.span = span
         self.text = text
 
 
@@ -368,6 +368,19 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             SqlassertToken.SQLASSERT_EXHAUSTIVE: lambda self, token: self._parse_exhaustive_case(token),
         }
 
+        def _span(self, token: Token) -> Span:
+            """Where `token` is written in the SQL being parsed."""
+            return Span.of(self.sql, token.start, token.end + 1)
+
+        def _misplaced_case_marker(self, marker: Token) -> UnattachedMarker:
+            span = self._span(marker)
+            return UnattachedMarker(
+                f"the exhaustive assertion on line {span.line} is not followed by CASE; "
+                "it must sit immediately before a simple CASE expression",
+                span,
+                marker.text,
+            )
+
         def _parse_exhaustive_case(self, marker: Token) -> exp.Case:
             """The simple CASE a case marker precedes.
 
@@ -375,16 +388,16 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             literals: each is compared with the operand, so an arm matches a
             domain member exactly when it is that literal.
             """
-            line = marker.line
+            span = self._span(marker)
 
             def malformed(problem: str) -> UnattachedMarker:
-                return UnattachedMarker(f"the exhaustive assertion on line {line} {problem}", line, marker.text)
+                return UnattachedMarker(f"the exhaustive assertion on line {span.line} {problem}", span, marker.text)
 
             if not self._match(TokenType.CASE):
-                raise _misplaced_case_marker(marker)
+                raise self._misplaced_case_marker(marker)
             case = self._parse_case()
             if not isinstance(case, exp.Case):
-                raise _misplaced_case_marker(marker)
+                raise self._misplaced_case_marker(marker)
             if case.this is None:
                 raise malformed("marks a searched CASE; only a simple CASE operand WHEN value ... can be exhaustive")
             values: list[LiteralValue] = []
@@ -398,7 +411,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 if value in values:
                     raise malformed(f"lists WHEN {value.sql()} more than once")
                 values.append(value)
-            case.meta[_EXHAUSTIVE_AT] = line
+            case.meta[_EXHAUSTIVE_AT] = span
             return case
 
         def _parse_case(self, *args, **kwargs):
@@ -412,7 +425,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
 
         def _parse_join(self, *args, **kwargs):
             if self._curr is not None and self._curr.token_type is SqlassertToken.SQLASSERT_EXHAUSTIVE:
-                raise _misplaced_case_marker(self._curr)
+                raise self._misplaced_case_marker(self._curr)
             if self._curr is None or self._curr.token_type not in JOIN_MARKER_KINDS:
                 start = self._curr
                 join = super()._parse_join(*args, **kwargs)
@@ -423,10 +436,10 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
 
             kind = JOIN_MARKER_KINDS[self._curr.token_type]
             self._advance()
-            line = self._prev.line
+            span = self._span(self._prev)
             unattached = UnattachedMarker(
-                f"the {JOIN_MARKER_NOUNS[kind]} marker on line {line} is not followed by the JOIN keyword",
-                line,
+                f"the {JOIN_MARKER_NOUNS[kind]} marker on line {span.line} is not followed by the JOIN keyword",
+                span,
                 self._prev.text,
             )
 
@@ -439,7 +452,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             if join is None:
                 raise unattached
 
-            join.meta[_ASSERTED_AT] = line
+            join.meta[_ASSERTED_AT] = span
             join.meta[_JOIN_MARKER_KIND] = kind
             return join
 
@@ -460,31 +473,33 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             found: list[ColumnMarker] = []
             while self._curr is not None and self._curr.token_type in _COLUMN_MARKER_OPEN_TOKENS:
                 kind = _COLUMN_MARKER_OPEN_TOKENS[self._curr.token_type]
-                line = self._curr.line
+                open_ = self._curr
+                span = self._span(open_)
                 self._advance()
 
                 dependent: tuple[str, ...] = ()
                 values: tuple[LiteralValue, ...] = ()
                 if kind in DETERMINES_KINDS:
-                    names, dependent = self._parse_marker_dependency(kind, line)
+                    names, dependent = self._parse_marker_dependency(kind, span)
                 elif kind in ENUM_KINDS:
-                    names, values = self._parse_marker_domain(kind, line)
+                    names, values = self._parse_marker_domain(kind, span)
                 else:
-                    names = self._parse_marker_columns(kind, line)
+                    names = self._parse_marker_columns(kind, span)
                 referenced_relation, referenced_columns = None, ()
                 if kind in FOREIGN_KEY_KINDS:
-                    referenced_relation, referenced_columns = self._parse_marker_reference(kind, line, len(names))
+                    referenced_relation, referenced_columns = self._parse_marker_reference(kind, span, len(names))
                 if not self._match(SqlassertToken.SQLASSERT_MARKER_CLOSE):
                     raise UnattachedMarker(
-                        f"the {MARKER_NOUNS[kind]} on line {line} is not closed with **/", line, self._prev.text
+                        f"the {MARKER_NOUNS[kind]} on line {span.line} is not closed with **/", span, self._prev.text
                     )
 
-                found.append(ColumnMarker(kind, names, line, referenced_relation, referenced_columns, dependent, values))
+                whole = Span.of(self.sql, open_.start, self._prev.end + 1)
+                found.append(ColumnMarker(kind, names, whole, referenced_relation, referenced_columns, dependent, values))
 
             if found:
                 result.meta[_COLUMN_MARKERS_AT] = found
             if self._curr is not None and self._curr.token_type is SqlassertToken.SQLASSERT_EXHAUSTIVE:
-                raise _misplaced_case_marker(self._curr)
+                raise self._misplaced_case_marker(self._curr)
 
             # `super()._parse_select_query` already tried, and gave up, on
             # attaching a following UNION/INTERSECT/EXCEPT to this same
@@ -506,52 +521,52 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 this.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
             return super()._parse_set_operations(this, *args, **kwargs)
 
-        def _parse_marker_columns(self, kind: ColumnMarkerKind, line: int) -> tuple[str, ...]:
+        def _parse_marker_columns(self, kind: ColumnMarkerKind, span: Span) -> tuple[str, ...]:
             """A marker's column list after its opening parenthesis, through the closing one."""
             columns = self._parse_csv(self._parse_id_var)
             if not columns:
-                raise UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {line} names no columns", line, self._prev.text)
+                raise UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {span.line} names no columns", span, self._prev.text)
             names = tuple(column.name for column in columns)
             if len({name.lower() for name in names}) != len(names):
                 raise UnattachedMarker(
-                    f"the {MARKER_NOUNS[kind]} on line {line} names the same column more than once",
-                    line,
+                    f"the {MARKER_NOUNS[kind]} on line {span.line} names the same column more than once",
+                    span,
                     self._prev.text,
                 )
             if not self._match(TokenType.R_PAREN):
                 raise UnattachedMarker(
-                    f"the {MARKER_NOUNS[kind]} on line {line} is missing its closing parenthesis",
-                    line,
+                    f"the {MARKER_NOUNS[kind]} on line {span.line} is missing its closing parenthesis",
+                    span,
                     self._prev.text,
                 )
             return names
 
-        def _parse_marker_dependency(self, kind: ColumnMarkerKind, line: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        def _parse_marker_dependency(self, kind: ColumnMarkerKind, span: Span) -> tuple[tuple[str, ...], tuple[str, ...]]:
             """`determinant -> dependent`, each a column list, through the closing parenthesis."""
             determinant = tuple(column.name for column in self._parse_csv(self._parse_id_var))
             if not determinant or not self._match(TokenType.ARROW):
                 raise UnattachedMarker(
-                    f"the {MARKER_NOUNS[kind]} on line {line} must list columns, then ->, then the columns they determine",
-                    line,
+                    f"the {MARKER_NOUNS[kind]} on line {span.line} must list columns, then ->, then the columns they determine",
+                    span,
                     self._prev.text,
                 )
-            dependent = self._parse_marker_columns(kind, line)
+            dependent = self._parse_marker_columns(kind, span)
             if len({name.lower() for name in determinant}) != len(determinant):
                 raise UnattachedMarker(
-                    f"the {MARKER_NOUNS[kind]} on line {line} names the same column more than once",
-                    line,
+                    f"the {MARKER_NOUNS[kind]} on line {span.line} names the same column more than once",
+                    span,
                     self._prev.text,
                 )
             return determinant, dependent
 
-        def _parse_marker_domain(self, kind: ColumnMarkerKind, line: int) -> tuple[tuple[str, ...], tuple[LiteralValue, ...]]:
+        def _parse_marker_domain(self, kind: ColumnMarkerKind, span: Span) -> tuple[tuple[str, ...], tuple[LiteralValue, ...]]:
             """`column IN (literal, ...)`, through the marker's closing parenthesis.
 
             Members are distinct, non-null string, numeric, and boolean literals.
             """
 
             def malformed(problem: str) -> UnattachedMarker:
-                return UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {line} {problem}", line, self._prev.text)
+                return UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {span.line} {problem}", span, self._prev.text)
 
             column = self._parse_id_var(any_token=False)
             if column is None or not self._match(TokenType.IN) or not self._match(TokenType.L_PAREN):
@@ -573,11 +588,11 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 values.append(value)
             return (column.name,), tuple(values)
 
-        def _parse_marker_reference(self, kind: ColumnMarkerKind, line: int, count: int) -> tuple[str, tuple[str, ...]]:
+        def _parse_marker_reference(self, kind: ColumnMarkerKind, span: Span, count: int) -> tuple[str, tuple[str, ...]]:
             """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
             missing = UnattachedMarker(
-                f"the {MARKER_NOUNS[kind]} on line {line} must continue with REFERENCES relation(column, ...)",
-                line,
+                f"the {MARKER_NOUNS[kind]} on line {span.line} must continue with REFERENCES relation(column, ...)",
+                span,
                 self._prev.text,
             )
             if not self._match(TokenType.REFERENCES):
@@ -588,12 +603,12 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             if None in parts or not self._match(TokenType.L_PAREN):
                 raise missing
             relation = ".".join(part.name for part in parts if part is not None)
-            columns = self._parse_marker_columns(kind, line)
+            columns = self._parse_marker_columns(kind, span)
             if len(columns) != count:
                 raise UnattachedMarker(
-                    f"the {MARKER_NOUNS[kind]} on line {line} pairs {count} column(s) with {len(columns)} "
+                    f"the {MARKER_NOUNS[kind]} on line {span.line} pairs {count} column(s) with {len(columns)} "
                     f"referenced column(s) of {relation}",
-                    line,
+                    span,
                     self._prev.text,
                 )
             return relation, columns
@@ -602,15 +617,6 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
         f"SqlAssert{parent.__name__}",
         (parent,),
         {"Tokenizer": _Tokenizer, "Parser": _Parser},
-    )
-
-
-def _misplaced_case_marker(marker: Token) -> UnattachedMarker:
-    return UnattachedMarker(
-        f"the exhaustive assertion on line {marker.line} is not followed by CASE; "
-        "it must sit immediately before a simple CASE expression",
-        marker.line,
-        marker.text,
     )
 
 
@@ -684,7 +690,7 @@ class SqlParser:
         return ParsedProgram(tuple(creates), selects[0] if selects else None, tuple(diagnostics))
 
     def _unattached(self, error: UnattachedMarker) -> Diagnostic:
-        return Diagnostic(diag.UNATTACHED_MARKER, str(error), Origin(SQL, error.text, error.line))
+        return Diagnostic(diag.UNATTACHED_MARKER, str(error), Origin.marked(error.text, error.span))
 
     def _unparseable(self, sql: str, error: SqlglotError) -> Diagnostic:
         """A parse failure, naming a marker when the program contains one.
@@ -695,10 +701,11 @@ class SqlParser:
         marker = self._marker_token(sql)
         if marker is None:
             return Diagnostic(diag.SQL_PARSE_FAILED, f"SQL could not be parsed: {error}")
+        span = Span.of(sql, marker.start, marker.end + 1)
         return Diagnostic(
             diag.SQL_PARSE_FAILED,
-            f"SQL could not be parsed, and a marker is on line {marker.line}: {error}",
-            Origin(SQL, marker.text, marker.line),
+            f"SQL could not be parsed, and a marker is on line {span.line}: {error}",
+            Origin.marked(marker.text, span),
         )
 
     def _marker_token(self, sql: str) -> Token | None:
@@ -747,12 +754,13 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
     return [
         Diagnostic(
             diag.UNRECOGNIZED_MARKER,
-            f"{match.group(0)!r} on line {_line_of(sql, match.start())} is not a sqlassert marker; "
+            f"{match.group(0)!r} on line {span.line} is not a sqlassert marker; "
             f"{_marker_hint(match.group(0))}the markers are {recognized}",
-            Origin(SQL, match.group(0), _line_of(sql, match.start())),
+            Origin.marked(match.group(0), span),
         )
         for match in _marker_shapes(sql)
         if not _is_recognized_marker(match.group(0))
+        for span in (Span.of(sql, match.start(), match.end()),)
     ]
 
 
@@ -787,7 +795,7 @@ def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diag
         1
         for statement in statements
         for join in statement.find_all(exp.Join)
-        if assertion_line(join) is not None
+        if assertion_span(join) is not None
     ) + sum(
         len(select.meta.get(_COLUMN_MARKERS_AT, ()))
         for statement in statements
@@ -796,29 +804,25 @@ def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diag
         1
         for statement in statements
         for case in statement.find_all(exp.Case)
-        if exhaustive_line(case) is not None
+        if exhaustive_span(case) is not None
     )
     if len(written) <= resolved:
         return []
 
     first = written[resolved]
-    line = _line_of(sql, first.start())
+    span = Span.of(sql, first.start(), first.end())
     return [
         Diagnostic(
             diag.UNRECOGNIZED_MARKER,
-            f"the marker on line {line} was not recognized: "
+            f"the marker on line {span.line} was not recognized: "
             f"{resolved} of {len(written)} markers became assertions",
-            Origin(SQL, first.group(0), line),
+            Origin.marked(first.group(0), span),
         )
     ]
 
 
-def _line_of(sql: str, offset: int) -> int:
-    return sql.count("\n", 0, offset) + 1
-
-
-def assertion_line(join: exp.Join) -> int | None:
-    """The source line of the marker asserting a Property of this join, if any."""
+def assertion_span(join: exp.Join) -> Span | None:
+    """Where the marker asserting a Property of this join is written, if any."""
     return join.meta.get(_ASSERTED_AT)
 
 
@@ -828,12 +832,14 @@ def join_marker_kind(join: exp.Join) -> JoinMarkerKind | None:
 
 
 def join_origin(join: exp.Join, dialect: str) -> Origin:
-    """A readable origin for an asserted join."""
-    return Origin(SQL, join.sql(dialect=dialect), assertion_line(join))
+    """A readable origin for an asserted join: its marker's span."""
+    span = assertion_span(join)
+    assert span is not None, "only an asserted join has a join origin"
+    return Origin.marked(join.sql(dialect=dialect), span)
 
 
-def exhaustive_line(case: exp.Case) -> int | None:
-    """The source line of the marker asserting this CASE exhaustive, if any."""
+def exhaustive_span(case: exp.Case) -> Span | None:
+    """Where the marker asserting this CASE exhaustive is written, if any."""
     return case.meta.get(_EXHAUSTIVE_AT)
 
 

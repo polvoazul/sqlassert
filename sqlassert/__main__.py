@@ -1,4 +1,5 @@
-"""Command line: `sqlassert suggest FILE` prints the improvements and markers sqlassert can prove."""
+"""Command line: `sqlassert check PATH...` checks the assertions in SQL Programs for CI (`check.py`);
+`sqlassert suggest FILE` prints the improvements and markers sqlassert can prove."""
 
 from __future__ import annotations
 
@@ -6,6 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from sqlassert import check
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.suggest import DEFAULT_MAX_SIZE, suggest
 
@@ -38,9 +40,35 @@ def main(argv: list[str] | None = None) -> int:
         "--annotate", action="store_true",
         help="paste every suggested marker into FILE (for -, print the annotated SQL instead of the list)",
     )
+    check_command = commands.add_parser(
+        "check",
+        help="analyze SQL Programs and fail when an assertion is UNKNOWN or a Diagnostic is reported",
+        description="Analyze each SQL Program from its SQL alone. Exit status: "
+        f"{check.EXIT_OK} every assertion PROVED (warnings allowed), {check.EXIT_FINDINGS} an assertion UNKNOWN "
+        f"or a Diagnostic reported, {check.EXIT_USAGE} bad arguments, configuration, or unreadable SQL. "
+        "Defaults come from [tool.sqlassert] in the nearest pyproject.toml; flags replace them.",
+    )
+    check_command.add_argument(
+        "paths", nargs="*", metavar="PATH",
+        help="SQL files, directories (every *.sql under them), or globs; - for stdin (default: [tool.sqlassert] paths)",
+    )
+    check_command.add_argument("--dialect", help=f"SQL dialect (default: [tool.sqlassert] dialect, else {DEFAULT_DIALECT})")
+    check_command.add_argument(
+        "--ignore", action="append", metavar="CODE",
+        help="drop Findings with this code, e.g. undeclared-table; repeatable or comma-separated "
+        "(default: [tool.sqlassert] ignore)",
+    )
+    check_command.add_argument("--format", choices=sorted(check.FORMATS), default="text")
+    check_command.add_argument("--explain", action="store_true", help="print each UNKNOWN assertion's evidence")
     arguments = parser.parse_args(argv)
+    if arguments.command == "check":
+        return _check(arguments)
 
-    sql = sys.stdin.read() if arguments.file == "-" else Path(arguments.file).read_text()
+    try:
+        sql = check.read_sql(Path(arguments.file))
+    except check.UsageError as error:
+        print(f"sqlassert suggest: {error}", file=sys.stderr)
+        return check.EXIT_USAGE
     report = suggest(sql, dialect=arguments.dialect, max_size=arguments.max_size)
     for diagnostic in report.diagnostics:
         print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
@@ -65,8 +93,32 @@ def main(argv: list[str] | None = None) -> int:
     for row, item in zip(rows, items):
         print("  ".join(cell.ljust(width) for cell, width in zip(row[:4], widths)) + "  " + row[4])
         if arguments.explain:
-            print("\n".join("    " + line for line in item.evidence.explain().splitlines()))
+            print(check.indented(item.evidence.explain()))
     return 1 if report.diagnostics else 0
+
+
+def _check(arguments: argparse.Namespace) -> int:
+    try:
+        config = check.load_config(Path.cwd())
+        dialect = arguments.dialect or config.dialect
+        ignore = (
+            frozenset(code.strip() for codes in arguments.ignore for code in codes.split(",") if code.strip())
+            if arguments.ignore is not None else config.ignore
+        )
+        check.validate(dialect, ignore)
+        if arguments.paths:
+            paths = check.expand(arguments.paths, Path.cwd())
+        elif config.paths:
+            paths = check.expand(config.paths, config.root)
+        else:
+            raise check.UsageError("no SQL to check: name files, directories or globs, or set paths in [tool.sqlassert]")
+        programs = [(check.display(path), check.read_sql(path)) for path in paths]
+    except check.UsageError as error:
+        print(f"sqlassert check: {error}", file=sys.stderr)
+        return check.EXIT_USAGE
+    checked = [check.check(path, sql, dialect=dialect, ignore=ignore) for path, sql in programs]
+    sys.stdout.write(check.FORMATS[arguments.format](checked, explain=arguments.explain))
+    return check.exit_code(checked)
 
 
 if __name__ == "__main__":

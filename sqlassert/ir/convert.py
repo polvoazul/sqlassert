@@ -24,8 +24,8 @@ from sqlassert.properties import (
 )
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
-    JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_line, column_markers,
-    exhaustive_line, join_marker_kind, join_origin, literal_value, marker_position,
+    JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_span, column_markers,
+    exhaustive_span, join_marker_kind, join_origin, literal_value, marker_position,
 )
 
 
@@ -347,7 +347,7 @@ class IrParser:
 
         for marker in column_markers(query):
             if marker.referenced_relation is not None:
-                origin = Origin(SQL, marker.referenced_relation, marker.line)
+                origin = Origin.marked(marker.referenced_relation, marker.span)
                 target = self._symbol_for_name(marker.referenced_relation, scope, origin)
                 self._marker_targets[id(marker)] = target
                 self._require_undeclared(target, marker.referenced_columns)
@@ -646,7 +646,8 @@ class IrParser:
 
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
-        origin = self._origin(join, assertion_line(join))
+        marked = assertion_span(join)
+        origin = self._origin(join, marked.line if marked is not None else None)
         kind = _join_kind(join, self.dialect)
         if kind is None:
             return self._opaque_join(left, right, join, origin)
@@ -705,7 +706,7 @@ class IrParser:
             # It keeps or drops left rows whole and outputs no right row: cardinality does not apply.
             self._diagnostics.append(Diagnostic(
                 diag.CARDINALITY_ON_FILTERING_JOIN,
-                f"the {JOIN_MARKER_NOUNS[kind]} marker on line {assertion_line(join)} is on a {relation.kind} join, "
+                f"the {JOIN_MARKER_NOUNS[kind]} marker on line {join_origin(join, self.dialect).line} is on a {relation.kind} join, "
                 "which outputs no right rows: join cardinality does not apply to it",
                 join_origin(join, self.dialect),
             ))
@@ -1303,10 +1304,10 @@ class IrParser:
         if id(case) not in self._sited_cases:
             self._sited_cases.add(id(case))
             self._add_attachment_site(case, f"CASE {case.this.sql(dialect=self.dialect)}", lowered, trailing=False)
-        line = exhaustive_line(case)
-        if line is not None and id(case) not in self._handled_cases:
+        span = exhaustive_span(case)
+        if span is not None and id(case) not in self._handled_cases:
             self._handled_cases.add(id(case))
-            origin = Origin(SQL, case.sql(dialect=self.dialect), line)
+            origin = Origin.marked(case.sql(dialect=self.dialect), span)
             self._assertions.append(ir.Assertion(origin=origin, property=ExhaustiveCase(case=lowered)))
         return lowered
 
@@ -1324,9 +1325,9 @@ class IrParser:
     def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Select) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
         for marker in column_markers(select):
-            kind, columns, line = marker.kind, marker.columns, marker.line
+            kind, columns, line = marker.kind, marker.columns, marker.span.line
             self._handled_column_markers.add(id(marker))
-            origin = Origin(SQL, select.sql(dialect=self.dialect), line)
+            origin = Origin.marked(select.sql(dialect=self.dialect), marker.span)
             unknown = [column for column in (*columns, *marker.dependent) if column.lower() not in by_name]
             if unknown and relation.is_schema_complete:
                 self._diagnostics.append(
@@ -1408,7 +1409,7 @@ class IrParser:
             if referenced is None:
                 self._diagnostics.append(Diagnostic(
                     diag.UNKNOWN_REFERENCED_COLUMN,
-                    f"the {MARKER_NOUNS[marker.kind]} on line {marker.line} references "
+                    f"the {MARKER_NOUNS[marker.kind]} on line {marker.span.line} references "
                     f"{target.name}({', '.join(marker.referenced_columns)}), but {target.name} has no column "
                     f"{', '.join(_missing(target, marker.referenced_columns))}",
                     pending.origin,
@@ -1484,39 +1485,39 @@ class IrParser:
 
     def _report_unanalyzed(self, ast: ParsedProgram) -> None:
         for join in _asserted_joins(ast):
-            line, kind = assertion_line(join), join_marker_kind(join)
+            origin, kind = join_origin(join, self.dialect), join_marker_kind(join)
             if id(join) in self._handled_joins:
                 continue
             assert kind is not None, "every asserted join records its marker kind"
             self._diagnostics.append(
                 Diagnostic(
                     diag.UNANALYZED_ASSERTION,
-                    f"the {JOIN_MARKER_NOUNS[kind]} assertion on line {line} "
+                    f"the {JOIN_MARKER_NOUNS[kind]} assertion on line {origin.line} "
                     "is in a part of the program this analysis does not model",
-                    join_origin(join, self.dialect),
+                    origin,
                 )
             )
         for case in _asserted_cases(ast):
             if id(case) in self._handled_cases:
                 continue
-            line = exhaustive_line(case)
+            span = exhaustive_span(case)
+            assert span is not None, "every asserted case records its marker span"
             self._diagnostics.append(
                 Diagnostic(
                     diag.UNANALYZED_ASSERTION,
-                    f"the exhaustive assertion on line {line} is in a part of the program this analysis does not model",
-                    Origin(SQL, case.sql(dialect=self.dialect), line),
+                    f"the exhaustive assertion on line {span.line} is in a part of the program this analysis does not model",
+                    Origin.marked(case.sql(dialect=self.dialect), span),
                 )
             )
         for select in _asserted_selects(ast):
             for marker in column_markers(select):
-                kind, line = marker.kind, marker.line
                 if id(marker) in self._handled_column_markers:
                     continue
                 self._diagnostics.append(
                     Diagnostic(
                         diag.UNANALYZED_ASSERTION,
-                        f"the {MARKER_NOUNS[kind]} on line {line} is in a part of the program this analysis does not model",
-                        Origin(SQL, select.sql(dialect=self.dialect), line),
+                        f"the {MARKER_NOUNS[marker.kind]} on line {marker.span.line} is in a part of the program this analysis does not model",
+                        Origin.marked(select.sql(dialect=self.dialect), marker.span),
                     )
                 )
 
@@ -1680,7 +1681,7 @@ def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
     statements = (*ast.create_statements, ast.root_select)
     return [
         join for statement in statements if statement is not None
-        for join in statement.find_all(exp.Join) if assertion_line(join) is not None
+        for join in statement.find_all(exp.Join) if assertion_span(join) is not None
     ]
 
 
@@ -1697,7 +1698,7 @@ def _asserted_cases(ast: ParsedProgram) -> list[exp.Case]:
     statements = (*ast.create_statements, ast.root_select)
     return [
         case for statement in statements if statement is not None
-        for case in statement.find_all(exp.Case) if exhaustive_line(case) is not None
+        for case in statement.find_all(exp.Case) if exhaustive_span(case) is not None
     ]
 
 
