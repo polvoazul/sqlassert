@@ -1,4 +1,4 @@
-"""The warehouse fetchers (Snowflake, BigQuery, Databricks, Redshift) over
+"""The warehouse fetchers (Snowflake, BigQuery, Databricks, Redshift, Trino) over
 scripted DB-API connections. No warehouse runs here: each catalog query is
 answered with the rows that warehouse returns for a `customers` table and an
 `orders` table whose foreign key references it, so what is tested is the
@@ -18,6 +18,7 @@ from sqlassert.discovery.databricks import DatabricksKnowledgeFetcher
 from sqlassert.discovery.information_schema import InformationSchemaKnowledgeFetcher
 from sqlassert.discovery.redshift import RedshiftKnowledgeFetcher
 from sqlassert.discovery.snowflake import SnowflakeKnowledgeFetcher
+from sqlassert.discovery.trino import TrinoKnowledgeFetcher
 
 type Answers = list[tuple[str, list[tuple[Any, ...]]]]
 
@@ -204,6 +205,26 @@ def test_redshift_reads_view_text_from_pg_get_viewdef():
 
     assert fetcher.fetch_view_definition(view).sql == 'CREATE VIEW "paid" AS SELECT customers.id FROM customers'
     assert _outcomes(RedshiftKnowledgeFetcher(_Connection(connection.answers)), "redshift", trust=True) == [Outcome.PROVED]
+
+
+def test_trino_reads_each_catalogs_own_information_schema_and_no_keys():
+    connection = _Connection([
+        ("CURRENT_CATALOG", [("memory", "shop")]),
+        ("information_schema.TABLES", [("memory", "shop", "customers", "BASE TABLE"), ("memory", "shop", "orders", "BASE TABLE"), ("other", "shop", "customers", "BASE TABLE")]),
+        *_standard("memory", "shop"),
+    ])
+    fetcher = TrinoKnowledgeFetcher(connection)
+
+    found = fetcher.fetch_relation_metadata(("customers", "orders", "other.shop.customers"))
+
+    assert found["customers"].identity == "memory.shop.customers" and found["customers"].primary_key == ()
+    assert found["orders"].foreign_keys == ()
+    assert found["other.shop.customers"].identity == "other.shop.customers"
+    assert any('"memory".information_schema.TABLES' in operation for operation, _ in connection.log)
+    assert any('"other".information_schema.TABLES' in operation for operation, _ in connection.log)
+    assert not any("CONSTRAINT" in operation for operation, _ in connection.log)
+    assert all("%s" not in operation for operation, _ in connection.log)
+    assert _outcomes(TrinoKnowledgeFetcher(_Connection(connection.answers)), "trino", trust=True) == [Outcome.UNKNOWN]
 
 
 def test_names_that_differ_only_in_case_do_not_resolve():

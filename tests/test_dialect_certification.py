@@ -18,7 +18,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "certify_dialects.
 
 # The dialects whose engine runs locally (in process or in docker): each of
 # their facts is certified on an engine, never only documented.
-LOCAL_ENGINES = {"duckdb", "sqlite", "postgres", "mysql", "clickhouse"}
+LOCAL_ENGINES = {"duckdb", "sqlite", "postgres", "mysql", "clickhouse", "trino"}
 # Facts of a local engine that no local engine can run: MySQL Cluster's NDB.
 DOCUMENTED_ONLY = {("mysql", "foreign_key_engines:ndb"), ("mysql", "foreign_key_engines:ndbcluster")}
 

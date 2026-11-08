@@ -76,6 +76,7 @@ VERSION_SQL: dict[str, str] = {
     "spark2": "SELECT version()",
     "hive": "SELECT version()",
     "oracle": "SELECT version_full FROM product_component_version",
+    "trino": "SELECT version()",
 }
 
 # Appended to each probe table's CREATE: ClickHouse needs a table engine.

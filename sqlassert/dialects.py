@@ -160,6 +160,20 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
     "clickhouse": DialectSemantics(concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced"),
     "oracle": DialectSemantics(empty_string_is_null=True),
+    # Trino has no constraint but NOT NULL: its CREATE TABLE rejects a key, so
+    # one in the SQL describes a table some other engine holds.
+    "trino": DialectSemantics(
+        checked_arithmetic=True,
+        checked_division=True,
+        # VARCHAR compares by code point and Trino has no collations.
+        text_is_binary=True,
+        # Unlike Postgres, a NULL array or element operand makes `||` NULL too.
+        pipes="strict",
+        concat="strict",
+        concat_ws="skips-null",
+        unique_keys="unenforced",
+        foreign_keys="unenforced",
+    ),
 }
 
 

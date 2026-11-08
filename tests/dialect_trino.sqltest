@@ -1,0 +1,70 @@
+-- Trino semantics the rules depend on (`sqlassert/dialects.py`).
+--
+-- Arithmetic, CAST and division raise rather than return NULL, and Trino
+-- never casts implicitly between text and numbers. `||` and `concat()` are
+-- NULL when an operand is, arrays included; `concat_ws()` skips NULL values. VARCHAR compares by
+-- code point: Trino has no collations. Trino has no key constraints (its
+-- CREATE TABLE rejects them), so a key written in Trino SQL is unenforced;
+-- NOT NULL is enforced.
+
+-- dialect: trino
+CREATE TABLE t (id INTEGER NOT NULL, n INTEGER NOT NULL, m INTEGER, s VARCHAR NOT NULL, r VARCHAR, c CHAR(3), d DECIMAL);
+
+-- case: arithmetic_of_non_null_operands_is_non_null
+SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: division_by_a_non_null_value_is_non_null
+SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: remainder_by_a_non_null_value_is_non_null
+SELECT n % 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_cast_of_a_non_null_value_is_non_null
+SELECT CAST(s AS INTEGER) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: try_cast_may_be_null
+SELECT TRY_CAST(s AS INTEGER) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_comparison_of_non_null_operands_is_non_null
+SELECT n < 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: pipes_of_non_null_operands_are_non_null
+SELECT s || 'x' AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: pipes_reject_a_null_operand
+-- Even an array's: `ARRAY[1] || CAST(NULL AS ARRAY(INTEGER))` is NULL.
+SELECT o.id AS oid FROM t LEFT JOIN t AS o ON o.id = t.m WHERE o.r || 'x' = 'ax' /**ASSERT NOT NULL(oid)**/
+--~ PROVED
+
+-- case: concat_rejects_a_null_argument
+SELECT o.id AS oid FROM t LEFT JOIN t AS o ON o.id = t.m WHERE concat(o.r, 'x') = 'ax' /**ASSERT NOT NULL(oid)**/
+--~ PROVED
+
+-- case: concat_ws_skips_nulls
+SELECT concat_ws(',', r, s) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: varchar_is_compared_by_identity
+-- No value equals both 'b' and 'B', so no row is kept.
+SELECT r FROM t WHERE r IN ('a', 'b') AND r = 'B' /**ASSERT ENUM(r IN ('a'))**/  --~ PROVED
+
+-- case: char_is_not_compared_by_identity
+-- CHAR ignores trailing spaces when compared.
+SELECT c FROM t WHERE c IN ('a', 'b') AND c = 'B' /**ASSERT ENUM(c IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_decimal_without_a_scale_is_compared_by_identity
+-- A bare DECIMAL is DECIMAL(38, 0).
+SELECT d, CAST(d AS VARCHAR) AS x FROM t /**ASSERT DETERMINES(d -> x)**/  --~ PROVED
+
+-- case: a_primary_key_is_not_knowledge
+CREATE TABLE k (id INTEGER PRIMARY KEY);
+--~ unenforced-constraint "trino does not enforce it"
+SELECT id FROM k /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_foreign_key_is_not_knowledge
+CREATE TABLE k (id INTEGER NOT NULL);
+CREATE TABLE o (id INTEGER NOT NULL, k_id INTEGER, FOREIGN KEY (k_id) REFERENCES k (id));
+--~ unenforced-constraint "foreign key (k_id)"
+SELECT k_id FROM o /**ASSERT FOREIGN KEY(k_id) REFERENCES k(id)**/  --~ UNKNOWN
+
+-- case: not_null_is_enforced
+SELECT n FROM t /**ASSERT NOT NULL(n)**/  --~ PROVED

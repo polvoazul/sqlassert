@@ -9,7 +9,7 @@ The goal is to catch common query mistakes at test time or build time, using fas
 pip install sqlassert
 ```
 
-_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark and Redshift SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
+_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark, Redshift and Trino SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
 
 ## Features
 
@@ -263,7 +263,7 @@ unique constraints, foreign keys, view definitions), never table rows. A
 catalog foreign key is used when the SQL reaches both of its tables. `CREATE` statements in
 the SQL take precedence over catalog objects of the same name.
 
-PostgreSQL, MySQL, Snowflake, BigQuery, Databricks and Redshift have
+PostgreSQL, MySQL, Snowflake, BigQuery, Databricks, Redshift and Trino have
 fetchers too, in `sqlassert.discovery.<dialect>`. They take any DB-API
 connection (psycopg, PyMySQL, snowflake-connector-python, ...), so sqlassert
 depends on no driver:
@@ -277,7 +277,8 @@ report = analyze_database(sql, PostgresKnowledgeFetcher(psycopg.connect(dsn)), d
 
 Warehouse keys are not enforced, so catalog keys there prove only with
 `trust_unenforced_keys=True` (see Dialects below). `BigQueryKnowledgeFetcher`
-also takes the project and default dataset.
+also takes the project and default dataset. Trino's catalog has no keys, so
+`TrinoKnowledgeFetcher` reports NOT NULLs only.
 
 ### Dialects
 
@@ -286,7 +287,8 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
 `sqlassert/dialects.py`, argued in [docs/dialects.md](docs/dialects.md):
 
 - **Keys.** DuckDB, PostgreSQL and MySQL enforce primary, unique and foreign
-  keys. Snowflake, BigQuery, Databricks / Spark and Redshift do not, so a key
+  keys. Snowflake, BigQuery, Databricks / Spark, Redshift and Trino (which has
+  no key constraints) do not, so a key
   there is not Knowledge: one marked `RELY` (Snowflake, Databricks / Spark)
   becomes a Property Declaration, and `trust_unenforced_keys=True` makes every
   unenforced key one. Any other is ignored, with an `unenforced-constraint`
@@ -295,14 +297,14 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   (ignored before MySQL 9.0), a foreign key of a MySQL table whose `ENGINE`
   does not enforce them, and SQLite foreign keys.
 - **Text.** `VARCHAR` and `TEXT` with no `COLLATE` are taken to compare by
-  identity in DuckDB and PostgreSQL, whose shipped default collation is
-  binary; a setting that changes it (DuckDB's `SET default_collation`) is out
+  identity in DuckDB, PostgreSQL and Trino, whose shipped default collation is
+  binary (Trino has no collations); a setting that changes it (DuckDB's `SET default_collation`) is out
   of scope. MySQL's default collations ignore case, and the warehouses are
   not yet certified, so their text is not. Text with any `COLLATE` is never
   taken to compare by identity.
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
   operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
-  BigQuery, Redshift); division likewise, except in DuckDB. MySQL (outside
+  BigQuery, Redshift, Trino); division likewise, except in DuckDB. MySQL (outside
   strict mode) and Spark (outside ANSI mode) may return NULL even from a
   comparison. `||` and `concat()` follow each dialect's NULL handling.
 - **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
