@@ -1,0 +1,60 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: customers
+        columns:
+          - name: id
+            tests: [unique, not_null]
+      - name: orders
+        columns:
+          - name: id
+            tests: [unique, not_null]
+          - name: status
+            tests:
+              - not_null
+              - accepted_values:
+                  values: [placed, shipped, returned]
+                  config: {severity: warn}
+
+seeds:
+  - name: raw_payments
+    columns:
+      - name: id
+        tests: [not_null]
+
+models:
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        tests: [unique, not_null]
+      - name: first_name
+        tests:
+          - unique:
+              config: {where: "first_name is not null"}
+  - name: stg_orders
+    columns:
+      - name: order_id
+        tests: [unique]
+      - name: customer_id
+        tests:
+          - relationships: {to: ref('stg_customers'), field: customer_id}
+      - name: status
+        tests:
+          - accepted_values: {values: [placed, shipped, returned]}
+  - name: customers
+    columns:
+      - name: customer_id
+        tests: [unique]
+      - name: n_orders
+        tests: [not_null]
+  - name: orders_incremental
+    columns:
+      - name: order_id
+        tests: [unique, not_null]
+  - name: orders_appended
+    columns:
+      - name: order_id
+        tests: [unique]

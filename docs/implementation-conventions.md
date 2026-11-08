@@ -176,7 +176,19 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   NATURAL joins are diagnosed syntactically, including unused bodies, and
   their Select Expressions remain opaque. `suggest` emits no suggestions for
   a program containing one.
-
+- `dbt/` checks a dbt project from its `manifest.json`, without dbt.
+  `expectations.py` reads each test and contract constraint as the Property
+  that proves it (`asserted`) and the one it guarantees once it passed
+  (`declared`, None when it is no fact). `program.py` builds one Program per
+  model and branch: the model's compiled SQL as a FROM subquery of a Root
+  Select starting on line 1 (so its lines are the Program's), its tests as
+  markers on that Root Select, and every relation it reads as a `CREATE VIEW`
+  of its compiled SQL (Assertion Markers blanked) or a table. Declarations are
+  bound as Properties onto the linked IR, as `discovery/` binds catalog facts,
+  so a table with unknown columns can carry them too. `jinja.py` renders the
+  `ref`/`source`/`this`/`config`/`is_incremental()` subset; a rendering is
+  trusted only once it reproduces dbt's compiled code, and then maps every
+  compiled character to its line in the model file.
 ## Stage Objects
 
 Each pipeline stage is an object holding only the services it needs:

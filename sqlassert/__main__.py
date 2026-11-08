@@ -1,4 +1,5 @@
-"""Command line: `sqlassert suggest FILE` prints the improvements and markers sqlassert can prove."""
+"""Command line: `sqlassert suggest FILE` prints the improvements and markers sqlassert can prove;
+`sqlassert dbt [PROJECT]` checks a dbt project's tests and markers."""
 
 from __future__ import annotations
 
@@ -38,7 +39,16 @@ def main(argv: list[str] | None = None) -> int:
         "--annotate", action="store_true",
         help="paste every suggested marker into FILE (for -, print the annotated SQL instead of the list)",
     )
+    dbt_command = commands.add_parser("dbt", help="check a dbt project's tests and markers from its target/manifest.json")
+    dbt_command.add_argument("project", nargs="?", default=".", help="dbt project directory (default: .)")
+    dbt_command.add_argument("--manifest", help="manifest.json to read (default: PROJECT/target/manifest.json)")
+    dbt_command.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
+    dbt_command.add_argument("--explain", action="store_true", help="print each proof and failed proof")
     arguments = parser.parse_args(argv)
+    if arguments.command == "dbt":
+        from sqlassert.dbt import command
+
+        return command(arguments.project, manifest=arguments.manifest, dialect=arguments.dialect, explain=arguments.explain)
 
     sql = sys.stdin.read() if arguments.file == "-" else Path(arguments.file).read_text()
     report = suggest(sql, dialect=arguments.dialect, max_size=arguments.max_size)

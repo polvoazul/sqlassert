@@ -318,6 +318,28 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 
 `NATURAL JOIN` is unsupported: its presence anywhere in the program produces an `unsupported-natural-join` diagnostic, and `suggest` returns no suggestions. Write explicit `ON` or `USING` conditions instead.
 
+### dbt
+
+`sqlassert dbt [project dir]` checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). dbt itself is not needed.
+
+```bash
+$ sqlassert dbt .
+models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/ (customers)
+
+Proved statically (a test here can be skipped):
+  models/schema.yml  unique_stg_customers_customer_id  (test on stg_customers)
+
+Not proved (the warehouse run still checks these):
+  models/schema.yml  accepted_values_stg_orders_status  (test on stg_orders): its Property is not proved from the SQL
+
+Proved but untested (schema.yml additions):
+  models/schema.yml  customers.customer_id: not_null
+```
+
+Each model is analyzed from its compiled SQL. Its own tests are assertions: `unique` is a Unique Set, `not_null` Not Null, `accepted_values` an Enum, `relationships` Referential Coverage, `dbt_utils.unique_combination_of_columns` a `NOT NULL UNIQUE` (it counts NULL equal to NULL), and model contract `primary_key`, `unique`, `not_null` and `foreign_key` constraints likewise. The tests of the sources, seeds, snapshots and models it reads are declarations, since they passed before it was built -- but only tests that fail on any failing row: not one with `severity: warn`, a `where:` config, or `error_if`/`fail_calc` thresholds; and a constraint only on a contracted table whose adapter enforces it. A test is never a declaration for its own model.
+
+Markers written in model files are checked too, and reported at their line in the model file. An ephemeral model is analyzed where dbt inlined it; an incremental model in both `is_incremental()` branches, and a test of one holds only in both, and for a key only under a `merge` or `delete+insert` strategy on that `unique_key`. The other branch is rendered without dbt only when the model uses `ref`, `source`, `this`, `config` and `is_incremental()` alone; otherwise it is reported unanalyzed. The exit code is 1 when a marker is `UNKNOWN` or a diagnostic is reported (tests not proved do not fail it), 2 when the manifest cannot be read. Only adapters whose dialect sqlassert supports are analyzed (DuckDB today); `--dialect` names one explicitly.
+
 ## Details
 
 ### Join Cardinality Syntax
