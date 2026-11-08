@@ -8,8 +8,8 @@
 -- for GROUP BY and DISTINCT.
 
 -- case: a_qualify_by_partition_subquery_joined_on_its_full_composite_partition_key_is_proved
-CREATE TABLE orders (customer_id INTEGER, region VARCHAR, order_id INTEGER, amount INTEGER);
-CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR COLLATE c, order_id INTEGER, amount INTEGER);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR COLLATE c);
 
 WITH latest_order AS (
     SELECT customer_id, region, order_id, amount
@@ -23,8 +23,8 @@ FROM customer_regions
     AND customer_regions.region = latest_order.region
 
 -- case: joining_on_part_of_a_composite_partition_key_is_unknown
-CREATE TABLE orders (customer_id INTEGER, region VARCHAR, order_id INTEGER, amount INTEGER);
-CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR COLLATE c, order_id INTEGER, amount INTEGER);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR COLLATE c);
 
 WITH latest_order AS (
     SELECT customer_id, region, order_id, amount

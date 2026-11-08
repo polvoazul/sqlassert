@@ -24,18 +24,22 @@ before dialects were listed; see "Not done").
 | `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | yes | yes | no (ANSI off) | yes |
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes |
-| text compared by identity by default | yes | yes | no (`_ci`) | no (`DEFAULT_DDL_COLLATION`) | no (`DEFAULT COLLATE`) | no (default collation) | no (`CASE_INSENSITIVE` databases) |
-| binary `COLLATE`s | | `C`, `POSIX`, `ucs_basic`, `default`, `pg_c_utf8` | `utf8mb4_0900_bin`, `binary` | | | | |
+| text compared by identity by default | no (`default_collation`) | yes | no (`_ci`) | no (`DEFAULT_DDL_COLLATION`) | no (`DEFAULT COLLATE`) | no (default collation) | no (`CASE_INSENSITIVE` databases) |
+| binary `COLLATE`s | `binary`, `C`, `POSIX` | `C`, `POSIX`, `ucs_basic`, `default`, `pg_c_utf8` | `utf8mb4_0900_bin`, `binary` | | | | |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled |
+| `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none |
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced |
 
 Also: SQLite foreign keys are unenforced (`PRAGMA foreign_keys` is off by
 default) and its primary keys may be NULL (only an `INTEGER PRIMARY KEY` may
 not, and SQLGlot reads `INT` and `INTEGER` alike, so none is taken to be
-non-null). A ClickHouse primary key never rejects a duplicate. Hive has
-neither checked arithmetic nor enforced keys.
+non-null). A ClickHouse primary key never rejects a duplicate, and its
+`concat_ws` is NULL for a NULL value, as Snowflake's. Hive has neither checked
+arithmetic nor enforced keys, and its `concat_ws` is not modelled.
+`concat_ws()` is modelled only where it is listed: a NULL separator makes it
+NULL everywhere, but whether a NULL value is skipped differs.
 
 PostgreSQL `NUMERIC` with no scale (`unscaled_decimal`) keeps each value's own
 scale: `1.0 = 1.00`, but their text differs, so such a column is neither
@@ -145,19 +149,69 @@ The mapping: every rule is dialect-independent and already judged by the
 DuckDB oracle. A dialect changes only the inputs the rules read, through the
 flags above, so a dialect's analysis is sound when (a) the rules are, which
 the oracle checks, and (b) each flag it sets is true of that dialect. (b) is
-the table above, each entry a documented behaviour; where a flag is *stronger*
-than DuckDB's, it was checked against the engine where one ran:
+certified fact by fact (next section): on the engine where one runs locally,
+from vendor documentation otherwise (Snowflake, BigQuery and Redshift
+`checked_arithmetic`/`checked_division`: overflow and division by zero raise;
+`TRY_`, `SAFE_` and `DIV0` variants are separate functions SQLGlot parses
+apart).
 
-- Postgres `checked_division` (`n % 0` raises), `||` lenient on arrays, and
-  `concat(NULL)` = `''`: checked on PostgreSQL 18.
-- Snowflake, BigQuery and Redshift `checked_arithmetic`/`checked_division`:
-  from their documentation (overflow and division by zero raise; `TRY_`,
-  `SAFE_` and `DIV0` variants are separate functions SQLGlot parses apart).
-
-Where a flag is *weaker* than DuckDB's (MySQL, Spark, collations, keys), the
-dialect proves a subset of what DuckDB would, so the DuckDB oracle's
-judgement of the same rules covers it. The `.sqltest` cases in each dialect
+Where a flag is *weaker* than DuckDB's (MySQL, Spark, warehouse collations,
+keys), the dialect proves a subset of what DuckDB would, so the DuckDB
+oracle's judgement of the same rules covers it. The `.sqltest` cases in each dialect
 (`tests/dialect_*.sqltest`) pin each flag's effect.
+
+## Certifying facts
+
+Every claim a dialect's flags make, and every Builtin fact
+(`strict(op)`, `total(op)`, `injective(op)`) `ir/convert.dialect_builtins`
+derives from them, has a provenance in `docs/dialect-provenance.json`:
+`{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
+version or date}` otherwise. A weak setting (unchecked arithmetic, no
+binary default collation, unenforced keys) claims nothing and has none.
+`tests/test_dialect_certification.py` checks that every fact has one, that
+every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse)
+is certified on an engine, and reruns the DuckDB and SQLite probes.
+
+`scripts/certify_dialects.py` (not part of the package) generates one probe
+per fact from the fact itself: the Builtin called with a typed NULL (strict),
+with overflowing, zero-dividing and badly cast arguments (total, injective),
+or tables whose constraint violations it attempts (keys, collations, ENUMs).
+SQL a dialect writes differently comes from SQLGlot, and is kept only when
+sqlassert parses it back to the same node; a construct the engine rejects is
+VACUOUS for that engine (`^` in SQLite, an ENUM column in PostgreSQL). Each
+fact runs under the engine's defaults and again after the dialect's
+permissive settings (`PERMISSIVE`: MySQL `sql_mode = ''`, DuckDB
+`default_collation = 'nocase'`, Spark ANSI off). It prints PASS, FAIL (with
+the weaker setting to apply by hand), ERROR (the probe could not run) or
+VACUOUS per fact, and STRONGER for a weak setting the engine would also
+satisfy (never acted on). Unless `--dry-run`, it adds the engine version to
+each passing fact and removes it from each failing one; it never adds a fact
+or strengthens one. `--list` prints the probes without a connection.
+
+Certification is one-off: rerun it when adding a dialect, changing a fact, or
+supporting a new major version. The engines it was run on:
+
+```sh
+python scripts/certify_dialects.py duckdb       # in process
+python scripts/certify_dialects.py sqlite       # in process
+docker run -d --rm --name sqlassert-pg18 -e POSTGRES_PASSWORD=probe -p 55432:5432 postgres:18
+python scripts/certify_dialects.py postgres --driver psycopg \
+    --connect 'host=127.0.0.1 port=55432 user=postgres password=probe'
+docker run -d --rm --name sqlassert-mysql84 -e MYSQL_ROOT_PASSWORD=probe -e MYSQL_DATABASE=probe -p 53306:3306 mysql:8.4
+python scripts/certify_dialects.py mysql --driver pymysql \
+    --connect '{"host": "127.0.0.1", "port": 53306, "user": "root", "password": "probe", "database": "probe"}'
+docker run -d --rm --name sqlassert-clickhouse -e CLICKHOUSE_PASSWORD=probe -p 58123:8123 clickhouse/clickhouse-server
+python scripts/certify_dialects.py clickhouse --driver clickhouse_connect.dbapi \
+    --connect '{"host": "127.0.0.1", "port": 58123, "username": "default", "password": "probe"}'
+```
+
+The drivers (`psycopg[binary]`, `pymysql`, `clickhouse-connect`) are not
+dependencies; install them where the script runs (MySQL is reached at its
+port, so MySQL server 8.0, 8.4 and 9 images all work the same way). Wait for a
+container to accept connections before probing. Not certified on an engine:
+Spark and Databricks (a local Spark needs Java and a DB-API bridge), Hive,
+Oracle, MySQL's NDB engine, and the cloud warehouses, whose probes exist for
+when credentials do.
 
 ## Not done
 

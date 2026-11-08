@@ -12,7 +12,9 @@ the SQL alone does not say which are in force (ADR 0005): MySQL's `||` is OR
 or concatenation depending on `sql_mode`, so it is neither; Spark's
 arithmetic raises or returns NULL depending on ANSI mode, so it may return
 NULL. `docs/dialects.md` argues each entry and says how soundness is judged
-without DuckDB.
+without DuckDB; `docs/dialect-provenance.json` records, per fact, the engine
+versions it was certified on or the vendor doc it rests on
+(`scripts/certify_dialects.py`).
 """
 
 from __future__ import annotations
@@ -55,6 +57,9 @@ class DialectSemantics:
     unscaled_decimal: bool = False
     pipes: PipesMeaning = None
     concat: ConcatMeaning = None
+    # What `concat_ws(sep, a, ...)` does with a NULL value (a NULL separator
+    # makes it NULL either way); None where it does not exist or is not modelled.
+    concat_ws: ConcatMeaning = None
     unique_keys: KeyTrust = "enforced"
     foreign_keys: KeyTrust = "enforced"
     # A PRIMARY KEY column is NOT NULL.
@@ -81,6 +86,7 @@ _SPARK = DialectSemantics(
     casts_raise=False,
     pipes="strict",
     concat="strict",
+    concat_ws="skips-null",
     unique_keys="rely",
     foreign_keys="rely",
 )
@@ -88,9 +94,12 @@ _SPARK = DialectSemantics(
 _SEMANTICS: dict[str, DialectSemantics] = {
     "duckdb": DialectSemantics(
         checked_arithmetic=True,
-        binary_default_collation=True,
+        # Not `binary_default_collation`: `SET default_collation = 'nocase'`
+        # makes every column without a COLLATE ignore case.
+        binary_collations=frozenset({"binary", "c", "posix"}),
         pipes="strict",
         concat="skips-null",
+        concat_ws="skips-null",
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,
@@ -101,6 +110,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         unscaled_decimal=True,
         pipes="lenient",  # `ARRAY[1] || NULL` is `{1}`.
         concat="skips-null",
+        concat_ws="skips-null",
     ),
     "mysql": DialectSemantics(
         # Out of strict mode, a bad CAST or a bad date is NULL with a warning,
@@ -110,6 +120,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         binary_collations=frozenset({"utf8mb4_0900_bin", "binary"}),
         pipes="ambiguous",
         concat="strict",
+        concat_ws="skips-null",
         inline_references=False,
         foreign_key_engines=frozenset({"innodb", "ndb", "ndbcluster"}),
         enum_error_value=True,
@@ -119,6 +130,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         checked_division=True,
         pipes="strict",
         concat="strict",
+        concat_ws="strict",  # `concat_ws(',', 'a', NULL)` is NULL.
         unique_keys="rely",
         foreign_keys="rely",
     ),
@@ -143,13 +155,14 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced"),
     "sqlite": DialectSemantics(
         pipes="strict",
+        concat_ws="skips-null",
         # Foreign keys are checked only under `PRAGMA foreign_keys = ON`, off by default.
         foreign_keys="unenforced",
         # Only an INTEGER PRIMARY KEY (the rowid) is never NULL.
         primary_key_not_null=False,
     ),
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
-    "clickhouse": DialectSemantics(unique_keys="unenforced", foreign_keys="unenforced"),
+    "clickhouse": DialectSemantics(concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced"),
     "oracle": DialectSemantics(empty_string_is_null=True),
 }
 

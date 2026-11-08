@@ -7,7 +7,7 @@
 -- left column must be non-null. Any join kind but semi and anti: the left row's
 -- matches decide it, whatever a right or full join pads on.
 
-CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR COLLATE c);
 CREATE TABLE accounts (user_id INTEGER PRIMARY KEY);
 CREATE TABLE sessions (user_id INTEGER);
 CREATE TABLE orders (
@@ -147,68 +147,68 @@ SELECT o.id, u.name FROM orders AS o
 /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
 
 -- case: a_composite_or_derived_exactly_one_join_is_proved__semi_join
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ SEMI JOIN regions AS r  --~ PROVED
     ON s.country = r.country AND s.code = r.code
 
 -- case: a_composite_or_derived_exactly_one_join_is_proved__composite_key
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ PROVED
     ON s.country = r.country AND s.code = r.code
 
 -- case: a_composite_or_derived_exactly_one_join_is_proved__composite_pairs_in_another_order
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ LEFT JOIN regions AS r  --~ PROVED
     ON r.code = s.code AND r.country = s.country
 
 -- case: a_composite_or_derived_exactly_one_join_is_proved__renamed_pass_through_columns
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 WITH s AS (SELECT id, country AS c, code AS k FROM shops), r AS (SELECT country AS rc, code AS rk, label FROM regions)
 SELECT *
 FROM s
@@ -216,34 +216,34 @@ FROM s
     ON s.c = r.rc AND s.k = r.rk
 
 -- case: a_composite_or_derived_exactly_one_join_is_proved__filtered_left_input
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM (SELECT * FROM shops WHERE id > 3) AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ PROVED
     ON s.country = r.country AND s.code = r.code
 
 -- case: a_composite_or_derived_exactly_one_join_is_proved__p6
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM (SELECT * FROM shops WHERE maybe IS NOT NULL) AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ PROVED
@@ -290,136 +290,136 @@ JOIN orders
     ON accounts.user_id = orders.plain
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__only_one_column_of_the_composite_key
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__p2
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country AND s.other = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__pairs_swapped_across_the_key
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.code AND s.code = r.country
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__nullable_referencing_component
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country AND s.maybe = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__no_foreign_key
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM loose AS l
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON l.country = r.country AND l.code = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__right_side_filter_in_on
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country AND s.code = r.code AND r.label = 'x'
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__left_side_filter_in_on
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country AND s.code = r.code AND s.other = s.country
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__narrowed_right_relation
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 WITH r AS (SELECT * FROM regions WHERE label = 'x')
 SELECT *
 FROM shops AS s
@@ -427,17 +427,17 @@ FROM shops AS s
     ON s.country = r.country AND s.code = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__right_relation_narrowed_by_a_join
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 WITH r AS (SELECT regions.* FROM regions JOIN loose ON regions.code = loose.code)
 SELECT *
 FROM shops AS s
@@ -445,17 +445,17 @@ FROM shops AS s
     ON s.country = r.country AND s.code = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__right_relation_duplicated_by_a_join
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 WITH r AS (SELECT regions.* FROM regions LEFT JOIN loose ON regions.code = loose.code)
 SELECT *
 FROM shops AS s
@@ -463,51 +463,51 @@ FROM shops AS s
     ON s.country = r.country AND s.code = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__computed_left_column
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM (SELECT upper(country) AS country, code FROM shops) AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country AND s.code = r.code
 
 -- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__anti_join
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ ANTI JOIN regions AS r  --~ UNKNOWN
     ON s.country = r.country AND s.code = r.code
 
 -- case: a_proved_composite_exactly_one_left_join_pads_no_right_column
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 
         SELECT s.id, r.code AS matched FROM shops AS s
         /**ASSERT EXACTLY ONE**/ LEFT JOIN regions AS r  --~ PROVED
@@ -613,17 +613,17 @@ SELECT * FROM orders /**ASSERT EXACTLY 1**/ JOIN users ON orders.user_id = users
 --~ unrecognized-marker "/**ASSERT EXACTLY ONE**/"
 
 -- case: every_missing_half_of_a_composite_join_is_named
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM loose AS l
 /**ASSERT EXACTLY ONE**/ JOIN shops AS s
@@ -631,17 +631,17 @@ FROM loose AS l
     ON l.country = s.country AND l.code = s.maybe
 
 -- case: each_nullable_left_column_is_named
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r
@@ -649,17 +649,17 @@ FROM shops AS s
     ON s.country = r.country AND s.maybe = r.code
 
 -- case: a_narrowed_right_relation_is_named_in_the_explanation
-CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE regions (country VARCHAR COLLATE c, code VARCHAR COLLATE c, label VARCHAR COLLATE c, PRIMARY KEY (country, code));
 CREATE TABLE shops (
     id INTEGER PRIMARY KEY,
-    country VARCHAR NOT NULL,
-    code VARCHAR NOT NULL,
-    other VARCHAR NOT NULL,
-    maybe VARCHAR,
+    country VARCHAR COLLATE c NOT NULL,
+    code VARCHAR COLLATE c NOT NULL,
+    other VARCHAR COLLATE c NOT NULL,
+    maybe VARCHAR COLLATE c,
     FOREIGN KEY (country, code) REFERENCES regions(country, code),
     FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
 );
-CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+CREATE TABLE loose (country VARCHAR COLLATE c NOT NULL, code VARCHAR COLLATE c NOT NULL);
 WITH r AS (SELECT * FROM regions WHERE label = 'x')
 SELECT *
 FROM shops AS s
