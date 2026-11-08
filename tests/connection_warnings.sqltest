@@ -1,0 +1,9 @@
+-- ADR 0005: `analyze(sql)` warns whenever a connection would have helped.
+--
+-- The same SQL analyzed with a catalog proves what the warnings said was missing,
+-- and a connection never turns PROVED into UNKNOWN.
+
+-- case: declared_tables_do_not_warn
+CREATE TABLE accounts (id INTEGER PRIMARY KEY, region INTEGER);
+CREATE TABLE regions (code INTEGER PRIMARY KEY, name VARCHAR);
+SELECT id FROM accounts /**ASSERT UNIQUE(id)**/  --~ PROVED

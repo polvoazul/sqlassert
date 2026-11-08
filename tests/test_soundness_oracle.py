@@ -14,6 +14,15 @@ from sqlassert.sql_parse import SqlParser
 # Few examples: these programs are tiny, and the counterexamples they need
 # are found almost at once.
 EXAMPLES = 50
+# For a test marked `slow`: a counterexample that EXAMPLES finds only most of
+# the time (ONE TO MANY below missed 3 in 100 runs at 50, none at 200 or 500).
+SLOW_EXAMPLES = 500
+
+
+@pytest.fixture
+def examples(request: pytest.FixtureRequest) -> int:
+    """The search budget for this test: larger when it is marked `slow`."""
+    return SLOW_EXAMPLES if request.node.get_closest_marker("slow") else EXAMPLES
 
 
 def claimed_proved(sql: str) -> tuple[str, Report]:
@@ -23,8 +32,8 @@ def claimed_proved(sql: str) -> tuple[str, Report]:
     return sql, replace(report, assertions=tuple(replace(assertion, outcome=Outcome.PROVED) for assertion in report.assertions))
 
 
-def judged(sql: str, report: Report) -> Judgement:
-    return judge(sql, report, max_examples=EXAMPLES)
+def judged(sql: str, report: Report, examples: int = EXAMPLES) -> Judgement:
+    return judge(sql, report, max_examples=examples)
 
 
 def test_a_true_unique_join_proof_has_no_counterexample():
@@ -79,13 +88,14 @@ def test_a_false_unique_join_claim_over_a_cte_is_refuted_with_its_context():
         ("ONE TO ONE", "sessions", "users_by_name"),
     ],
 )
-def test_a_false_cardinality_claim_is_refuted(marker: str, left: str, right: str):
+@pytest.mark.slow
+def test_a_false_cardinality_claim_is_refuted(marker: str, left: str, right: str, examples: int):
     on = "sessions.user_id = users_by_name.user_id" if right == "users_by_name" else "sessions.user_id = other.user_id"
     judgement = judged(*claimed_proved(f"""
         CREATE TABLE users_by_name (user_id INTEGER, name VARCHAR PRIMARY KEY);
         CREATE TABLE sessions (user_id INTEGER);
         SELECT * FROM {left} /**ASSERT {marker}**/ JOIN {right} ON {on}
-    """))
+    """), examples)
 
     assert len(judgement.counterexamples) == 1
 

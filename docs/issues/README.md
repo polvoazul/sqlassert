@@ -6,7 +6,6 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
 - [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (parent epic of 37, 38, 39)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
-- [36. Move semantic tests to `.sqltest` files](0036-refactor-tests-for-corpus-and-oracle-scale.md) — ready
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
@@ -14,7 +13,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 38, 41, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 41, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -24,7 +23,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
   and its missing rules fold into #37); #37 (Paulley audit's missing rules);
   #15's remaining Low smells and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
-- **P3:** #39 (smaller lowering gaps); #36 (move semantic tests to `.sqltest`).
+- **P3:** #39 (smaller lowering gaps).
 - **P4, not planned:** #42 (lowering support v2): window functions (and
   #33's CTE part, which needs them), recursive CTEs, column lineage, LATERAL
   and UNNEST, ADD COLUMN, scalar subqueries in grouped select lists and in ON.

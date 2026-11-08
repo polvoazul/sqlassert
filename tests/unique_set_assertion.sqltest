@@ -1,0 +1,133 @@
+-- Unique Set Assertions: `ASSERT UNIQUE(...)` and `ASSERT NOT NULL UNIQUE(...)`
+-- written on a Select Expression -- a Root Select, a view, a CTE, or a
+-- subquery -- asserting that the named output columns form a Unique Set or,
+-- for `NOT NULL UNIQUE` (alias `PRIMARY KEY`), the stricter Non-Null Unique Set.
+--
+-- Proof is defined purely in terms of a Relation Expression and its Output Columns:
+-- nothing here should behave differently depending on whether the Select
+-- Expression is a Root Select, a view, or a CTE (see
+-- `test_the_same_assertion_proves_identically_regardless_of_attachment_site`).
+
+-- case: a_single_column_unique_set_assertion_on_a_view_is_proved
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
+CREATE VIEW active AS SELECT id, email FROM users WHERE id > 0 /**ASSERT UNIQUE(id)**/;
+--~ PROVED
+
+SELECT * FROM active
+
+-- case: a_composite_unique_set_assertion_requires_every_member
+CREATE TABLE order_items (order_id INTEGER, line_no INTEGER, PRIMARY KEY (order_id, line_no));
+
+SELECT order_id, line_no FROM order_items /**ASSERT UNIQUE(order_id, line_no)**/
+--~ PROVED
+
+-- case: a_composite_unique_set_assertion_missing_a_member_is_unknown
+CREATE TABLE order_items (order_id INTEGER, line_no INTEGER, PRIMARY KEY (order_id, line_no));
+
+SELECT order_id FROM order_items /**ASSERT UNIQUE(order_id)**/  --~ UNKNOWN
+
+-- case: the_same_column_asserted_unique_instead_is_proved_even_when_nullable
+CREATE TABLE users (id INTEGER, email VARCHAR UNIQUE);
+
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ PROVED
+
+-- case: a_superset_of_a_smaller_proved_unique_set_is_proved_too
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+
+SELECT id, name FROM users /**ASSERT UNIQUE(id, name)**/  --~ PROVED
+
+-- case: multiple_assertions_on_one_select_expression_are_each_reported
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE);
+
+SELECT id, email FROM users /**ASSERT UNIQUE(id)**/  --~ PROVED
+/**ASSERT UNIQUE(email)**/  --~ PROVED
+
+-- case: a_proved_assertion_on_a_view_feeds_forward_to_a_later_statement
+-- A view's proved Unique Set Assertion becomes visible to a later
+-- statement referencing it, exactly as an externally supplied Knowledge
+-- declaration would -- no separate declaration needed.
+CREATE TABLE raw (id INTEGER, region INTEGER);
+CREATE VIEW dedup AS SELECT id FROM raw GROUP BY id /**ASSERT UNIQUE(id)**/;  --~ PROVED
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN dedup  --~ PROVED
+    ON sessions.user_id = dedup.id
+
+-- case: a_root_select_with_its_own_join_and_projection_can_be_asserted
+-- The Root Select's own tail (WHERE/GROUP BY/DISTINCT/QUALIFY/projection)
+-- is modeled the same way a CTE or view body's already is, including
+-- directly on top of a proven-unique join.
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
+CREATE TABLE sessions (user_id INTEGER PRIMARY KEY, ts TIMESTAMP);
+
+SELECT sessions.user_id
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users ON sessions.user_id = users.id  --~ PROVED
+/**ASSERT UNIQUE(user_id)**/  --~ PROVED
+
+-- case: a_cte_can_carry_a_unique_set_assertion
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+
+WITH active AS (SELECT id FROM users WHERE id > 0 /**ASSERT UNIQUE(id)**/)  --~ PROVED
+SELECT * FROM active
+
+-- case: a_from_subquery_can_carry_a_unique_set_assertion
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+
+SELECT * FROM (SELECT id FROM users WHERE id > 0 /**ASSERT UNIQUE(id)**/) AS active
+--~ PROVED
+
+-- case: the_same_assertion_proves_identically_regardless_of_attachment_site
+-- The assertion's IR and engine representation is defined purely in
+-- terms of a Relation Expression and its Output Columns -- a view-attached,
+-- CTE-attached, and Root-Select-attached assertion over the same underlying
+-- structure must be indistinguishable to the engine.
+CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER);
+SELECT a, b FROM t /**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: the_same_assertion_proves_identically_regardless_of_attachment_site__program_2
+CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER);
+CREATE VIEW v AS SELECT a, b FROM t /**ASSERT UNIQUE(a)**/;  --~ PROVED
+SELECT * FROM v
+
+-- case: the_same_assertion_proves_identically_regardless_of_attachment_site__program_3
+CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER);
+WITH c AS (SELECT a, b FROM t /**ASSERT UNIQUE(a)**/) SELECT * FROM c  --~ PROVED
+
+-- case: an_empty_column_list_is_reported_rather_than_silently_accepted
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t /**ASSERT UNIQUE()**/
+--~ unattached-marker
+
+-- case: a_self_duplicating_column_list_is_reported_rather_than_silently_accepted
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t /**ASSERT UNIQUE(a, a)**/
+--~ unattached-marker
+
+-- case: a_typo_in_the_keyword_is_reported_as_an_unrecognized_marker
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t /**ASSERT UNIQE(a)**/
+--~ unrecognized-marker
+
+-- case: a_marker_on_a_select_with_a_join_inside_a_cte_body_is_analyzed
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+WITH enriched AS (
+    SELECT users.id
+    FROM users
+    JOIN sessions ON sessions.user_id = users.id
+    /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+)
+SELECT * FROM enriched
+
+-- case: assertions_cannot_prove_themselves_or_each_other
+CREATE TABLE t (id INTEGER, name VARCHAR);
+SELECT id, name FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(id, name)**/  --~ UNKNOWN
+
+-- case: a_subset_of_a_known_composite_unique_set_is_not_proved_unique
+CREATE TABLE t (id INTEGER, name VARCHAR, region VARCHAR, UNIQUE (id, region));
+SELECT id, name FROM t /**ASSERT UNIQUE(id, name)**/  --~ UNKNOWN

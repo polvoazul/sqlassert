@@ -1,0 +1,26 @@
+-- Unique Sets derived from ordinary Aggregate (`GROUP BY`) and `DISTINCT`.
+--
+-- Both earn a Unique Set of their own regardless of their input relation's
+-- existing Unique Sets: an Aggregate by its complete set of Grouping Keys, a
+-- Distinct by its complete set of output expressions. Every case here wraps the
+-- aggregate or distinct query in a CTE, exercising #5's and #7's lowering
+-- together, exactly like `test_analyze_cte_and_subquery.py` does for plain
+-- Filter/Project bodies.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL);
+
+-- case: a_scalar_aggregate_is_one_row__p1
+SELECT count(*) AS n FROM t /**ASSERT NOT NULL UNIQUE(n)**/  --~ PROVED
+
+-- case: a_scalar_aggregate_is_one_row__p2
+SELECT max(id) AS m, count(*) AS n FROM t /**ASSERT UNIQUE(m)**/  --~ PROVED
+
+-- case: a_scalar_aggregate_is_one_row__p3
+SELECT sum(x) AS s FROM t /**ASSERT NOT NULL(s)**/  --~ UNKNOWN
+
+-- case: a_scalar_aggregate_is_one_row__p4
+SELECT x, sum(id) OVER () AS s FROM t /**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+
+-- case: a_bare_column_of_a_scalar_aggregate_may_be_null
+-- dialect: mysql
+SELECT x, count(*) AS n FROM t /**ASSERT NOT NULL(x)**/  --~ UNKNOWN

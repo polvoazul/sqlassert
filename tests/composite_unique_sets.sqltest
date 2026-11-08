@@ -1,0 +1,138 @@
+-- Composite and nullable Unique Sets, constants, USING, and LEFT joins.
+--
+-- Covers the acceptance criteria of proving Unique Join Assertions from
+-- composite and nullable Unique Sets supplied by Create Table declarations,
+-- per docs/mvp-scope.md.
+
+-- case: fully_covering_a_composite_unique_set_in_an_inner_join_is_proved
+CREATE TABLE users (id INTEGER, region INTEGER, name VARCHAR, PRIMARY KEY (id, region));
+CREATE TABLE sessions (user_id INTEGER, user_region INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id AND sessions.user_region = users.region
+
+-- case: covering_only_part_of_a_composite_unique_set_is_unknown
+CREATE TABLE users (id INTEGER, region INTEGER, name VARCHAR, PRIMARY KEY (id, region));
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_id = users.id
+
+-- case: a_right_side_key_member_equated_to_a_constant_completes_a_composite_unique_set
+CREATE TABLE users (id INTEGER, region INTEGER, name VARCHAR, PRIMARY KEY (id, region));
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id AND users.region = 1
+
+-- case: a_range_predicate_does_not_cover_a_key_member_and_stays_unknown
+CREATE TABLE users (id INTEGER, region INTEGER, name VARCHAR, PRIMARY KEY (id, region));
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_id = users.id AND users.region > 1
+
+-- case: a_nullable_unique_set_proves_ordinary_equality_uniqueness
+CREATE TABLE users (id INTEGER, email VARCHAR, UNIQUE (email));
+CREATE TABLE sessions (user_email VARCHAR, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_email = users.email
+
+-- case: a_non_null_unique_set_also_proves_ordinary_equality_uniqueness
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR);
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: composite_keys_support_unique_joins_with_or_without_nullable_members
+CREATE TABLE users (id INTEGER NOT NULL, region INTEGER NOT NULL, PRIMARY KEY (id, region));
+CREATE TABLE sessions (user_id INTEGER, user_region INTEGER);
+
+SELECT * FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id AND sessions.user_region = users.region
+
+-- case: composite_keys_support_unique_joins_with_or_without_nullable_members__program_2
+CREATE TABLE users (id INTEGER NOT NULL, region INTEGER, UNIQUE (id, region));
+CREATE TABLE sessions (user_id INTEGER, user_region INTEGER);
+
+SELECT * FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id AND sessions.user_region = users.region
+
+-- case: using_participates_in_the_same_key_coverage_reasoning_as_on
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE sessions (id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    USING (id)
+
+-- case: left_joins_participate_in_the_same_key_coverage_reasoning_as_inner
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ LEFT JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_left_join_without_a_matching_unique_set_is_unknown
+CREATE TABLE users (id INTEGER, name VARCHAR);
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ LEFT JOIN users  --~ UNKNOWN
+    ON sessions.user_id = users.id
+
+-- case: null_safe_equality_does_not_cover_a_key_member_and_stays_unknown
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_id IS NOT DISTINCT FROM users.id
+
+-- case: an_or_predicate_does_not_cover_a_key_member_and_stays_unknown
+CREATE TABLE users (id INTEGER PRIMARY KEY, other_id INTEGER, name VARCHAR);
+CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_id = users.id OR sessions.user_id = users.other_id
+
+-- case: using_against_an_ambiguous_left_side_stays_unknown_rather_than_guessing
+CREATE TABLE a (id INTEGER);
+CREATE TABLE b (id INTEGER);
+CREATE TABLE c (id INTEGER PRIMARY KEY);
+
+SELECT * FROM a JOIN b USING (id) /**ASSERT MANY TO ONE**/ JOIN c USING (id)
+--~ UNKNOWN
+--~! ambiguous-column
+
+-- case: a_table_level_unique_constraint_does_not_imply_non_null
+CREATE TABLE users (id INTEGER, region INTEGER, UNIQUE (id, region));
+CREATE TABLE sessions (user_id INTEGER, user_region INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id AND sessions.user_region = users.region

@@ -1,0 +1,15 @@
+-- A Unique Join Assertion through every join kind.
+--
+-- A left row appears once per matching right row, or once padded, whatever the
+-- kind: RIGHT and FULL joins pad right rows on but never repeat a left row more
+-- than its matches do, so the right side's Unique Set proves them as it proves
+-- INNER and LEFT joins. A CROSS join is an ON with no conjuncts: unique only when
+-- the right input has at most one row. SEMI and ANTI joins keep or drop each
+-- left row whole and output no right row: no cardinality marker applies to them.
+
+-- case: an_unknown_join_kind_is_opaque_and_its_marker_unanalyzed
+-- dialect: clickhouse
+CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);
+SELECT t.id FROM t /**ASSERT MANY TO ONE**/ ARRAY JOIN arr
+--~ unanalyzed-assertion
+/**ASSERT NOT NULL(id)**/  --~ UNKNOWN

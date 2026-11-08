@@ -1,0 +1,37 @@
+-- Unique Sets derived from recognized `ROW_NUMBER() OVER (PARTITION BY ...) = 1`
+-- QualifyByPartition qualification.
+--
+-- Only this narrow shape earns a Unique Set, by its complete Partition Key,
+-- because that predicate keeps exactly one row per partition. Every case here
+-- wraps the qualified query in a CTE, exercising #5's lowering together with
+-- this recognition, exactly like `test_analyze_aggregate_and_distinct.py` does
+-- for GROUP BY and DISTINCT.
+
+-- case: a_qualify_by_partition_subquery_joined_on_its_full_composite_partition_key_is_proved
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR, order_id INTEGER, amount INTEGER);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+
+WITH latest_order AS (
+    SELECT customer_id, region, order_id, amount
+    FROM orders
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id, region ORDER BY order_id DESC) = 1
+)
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN latest_order  --~ PROVED
+    ON customer_regions.customer_id = latest_order.customer_id
+    AND customer_regions.region = latest_order.region
+
+-- case: joining_on_part_of_a_composite_partition_key_is_unknown
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR, order_id INTEGER, amount INTEGER);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+
+WITH latest_order AS (
+    SELECT customer_id, region, order_id, amount
+    FROM orders
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id, region ORDER BY order_id DESC) = 1
+)
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN latest_order  --~ UNKNOWN
+    ON customer_regions.customer_id = latest_order.customer_id

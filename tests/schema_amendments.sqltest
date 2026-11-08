@@ -1,0 +1,110 @@
+-- Constraints added after `CREATE TABLE`: `ALTER TABLE ... ADD PRIMARY KEY /
+-- UNIQUE / FOREIGN KEY`, `ALTER COLUMN ... SET NOT NULL`, and `CREATE UNIQUE
+-- INDEX`. Each is the same Knowledge its `CREATE TABLE` form states. One that
+-- names no table created before it is diagnosed, as is any other `ALTER`.
+
+CREATE TABLE users (id INTEGER, email VARCHAR, org INTEGER, nick VARCHAR);
+CREATE TABLE orgs (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER NOT NULL);
+
+-- case: a_constraint_added_after_create_table_is_knowledge__add_primary_key
+ALTER TABLE users ADD PRIMARY KEY (id);
+SELECT id FROM users /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__named_primary_key
+ALTER TABLE users ADD CONSTRAINT pk PRIMARY KEY (id);
+SELECT id FROM users /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__composite_primary_key
+ALTER TABLE users ADD PRIMARY KEY (org, email);
+SELECT org, email FROM users /**ASSERT NOT NULL UNIQUE(org, email)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__add_unique
+ALTER TABLE users ADD UNIQUE (email);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__named_unique
+ALTER TABLE users ADD CONSTRAINT u UNIQUE (org, email);
+SELECT org, email FROM users /**ASSERT UNIQUE(org, email)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__set_not_null
+ALTER TABLE users ALTER COLUMN nick SET NOT NULL;
+SELECT nick FROM users /**ASSERT NOT NULL(nick)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__unique_plus_set_not_null
+ALTER TABLE users ALTER email SET NOT NULL;
+ALTER TABLE users ADD UNIQUE (email);
+SELECT email FROM users /**ASSERT NOT NULL UNIQUE(email)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__create_unique_index
+CREATE UNIQUE INDEX users_email ON users (email);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__composite_unique_index
+CREATE UNIQUE INDEX users_org_email ON users (org, email);
+SELECT org, email FROM users /**ASSERT UNIQUE(org, email)**/  --~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__add_foreign_key
+ALTER TABLE users ALTER COLUMN org SET NOT NULL;
+ALTER TABLE users ADD FOREIGN KEY (org) REFERENCES orgs (id);
+SELECT u.id FROM users u /**ASSERT EXACTLY ONE**/ JOIN orgs o ON u.org = o.id
+--~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__add_foreign_key_onto_the_primary_key
+ALTER TABLE users ALTER COLUMN org SET NOT NULL;
+ALTER TABLE users ADD CONSTRAINT fk FOREIGN KEY (org) REFERENCES orgs;
+SELECT u.id FROM users u /**ASSERT EXACTLY ONE**/ JOIN orgs o ON u.org = o.id
+--~ PROVED
+
+-- case: a_constraint_added_after_create_table_is_knowledge__add_primary_key_makes_a_join_unique
+ALTER TABLE users ADD PRIMARY KEY (id);
+SELECT s.user_id
+FROM sessions s
+/**ASSERT MANY TO ONE**/ JOIN users u  --~ PROVED
+    ON s.user_id = u.id
+
+-- case: what_a_constraint_does_not_state_is_not_proved__plain_index
+CREATE INDEX users_email ON users (email);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+
+-- case: what_a_constraint_does_not_state_is_not_proved__unique_is_not_not_null
+ALTER TABLE users ADD UNIQUE (email);
+SELECT email FROM users /**ASSERT NOT NULL(email)**/  --~ UNKNOWN
+
+-- case: what_a_constraint_does_not_state_is_not_proved__constraint_on_another_table
+ALTER TABLE orgs ADD UNIQUE (id);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+
+-- case: what_a_constraint_does_not_state_is_not_proved__composite_unique_is_not_per_column
+ALTER TABLE users ADD UNIQUE (org, email);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+
+-- case: a_unique_index_not_over_plain_columns_is_diagnosed_and_states_nothing__expression
+CREATE UNIQUE INDEX users_email ON users (lower(email));
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-create-statement
+
+-- case: a_unique_index_not_over_plain_columns_is_diagnosed_and_states_nothing__partial
+CREATE UNIQUE INDEX users_email ON users (email) WHERE org > 0;
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-create-statement
+
+-- case: any_other_alter_table_is_diagnosed_and_states_nothing__add_column
+ALTER TABLE users ADD COLUMN extra INTEGER;
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-statement
+
+-- case: any_other_alter_table_is_diagnosed_and_states_nothing__drop_not_null
+ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-statement
+
+-- case: any_other_alter_table_is_diagnosed_and_states_nothing__mixed_with_an_unsupported_action
+ALTER TABLE users ADD UNIQUE (email), DROP COLUMN nick;
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-statement
+
+-- case: any_other_alter_table_is_diagnosed_and_states_nothing__rename
+ALTER TABLE users RENAME TO people;
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-statement

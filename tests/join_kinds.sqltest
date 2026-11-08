@@ -1,0 +1,215 @@
+-- A Unique Join Assertion through every join kind.
+--
+-- A left row appears once per matching right row, or once padded, whatever the
+-- kind: RIGHT and FULL joins pad right rows on but never repeat a left row more
+-- than its matches do, so the right side's Unique Set proves them as it proves
+-- INNER and LEFT joins. A CROSS join is an ON with no conjuncts: unique only when
+-- the right input has at most one row. SEMI and ANTI joins keep or drop each
+-- left row whole and output no right row: no cardinality marker applies to them.
+
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__join_users_on_sessions_user_id_users_id
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__inner_join_users_on_sessions_user_id_users_id
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ INNER JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__left_join_users_on_sessions_user_id_users_id
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ LEFT JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__p4
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ LEFT OUTER JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__right_join_users_on_sessions_user_id_users_id
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ RIGHT JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__full_join_users_on_sessions_user_id_users_id
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ FULL JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__p7
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ FULL OUTER JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_join_against_a_primary_key_is_proved_whatever_its_kind__cross_join_select_count_as_n_from_users_as_c
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ CROSS JOIN (SELECT count(*) AS n FROM users) AS c  --~ PROVED
+
+-- case: unproved_joins_stay_unknown__right_without_a_key
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ RIGHT JOIN sessions AS s2  --~ UNKNOWN
+    ON sessions.user_id = s2.user_id
+
+-- case: unproved_joins_stay_unknown__full_without_a_key
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ FULL JOIN sessions AS s2  --~ UNKNOWN
+    ON sessions.user_id = s2.user_id
+
+-- case: unproved_joins_stay_unknown__cross_onto_many_rows
+SELECT * FROM sessions /**ASSERT MANY TO ONE**/ CROSS JOIN users  --~ UNKNOWN
+
+-- case: unproved_joins_stay_unknown__positional
+SELECT * FROM sessions /**ASSERT MANY TO ONE**/ POSITIONAL JOIN users  --~ UNKNOWN
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__unique_semi_join
+SELECT *
+FROM sessions
+/**ASSERT UNIQUE**/ SEMI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__unique_anti_join
+SELECT *
+FROM sessions
+/**ASSERT UNIQUE**/ ANTI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__unique_right_semi_join
+SELECT *
+FROM sessions
+/**ASSERT UNIQUE**/ RIGHT
+--~ cardinality-on-filtering-join
+SEMI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__unique_right_anti_join
+SELECT *
+FROM sessions
+/**ASSERT UNIQUE**/ RIGHT
+--~ cardinality-on-filtering-join
+ANTI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__many_to_one_semi_join
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ SEMI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__many_to_one_anti_join
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ ANTI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__many_to_one_right_semi_join
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ RIGHT
+--~ cardinality-on-filtering-join
+SEMI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__many_to_one_right_anti_join
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ RIGHT
+--~ cardinality-on-filtering-join
+ANTI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_many_semi_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO MANY**/ SEMI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_many_anti_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO MANY**/ ANTI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_many_right_semi_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO MANY**/ RIGHT
+--~ cardinality-on-filtering-join
+SEMI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_many_right_anti_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO MANY**/ RIGHT
+--~ cardinality-on-filtering-join
+ANTI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_one_semi_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO ONE**/ SEMI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_one_anti_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO ONE**/ ANTI JOIN users
+--~ cardinality-on-filtering-join
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_one_right_semi_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO ONE**/ RIGHT
+--~ cardinality-on-filtering-join
+SEMI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cardinality_marker_on_a_semi_or_anti_join_is_rejected__one_to_one_right_anti_join
+SELECT *
+FROM sessions
+/**ASSERT ONE TO ONE**/ RIGHT
+--~ cardinality-on-filtering-join
+ANTI JOIN users
+    ON sessions.user_id = users.id
+
+-- case: a_cross_join_onto_one_row_keeps_the_left_key
+SELECT u.id
+FROM users AS u
+CROSS JOIN (SELECT count(*) AS n FROM sessions) AS c
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_right_join_does_not_keep_the_left_key
+SELECT u.id, s.user_id
+FROM users AS u
+RIGHT JOIN sessions AS s
+    ON u.id = s.user_id
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_positional_join_pads_both_sides
+CREATE TABLE a (x INTEGER NOT NULL);
+CREATE TABLE b (y INTEGER NOT NULL);
+SELECT x, y FROM a POSITIONAL JOIN b /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(y)**/  --~ UNKNOWN

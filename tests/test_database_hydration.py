@@ -12,7 +12,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from sqlassert import Outcome, analyze
+from sqlassert import Outcome
 from sqlassert import ir
 from sqlassert.diagnostics import (
     CATALOG_METADATA_UNAVAILABLE,
@@ -93,12 +93,6 @@ def test_a_unique_join_proves_against_a_catalog_primary_key():
 
     assert report.proved
     assert sorted(fetcher.requested) == ["orders", "users"]
-
-
-def test_offline_analysis_stays_pure_and_unknown():
-    report = analyze(UNIQUE_JOIN)
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
 def test_relations_are_found_through_the_preliminary_ir_so_a_cte_is_never_fetched():

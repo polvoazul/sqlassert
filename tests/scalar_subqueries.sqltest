@@ -1,0 +1,62 @@
+-- Scalar subqueries as left joins (issue 38).
+--
+-- A scalar subquery with body B is a left join with B: no row makes it NULL,
+-- which is a left join's padding. More than one row is a runtime error, so the
+-- join is many to one, or the query fails. Uncorrelated, B sits under an
+-- implied LIMIT 1, so its value is the same on every row: `a = (SELECT ...)`
+-- makes `a` constant (Paulley's R10). Correlated, B's WHERE is the ON of a
+-- dependent join.
+
+CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, PRIMARY KEY (a, b));
+CREATE TABLE r (k INTEGER PRIMARY KEY, g INTEGER, x INTEGER NOT NULL, y INTEGER);
+
+-- case: scalar_subqueries__aggregate
+SELECT a, b FROM t WHERE a = (SELECT max(x) FROM r) /**ASSERT UNIQUE(b)**/  --~ PROVED
+
+-- case: scalar_subqueries__filtered_to_a_key
+SELECT a, b FROM t WHERE a = (SELECT x FROM r WHERE k = 1) /**ASSERT UNIQUE(b)**/
+--~ PROVED
+
+-- case: scalar_subqueries__any_body
+SELECT a, b FROM t WHERE a = (SELECT x FROM r) /**ASSERT UNIQUE(b)**/  --~ PROVED
+
+-- case: scalar_subqueries__star
+SELECT * FROM t WHERE a = (SELECT max(x) FROM r) /**ASSERT UNIQUE(b)**/  --~ PROVED
+
+-- case: scalar_subqueries__in_the_select_list
+SELECT a, b, (SELECT max(x) FROM r) AS m FROM t /**ASSERT DETERMINES(a -> m)**/
+--~ PROVED
+
+-- case: scalar_subqueries__correlated
+SELECT a, b, (SELECT r.y FROM r WHERE r.k = t.c) AS m FROM t /**ASSERT UNIQUE(a, b)**/
+--~ PROVED
+
+-- case: scalar_subqueries__correlated_unqualified
+SELECT a, b, (SELECT y FROM r WHERE k = c) AS m FROM t /**ASSERT UNIQUE(a, b)**/
+--~ PROVED
+
+-- case: scalar_subqueries__may_be_null
+SELECT a, b, (SELECT max(x) FROM r) AS m FROM t /**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+
+-- case: scalar_subqueries__correlated_may_be_null
+SELECT a, (SELECT r.x FROM r WHERE r.k = t.c) AS m FROM t /**ASSERT NOT NULL(m)**/
+--~ UNKNOWN
+
+-- case: scalar_subqueries__is_null_keeps_rows
+SELECT a, b FROM t WHERE (SELECT max(x) FROM r) IS NULL /**ASSERT UNIQUE(a, b)**/
+--~ PROVED
+
+-- case: scalar_subqueries__no_constant_without_the_subquery
+SELECT a, b FROM t /**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+
+-- case: unlowered_scalar_subqueries_stay_opaque__p1
+SELECT a, b
+FROM t
+WHERE a = (SELECT max(r.x) FROM r WHERE r.g = t.c)
+/**ASSERT UNIQUE(b)**/  --~ UNKNOWN
+
+-- case: unlowered_scalar_subqueries_stay_opaque__p2
+SELECT a, b
+FROM t
+WHERE a = (SELECT max(x) FROM r WHERE k IN (SELECT c FROM t))
+/**ASSERT UNIQUE(b)**/  --~ UNKNOWN

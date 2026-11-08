@@ -7,6 +7,7 @@ from collections import Counter
 import pytest
 
 import soundness_oracle
+from sqltest import SqlTestFile
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -15,6 +16,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="judge each test's PROVED assertions against DuckDB after its fixtures finish",
     )
+
+
+def pytest_collect_file(file_path, parent):
+    if file_path.suffix == ".sqltest":
+        return SqlTestFile.from_parent(parent, path=file_path)
+    return None
 
 
 def pytest_configure(config: pytest.Config) -> None:

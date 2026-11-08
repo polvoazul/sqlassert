@@ -1,0 +1,188 @@
+-- Functional dependencies: uniqueness and `DETERMINES` beyond pass-through columns.
+--
+-- Keys, equalities, constants, and grouping all create functional
+-- dependencies; closure over them proves Unique Sets that column pass-through
+-- alone cannot. Cases come from Paulley, *Exploiting Functional Dependence in
+-- Query Optimization* (2000), and from docs/functional-dependencies.md. Every
+-- PROVED case here is also judged by the soundness oracle; every UNKNOWN case
+-- is a known counterexample to a plausible but unsound rule.
+
+CREATE TABLE f (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, s VARCHAR, n VARCHAR COLLATE NOCASE, d DOUBLE);
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__arithmetic
+SELECT a, a + 1 AS k, count(*) AS c FROM f GROUP BY a, a + 1 /**ASSERT UNIQUE(a)**/
+--~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__two_arguments
+SELECT a, b, a * b AS k, count(*) AS c
+FROM f
+GROUP BY a, b, a * b
+/**ASSERT UNIQUE(a, b)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__built_in_function
+SELECT s, upper(s) AS k, count(*) AS c
+FROM f
+GROUP BY s, upper(s)
+/**ASSERT UNIQUE(s)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__cast
+SELECT a, CAST(a AS VARCHAR) AS k, count(*) AS c
+FROM f
+GROUP BY a, CAST(a AS VARCHAR)
+/**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__distinct
+SELECT DISTINCT a, a * 2 AS k FROM f /**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__asserted_dependency
+SELECT a, b, a + b AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__through_a_cte
+WITH g AS (SELECT a, b, a + b AS k FROM f)
+SELECT a, b, k
+FROM g
+/**ASSERT DETERMINES(a, b -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__coalesce
+SELECT a, b, coalesce(a, b) AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__simple_case
+SELECT a, CASE a WHEN 1 THEN 'x' ELSE 'y' END AS k
+FROM f
+/**ASSERT DETERMINES(a -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__searched_case
+SELECT a, b, CASE WHEN a > b THEN a END AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/
+--~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__comparison_as_a_value
+SELECT a, b, a = b AS k FROM f /**ASSERT DETERMINES(a, b -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__unmodelled_function
+SELECT s, concat(s, 'x') AS k FROM f /**ASSERT DETERMINES(s -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__nested
+SELECT a, b, coalesce(a + 1, CASE b WHEN 2 THEN a END) AS k
+FROM f
+/**ASSERT DETERMINES(a, b -> k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__user_defined_function_inside_coalesce
+SELECT a, coalesce(my_udf(a), 0) AS k FROM f /**ASSERT DETERMINES(a -> k)**/
+--~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__window_inside_case
+SELECT a, CASE a WHEN 1 THEN count(*) OVER () END AS k
+FROM f
+/**ASSERT DETERMINES(a -> k)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__user_defined_function
+SELECT a, my_udf(a) AS k, count(*) AS c
+FROM f
+GROUP BY a, my_udf(a)
+/**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__random
+SELECT a, a + random() AS k, count(*) AS c
+FROM f
+GROUP BY a, a + random()
+/**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__collated_text
+SELECT n, n || '' AS k, count(*) AS c FROM f GROUP BY n, n || '' /**ASSERT UNIQUE(n)**/
+--~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__double
+SELECT d, CAST(d AS VARCHAR) AS k, count(*) AS c
+FROM f
+GROUP BY d, CAST(d AS VARCHAR)
+/**ASSERT UNIQUE(d)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__injective
+SELECT id + 1 AS k, b FROM f /**ASSERT DETERMINES(k -> b)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__injective_key
+SELECT id - 10 AS k FROM f /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__injective_nested
+SELECT -(10 - id) AS k FROM f /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__injective_grouping
+SELECT a + 1 AS k, count(*) AS c FROM f GROUP BY a + 1 /**ASSERT DETERMINES(k -> c)**/
+--~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__injective_decimal_literal
+SELECT id + 0.5 AS k FROM f /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__double_literal
+SELECT id + 1e0 AS k FROM f /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__two_columns
+SELECT a + b AS k, id FROM f /**ASSERT DETERMINES(k -> id)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__multiplication
+SELECT id * 2 AS k FROM f /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__double_column
+SELECT d + 1 AS k, id FROM f /**ASSERT DETERMINES(k -> id)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__text_column
+SELECT s || 'x' AS k, id FROM f /**ASSERT DETERMINES(k -> id)**/  --~ UNKNOWN
+
+-- case: a_deterministic_function_is_determined_by_its_arguments__not_injective
+SELECT a, a % 2 AS k, count(*) AS c FROM f GROUP BY a, a % 2 /**ASSERT UNIQUE(k)**/
+--~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__arithmetic
+SELECT a, b FROM f WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__mirrored
+SELECT a, b FROM f WHERE a * 2 = b /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__two_inputs
+SELECT id, a, b FROM f WHERE id = a + b /**ASSERT DETERMINES(a, b -> id)**/  --~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__coalesce
+SELECT a, b FROM f WHERE b = coalesce(a, 0) /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__among_other_conjuncts
+SELECT a, b FROM f WHERE id > 0 AND b = a - 1 /**ASSERT DETERMINES(a -> b)**/
+--~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__inner_join_on
+SELECT f.a, g.b FROM f JOIN f AS g ON g.b = f.a + 1 /**ASSERT DETERMINES(a -> b)**/
+--~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__reversed
+SELECT a, b FROM f WHERE b = a + 1 /**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__reversed_negation
+SELECT id, b FROM f WHERE b = -id /**ASSERT NOT NULL UNIQUE(b)**/  --~ PROVED
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__not_one_to_one
+SELECT a, b FROM f WHERE b = a % 2 /**ASSERT DETERMINES(b -> a)**/  --~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__double_target_reversed
+SELECT a, d FROM f WHERE d = a + 1 /**ASSERT DETERMINES(d -> a)**/  --~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__user_defined_function
+SELECT a, b FROM f WHERE b = my_udf(a) /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__random
+SELECT a, b FROM f WHERE b = a + random() /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__double_target
+SELECT a, d FROM f WHERE d = a + 1 /**ASSERT DETERMINES(a -> d)**/  --~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__double_input
+SELECT a, d FROM f WHERE a = CAST(d AS INTEGER) /**ASSERT DETERMINES(d -> a)**/
+--~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__collated_input
+SELECT a, n FROM f WHERE a = length(n) /**ASSERT DETERMINES(n -> a)**/  --~ UNKNOWN
+
+-- case: a_column_equal_to_a_function_is_determined_by_its_arguments__under_or
+SELECT a, b FROM f WHERE b = a + 1 OR b = a /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+
+-- case: injectivity_needs_arithmetic_that_raises_on_overflow
+-- dialect: sqlite
+SELECT id + 1 AS k, b FROM f /**ASSERT DETERMINES(k -> b)**/  --~ UNKNOWN

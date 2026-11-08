@@ -22,6 +22,9 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   is reported as an unrecognized marker rather than ignored. `/**` is assertion
   syntax, so a near miss is likelier a typo than a note, and a typo that was
   silently dropped would read to its author as a proof.
+  Only marker shapes written as SQL count: one inside a `--` comment or a
+  quoted string is not a marker (`_marker_shapes`). A `--` comment is how an
+  author switches a marker off, and quoted text is data.
 
   The case marker (`/**ASSERT EXHAUSTIVE**/`) is another fixed literal, written
   inside an expression: the dialect adds its token to `PRIMARY_PARSERS`, so it
@@ -204,3 +207,24 @@ Assertion evidence supports `.explain()`.
 `suggest(sql, *, dialect="duckdb", max_size=3) -> SuggestionReport` lists the
 Properties `analyze` would prove if their markers were pasted in. Like
 `analyze`, it returns data and never prints.
+
+## Tests
+
+A test that only analyzes SQL and checks outcomes and Diagnostics is a case in
+a `tests/*.sqltest` file: the SQL with `--~` annotations next to the lines they
+check. `tests/sqltest.py` defines the format (setup, `-- include:`,
+`-- dialect:`, `-- case:`, inline, standalone and `--~!` annotations) and the
+pytest collector. Matching is exhaustive, so a case states every outcome and
+every Diagnostic, warnings included. Quoted substrings after an outcome must
+appear in that assertion's `evidence.explain()`; after a code, in the
+Diagnostic's message. One marker per line; a bare outcome inline, an outcome
+with substrings and every Diagnostic on its own line under the line it checks;
+an annotation goes on its own line when inline it would pass 88 columns.
+
+Tests stay in Python when they need Evidence structure, origins beyond the
+line, mocking, fixtures, `analyze_database`, suggestions, parsing or IR
+internals, or a large generated matrix (marker accounting).
+
+A randomized search that needs a larger budget to be reliable is marked
+`@pytest.mark.slow` and takes its budget from the `examples` fixture
+(`tests/test_soundness_oracle.py`).

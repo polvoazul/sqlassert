@@ -1,0 +1,44 @@
+-- Not-null assertions and declarations, and the Non-Null Unique Sets they complete.
+--
+-- `ASSERT NOT NULL(...)` asks for one proof covering every listed column;
+-- `DECLARE NOT NULL(...)` and `DECLARE PRIMARY KEY(...)` state trusted
+-- facts and produce no assertion result of their own.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, s VARCHAR NOT NULL, n VARCHAR, x INTEGER);
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__non_null_arms
+SELECT CASE s WHEN 'a' THEN 1 ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/
+--~ PROVED
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__nullable_operand_else
+SELECT CASE n WHEN 'a' THEN 1 ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/
+--~ PROVED
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__exhaustive_no_else
+WITH d AS (SELECT * FROM t /**DECLARE ENUM(s IN ('a', 'b'))**/
+/**DECLARE ENUM(n IN ('a', 'b'))**/) SELECT CASE s WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS k FROM d
+/**ASSERT NOT NULL(k)**/  --~ PROVED
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__null_then
+SELECT CASE s WHEN 'a' THEN NULL ELSE 2 END AS k FROM t /**ASSERT NOT NULL(k)**/
+--~ UNKNOWN "THEN arm 1 may be NULL"
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__nullable_then
+SELECT CASE s WHEN 'a' THEN 1 WHEN 'b' THEN x ELSE 2 END AS k
+FROM t
+/**ASSERT NOT NULL(k)**/
+--~ UNKNOWN "THEN arm 2 may be NULL"
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__null_else
+SELECT CASE s WHEN 'a' THEN 1 ELSE NULL END AS k FROM t /**ASSERT NOT NULL(k)**/
+--~ UNKNOWN "ELSE may be NULL"
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__no_else_not_exhaustive
+SELECT CASE s WHEN 'a' THEN 1 END AS k FROM t /**ASSERT NOT NULL(k)**/
+--~ UNKNOWN "With no ELSE"
+
+-- case: a_simple_case_is_non_null_when_every_arm_it_can_take_is__no_else_nullable_operand
+WITH d AS (SELECT * FROM t /**DECLARE ENUM(s IN ('a', 'b'))**/
+/**DECLARE ENUM(n IN ('a', 'b'))**/) SELECT CASE n WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS k FROM d
+/**ASSERT NOT NULL(k)**/
+--~ UNKNOWN "With no ELSE"

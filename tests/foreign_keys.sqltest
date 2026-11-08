@@ -1,0 +1,419 @@
+-- Direct Foreign Keys: `REFERENCES` constraints in `CREATE TABLE`,
+-- `DECLARE FOREIGN KEY(...) REFERENCES t(...)`, and
+-- `ASSERT FOREIGN KEY(...) REFERENCES t(...)`.
+--
+-- A Foreign Key is Referential Coverage onto a Unique Set of the referenced
+-- relation. Constraints and declarations supply the coverage only; the Unique Set
+-- is proved separately every time. Under MATCH SIMPLE a row with a null
+-- referencing component is exempt, so nullable referencing columns never weaken
+-- a Foreign Key.
+
+CREATE TABLE users (id INTEGER PRIMARY KEY, org INTEGER, name VARCHAR, UNIQUE (org, name));
+CREATE TABLE plain (id INTEGER);
+CREATE TABLE orders (
+    id INTEGER,
+    user_id INTEGER REFERENCES users(id),
+    buyer INTEGER REFERENCES users,
+    org INTEGER,
+    owner VARCHAR,
+    FOREIGN KEY (org, owner) REFERENCES users(org, name)
+);
+CREATE TABLE events (user_id INTEGER, ts TIMESTAMP);
+CREATE TABLE notes (org INTEGER, author VARCHAR, body VARCHAR);
+
+-- case: a_direct_foreign_key_is_proved__column_level_constraint
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_direct_foreign_key_is_proved__p2
+SELECT * FROM orders /**ASSERT FOREIGN KEY(buyer) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_direct_foreign_key_is_proved__table_level_composite_constraint
+SELECT * FROM orders /**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/
+--~ PROVED
+
+-- case: a_direct_foreign_key_is_proved__composite_pairs_listed_in_another_order
+SELECT * FROM orders /**ASSERT FOREIGN KEY(owner, org) REFERENCES users(name, org)**/
+--~ PROVED
+
+-- case: a_direct_foreign_key_is_proved__aliased_table
+SELECT * FROM orders AS o /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+--~ PROVED
+
+-- case: nullable_referencing_columns_do_not_invalidate_a_foreign_key
+SELECT * FROM orders /**ASSERT NOT NULL(user_id)**/  --~ UNKNOWN
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: assertions_are_reported_in_written_order
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+/**ASSERT NOT NULL(user_id)**/  --~ UNKNOWN
+
+-- case: composite_columns_pair_by_position
+SELECT * FROM orders /**ASSERT FOREIGN KEY(org, owner) REFERENCES users(name, org)**/
+--~ UNKNOWN
+
+-- case: a_partial_composite_key_is_not_a_foreign_key
+SELECT * FROM orders /**ASSERT FOREIGN KEY(org) REFERENCES users(org)**/  --~ UNKNOWN
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__filter_of_the_referencing_relation
+SELECT * FROM orders WHERE id > 0 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+--~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__renaming_projection
+SELECT id, user_id AS uid FROM orders /**ASSERT FOREIGN KEY(uid) REFERENCES users(id)**/
+--~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__renamed_composite
+SELECT owner AS n, org AS o
+FROM orders
+/**ASSERT FOREIGN KEY(o, n) REFERENCES users(org, name)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__aliased_subquery
+SELECT s.u
+FROM (SELECT user_id AS u FROM orders) AS s
+/**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__cte
+WITH c AS (SELECT user_id FROM orders WHERE id > 0)
+SELECT *
+FROM c
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__view
+CREATE VIEW v AS SELECT org, owner FROM orders;
+SELECT * FROM v AS x /**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/
+--~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__assertion_in_a_view_body
+CREATE VIEW v AS
+SELECT user_id
+FROM orders
+WHERE id > 0
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/;  --~ PROVED
+SELECT * FROM v
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__distinct
+SELECT DISTINCT user_id
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__grouping_key
+SELECT user_id, count(*) AS n
+FROM orders
+GROUP BY user_id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__inner_join
+SELECT o.user_id, e.ts
+FROM orders AS o
+JOIN events AS e
+    ON e.user_id = o.id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__preserved_side_of_a_left_join
+SELECT o.user_id, e.ts
+FROM orders AS o
+LEFT JOIN events AS e
+    ON e.user_id = o.id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__padded_side_of_a_right_join
+SELECT o.user_id, e.ts
+FROM orders AS o
+RIGHT JOIN events AS e
+    ON e.user_id = o.id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__padded_side_of_a_full_join
+SELECT o.org, o.owner
+FROM orders AS o
+FULL JOIN events AS e
+    ON e.user_id = o.id
+/**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__union_of_covered_branches
+SELECT *
+FROM (SELECT user_id FROM orders UNION ALL SELECT buyer FROM orders) AS s
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__except_keeps_left_rows
+SELECT *
+FROM (SELECT user_id FROM orders EXCEPT SELECT user_id FROM events) AS s
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_foreign_key_propagates_through_a_transformation_that_keeps_coverage__intersect_with_a_covered_right_branch
+SELECT *
+FROM (SELECT user_id FROM events INTERSECT SELECT user_id FROM orders) AS s
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: an_inner_equality_join_establishes_a_foreign_key__inner_join_on_the_target
+SELECT e.user_id, e.ts
+FROM events AS e
+JOIN users AS u
+    ON e.user_id = u.id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: an_inner_equality_join_establishes_a_foreign_key__where_equality
+SELECT e.user_id
+FROM events AS e, users AS u
+WHERE u.id = e.user_id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: an_inner_equality_join_establishes_a_foreign_key__composite_join
+SELECT n.author, n.org
+FROM notes AS n
+JOIN users AS u
+    ON n.org = u.org AND n.author = u.name
+/**ASSERT FOREIGN KEY(author, org) REFERENCES users(name, org)**/  --~ PROVED
+
+-- case: an_inner_equality_join_establishes_a_foreign_key__join_through_a_cte
+WITH u AS (SELECT id FROM users)
+SELECT e.user_id
+FROM events AS e
+JOIN u
+    ON u.id = e.user_id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: an_inner_equality_join_establishes_a_foreign_key__join_to_a_narrowed_view
+CREATE VIEW a AS SELECT id FROM users WHERE org = 1;
+SELECT o.user_id
+FROM orders AS o
+JOIN a
+    ON a.id = o.user_id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/  --~ PROVED
+
+-- case: coverage_of_a_relation_carries_to_a_relation_keeping_all_its_rows__projecting_view
+CREATE VIEW people AS SELECT id, name FROM users;
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/  --~ PROVED
+
+-- case: coverage_of_a_relation_carries_to_a_relation_keeping_all_its_rows__distinct_view
+CREATE VIEW ids AS SELECT DISTINCT id FROM users;
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES ids(id)**/  --~ PROVED
+
+-- case: coverage_of_a_relation_carries_to_a_relation_keeping_all_its_rows__renamed_composite
+CREATE VIEW people AS SELECT name AS n, org AS o FROM users;
+SELECT * FROM orders /**ASSERT FOREIGN KEY(org, owner) REFERENCES people(o, n)**/
+--~ PROVED
+
+-- case: coverage_of_a_relation_carries_to_a_relation_keeping_all_its_rows__preserved_side_of_a_left_join
+CREATE VIEW people AS SELECT u.id FROM users AS u LEFT JOIN users AS m ON m.id = u.id;
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/  --~ PROVED
+
+-- case: coverage_of_a_relation_carries_to_a_relation_keeping_all_its_rows__declared_coverage_of_a_derived_relation
+CREATE VIEW people AS SELECT id FROM users;
+CREATE VIEW v AS
+SELECT user_id
+FROM events
+/**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/;
+SELECT *
+FROM v
+WHERE user_id > 0
+/**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/  --~ PROVED
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__computed_column
+SELECT user_id + 0 AS u FROM orders /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/
+--~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__aggregated_column
+SELECT org, max(user_id) AS u
+FROM orders
+GROUP BY org
+/**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/  --~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__swapped_composite_renames
+SELECT org AS owner, owner AS org
+FROM orders
+/**ASSERT FOREIGN KEY(org, owner) REFERENCES users(org, name)**/  --~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__composite_from_two_join_sides
+SELECT o.org, u.name
+FROM orders AS o
+JOIN users AS u
+    ON u.id = o.user_id
+/**ASSERT FOREIGN KEY(org, name) REFERENCES users(org, name)**/  --~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__union_with_an_uncovered_branch
+SELECT *
+FROM (SELECT user_id FROM orders UNION SELECT user_id FROM events) AS s
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__outer_join_on_is_not_an_equality
+SELECT e.user_id
+FROM events AS e
+LEFT JOIN users AS u
+    ON e.user_id = u.id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__filtered_target
+WITH a AS (SELECT id FROM users WHERE org = 1)
+SELECT *
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/  --~ UNKNOWN
+
+-- case: a_transformation_that_may_lose_coverage_stops_propagation__inner_joined_target
+CREATE VIEW a AS
+SELECT u.id
+FROM users AS u
+JOIN users AS m
+    ON m.id = u.id AND m.org = 1;
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/  --~ UNKNOWN
+
+-- case: a_limit_on_the_referencing_side_keeps_coverage
+SELECT user_id
+FROM orders
+LIMIT 1
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: joining_a_limited_target_establishes_coverage_onto_it
+WITH target AS (SELECT id FROM users LIMIT 1)
+SELECT o.user_id
+FROM orders o
+JOIN target t
+    ON o.user_id = t.id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/  --~ PROVED
+
+-- case: a_declaration_proves_an_assertion_at_every_attachment_site__root_select
+SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_declaration_proves_an_assertion_at_every_attachment_site__view
+CREATE VIEW v AS
+SELECT user_id
+FROM events
+/**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/;  --~ PROVED
+SELECT * FROM v
+
+-- case: a_declaration_proves_an_assertion_at_every_attachment_site__cte
+WITH c AS (SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/) SELECT * FROM c  --~ PROVED
+
+-- case: a_declaration_proves_an_assertion_at_every_attachment_site__from_subquery
+SELECT *
+FROM (SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/) AS s  --~ PROVED
+
+-- case: a_declared_unique_set_on_the_referenced_relation_suffices
+CREATE VIEW people AS SELECT id FROM plain /**DECLARE UNIQUE(id)**/;
+SELECT user_id FROM events
+/**DECLARE FOREIGN KEY(user_id) REFERENCES people(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES people(id)**/  --~ PROVED
+
+-- case: a_cte_can_be_referenced
+WITH ids AS (SELECT DISTINCT id FROM plain)
+SELECT user_id FROM events
+/**DECLARE FOREIGN KEY(user_id) REFERENCES ids(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES ids(id)**/  --~ PROVED
+
+-- case: a_view_can_reference_itself
+CREATE TABLE plain_tree (id INTEGER, parent INTEGER);
+CREATE VIEW tree AS SELECT id, parent FROM plain_tree
+/**DECLARE UNIQUE(id)**/
+/**DECLARE FOREIGN KEY(parent) REFERENCES tree(id)**/
+/**ASSERT FOREIGN KEY(parent) REFERENCES tree(id)**/;  --~ PROVED
+SELECT * FROM tree
+
+-- case: without_a_constraint_the_relationship_is_unknown_and_explained
+SELECT * FROM events /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+--~ UNKNOWN "No known Foreign Key from events(user_id) to users(id)"
+
+-- case: an_unknown_relationship_names_the_known_ones_from_the_same_columns
+SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES plain(id)**/
+--~ UNKNOWN "these columns reference users(id)"
+
+-- case: a_derived_relation_explains_the_closest_missing_relationship
+SELECT s.user_id
+FROM (SELECT user_id FROM events WHERE ts IS NOT NULL) AS s
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+--~ UNKNOWN "No known Foreign Key from events(user_id) to users(id)"
+
+-- case: a_computed_column_is_named_where_propagation_stops
+SELECT user_id + 0 AS u FROM orders /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/
+--~ UNKNOWN "(u) are not passed through from one input row"
+
+-- case: a_narrowed_target_is_named_in_the_explanation
+WITH a AS (SELECT id FROM users WHERE org = 1)
+SELECT *
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES a(id)**/
+--~ UNKNOWN "may drop rows of its input"
+
+-- case: a_union_names_the_uncovered_branch
+SELECT *
+FROM (SELECT user_id FROM orders UNION SELECT user_id FROM events) AS s
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+--~ UNKNOWN "No known Foreign Key from events(user_id) to users(id)"
+
+-- case: a_limited_referenced_relation_does_not_inherit_coverage__limit_0
+WITH target AS (SELECT id FROM users LIMIT 0)
+SELECT user_id
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/
+--~ UNKNOWN "may drop rows of its input"
+
+-- case: a_limited_referenced_relation_does_not_inherit_coverage__limit_1
+WITH target AS (SELECT id FROM users LIMIT 1)
+SELECT user_id
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/
+--~ UNKNOWN "may drop rows of its input"
+
+-- case: a_limited_referenced_relation_does_not_inherit_coverage__offset_1
+WITH target AS (SELECT id FROM users OFFSET 1)
+SELECT user_id
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/
+--~ UNKNOWN "may drop rows of its input"
+
+-- case: a_limited_referenced_relation_does_not_inherit_coverage__limit_1_offset_1
+WITH target AS (SELECT id FROM users LIMIT 1 OFFSET 1)
+SELECT user_id
+FROM orders
+/**ASSERT FOREIGN KEY(user_id) REFERENCES target(id)**/
+--~ UNKNOWN "may drop rows of its input"
+
+-- case: a_declaration_produces_no_assertion_result
+SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+
+-- case: the_explanation_identifies_the_declaration_as_trusted
+SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
+--~ PROVED "Declared ReferentialCoverage"
+
+-- case: a_declaration_still_needs_a_unique_set_on_the_referenced_columns
+SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES plain(id)**/
+/**ASSERT FOREIGN KEY(user_id) REFERENCES plain(id)**/
+--~ UNKNOWN "Declared ReferentialCoverage" "referenced columns plain(id) must form a Unique Set"
+
+-- case: an_undeclared_referenced_relation_is_explained
+SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES accounts(id)**/
+--~ undeclared-table
+/**ASSERT FOREIGN KEY(user_id) REFERENCES accounts(id)**/
+--~ UNKNOWN "accounts has no complete declared schema"
+
+-- case: an_unknown_referencing_column_is_reported
+SELECT user_id FROM events /**ASSERT FOREIGN KEY(missing) REFERENCES users(id)**/
+--~ unknown-asserted-column "foreign key assertion"
+
+-- case: an_unknown_referenced_column_is_reported
+SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(missing)**/
+--~ unknown-referenced-column "users" "missing"
+
+-- case: a_malformed_marker_is_reported__mismatched_column_counts
+SELECT user_id, ts
+FROM events
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(org, name)**/
+--~ unattached-marker
+
+-- case: a_malformed_marker_is_reported__no_references
+SELECT user_id, ts FROM events /**ASSERT FOREIGN KEY(user_id)**/
+--~ unattached-marker
+
+-- case: a_malformed_marker_is_reported__no_referenced_columns
+SELECT user_id, ts FROM events /**ASSERT FOREIGN KEY(user_id) REFERENCES users**/
+--~ unattached-marker
+
+-- case: a_malformed_marker_is_reported__repeated_referenced_column
+SELECT user_id, ts
+FROM events
+/**ASSERT FOREIGN KEY(user_id, ts) REFERENCES users(id, id)**/
+--~ unattached-marker

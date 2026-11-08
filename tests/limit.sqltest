@@ -1,0 +1,37 @@
+-- Limits retain input facts but may remove rows needed by referenced coverage.
+
+-- case: at_most_one_row_is_unique_without_an_input_key__limit_0
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t LIMIT 0 /**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: at_most_one_row_is_unique_without_an_input_key__limit_1
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t LIMIT 1 /**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: at_most_one_row_is_unique_without_an_input_key__fetch_first_1_rows_only
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t FETCH FIRST 1 ROWS ONLY /**ASSERT UNIQUE(a)**/  --~ PROVED
+
+-- case: a_limit_that_may_keep_duplicate_rows_does_not_make_a_key__limit_2
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t LIMIT 2 /**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+
+-- case: a_limit_that_may_keep_duplicate_rows_does_not_make_a_key__limit_1_percent
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t LIMIT 1 PERCENT /**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+
+-- case: a_limit_that_may_keep_duplicate_rows_does_not_make_a_key__order_by_a_fetch_first_1_rows_with_ties
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t ORDER BY a FETCH FIRST 1 ROWS WITH TIES /**ASSERT UNIQUE(a)**/
+--~ UNKNOWN
+
+-- case: a_limit_preserves_keys_non_nullness_and_domains
+CREATE TABLE t (id INTEGER PRIMARY KEY, status VARCHAR);
+WITH limited AS (SELECT id, status FROM t WHERE status = 'paid' LIMIT 2)
+SELECT id, status FROM limited
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+/**ASSERT ENUM(status IN ('paid'))**/  --~ PROVED
+
+-- case: a_limit_does_not_make_a_nullable_column_non_null
+CREATE TABLE t (a INTEGER);
+SELECT a FROM t LIMIT 1 /**ASSERT NOT NULL(a)**/  --~ UNKNOWN

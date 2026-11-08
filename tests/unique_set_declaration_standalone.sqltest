@@ -1,0 +1,10 @@
+-- Unique Set Declarations: `DECLARE UNIQUE(...)` written on a Select
+-- Expression states a trusted Unique Set. It is an assumption, not a proof: it
+-- contributes Knowledge for downstream proofs and never produces an assertion
+-- result of its own.
+
+-- case: a_declaration_proves_a_unique_join
+CREATE TABLE t (id INTEGER, v INTEGER);
+CREATE TABLE s (tid INTEGER);
+WITH c AS (SELECT id FROM t /**DECLARE UNIQUE(id)**/)
+SELECT * FROM s /**ASSERT MANY TO ONE**/ JOIN c ON s.tid = c.id  --~ PROVED

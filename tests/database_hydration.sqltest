@@ -1,0 +1,13 @@
+-- Generic Database Knowledge hydration, exercised with a fake fetcher.
+--
+-- The fetcher resolves the external Relations a SQL Program reaches, expands
+-- catalog views recursively through the ordinary parser and linker, rebuilds the
+-- final IR, and binds catalog metadata to that IR as Knowledge. The engine only
+-- ever sees IR-bound Properties.
+
+-- case: offline_analysis_stays_pure_and_unknown
+SELECT *
+FROM orders
+/**ASSERT MANY TO ONE**/ JOIN users ON orders.user_id = users.id  --~ UNKNOWN
+--~! undeclared-table
+--~! undeclared-table

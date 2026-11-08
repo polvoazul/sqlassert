@@ -1,0 +1,100 @@
+-- Unique Sets derived from ordinary Aggregate (`GROUP BY`) and `DISTINCT`.
+--
+-- Both earn a Unique Set of their own regardless of their input relation's
+-- existing Unique Sets: an Aggregate by its complete set of Grouping Keys, a
+-- Distinct by its complete set of output expressions. Every case here wraps the
+-- aggregate or distinct query in a CTE, exercising #5's and #7's lowering
+-- together, exactly like `test_analyze_cte_and_subquery.py` does for plain
+-- Filter/Project bodies.
+
+-- case: a_group_by_subquery_joined_on_its_full_composite_grouping_key_is_proved
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR, amount INTEGER);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+
+WITH per_customer_region AS (
+    SELECT customer_id, region, COUNT(*) AS n FROM orders GROUP BY customer_id, region
+)
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN per_customer_region  --~ PROVED
+    ON customer_regions.customer_id = per_customer_region.customer_id
+    AND customer_regions.region = per_customer_region.region
+
+-- case: a_computed_grouping_key_maps_the_unique_set_to_the_outer_column
+-- A Grouping Key is a bound scalar expression, not just a bare column --
+-- it maps to the outer column through the selected output that computes it
+-- unrenamed, exactly like a bare column does.
+CREATE TABLE orders (customer_id VARCHAR);
+CREATE TABLE customers (id VARCHAR);
+
+WITH per_customer AS (
+    SELECT UPPER(customer_id) AS ucid, COUNT(*) AS n
+    FROM orders
+    GROUP BY UPPER(customer_id)
+)
+SELECT *
+FROM customers
+/**ASSERT MANY TO ONE**/ JOIN per_customer  --~ PROVED
+    ON customers.id = per_customer.ucid
+
+-- case: a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_proved
+-- Regression test for the same parenthesized-body bug `test_analyze_views.py`
+-- covers, exercised through the exact shape that surfaced it: a `GROUP BY`
+-- aggregate view, self-joined through `USING`.
+CREATE TABLE orders (user_id INTEGER, amount INTEGER);
+CREATE VIEW per_user AS (
+    SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY user_id
+);
+
+SELECT * FROM per_user AS a /**ASSERT MANY TO ONE**/ JOIN per_user AS b USING (user_id)
+--~ PROVED
+
+-- case: a_positional_grouping_key_maps_to_its_selected_output
+CREATE TABLE orders (user_id INTEGER, amount INTEGER);
+CREATE VIEW per_user AS (
+    SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY 1
+);
+
+SELECT * FROM per_user AS a /**ASSERT MANY TO ONE**/ JOIN per_user AS b USING (user_id)
+--~ PROVED
+
+-- case: a_distinct_subquery_joined_on_its_full_composite_output_set_is_proved
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+
+WITH distinct_pairs AS (
+    SELECT DISTINCT customer_id, region FROM orders
+)
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN distinct_pairs  --~ PROVED
+    ON customer_regions.customer_id = distinct_pairs.customer_id
+    AND customer_regions.region = distinct_pairs.region
+
+-- case: distinct_star_is_unsupported_and_unknown
+CREATE TABLE orders (customer_id INTEGER);
+CREATE TABLE customers (id INTEGER);
+
+WITH distinct_star AS (
+    SELECT DISTINCT * FROM orders
+)
+SELECT *
+FROM customers
+/**ASSERT MANY TO ONE**/ JOIN distinct_star  --~ UNKNOWN
+    ON customers.id = distinct_star.customer_id
+
+-- case: a_select_without_from_is_one_row__p1
+SELECT 'p' AS k, 1 AS n /**ASSERT NOT NULL UNIQUE(k)**/  --~ PROVED
+
+-- case: a_select_without_from_is_one_row__select_p_as_k_assert_enum_k_in_p_outcome_proved
+SELECT 'p' AS k /**ASSERT ENUM(k IN ('p'))**/  --~ PROVED
+
+-- case: a_select_without_from_is_one_row__p3
+SELECT 1 AS x WHERE 1 = 2 /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: a_select_without_from_is_one_row__p4
+SELECT NULL AS x /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: a_select_without_from_is_one_row__p5
+WITH u AS (SELECT 'a' AS t UNION ALL SELECT 'a') SELECT t FROM u /**ASSERT UNIQUE(t)**/
+--~ UNKNOWN

@@ -1,0 +1,41 @@
+-- Unique Set Declarations: `DECLARE UNIQUE(...)` written on a Select
+-- Expression states a trusted Unique Set. It is an assumption, not a proof: it
+-- contributes Knowledge for downstream proofs and never produces an assertion
+-- result of its own.
+
+CREATE TABLE t (id INTEGER, v INTEGER);
+
+-- case: a_declaration_proves_a_downstream_assertion_at_every_attachment_site__root_select
+SELECT id, v FROM t /**DECLARE UNIQUE(id)**/
+/**ASSERT UNIQUE(id, v)**/  --~ PROVED
+
+-- case: a_declaration_proves_a_downstream_assertion_at_every_attachment_site__view
+CREATE VIEW w AS SELECT id, v FROM t /**DECLARE UNIQUE(id)**/;
+SELECT id FROM w /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_declaration_proves_a_downstream_assertion_at_every_attachment_site__cte
+WITH c AS (SELECT id, v FROM t /**DECLARE UNIQUE(id)**/) SELECT id FROM c
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_declaration_proves_a_downstream_assertion_at_every_attachment_site__from_subquery
+SELECT id FROM (SELECT id, v FROM t /**DECLARE UNIQUE(id)**/) AS s
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_declaration_produces_no_assertion_result
+SELECT id FROM t /**DECLARE UNIQUE(id)**/
+
+-- case: without_the_declaration_the_same_assertion_is_unknown
+WITH c AS (SELECT id, v FROM t) SELECT id FROM c /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_declaration_naming_an_unknown_column_is_reported
+SELECT id FROM t /**DECLARE UNIQUE(missing)**/
+--~ unknown-asserted-column "declaration"
+
+-- case: a_declaration_with_no_columns_is_reported
+SELECT id FROM t /**DECLARE UNIQUE()**/
+--~ unattached-marker
+
+-- case: the_explanation_identifies_the_declaration_as_trusted
+WITH c AS (SELECT id, v FROM t /**DECLARE UNIQUE(id)**/) SELECT id FROM c
+/**ASSERT UNIQUE(id)**/
+--~ PROVED "Declared UniqueSet"

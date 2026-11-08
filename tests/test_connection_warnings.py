@@ -42,13 +42,6 @@ def test_a_table_without_create_warns_once_and_names_the_fix():
     assert "analyze_database" in message
 
 
-def test_declared_tables_do_not_warn():
-    report = analyze(CATALOG + "SELECT id FROM accounts /**ASSERT UNIQUE(id)**/")
-
-    assert report.warnings == ()
-    assert report.proved
-
-
 def test_warnings_do_not_fail_a_report():
     report = analyze("SELECT id FROM accounts /**DECLARE UNIQUE(id)**/ /**ASSERT UNIQUE(id)**/")
 

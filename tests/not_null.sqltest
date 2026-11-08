@@ -1,0 +1,303 @@
+-- Not-null assertions and declarations, and the Non-Null Unique Sets they complete.
+--
+-- `ASSERT NOT NULL(...)` asks for one proof covering every listed column;
+-- `DECLARE NOT NULL(...)` and `DECLARE PRIMARY KEY(...)` state trusted
+-- facts and produce no assertion result of their own.
+
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL, nickname VARCHAR);
+CREATE TABLE sessions (user_id INTEGER NOT NULL, ts TIMESTAMP);
+
+-- case: not_null_is_proved__union
+WITH c AS (SELECT id FROM users UNION ALL SELECT id FROM users)
+SELECT id
+FROM c
+/**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__intersect_non_null_on_the_right
+WITH c AS (SELECT nickname FROM users INTERSECT SELECT email FROM users)
+SELECT nickname
+FROM c
+/**ASSERT NOT NULL(nickname)**/  --~ PROVED
+
+-- case: not_null_is_proved__except
+WITH c AS (SELECT email FROM users EXCEPT SELECT nickname FROM users)
+SELECT email
+FROM c
+/**ASSERT NOT NULL(email)**/  --~ PROVED
+
+-- case: not_null_is_proved__primary_key_column
+SELECT id FROM users /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__not_null_column
+SELECT email FROM users /**ASSERT NOT NULL(email)**/  --~ PROVED
+
+-- case: not_null_is_proved__several_columns
+SELECT id, email FROM users /**ASSERT NOT NULL(id, email)**/  --~ PROVED
+
+-- case: not_null_is_proved__renamed_column
+SELECT email AS address FROM users /**ASSERT NOT NULL(address)**/  --~ PROVED
+
+-- case: not_null_is_proved__filtered
+SELECT id FROM users WHERE nickname = 'x' /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__filtered_by_in
+SELECT nickname FROM users WHERE nickname IN ('a', 'b') /**ASSERT NOT NULL(nickname)**/
+--~ PROVED
+
+-- case: not_null_is_proved__star
+SELECT * FROM users /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__string_literal
+SELECT 'x' AS tag FROM users /**ASSERT NOT NULL(tag)**/  --~ PROVED
+
+-- case: not_null_is_proved__numeric_literal
+SELECT 1 AS one FROM users /**ASSERT NOT NULL(one)**/  --~ PROVED
+
+-- case: not_null_is_proved__view
+CREATE VIEW v AS SELECT id FROM users;
+SELECT id FROM v /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__cte
+WITH c AS (SELECT id FROM users) SELECT id FROM c /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__subquery
+SELECT id FROM (SELECT id FROM users) AS s /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_proved__group_key
+SELECT user_id, count(*) AS n
+FROM sessions
+GROUP BY user_id
+/**ASSERT NOT NULL(user_id)**/  --~ PROVED
+
+-- case: not_null_is_proved__inner_join_both_sides
+SELECT s.user_id, u.email
+FROM sessions s
+JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(user_id, email)**/  --~ PROVED
+
+-- case: not_null_is_proved__left_join_preserved_side
+SELECT s.user_id
+FROM sessions s
+LEFT JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(user_id)**/  --~ PROVED
+
+-- case: not_null_is_proved__coalesce_non_null_last_argument
+SELECT coalesce(nickname, email) AS name FROM users /**ASSERT NOT NULL(name)**/
+--~ PROVED
+
+-- case: not_null_is_proved__coalesce_non_null_first_argument
+SELECT coalesce(email, nickname) AS name FROM users /**ASSERT NOT NULL(name)**/
+--~ PROVED
+
+-- case: not_null_is_proved__coalesce_literal_fallback
+SELECT coalesce(nickname, '') AS name FROM users /**ASSERT NOT NULL(name)**/  --~ PROVED
+
+-- case: not_null_is_proved__ifnull
+SELECT ifnull(nickname, 'anon') AS name FROM users /**ASSERT NOT NULL(name)**/
+--~ PROVED
+
+-- case: not_null_is_proved__coalesce_over_a_null_extended_column
+SELECT coalesce(u.nickname, 'anon') AS name
+FROM sessions s
+LEFT JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(name)**/  --~ PROVED
+
+-- case: not_null_is_proved__right_join_preserved_side
+SELECT u.email
+FROM sessions s
+RIGHT JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(email)**/  --~ PROVED
+
+-- case: not_null_is_proved__count_per_group
+SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/
+--~ PROVED
+
+-- case: not_null_is_proved__count_of_a_nullable_column
+SELECT user_id, count(ts) AS n FROM sessions GROUP BY user_id /**ASSERT NOT NULL(n)**/
+--~ PROVED
+
+-- case: not_null_is_proved__count_distinct
+SELECT user_id, count(DISTINCT ts) AS n
+FROM sessions
+GROUP BY user_id
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: not_null_is_proved__count_without_group_by
+SELECT count(*) AS n FROM sessions /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: not_null_is_proved__count_over_a_padded_side
+SELECT s.user_id, count(u.nickname) AS n
+FROM sessions s
+LEFT JOIN users u
+    ON s.user_id = u.id
+GROUP BY s.user_id
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: not_null_is_proved__count_through_a_cte
+WITH c AS (SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id)
+SELECT n
+FROM c
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: not_null_is_not_guessed__nullable_column
+SELECT nickname FROM users /**ASSERT NOT NULL(nickname)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__null_literal
+SELECT NULL AS nothing FROM users /**ASSERT NOT NULL(nothing)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__opaque_expression
+SELECT upper(email) AS name FROM users /**ASSERT NOT NULL(name)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__coalesce_of_nullables
+SELECT coalesce(nickname, NULL) AS name FROM users /**ASSERT NOT NULL(name)**/
+--~ UNKNOWN
+
+-- case: not_null_is_not_guessed__left_join_null_extended_side
+SELECT u.email
+FROM sessions s
+LEFT JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(email)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__right_join_null_extended_side
+SELECT s.user_id
+FROM sessions s
+RIGHT JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(user_id)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__full_join
+SELECT s.user_id
+FROM sessions s
+FULL JOIN users u
+    ON s.user_id = u.id
+/**ASSERT NOT NULL(user_id)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__union_nullable_in_one_input
+WITH c AS (SELECT id FROM users UNION ALL SELECT nickname FROM users)
+SELECT id
+FROM c
+/**ASSERT NOT NULL(id)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__union_by_name
+WITH c AS (SELECT id FROM users UNION BY NAME SELECT id FROM users)
+SELECT id
+FROM c
+/**ASSERT NOT NULL(id)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__intersect_nullable_in_both
+WITH c AS (SELECT nickname FROM users INTERSECT SELECT nickname FROM users)
+SELECT nickname
+FROM c
+/**ASSERT NOT NULL(nickname)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__except_nullable_on_the_left
+WITH c AS (SELECT nickname FROM users EXCEPT SELECT email FROM users)
+SELECT nickname
+FROM c
+/**ASSERT NOT NULL(nickname)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__count_padded_by_a_later_outer_join
+WITH c AS (SELECT user_id, count(*) AS n FROM sessions GROUP BY user_id)
+SELECT c.n
+FROM users u
+LEFT JOIN c
+    ON c.user_id = u.id
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__count_inside_another_expression
+SELECT user_id, nullif(count(*), 0) AS n
+FROM sessions
+GROUP BY user_id
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__sum
+SELECT user_id, sum(user_id) AS n
+FROM sessions
+GROUP BY user_id
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: one_assertion_covers_its_whole_column_list
+SELECT id, nickname FROM users /**ASSERT NOT NULL(id, nickname)**/  --~ UNKNOWN
+
+-- case: a_not_null_assertion_naming_an_unknown_column_is_reported
+SELECT id FROM users /**ASSERT NOT NULL(missing)**/
+--~ unknown-asserted-column "not null assertion"
+
+-- case: a_not_null_declaration_produces_no_assertion_result
+SELECT nickname FROM users /**DECLARE NOT NULL(nickname)**/
+
+-- case: a_not_null_declaration_does_not_survive_null_extension
+WITH c AS (SELECT id, nickname FROM users /**DECLARE NOT NULL(nickname)**/)
+SELECT c.nickname
+FROM sessions s
+LEFT JOIN c
+    ON s.user_id = c.id
+/**ASSERT NOT NULL(nickname)**/  --~ UNKNOWN
+
+-- case: a_primary_key_assertion_needs_uniqueness_and_non_nullness
+SELECT id, email FROM users /**ASSERT PRIMARY KEY(id)**/  --~ PROVED
+
+-- case: a_primary_key_assertion_needs_uniqueness_and_non_nullness__program_2
+SELECT DISTINCT nickname FROM users /**ASSERT PRIMARY KEY(nickname)**/  --~ UNKNOWN
+
+-- case: a_primary_key_assertion_needs_uniqueness_and_non_nullness__program_3
+SELECT DISTINCT email FROM users /**ASSERT PRIMARY KEY(email)**/  --~ PROVED
+
+-- case: a_primary_key_survives_a_unique_join_on_its_preserved_side
+SELECT u.id
+FROM users u
+/**ASSERT MANY TO ONE**/ JOIN (SELECT DISTINCT user_id FROM sessions) s  --~ PROVED
+    ON s.user_id = u.id
+/**ASSERT PRIMARY KEY(id)**/  --~ PROVED
+
+-- case: a_primary_key_survives_a_unique_join_on_its_preserved_side__program_2
+SELECT u.id
+FROM users u
+LEFT JOIN (SELECT DISTINCT user_id FROM sessions) s
+    ON s.user_id = u.id
+/**ASSERT PRIMARY KEY(id)**/  --~ PROVED
+
+-- case: a_primary_key_declaration_proves_a_downstream_primary_key__root_select
+SELECT nickname, email FROM users /**DECLARE PRIMARY KEY(nickname)**/
+/**ASSERT PRIMARY KEY(nickname, email)**/  --~ PROVED
+
+-- case: a_primary_key_declaration_proves_a_downstream_primary_key__view
+CREATE VIEW v AS SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/;
+SELECT nickname FROM v /**ASSERT PRIMARY KEY(nickname)**/  --~ PROVED
+
+-- case: a_primary_key_declaration_proves_a_downstream_primary_key__cte
+WITH c AS (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/)
+SELECT nickname
+FROM c
+/**ASSERT PRIMARY KEY(nickname)**/  --~ PROVED
+
+-- case: a_primary_key_declaration_proves_a_downstream_primary_key__subquery
+SELECT nickname
+FROM (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/) AS s
+/**ASSERT PRIMARY KEY(nickname)**/  --~ PROVED
+
+-- case: a_composite_primary_key_declaration_also_declares_each_column_non_null
+WITH c AS (SELECT nickname, email FROM users /**DECLARE PRIMARY KEY(nickname, email)**/)
+SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/  --~ PROVED
+/**ASSERT UNIQUE(nickname)**/  --~ UNKNOWN
+
+-- case: a_primary_key_declaration_proves_a_unique_join
+WITH c AS (SELECT nickname FROM users /**DECLARE PRIMARY KEY(nickname)**/)
+SELECT * FROM sessions s /**ASSERT MANY TO ONE**/ JOIN c ON s.ts = c.nickname
+--~ PROVED
+
+-- case: an_unknown_assertion_names_every_column_it_could_not_prove
+SELECT id, nickname, NULL AS nothing
+FROM users
+/**ASSERT NOT NULL(id, nickname, nothing)**/
+--~ UNKNOWN "nickname" "NULL literal"
+
+-- case: a_not_null_declaration_proves_downstream_and_is_labelled_declared
+WITH c AS (SELECT nickname FROM users /**DECLARE NOT NULL(nickname)**/)
+SELECT nickname FROM c /**ASSERT NOT NULL(nickname)**/
+--~ PROVED "Declared NonNullColumn"

@@ -193,12 +193,6 @@ def test_a_session_default_collation_makes_text_collated():
     assert [assertion.outcome for assertion in analyze_with(connection, sql).assertions] == [Outcome.UNKNOWN]
 
 
-def test_an_inline_enum_column_type_is_a_domain_without_a_connection():
-    sql = "CREATE TABLE t (status ENUM('new', 'paid')); SELECT status FROM t /**ASSERT ENUM(status IN ('new', 'paid'))**/"
-
-    assert analyze(sql).proved
-
-
 def test_a_column_of_a_user_defined_type_is_lowered():
     # Regression: the identity-comparison check once rebuilt the type by name.
     # Lowered directly: DuckDB cannot run the program without CREATE TYPE.

@@ -1,6 +1,6 @@
 """CTE and FROM-subquery plans lowered recursively.
 
-`test_analyze_propagation.py` already covers the narrow single-table FROM
+`propagation.sqltest` already covers the narrow single-table FROM
 subquery. Every case here needs the recursive part of #5: a CTE actually
 lowered into a relational subplan, and nesting of CTEs and FROM subqueries
 inside one another, so a Unique Set survives to prove a join several layers
@@ -170,23 +170,6 @@ def test_a_doubly_parenthesized_from_subquery_preserves_its_unique_set(users_and
     assert report.proved
 
 
-def test_a_cte_dropping_a_required_composite_key_member_is_unknown():
-    report = analyze(
-        """
-        CREATE TABLE order_items (order_id INTEGER, line_no INTEGER, sku VARCHAR, PRIMARY KEY (order_id, line_no));
-        CREATE TABLE orders (id INTEGER);
-
-        WITH partial AS (SELECT order_id FROM order_items)
-        SELECT *
-        FROM orders
-        /**ASSERT MANY TO ONE**/ JOIN partial
-            ON orders.id = partial.order_id
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
 def test_a_scalar_subquery_in_a_cte_projection_is_unsupported_and_never_guessed(users_and_sessions):
     report = analyze(
         users_and_sessions
@@ -256,19 +239,3 @@ def test_a_self_referencing_cte_without_recursive_does_not_hang_and_is_unknown(u
     )
 
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
-def test_an_unaliased_from_subquery_preserves_its_unique_set():
-    """DuckDB allows a FROM subquery without an alias; it is lowered like an
-    aliased one rather than treated as opaque, so the key on `users.id`
-    survives."""
-    report = analyze(
-        """
-        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-
-        SELECT id FROM (SELECT id, name FROM users) /**ASSERT UNIQUE(id)**/
-        """
-    )
-
-    assert not report.diagnostics
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]

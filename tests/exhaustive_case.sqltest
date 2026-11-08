@@ -1,0 +1,158 @@
+-- Exhaustive simple CASE: `ASSERT EXHAUSTIVE CASE x WHEN ... END`.
+--
+-- The marker sits immediately before a simple `CASE` and asks for a proof that
+-- every member of the operand's Enumerated Domain has an explicit `WHEN` arm.
+-- `ELSE` never substitutes for an arm, and NULL is outside every domain. A CASE
+-- whose `ELSE` is unreachable -- exhaustive over a non-null operand -- has the
+-- domain of its `THEN` arms alone.
+
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, kind VARCHAR NOT NULL, qty INTEGER);
+
+-- case: exhaustive_case_is_proved__every_member_has_an_arm
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END AS n FROM o
+--~ PROVED
+
+-- case: exhaustive_case_is_proved__arms_beyond_the_domain
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'paid' THEN 1 WHEN 'void' THEN 0 WHEN 'new' THEN 2 END AS n
+--~ PROVED
+FROM o
+
+-- case: exhaustive_case_is_proved__with_else
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 ELSE 0 END AS n
+--~ PROVED
+FROM o
+
+-- case: exhaustive_case_is_proved__narrowed_by_where
+SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 END AS n  --~ PROVED
+FROM orders
+WHERE status = 'new'
+
+-- case: exhaustive_case_is_proved__numeric_domain
+SELECT
+/**ASSERT EXHAUSTIVE**/ CASE qty WHEN 1 THEN 'one' WHEN 2 THEN 'two' END AS n
+--~ PROVED
+FROM orders
+WHERE qty IN (1, 2)
+
+-- case: exhaustive_case_is_proved__in_where
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT id
+FROM o
+WHERE
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END = 1
+--~ PROVED
+
+-- case: exhaustive_case_is_proved__in_a_join_s_on
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT o.id
+FROM o
+JOIN orders p
+    ON
+/**ASSERT EXHAUSTIVE**/ CASE o.status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END = p.qty
+--~ PROVED
+
+-- case: exhaustive_case_is_proved__in_a_view
+CREATE VIEW v AS WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END AS n
+--~ PROVED
+FROM o;
+SELECT n FROM v
+
+-- case: exhaustive_case_is_proved__grouping_key_operand
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status,
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END AS n
+--~ PROVED
+FROM o
+GROUP BY status
+
+-- case: exhaustive_case_is_not_guessed__a_member_has_no_arm
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 END AS n FROM o  --~ UNKNOWN
+
+-- case: exhaustive_case_is_not_guessed__else_does_not_substitute
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 ELSE 2 END AS n FROM o
+--~ UNKNOWN
+
+-- case: exhaustive_case_is_not_guessed__no_known_domain
+SELECT /**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 END AS n FROM orders
+--~ UNKNOWN
+
+-- case: exhaustive_case_is_not_guessed__a_number_never_covers_a_string
+SELECT
+/**ASSERT EXHAUSTIVE**/ CASE qty WHEN '1' THEN 1 END AS n  --~ UNKNOWN
+FROM orders
+WHERE qty = 1
+
+-- case: exhaustive_case_is_not_guessed__an_integer_never_covers_a_decimal
+SELECT
+/**ASSERT EXHAUSTIVE**/ CASE qty WHEN 1 THEN 1 END AS n  --~ UNKNOWN
+FROM orders
+WHERE qty = 1.0
+
+-- case: null_is_left_to_not_null
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 1 WHEN 'paid' THEN 2 END AS n, status
+--~ PROVED
+FROM o
+/**ASSERT NOT NULL(status)**/  --~ UNKNOWN
+
+-- case: a_case_contributes_its_output_domain__then_literals_and_else
+SELECT CASE status WHEN 'new' THEN 1 ELSE 0 END AS n
+FROM orders
+/**ASSERT ENUM(n IN (0, 1))**/  --~ PROVED
+
+-- case: a_case_contributes_its_output_domain__no_else_is_null
+SELECT CASE status WHEN 'new' THEN 1 WHEN 'old' THEN 2 END AS n
+FROM orders
+/**ASSERT ENUM(n IN (1, 2))**/  --~ PROVED
+
+-- case: a_case_contributes_its_output_domain__unreachable_else
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/
+/**DECLARE NOT NULL(status)**/) SELECT
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' ELSE 'z' END AS n
+--~ PROVED
+FROM o
+/**ASSERT ENUM(n IN ('a', 'b'))**/  --~ PROVED
+
+-- case: a_case_contributes_its_output_domain__unreachable_else_needs_no_marker
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/
+/**DECLARE NOT NULL(status)**/) SELECT CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' ELSE 'z' END AS n FROM o
+/**ASSERT ENUM(n IN ('a', 'b'))**/  --~ PROVED
+
+-- case: a_case_output_domain_is_not_guessed__else_is_reachable_on_null
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' ELSE 'z' END AS n
+FROM o
+/**ASSERT ENUM(n IN ('a', 'b'))**/  --~ UNKNOWN
+
+-- case: a_case_output_domain_is_not_guessed__else_is_reachable_on_a_missing_member
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/
+/**DECLARE NOT NULL(status)**/) SELECT CASE status WHEN 'new' THEN 'a' ELSE 'z' END AS n FROM o
+/**ASSERT ENUM(n IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_case_output_domain_is_not_guessed__a_then_arm_is_not_enumerated
+SELECT CASE status WHEN 'new' THEN kind END AS n
+FROM orders
+/**ASSERT ENUM(n IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_case_output_domain_is_not_guessed__an_operand_dependent_else
+SELECT CASE status WHEN 'new' THEN 'a' ELSE status END AS n
+FROM orders
+/**ASSERT ENUM(n IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_non_null_operand_without_else_has_the_then_domain
+SELECT CASE kind WHEN 'a' THEN 1 END AS n FROM orders /**ASSERT ENUM(n IN (1))**/
+--~ PROVED
+
+-- case: an_exhaustive_case_inside_an_aggregate_is_analyzed
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/
+/**DECLARE NOT NULL(status)**/) SELECT max(
+/**ASSERT EXHAUSTIVE**/ CASE status WHEN 'new' THEN 'a' WHEN 'paid' THEN 'b' END) AS n FROM o
+--~ PROVED

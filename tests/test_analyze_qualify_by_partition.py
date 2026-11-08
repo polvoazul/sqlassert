@@ -43,49 +43,6 @@ def test_a_qualify_by_partition_subquery_joined_on_its_full_partition_key_is_pro
     assert report.proved
 
 
-def test_a_qualify_by_partition_subquery_joined_on_its_full_composite_partition_key_is_proved():
-    report = analyze(
-        """
-        CREATE TABLE orders (customer_id INTEGER, region VARCHAR, order_id INTEGER, amount INTEGER);
-        CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
-
-        WITH latest_order AS (
-            SELECT customer_id, region, order_id, amount
-            FROM orders
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id, region ORDER BY order_id DESC) = 1
-        )
-        SELECT *
-        FROM customer_regions
-        /**ASSERT MANY TO ONE**/ JOIN latest_order
-            ON customer_regions.customer_id = latest_order.customer_id
-            AND customer_regions.region = latest_order.region
-        """
-    )
-
-    assert report.proved
-
-
-def test_joining_on_part_of_a_composite_partition_key_is_unknown():
-    report = analyze(
-        """
-        CREATE TABLE orders (customer_id INTEGER, region VARCHAR, order_id INTEGER, amount INTEGER);
-        CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
-
-        WITH latest_order AS (
-            SELECT customer_id, region, order_id, amount
-            FROM orders
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id, region ORDER BY order_id DESC) = 1
-        )
-        SELECT *
-        FROM customer_regions
-        /**ASSERT MANY TO ONE**/ JOIN latest_order
-            ON customer_regions.customer_id = latest_order.customer_id
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
 def test_an_aliased_partition_key_maps_the_unique_set_to_the_outer_column(orders_and_customers):
     report = analyze(
         orders_and_customers

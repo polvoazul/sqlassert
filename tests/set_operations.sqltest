@@ -1,0 +1,56 @@
+-- UNION, INTERSECT, and EXCEPT at the root of a SQL Program.
+--
+-- Each arm of a set operation is lowered independently, exactly as if it were
+-- its own top-level query, so a marked join in either arm is analyzed on its
+-- own relation rather than reported as unanalyzed. `UNION`/`INTERSECT`/`EXCEPT`
+-- without `ALL` dedup their output, so every output column together is a Unique
+-- Set; `INTERSECT` and `EXCEPT` also keep the left input's Unique Sets, since
+-- every output row is a row of it.
+
+-- case: a_distinct_set_operation_makes_its_output_columns_a_unique_set__union_outcome_proved
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT user_id FROM sessions UNION SELECT user_id FROM orders)
+SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/  --~ PROVED
+
+-- case: a_distinct_set_operation_makes_its_output_columns_a_unique_set__intersect_outcome_proved
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT user_id FROM sessions INTERSECT SELECT user_id FROM orders)
+SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/  --~ PROVED
+
+-- case: a_distinct_set_operation_makes_its_output_columns_a_unique_set__except_outcome_proved
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT user_id FROM sessions EXCEPT SELECT user_id FROM orders)
+SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/  --~ PROVED
+
+-- case: a_distinct_set_operation_makes_its_output_columns_a_unique_set__union_all_outcome_unknown
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT user_id FROM sessions UNION ALL SELECT user_id FROM orders)
+SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/  --~ UNKNOWN
+
+-- case: a_distinct_set_operation_makes_its_output_columns_a_unique_set__intersect_all_outcome_unknown
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT user_id FROM sessions INTERSECT ALL SELECT user_id FROM orders)
+SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/  --~ UNKNOWN
+
+-- case: a_distinct_set_operation_makes_its_output_columns_a_unique_set__except_all_outcome_unknown
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT user_id FROM sessions EXCEPT ALL SELECT user_id FROM orders)
+SELECT user_id FROM ids /**ASSERT UNIQUE(user_id)**/  --~ UNKNOWN
+
+-- case: intersect_and_except_keep_the_left_input_s_unique_sets__intersect_all
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT id FROM users INTERSECT ALL SELECT user_id FROM orders)
+SELECT id FROM ids /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: intersect_and_except_keep_the_left_input_s_unique_sets__except_all
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE orders (user_id INTEGER);
+WITH ids AS (SELECT id FROM users EXCEPT ALL SELECT user_id FROM orders)
+SELECT id FROM ids /**ASSERT UNIQUE(id)**/  --~ PROVED

@@ -27,5 +27,7 @@ connection may only add proofs, never change what the SQL alone proves.
 - Domain language: `CONTEXT.md`. Use its terms; it lists terms to avoid.
 - Implementation conventions: `docs/implementation-conventions.md`.
 - Rule style: `sqlassert/rules/STYLEGUIDE.md`.
+- Test style: SQL cases in `tests/*.sqltest` (format in `tests/sqltest.py`;
+  see "Tests" in `docs/implementation-conventions.md`).
 - Open work: `docs/issues/` (index in `docs/issues/README.md`).
 - Architecture decisions: `docs/adr/`.

@@ -1,0 +1,115 @@
+-- Functional dependencies: uniqueness and `DETERMINES` beyond pass-through columns.
+--
+-- Keys, equalities, constants, and grouping all create functional
+-- dependencies; closure over them proves Unique Sets that column pass-through
+-- alone cannot. Cases come from Paulley, *Exploiting Functional Dependence in
+-- Query Optimization* (2000), and from docs/functional-dependencies.md. Every
+-- PROVED case here is also judged by the soundness oracle; every UNKNOWN case
+-- is a known counterexample to a plausible but unsound rule.
+
+-- case: a_design_case_is_proved__a_constant_drops_out_of_a_composite_key
+CREATE TABLE items (tenant_id INTEGER, id INTEGER, name VARCHAR, PRIMARY KEY (tenant_id, id));
+SELECT id, name FROM items WHERE tenant_id = 5 /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_design_case_is_proved__an_equal_column_stands_in_for_a_key_column
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE orders (user_id INTEGER, order_no INTEGER, PRIMARY KEY (user_id, order_no));
+SELECT u.id, o.order_no
+FROM orders o
+JOIN users u
+    ON o.user_id = u.id
+/**ASSERT UNIQUE(id, order_no)**/  --~ PROVED
+
+-- case: a_design_case_is_proved__grouping_by_a_key_and_a_column_it_determines
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE events (user_id INTEGER);
+SELECT u.id, u.name, count(*) AS n FROM events e JOIN users u ON e.user_id = u.id
+GROUP BY u.id, u.name /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_design_case_is_proved__grouping_by_a_key_one_group_per_input_row
+CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE);
+SELECT id, email, count(*) AS n FROM users GROUP BY id, email /**ASSERT UNIQUE(email)**/
+--~ PROVED
+
+-- case: a_design_case_is_proved__p5
+CREATE TABLE customer (c_custkey INTEGER PRIMARY KEY, c_mktsegment VARCHAR);
+CREATE TABLE orders (o_orderkey INTEGER PRIMARY KEY, o_custkey INTEGER, o_orderdate DATE, o_shippriority INTEGER);
+CREATE TABLE lineitem (
+    l_orderkey INTEGER, l_linenumber INTEGER, l_extendedprice INTEGER, l_discount INTEGER,
+    PRIMARY KEY (l_orderkey, l_linenumber)
+);
+SELECT l_orderkey, sum(l_extendedprice * (1 - l_discount)) AS revenue, o_orderdate, o_shippriority
+FROM customer, orders, lineitem
+WHERE c_mktsegment = 'BUILDING' AND c_custkey = o_custkey AND l_orderkey = o_orderkey
+    AND o_orderdate < DATE '1995-03-15'
+GROUP BY l_orderkey, o_orderdate, o_shippriority
+/**ASSERT UNIQUE(l_orderkey)**/  --~ PROVED
+
+-- case: a_design_case_is_proved__p6
+CREATE TABLE users (id INTEGER PRIMARY KEY, login VARCHAR);
+CREATE TABLE members (id INTEGER PRIMARY KEY, user_id INTEGER, project_id INTEGER, UNIQUE (user_id, project_id));
+SELECT users.id, users.login FROM users JOIN members ON members.user_id = users.id
+WHERE members.project_id = 2
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_design_case_is_proved__p7
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+SELECT name FROM users WHERE id = 3 /**ASSERT UNIQUE(name)**/  --~ PROVED
+
+-- case: a_design_case_is_proved__a_declared_dependency_extends_a_key
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR NOT NULL, street VARCHAR, UNIQUE (city, street));
+WITH a AS (SELECT zip, city, street FROM addresses /**DECLARE DETERMINES(zip -> city)**/)
+SELECT zip, city, street FROM a /**ASSERT DETERMINES(zip -> city)**/  --~ PROVED
+/**ASSERT UNIQUE(zip, street)**/  --~ PROVED
+
+-- case: a_dependency_is_not_assumed_without_a_source
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip, city FROM addresses /**ASSERT DETERMINES(zip -> city)**/  --~ UNKNOWN
+
+-- case: an_equality_on_an_outer_join_is_not_a_strict_equivalence
+-- `ON o.user_id = u.id` holds only on matched rows, so `u.id` does not
+-- stand in for `o.user_id` the way it does on an inner join.
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE orders (user_id INTEGER, order_no INTEGER, PRIMARY KEY (user_id, order_no));
+SELECT u.id, o.order_no
+FROM orders o
+LEFT JOIN users u
+    ON o.user_id = u.id
+/**ASSERT UNIQUE(id, order_no)**/  --~ PROVED
+
+-- case: a_declared_dependency_onto_a_nullable_column_does_not_extend_a_key
+-- `zip -> city` lets two rows share a zip with a NULL city, and a NULL
+-- city is exempt from `UNIQUE (city, street)`, so `(zip, street)` repeats.
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR, street VARCHAR, UNIQUE (city, street));
+WITH a AS (SELECT zip, city, street FROM addresses /**DECLARE DETERMINES(zip -> city)**/)
+SELECT zip, city, street FROM a /**ASSERT UNIQUE(zip, street)**/  --~ UNKNOWN
+
+-- case: a_malformed_dependency_marker_is_reported__assert_determines_zip_city
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip, city FROM addresses /**ASSERT DETERMINES(zip city)**/
+--~ unattached-marker "functional dependency"
+
+-- case: a_malformed_dependency_marker_is_reported__assert_determines_city
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip, city FROM addresses /**ASSERT DETERMINES(-> city)**/
+--~ unattached-marker "functional dependency"
+
+-- case: a_malformed_dependency_marker_is_reported__assert_determines_zip
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip, city FROM addresses /**ASSERT DETERMINES(zip ->)**/
+--~ unattached-marker "functional dependency"
+
+-- case: a_malformed_dependency_marker_is_reported__assert_determines_zip_zip_city
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip, city FROM addresses /**ASSERT DETERMINES(zip, zip -> city)**/
+--~ unattached-marker "functional dependency"
+
+-- case: a_malformed_dependency_marker_is_reported__declare_determines_zip_city
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip, city FROM addresses /**DECLARE DETERMINES(zip -> city**/
+--~ unattached-marker "functional dependency"
+
+-- case: a_dependency_marker_naming_an_unknown_column_is_reported
+CREATE TABLE addresses (zip VARCHAR, city VARCHAR);
+SELECT zip FROM addresses /**ASSERT DETERMINES(zip -> city)**/
+--~ unknown-asserted-column

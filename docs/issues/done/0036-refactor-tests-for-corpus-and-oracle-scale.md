@@ -1,6 +1,6 @@
 # 36. Move semantic tests to `.sqltest` files
 
-- **State:** ready
+- **State:** done
 - **Labels:** tests, refactor
 - **Created:** 2026-11-01
 - **Related:** [27: soundness oracle](0027-soundness-oracle-against-duckdb.md)
@@ -141,12 +141,49 @@ unused, in the same change.
 
 ## Acceptance criteria
 
-- [ ] `.sqltest` collector implements the grammar above, with tests for its
+- [x] `.sqltest` collector implements the grammar above, with tests for its
       parse errors and expectation mismatches.
-- [ ] Every qualifying test is migrated; superseded Python tests and helpers
+- [x] Every qualifying test is migrated; superseded Python tests and helpers
       are deleted.
-- [ ] Cases have stable `<file>.sqltest::<name>` IDs, select with `-k`, and
+- [x] Cases have stable `<file>.sqltest::<name>` IDs, select with `-k`, and
       report failures at the file line.
-- [ ] Line/branch coverage and oracle counts are recorded before and after
+- [x] Line/branch coverage and oracle counts are recorded before and after
       and do not drop.
-- [ ] Serial and parallel runs pass.
+- [x] Serial and parallel runs pass.
+
+## Result (2026-11-08)
+
+- 832 pytest items from 263 Python test functions became 839 cases in 43
+  `.sqltest` files; eleven Python test modules emptied and were deleted. The 7
+  extra cases are tests that analyzed two Programs; each is now a case. Items
+  went from 1,540 to 1,579: 708 Python items, 845 cases (the 839 plus 6 new
+  marker cases below), and the collector's 26 tests.
+- Outcomes take explanation substrings (`--~ UNKNOWN "may drop rows"`), so the
+  49 tests that checked `evidence.explain()` text moved too. Tests that build
+  Knowledge or inspect Evidence structure stay in Python.
+- Every one of the 1,028 distinct Programs the suite analyzed before is still
+  analyzed (comments and whitespace aside), with the same outcomes in order and
+  the same Diagnostic codes.
+- `--cov=sqlassert --cov-branch`: every line and branch covered before is
+  covered after (4,247/4,435 lines and 1,633/1,774 branches before; the new
+  marker scanner adds lines, all covered).
+- `--soundness-oracle`: 1,057 programs, 687 PROVED judged, 12 skipped, 0
+  counterexamples before; nothing lower after.
+- `-n 0` and `-n auto` both pass.
+- File names: the largest group of a subject takes its name; a file whose cases
+  carry their own schema ends in `_standalone`; others say what they hold
+  (`not_null_rejection`, `not_null_values`, `scalar_aggregates`, ...). A
+  file's setup is a schema shared by its cases.
+- `paulley_audit.sqltest` keeps the audit's rule IDs (`A11-` is `A11_minus`).
+
+Done alongside:
+
+- A marker shape inside a `--` comment or a quoted string is no longer a
+  marker (`sql_parse._marker_shapes`): commenting a marker out switches it
+  off, and marker accounting no longer reports it. Six cases in
+  `marker_accounting.sqltest` cover comments, strings, escaped quotes and
+  multi-line strings.
+- `test_a_false_cardinality_claim_is_refuted` missed its counterexample in 3
+  of 100 runs at 50 examples (none at 200 or 500). It is marked
+  `@pytest.mark.slow`, which gives a test 500 examples through the `examples`
+  fixture in `test_soundness_oracle.py`; 30 serial runs of that file passed.

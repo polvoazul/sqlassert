@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlassert import Outcome, analyze
+from sqlassert import analyze
 
 
 PROVABLE_PROGRAM = """
@@ -13,48 +13,6 @@ PROVABLE_PROGRAM = """
         ON sessions.user_id = users.id
 """
 
-UNPROVABLE_PROGRAM = """
-    CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-    CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-
-    SELECT *
-    FROM users
-    /**ASSERT MANY TO ONE**/ JOIN sessions
-        ON users.id = sessions.user_id
-"""
-
-
-def test_declared_unique_set_covered_by_the_join_predicate_is_proved():
-    report = analyze(PROVABLE_PROGRAM)
-
-    assert report.proved
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-
-
-def test_join_proof_is_independent_of_equality_operand_order():
-    report = analyze(
-        """
-        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-
-        SELECT *
-        FROM sessions
-        /**ASSERT MANY TO ONE**/ JOIN users
-            ON users.id = sessions.user_id
-        """
-    )
-
-    assert report.proved
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-
-
-def test_join_without_a_matching_unique_set_is_unknown_rather_than_disproved():
-    report = analyze(UNPROVABLE_PROGRAM)
-
-    assert not report.proved
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-    assert not report.diagnostics
-
 
 def test_assertion_provenance_locates_the_marked_join_in_the_source():
     report = analyze(PROVABLE_PROGRAM)
@@ -62,89 +20,3 @@ def test_assertion_provenance_locates_the_marked_join_in_the_source():
     origin = report.assertions[0].origin
     assert "users" in origin.detail
     assert origin.line == 7
-
-
-def test_program_without_markers_declares_no_assertions():
-    report = analyze("SELECT * FROM sessions JOIN users ON sessions.user_id = users.id")
-
-    assert report.assertions == ()
-    assert report.proved
-
-
-def test_more_than_one_root_select_is_an_explicit_program_diagnostic():
-    report = analyze("SELECT 1; SELECT 2")
-
-    assert not report.proved
-    assert [diagnostic.code for diagnostic in report.diagnostics] == ["multiple-root-selects"]
-    assert report.assertions == ()
-
-
-def test_omitted_knowledge_behaves_as_empty_knowledge():
-    report = analyze(
-        """
-        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-
-        SELECT *
-        FROM sessions
-        /**ASSERT MANY TO ONE**/ JOIN users
-            ON sessions.user_id = users.id
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
-def test_unqualified_columns_in_the_on_predicate_resolve_by_name():
-    report = analyze(
-        """
-        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-
-        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN users ON user_id = id
-        """
-    )
-
-    assert not report.diagnostics
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-
-
-def test_an_unaliased_subquery_can_be_the_right_side_of_a_unique_join():
-    report = analyze(
-        """
-        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-        CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
-
-        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN (SELECT id FROM users) ON sessions.user_id = id
-        """
-    )
-
-    assert not report.diagnostics
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-
-
-def test_an_unqualified_column_is_not_resolved_past_a_source_of_unknown_schema():
-    """`sessions` is undeclared, so it may have its own `id`; the one visible
-    `id` cannot be assumed to be `users.id`."""
-    report = analyze(
-        """
-        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-
-        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN users ON user_id = id
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
-def test_an_ambiguous_unqualified_column_is_not_resolved():
-    """Both inputs have `id`; the predicate does not bind `users.id`."""
-    report = analyze(
-        """
-        CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
-        CREATE TABLE sessions (id INTEGER, user_id INTEGER);
-
-        SELECT * FROM sessions /**ASSERT MANY TO ONE**/ JOIN users ON user_id = id
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]

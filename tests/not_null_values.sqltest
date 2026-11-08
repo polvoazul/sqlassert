@@ -1,0 +1,70 @@
+-- Not-null assertions and declarations, and the Non-Null Unique Sets they complete.
+--
+-- `ASSERT NOT NULL(...)` asks for one proof covering every listed column;
+-- `DECLARE NOT NULL(...)` and `DECLARE PRIMARY KEY(...)` state trusted
+-- facts and produce no assertion result of their own.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, m INTEGER, s VARCHAR, sep VARCHAR NOT NULL);
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_1_duckdb_outcome_proved
+SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_2_postgres_outcome_proved
+-- dialect: postgres
+SELECT -n * 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_1_sqlite_outcome_unknown
+-- dialect: sqlite
+SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_m_duckdb_outcome_unknown
+SELECT n + m AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_0_sqlite_outcome_proved
+-- dialect: sqlite
+SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__p6
+SELECT n > m AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__not_n_0_duckdb_outcome_proved
+SELECT NOT (n > 0) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_between_0_and_id_duckdb_outcome_proved
+SELECT n BETWEEN 0 AND id AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_between_0_and_m_duckdb_outcome_unknown
+SELECT n BETWEEN 0 AND m AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__p10
+-- dialect: postgres
+SELECT n % 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__n_2_duckdb_outcome_unknown
+SELECT n % 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__p12
+SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__cast_n_as_varchar_duckdb_outcome_proved
+SELECT CAST(n AS VARCHAR) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__cast_n_as_varchar_mysql_outcome_unknown
+-- dialect: mysql
+SELECT CAST(n AS VARCHAR) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__try_cast_n_as_varchar_duckdb_outcome_unknown
+SELECT TRY_CAST(n AS VARCHAR) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__concat_ws_s_m_duckdb_outcome_proved
+SELECT concat_ws(',', s, m) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__concat_ws_sep_s_postgres_outcome_proved
+-- dialect: postgres
+SELECT concat_ws(sep, s) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__concat_ws_s_sep_duckdb_outcome_unknown
+SELECT concat_ws(s, sep) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: a_builtin_is_non_null_when_its_total_arguments_are__upper_s_duckdb_outcome_unknown
+SELECT upper(s) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN

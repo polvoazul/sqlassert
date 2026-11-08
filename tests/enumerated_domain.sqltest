@@ -1,0 +1,547 @@
+-- Enumerated Domains: `ASSERT ENUM(col IN ('a', 'b'))` and its `DECLARE` form.
+--
+-- An Enumerated Domain bounds a column's non-null values to a finite set. It
+-- comes from literals, declarations, external Knowledge, and filters, and
+-- crosses value equalities. NULL is never in a domain: `NOT NULL` governs it.
+
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, channel VARCHAR, kind VARCHAR);
+CREATE TABLE codes (code VARCHAR, label VARCHAR);
+CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR);
+CREATE TABLE people (name VARCHAR COLLATE NOCASE);
+
+-- case: typed_enum_is_proved__numeric_literal
+SELECT 1 AS n FROM orders /**ASSERT ENUM(n IN (1, 2))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__negative_numeric_literal
+SELECT -1 AS n FROM orders /**ASSERT ENUM(n IN (-1, 0))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__decimal_literal
+SELECT 2.5 AS n FROM orders /**ASSERT ENUM(n IN (2.5))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__boolean_literal
+SELECT TRUE AS f FROM orders /**ASSERT ENUM(f IN (TRUE, FALSE))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__integer_spellings_are_one_value
+SELECT 007 AS n FROM orders /**ASSERT ENUM(n IN (7))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__coalesce_of_typed_literals
+SELECT coalesce(NULL, 3, 4) AS n FROM orders /**ASSERT ENUM(n IN (3, 4))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__where_numeric_equality
+SELECT qty FROM items WHERE qty = 3 /**ASSERT ENUM(qty IN (3))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__where_numeric_in_list
+SELECT qty FROM items WHERE qty IN (1, 2) /**ASSERT ENUM(qty IN (1, 2, 3))**/
+--~ PROVED
+
+-- case: typed_enum_is_proved__where_boolean_equality
+SELECT flag FROM items WHERE flag = FALSE /**ASSERT ENUM(flag IN (FALSE))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__declared_numeric
+WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/
+/**DECLARE ENUM(flag IN (TRUE))**/) SELECT qty FROM i
+/**ASSERT ENUM(qty IN (3, 2, 1))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__declared_boolean
+WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/
+/**DECLARE ENUM(flag IN (TRUE))**/) SELECT flag FROM i
+/**ASSERT ENUM(flag IN (TRUE))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__declared_and_narrowed
+WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/
+/**DECLARE ENUM(flag IN (TRUE))**/) SELECT qty FROM i WHERE qty IN (2, 5)
+/**ASSERT ENUM(qty IN (2))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__across_a_numeric_equality
+WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/
+/**DECLARE ENUM(flag IN (TRUE))**/) SELECT size FROM i WHERE size = qty
+/**ASSERT ENUM(size IN (1, 2, 3))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__view
+CREATE VIEW v AS SELECT qty FROM items /**DECLARE ENUM(qty IN (1, 2))**/;
+SELECT qty FROM v /**ASSERT ENUM(qty IN (1, 2))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__mixed_types
+WITH m AS (SELECT * FROM items /**DECLARE ENUM(tag IN ('a', 1, TRUE))**/)
+SELECT tag
+FROM m
+/**ASSERT ENUM(tag IN (TRUE, 1, 'a'))**/  --~ PROVED
+
+-- case: typed_enum_is_proved__p16
+WITH a AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('01'))**/
+/**DECLARE ENUM(channel IN ('1'))**/), j AS (SELECT a.status, a.channel
+FROM a
+JOIN items
+    ON a.status = items.qty AND items.qty = a.channel) SELECT status FROM j WHERE status = channel
+/**ASSERT ENUM(status IN ('zz'))**/  --~ PROVED
+
+-- case: typed_enum_is_not_guessed__numeric_one_is_not_string_one
+SELECT 1 AS n FROM orders /**ASSERT ENUM(n IN ('1'))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__string_one_is_not_numeric_one
+SELECT '1' AS n FROM orders /**ASSERT ENUM(n IN (1))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__boolean_true_is_not_numeric_one
+SELECT TRUE AS f FROM orders /**ASSERT ENUM(f IN (1))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__decimal_scale_is_part_of_the_literal
+SELECT 1.0 AS n FROM orders /**ASSERT ENUM(n IN (1))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__exponent_literal_is_not_the_integer
+SELECT 1e0 AS n FROM orders /**ASSERT ENUM(n IN (1))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__declared_subset_asserted
+WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/
+/**DECLARE ENUM(flag IN (TRUE))**/) SELECT qty FROM i
+/**ASSERT ENUM(qty IN (1, 2))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__table_column
+SELECT qty FROM items /**ASSERT ENUM(qty IN (1))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__float_rounding
+WITH r AS (SELECT * FROM items /**DECLARE ENUM(ratio IN (0.1))**/)
+SELECT ratio
+FROM r
+WHERE ratio = 0.100000001
+/**ASSERT ENUM(ratio IN (5))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__text_cast_to_a_numeric_literal_s_scale
+WITH t AS (SELECT * FROM items /**DECLARE ENUM(tag IN (1))**/)
+SELECT tag
+FROM t
+WHERE tag = 1.4
+/**ASSERT ENUM(tag IN (5))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__a_string_and_a_number_may_meet
+WITH t AS (SELECT * FROM items /**DECLARE ENUM(qty IN ('1'))**/)
+SELECT qty
+FROM t
+WHERE qty = 1
+/**ASSERT ENUM(qty IN (5))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__two_strings_may_equal_one_integer
+WITH t AS (SELECT * FROM items /**DECLARE ENUM(qty IN ('01'))**/)
+SELECT qty
+FROM t
+WHERE qty = '1'
+/**ASSERT ENUM(qty IN ('2'))**/  --~ UNKNOWN
+
+-- case: typed_enum_is_not_guessed__two_strings_may_equal_under_a_collation
+WITH p AS (SELECT * FROM people /**DECLARE ENUM(name IN ('a'))**/)
+SELECT name
+FROM p
+WHERE name = 'A'
+/**ASSERT ENUM(name IN ('b'))**/  --~ UNKNOWN
+
+-- case: a_cast_based_equality_does_not_transfer_a_domain
+WITH t AS (SELECT qty, tag FROM items /**DECLARE ENUM(qty IN ('01'))**/)
+SELECT tag
+FROM t
+WHERE qty = tag
+/**ASSERT ENUM(tag IN ('01'))**/  --~ UNKNOWN
+
+-- case: distinct_numeric_literals_do_not_meet
+WITH i AS (SELECT * FROM items /**DECLARE ENUM(qty IN (1, 2, 3))**/
+/**DECLARE ENUM(flag IN (TRUE))**/) SELECT qty FROM i WHERE qty IN (3, 4)
+/**ASSERT ENUM(qty IN (3))**/  --~ PROVED
+
+-- case: enum_is_proved__string_literal
+SELECT 'a' AS tag FROM orders /**ASSERT ENUM(tag IN ('a', 'b'))**/  --~ PROVED
+
+-- case: enum_is_proved__null_literal_is_outside_every_domain
+SELECT NULL AS tag FROM orders /**ASSERT ENUM(tag IN ('a'))**/  --~ PROVED
+
+-- case: enum_is_proved__coalesce_of_literals
+SELECT coalesce(NULL, 'b') AS tag FROM orders /**ASSERT ENUM(tag IN ('a', 'b'))**/
+--~ PROVED
+
+-- case: enum_is_proved__declared_same_set
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__declared_superset_asserted
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+/**ASSERT ENUM(status IN ('paid', 'new', 'void'))**/  --~ PROVED
+
+-- case: enum_is_proved__renamed
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status AS state
+FROM o
+/**ASSERT ENUM(state IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__filtered
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+WHERE id > 3
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__alias
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT x.status
+FROM o AS x
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__nested_cte
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) , p AS (SELECT status FROM o)
+SELECT status
+FROM p
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__subquery
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM (SELECT status FROM o) AS s
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__grouping_key
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status, count(*) AS n
+FROM o
+GROUP BY status
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__distinct
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT DISTINCT status
+FROM o
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__left_join_padded_side
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT o.status
+FROM codes c
+LEFT JOIN o
+    ON c.code = o.channel
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__where_equality_to_a_literal
+SELECT status FROM orders WHERE status = 'paid' /**ASSERT ENUM(status IN ('paid'))**/
+--~ PROVED
+
+-- case: enum_is_proved__literal_on_the_left
+SELECT status FROM orders WHERE 'paid' = status /**ASSERT ENUM(status IN ('paid'))**/
+--~ PROVED
+
+-- case: enum_is_proved__where_in_list
+SELECT status
+FROM orders
+WHERE status IN ('new', 'paid')
+/**ASSERT ENUM(status IN ('new', 'paid', 'void'))**/  --~ PROVED
+
+-- case: enum_is_proved__inner_join_on_literal
+SELECT o.status
+FROM codes c
+JOIN orders o
+    ON o.status = 'new'
+/**ASSERT ENUM(status IN ('new'))**/  --~ PROVED
+
+-- case: enum_is_proved__left_join_on_literal_padded_side
+SELECT o.status
+FROM codes c
+LEFT JOIN orders o
+    ON o.status = 'new'
+/**ASSERT ENUM(status IN ('new'))**/  --~ PROVED
+
+-- case: enum_is_proved__declared_and_narrowed
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+WHERE status IN ('paid', 'void')
+/**ASSERT ENUM(status IN ('paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__across_a_where_equality
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT orders.channel
+FROM o
+JOIN orders
+    ON TRUE
+WHERE orders.channel = o.status
+/**ASSERT ENUM(channel IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__across_an_inner_join
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT c.code
+FROM o
+JOIN codes c
+    ON c.code = o.status
+/**ASSERT ENUM(code IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__across_an_equality_to_a_narrowed_column
+SELECT channel
+FROM orders
+WHERE channel = status AND status = 'x'
+/**ASSERT ENUM(channel IN ('x'))**/  --~ PROVED
+
+-- case: enum_is_proved__view
+CREATE VIEW v AS SELECT status FROM orders /**DECLARE ENUM(status IN ('new'))**/;
+SELECT status FROM v /**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_proved__intersecting_declarations_across_an_equality
+WITH a AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('x', 'y'))**/
+/**DECLARE ENUM(channel IN ('y', 'z'))**/) SELECT status FROM a WHERE status = channel
+/**ASSERT ENUM(status IN ('y'))**/  --~ PROVED
+
+-- case: enum_is_proved__intersect_keeps_the_left_domain
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) , i AS (SELECT status FROM o INTERSECT SELECT status FROM orders)
+SELECT status
+FROM i
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: enum_is_not_guessed__table_column
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__literal_outside_the_set
+SELECT 'c' AS tag FROM orders /**ASSERT ENUM(tag IN ('a', 'b'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__declared_subset_asserted
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+/**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__opaque_expression
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT upper(status) AS status
+FROM o
+/**ASSERT ENUM(status IN ('NEW', 'PAID'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__coalesce_with_an_unbounded_argument
+SELECT coalesce(status, 'a') AS tag FROM orders /**ASSERT ENUM(tag IN ('a'))**/
+--~ UNKNOWN
+
+-- case: enum_is_not_guessed__left_join_on_literal_preserved_side
+SELECT o.status
+FROM orders o
+LEFT JOIN codes c
+    ON o.status = 'new'
+/**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__outer_join_on_never_crosses
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT c.code
+FROM codes c
+LEFT JOIN o
+    ON c.code = o.status
+/**ASSERT ENUM(code IN ('new', 'paid'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__disjunction
+SELECT status
+FROM orders
+WHERE status = 'a' OR id = 1
+/**ASSERT ENUM(status IN ('a'))**/  --~ UNKNOWN
+
+-- case: enum_is_not_guessed__negated_in_list
+SELECT status FROM orders WHERE status NOT IN ('a') /**ASSERT ENUM(status IN ('b'))**/
+--~ UNKNOWN
+
+-- case: enum_is_not_guessed__aggregate
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT max(status) AS m
+FROM o
+/**ASSERT ENUM(m IN ('new', 'paid'))**/  --~ UNKNOWN
+
+-- case: a_declaration_does_not_claim_its_values_occur_or_that_the_column_is_non_null
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+/**ASSERT NOT NULL(status)**/  --~ UNKNOWN
+
+-- case: not_null_and_enum_together_bound_every_value
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) , p AS (SELECT status FROM o
+/**DECLARE NOT NULL(status)**/) SELECT status FROM p
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+/**ASSERT NOT NULL(status)**/  --~ PROVED
+
+-- case: an_enum_marker_on_a_missing_column_is_diagnosed
+SELECT status FROM orders /**ASSERT ENUM(nope IN ('a'))**/
+--~ unknown-asserted-column
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_in_lists_no_values
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN ())**/
+--~ unattached-marker "lists no values"
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_in_a_null_null_is_never
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN ('a', NULL))**/
+--~ unattached-marker "NULL is never"
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_in_a_a_lists_a_more_than_once
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN ('a', 'a'))**/
+--~ unattached-marker "lists 'a' more than once"
+
+-- case: a_malformed_enum_marker_is_diagnosed__p4
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (1, 2, 1))**/
+--~ unattached-marker "lists 1 more than once"
+
+-- case: a_malformed_enum_marker_is_diagnosed__p5
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (7, 007))**/
+--~ unattached-marker "lists 7 more than once"
+
+-- case: a_malformed_enum_marker_is_diagnosed__p6
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (TRUE, true))**/
+--~ unattached-marker "lists TRUE more than once"
+
+-- case: a_malformed_enum_marker_is_diagnosed__p7
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (DATE '2020-01-01'))**/
+--~ unattached-marker "lists CAST('2020-01-01' AS DATE), which is not a string, numeric, or boolean literal"
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_in_1_1_lists_1_1_which_is_not
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (1 + 1))**/
+--~ unattached-marker "lists 1 + 1, which is not"
+
+-- case: a_malformed_enum_marker_is_diagnosed__p9
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (channel))**/
+--~ unattached-marker "lists channel, which is not"
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_in_a_which_is_not
+SELECT status, channel FROM orders /**ASSERT ENUM(status IN (-'a'))**/
+--~ unattached-marker "which is not"
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_a_must_be_written
+SELECT status, channel FROM orders /**ASSERT ENUM(status ('a'))**/
+--~ unattached-marker "must be written"
+
+-- case: a_malformed_enum_marker_is_diagnosed__assert_enum_status_channel_in_a_must_be_written
+SELECT status, channel FROM orders /**ASSERT ENUM(status, channel IN ('a'))**/
+--~ unattached-marker "must be written"
+
+-- case: values_of_different_types_spelled_alike_are_not_duplicates
+SELECT status FROM orders /**ASSERT ENUM(status IN (1, '1', TRUE, 'TRUE', 1.0))**/
+--~ UNKNOWN
+
+-- case: a_domain_flows_through_set_operations__union_without_from
+WITH u AS (SELECT 'a' AS tag UNION ALL SELECT 'b')
+SELECT tag
+FROM u
+/**ASSERT ENUM(tag IN ('a', 'b'))**/  --~ PROVED
+
+-- case: a_domain_flows_through_set_operations__union_of_literals
+WITH u AS (SELECT 'new' AS s FROM orders UNION SELECT 'paid' FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: a_domain_flows_through_set_operations__union_with_a_declared_source
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/) , u AS (SELECT status FROM o UNION ALL SELECT 'void' FROM orders)
+SELECT status
+FROM u
+/**ASSERT ENUM(status IN ('new', 'paid', 'void'))**/  --~ PROVED
+
+-- case: a_domain_flows_through_set_operations__union_missing_a_value
+WITH u AS (SELECT 'new' AS s FROM orders UNION SELECT 'paid' FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN ('new'))**/  --~ UNKNOWN
+
+-- case: a_domain_flows_through_set_operations__union_with_an_unbounded_input
+WITH u AS (SELECT 'new' AS s FROM orders UNION ALL SELECT status FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN ('new'))**/  --~ UNKNOWN
+
+-- case: a_domain_flows_through_set_operations__union_of_mixed_types
+WITH u AS (SELECT 1 AS s FROM orders UNION SELECT 'a' FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN (1, 'a'))**/  --~ UNKNOWN
+
+-- case: a_domain_flows_through_set_operations__union_by_name
+WITH u AS (SELECT 'new' AS s FROM orders UNION BY NAME SELECT 'paid' AS s FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN ('new', 'paid'))**/  --~ UNKNOWN
+
+-- case: a_domain_flows_through_set_operations__intersect_bounded_by_the_right
+WITH u AS (SELECT status FROM orders INTERSECT SELECT 'paid' FROM orders)
+SELECT status
+FROM u
+/**ASSERT ENUM(status IN ('paid'))**/  --~ PROVED
+
+-- case: a_domain_flows_through_set_operations__intersect_under_nocase
+WITH u AS (SELECT name FROM people INTERSECT SELECT 'ann' FROM people)
+SELECT name
+FROM u
+/**ASSERT ENUM(name IN ('ann'))**/  --~ UNKNOWN
+
+-- case: a_domain_flows_through_set_operations__intersect_of_numbers
+WITH u AS (SELECT qty FROM items INTERSECT SELECT 2 FROM items)
+SELECT qty
+FROM u
+/**ASSERT ENUM(qty IN (2))**/  --~ PROVED
+
+-- case: a_domain_flows_through_set_operations__except_bounded_by_the_left
+WITH u AS (SELECT 'new' AS s FROM orders EXCEPT SELECT status FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN ('new'))**/  --~ PROVED
+
+-- case: a_domain_flows_through_set_operations__except_not_bounded_by_the_right
+WITH u AS (SELECT status FROM orders EXCEPT SELECT 'new' FROM orders)
+SELECT status
+FROM u
+/**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
+
+-- case: an_or_bounds_a_column_every_branch_bounds__status_a_or_status_b_a_b_outcome_proved
+SELECT status
+FROM orders
+WHERE status = 'a' OR status = 'b'
+/**ASSERT ENUM(status IN ('a', 'b'))**/  --~ PROVED
+
+-- case: an_or_bounds_a_column_every_branch_bounds__status_a_or_status_b_a_outcome_unknown
+SELECT status
+FROM orders
+WHERE status = 'a' OR status = 'b'
+/**ASSERT ENUM(status IN ('a'))**/  --~ UNKNOWN
+
+-- case: an_or_bounds_a_column_every_branch_bounds__p3
+SELECT status
+FROM orders
+WHERE (status = 'a' AND id = 1) OR status IN ('b', 'c')
+/**ASSERT ENUM(status IN ('a', 'b', 'c'))**/  --~ PROVED
+
+-- case: an_or_bounds_a_column_every_branch_bounds__p4
+SELECT status
+FROM orders
+WHERE (status IN ('a', 'b') AND status IN ('b', 'c')) OR status = 'd'
+/**ASSERT ENUM(status IN ('b', 'd'))**/  --~ PROVED
+
+-- case: an_or_bounds_a_column_every_branch_bounds__p5
+SELECT status
+FROM orders
+WHERE status = 'a' OR (id = 1 AND (status = 'b' OR status = 'c'))
+/**ASSERT ENUM(status IN ('a', 'b', 'c'))**/  --~ PROVED
+
+-- case: an_or_bounds_a_column_every_branch_bounds__p6
+SELECT status
+FROM orders
+WHERE status = 'a' OR (id = 1 AND (status = 'b' OR kind = 'c'))
+/**ASSERT ENUM(status IN ('a', 'b'))**/  --~ UNKNOWN
+
+-- case: an_unknown_report_lists_mixed_types_in_a_fixed_order
+WITH m AS (SELECT * FROM items /**DECLARE ENUM(tag IN (10, 'b', 2, TRUE, 'a', FALSE, -1.5))**/)
+SELECT tag
+FROM m
+/**ASSERT ENUM(tag IN ('zzz'))**/
+--~ UNKNOWN "tag may be FALSE, TRUE, -1.5, 2, 10, 'a', 'b', which the assertion does not cover"
+
+-- case: an_unknown_report_names_every_value_the_assertion_does_not_cover
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+/**ASSERT ENUM(status IN ('void'))**/
+--~ UNKNOWN "status may be 'new', 'paid', which the assertion does not cover"
+
+-- case: an_unknown_report_says_when_no_domain_is_known
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new'))**/
+--~ UNKNOWN "No finite domain is known for status"
+
+-- case: a_declaration_produces_no_assertion_and_is_shown_as_declared
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM o
+/**ASSERT ENUM(status IN ('new', 'paid'))**/
+--~ PROVED "Declared EnumeratedDomain"

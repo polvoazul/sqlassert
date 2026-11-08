@@ -1,0 +1,124 @@
+-- Joins inside CTE, view, and FROM-subquery bodies are lowered like the Root Select's.
+--
+-- Their markers are analyzed, and every fact (keys, non-null, Equality Groups,
+-- Enumerated Domains, Foreign Keys) flows through them to the queries that read
+-- the body.
+
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id), status VARCHAR);
+CREATE TABLE items (order_id INTEGER);
+
+-- case: a_join_marker_inside_a_body_is_proved__cte
+WITH c AS (SELECT * FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id)
+--~ PROVED
+SELECT *
+FROM c
+
+-- case: a_join_marker_inside_a_body_is_proved__view
+CREATE VIEW v AS
+SELECT orders.id
+FROM orders
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON users.id = orders.user_id;
+SELECT * FROM v
+
+-- case: a_join_marker_inside_a_body_is_proved__from_subquery
+SELECT *
+FROM (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) AS s
+--~ PROVED
+
+-- case: a_join_marker_inside_a_body_is_proved__joined_subquery
+SELECT *
+FROM items
+JOIN (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id) AS s
+--~ PROVED
+    ON s.id = items.order_id
+
+-- case: a_join_marker_inside_a_body_is_proved__exactly_one_in_a_cte
+WITH c AS (SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON users.id = orders.user_id)
+--~ PROVED
+SELECT *
+FROM c
+
+-- case: an_unprovable_join_marker_inside_a_cte_is_unknown
+WITH c AS (SELECT * FROM users /**ASSERT MANY TO ONE**/ JOIN orders ON users.id = orders.user_id)
+--~ UNKNOWN
+SELECT *
+FROM c
+
+-- case: a_cte_referenced_twice_states_its_assertion_once
+WITH c AS (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id)
+--~ PROVED
+SELECT *
+FROM c AS a
+JOIN c AS b
+    ON a.id = b.id
+
+-- case: nested_ctes_with_joins_are_lowered
+WITH outer_cte AS (
+    WITH inner_cte AS (SELECT orders.id FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id)
+    --~ PROVED
+    SELECT inner_cte.id
+    FROM inner_cte
+    /**ASSERT MANY TO ONE**/ JOIN orders  --~ PROVED
+        ON orders.id = inner_cte.id
+),
+later AS (SELECT items.order_id FROM items /**ASSERT MANY TO ONE**/ JOIN outer_cte ON outer_cte.id = items.order_id)
+--~ PROVED
+SELECT * FROM later
+
+-- case: a_view_joining_orders_to_users_by_key_keeps_the_orders_key
+CREATE VIEW v AS
+SELECT orders.id, users.name
+FROM orders
+JOIN users
+    ON users.id = orders.user_id;
+SELECT * FROM items /**ASSERT MANY TO ONE**/ JOIN v ON v.id = items.order_id;
+--~ PROVED
+
+-- case: facts_flow_through_a_join_in_a_cte__assert_not_null_unique_id_outcome_proved
+WITH c AS (SELECT orders.id, orders.user_id, users.name FROM orders JOIN users ON users.id = orders.user_id)
+SELECT *
+FROM c
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: facts_flow_through_a_join_in_a_cte__assert_not_null_name_outcome_proved
+WITH c AS (SELECT orders.id, orders.user_id, users.name FROM orders JOIN users ON users.id = orders.user_id)
+SELECT *
+FROM c
+/**ASSERT NOT NULL(name)**/  --~ PROVED
+
+-- case: facts_flow_through_a_join_in_a_cte__assert_determines_user_id_name_outcome_proved
+WITH c AS (SELECT orders.id, orders.user_id, users.name FROM orders JOIN users ON users.id = orders.user_id)
+SELECT *
+FROM c
+/**ASSERT DETERMINES(user_id -> name)**/  --~ PROVED
+
+-- case: facts_flow_through_a_join_in_a_cte__assert_unique_name_outcome_unknown
+WITH c AS (SELECT orders.id, orders.user_id, users.name FROM orders JOIN users ON users.id = orders.user_id)
+SELECT *
+FROM c
+/**ASSERT UNIQUE(name)**/  --~ UNKNOWN
+
+-- case: a_left_join_in_a_cte_pads_its_right_side
+WITH c AS (SELECT items.order_id, orders.status, orders.id FROM items LEFT JOIN orders ON orders.id = items.order_id)
+SELECT *
+FROM c
+/**ASSERT NOT NULL(id)**/  --~ UNKNOWN
+
+-- case: an_enumerated_domain_flows_through_a_join_in_a_subquery
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT status
+FROM (SELECT o.status FROM o JOIN users ON users.id = o.user_id) AS s
+/**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: a_set_operation_in_a_from_subquery_is_lowered
+SELECT *
+FROM (SELECT id FROM orders UNION SELECT order_id FROM items) AS s
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_join_marker_in_an_unreferenced_cte_is_still_reported
+-- An unreferenced CTE is not lowered, like an unreferenced view.
+WITH c AS (SELECT * FROM orders /**ASSERT MANY TO ONE**/ JOIN users ON users.id = orders.user_id)
+--~ unanalyzed-assertion
+SELECT 1 AS one

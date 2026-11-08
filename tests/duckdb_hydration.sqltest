@@ -1,0 +1,8 @@
+-- DuckDB catalog hydration, end to end against an in-memory connection.
+--
+-- Every assertion here reads only the catalog: tables are empty, and the facts
+-- come from DuckDB's own constraints and view definitions.
+
+-- case: an_inline_enum_column_type_is_a_domain_without_a_connection
+CREATE TABLE t (status ENUM('new', 'paid'));
+SELECT status FROM t /**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED

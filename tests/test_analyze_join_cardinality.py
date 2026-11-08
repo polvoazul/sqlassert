@@ -64,29 +64,3 @@ def test_each_direction_is_proved_from_its_own_input(marker: str, case, expected
 def test_padding_never_repeats_a_right_row(join: str):
     # Each right row appears once per matching left row, or once padded.
     assert outcome("ONE TO MANY", LEFT_ONLY, join) is Outcome.PROVED
-
-
-def test_a_left_constant_in_on_binds_the_left_column():
-    sql = SCHEMA + "SELECT * FROM customers /**ASSERT ONE TO MANY**/ JOIN payments ON customers.id = 7"
-    assertion, = analyze(sql).assertions
-    assert assertion.outcome is Outcome.PROVED
-
-
-def test_one_to_many_through_a_chain_needs_the_whole_left_input_unique():
-    # The left input of the second join is customers joined to orders, which
-    # repeats each customer: it is not unique on customers.id.
-    sql = SCHEMA + """
-    SELECT * FROM customers JOIN orders ON orders.customer_id = customers.id
-    /**ASSERT ONE TO MANY**/ JOIN payments ON payments.customer_id = customers.id
-    """
-    assertion, = analyze(sql).assertions
-    assert assertion.outcome is Outcome.UNKNOWN
-
-
-def test_the_explanation_names_the_input_that_is_unique():
-    left, right, on = LEFT_ONLY
-    assertion, = analyze(SCHEMA + f"SELECT * FROM {left} /**ASSERT UNIQUE**/ JOIN {right} ON {on}").assertions
-    assert assertion.evidence is not None
-    text = assertion.evidence.explain()
-    assert "PROVED: one_to_many_join" in text
-    assert "UNKNOWN: many_to_one_join" in text

@@ -1,0 +1,55 @@
+-- Direct Foreign Keys: `REFERENCES` constraints in `CREATE TABLE`,
+-- `DECLARE FOREIGN KEY(...) REFERENCES t(...)`, and
+-- `ASSERT FOREIGN KEY(...) REFERENCES t(...)`.
+--
+-- A Foreign Key is Referential Coverage onto a Unique Set of the referenced
+-- relation. Constraints and declarations supply the coverage only; the Unique Set
+-- is proved separately every time. Under MATCH SIMPLE a row with a null
+-- referencing component is exempt, so nullable referencing columns never weaken
+-- a Foreign Key.
+
+-- case: qualified_and_named_table_level_constraints
+CREATE SCHEMA app;
+CREATE TABLE app.users (id INTEGER PRIMARY KEY);
+CREATE TABLE app.orders (user_id INTEGER, CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES app.users(id) MATCH FULL);
+SELECT * FROM app.orders /**ASSERT FOREIGN KEY(user_id) REFERENCES app.users(id)**/
+--~ PROVED
+
+-- case: a_self_referencing_table
+CREATE TABLE employees (id INTEGER PRIMARY KEY, manager INTEGER REFERENCES employees(id));
+SELECT * FROM employees /**ASSERT FOREIGN KEY(manager) REFERENCES employees(id)**/
+--~ PROVED
+
+-- case: cast_based_equalities_do_not_establish_transitive_coverage
+CREATE TABLE targets (id VARCHAR PRIMARY KEY);
+CREATE TABLE source (a VARCHAR, b INTEGER);
+SELECT s.a FROM source s JOIN targets t ON s.b = t.id WHERE s.a = s.b
+/**ASSERT FOREIGN KEY(a) REFERENCES targets(id)**/  --~ UNKNOWN
+
+-- case: a_constraint_naming_an_unknown_referenced_column_is_reported
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE orders (user_id INTEGER REFERENCES users(missing));
+SELECT * FROM orders
+--~! unknown-referenced-column
+
+-- case: a_constraint_without_columns_needs_a_primary_key
+CREATE TABLE users (id INTEGER);
+CREATE TABLE orders (user_id INTEGER REFERENCES users);
+SELECT * FROM orders
+--~! unknown-referenced-column "primary key"
+
+-- case: an_invalid_table_level_constraint_is_reported__unknown_referencing_column
+CREATE TABLE users (id INTEGER PRIMARY KEY, org INTEGER);
+CREATE TABLE orders (user_id INTEGER, FOREIGN KEY (missing) REFERENCES users(id));
+SELECT * FROM orders
+--~! invalid-foreign-key-constraint
+
+-- case: an_invalid_table_level_constraint_is_reported__mismatched_column_counts
+CREATE TABLE users (id INTEGER PRIMARY KEY, org INTEGER);
+CREATE TABLE orders (user_id INTEGER, FOREIGN KEY (user_id) REFERENCES users(id, org));
+SELECT * FROM orders
+--~! invalid-foreign-key-constraint
+
+-- case: a_constraint_to_a_relation_outside_the_program_is_ignored
+CREATE TABLE orders (user_id INTEGER REFERENCES users(id));
+SELECT * FROM orders

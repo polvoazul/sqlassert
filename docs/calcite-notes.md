@@ -67,6 +67,6 @@ Disproof. Judge adapted PROVED cases with the DuckDB oracle where executable;
 record unsupported cases separately. Agreement is comparison evidence, and
 UNKNOWN without a counterexample remains Unknown.
 
-Broader extraction belongs to [issue 11](issues/0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md)
-and the corpus/oracle work in [issue 36](issues/0036-refactor-tests-for-corpus-and-oracle-scale.md).
+Broader extraction belongs to [issue 11](issues/0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md);
+targeted regressions are `.sqltest` cases ([issue 36](issues/done/0036-refactor-tests-for-corpus-and-oracle-scale.md)).
 Keep large corpus runs opt-in and preserve their schema context and provenance.

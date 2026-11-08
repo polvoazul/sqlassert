@@ -1,0 +1,123 @@
+-- WHERE subqueries as semi and anti joins (Paulley §4.4.2).
+--
+-- `EXISTS (SELECT ... FROM r WHERE p)` keeps the rows some row of r satisfies
+-- `p` for, a semi join on `p`; `NOT EXISTS` keeps the others, an anti join;
+-- `x IN (SELECT a ...)` is a semi join on `x = a`. `p` may read the outer row:
+-- the join is dependent, so the IR stays a DAG. Each keeps or drops whole left
+-- rows, so the left input's keys and dependencies hold; a semi join's ON holds
+-- on every row it keeps, which proves non-null columns and Foreign Keys.
+-- `NOT IN` stays opaque: one NULL among the values makes it reject every row.
+
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE events (id INTEGER PRIMARY KEY, user_id INTEGER, kind VARCHAR);
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__in_onto_a_key
+SELECT user_id
+FROM events
+WHERE user_id IN (SELECT id FROM users)
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__in_onto_a_filtered_key
+SELECT user_id
+FROM events
+WHERE user_id IN (SELECT id FROM users WHERE name = 'x')
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__correlated_exists
+SELECT user_id
+FROM events e
+WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__exists_with_more_conditions
+SELECT user_id
+FROM events e
+WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id AND u.name <> e.kind)
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__explicit_semi_join
+SELECT *
+FROM events e
+SEMI JOIN users u
+    ON u.id = e.user_id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__not_exists
+SELECT user_id
+FROM events e
+WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ UNKNOWN
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__not_in
+SELECT user_id
+FROM events
+WHERE user_id NOT IN (SELECT id FROM users)
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ UNKNOWN
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__in_onto_a_non_key
+SELECT user_id
+FROM events
+WHERE user_id IN (SELECT user_id FROM events)
+/**ASSERT FOREIGN KEY(user_id) REFERENCES events(user_id)**/  --~ UNKNOWN
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__in_rejects_null
+SELECT user_id
+FROM events
+WHERE user_id IN (SELECT id FROM users)
+/**ASSERT NOT NULL(user_id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__exists_rejects_null
+SELECT user_id
+FROM events e
+WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)
+/**ASSERT NOT NULL(user_id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__not_exists_keeps_null
+SELECT user_id
+FROM events e
+WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id)
+/**ASSERT NOT NULL(user_id)**/  --~ UNKNOWN
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__key_kept_by_exists
+SELECT u.id, u.name
+FROM users u
+WHERE EXISTS (SELECT 1 FROM events e WHERE e.user_id = u.id)
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__key_kept_by_not_exists
+SELECT u.id, u.name
+FROM users u
+WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.user_id = u.id)
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__outer_literal_in_exists
+SELECT e.kind
+FROM events e
+WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id AND e.kind = 'a')
+/**ASSERT ENUM(kind IN ('a'))**/  --~ PROVED
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__outer_literal_in_not_exists
+SELECT e.kind
+FROM events e
+WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = e.user_id AND e.kind = 'a')
+/**ASSERT ENUM(kind IN ('a'))**/  --~ UNKNOWN
+
+-- case: a_where_subquery_is_a_semi_or_anti_join__exists_no_longer_multiplies
+SELECT u.name
+FROM users u
+WHERE EXISTS (SELECT 1 FROM events e WHERE e.user_id = u.id) AND u.id = 1
+/**ASSERT UNIQUE(name)**/  --~ PROVED
+
+-- case: a_right_semi_join_keeps_right_rows
+-- dialect: spark
+SELECT *
+FROM events RIGHT
+SEMI JOIN users
+    ON events.user_id = users.id
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: a_join_marker_inside_an_exists_subquery_is_analyzed
+SELECT e.id
+FROM events e
+WHERE EXISTS (SELECT 1 FROM events x /**ASSERT MANY TO ONE**/ JOIN users u ON u.id = x.user_id WHERE x.id = e.id)
+--~ PROVED

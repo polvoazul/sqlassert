@@ -1,0 +1,222 @@
+-- Not-null assertions and declarations, and the Non-Null Unique Sets they complete.
+--
+-- `ASSERT NOT NULL(...)` asks for one proof covering every listed column;
+-- `DECLARE NOT NULL(...)` and `DECLARE PRIMARY KEY(...)` state trusted
+-- facts and produce no assertion result of their own.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, m INTEGER, s VARCHAR, flag BOOLEAN);
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_0_n
+SELECT n, m, s, flag FROM t WHERE n > 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__p2
+SELECT n, m, s, flag FROM t WHERE n < 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__p3
+SELECT n, m, s, flag FROM t WHERE n >= 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__p4
+SELECT n, m, s, flag FROM t WHERE n <= 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__p5
+SELECT n, m, s, flag FROM t WHERE n <> 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__p6
+SELECT n, m, s, flag FROM t WHERE n != 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__0_n_n
+SELECT n, m, s, flag FROM t WHERE 0 < n /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_m_n_m
+SELECT n, m, s, flag FROM t WHERE n > m /**ASSERT NOT NULL(n, m)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_between_1_and_5_n
+SELECT n, m, s, flag FROM t WHERE n BETWEEN 1 AND 5 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__s_like_a_s
+SELECT n, m, s, flag FROM t WHERE s LIKE 'a%' /**ASSERT NOT NULL(s)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__s_ilike_a_s
+SELECT n, m, s, flag FROM t WHERE s ILIKE 'a%' /**ASSERT NOT NULL(s)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__s_not_like_a_s
+SELECT n, m, s, flag FROM t WHERE s NOT LIKE 'a%' /**ASSERT NOT NULL(s)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_not_in_1_2_n
+SELECT n, m, s, flag FROM t WHERE n NOT IN (1, 2) /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__p14
+SELECT n, m, s, flag FROM t WHERE (n > 0) /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__not_n_0_n
+SELECT n, m, s, flag FROM t WHERE NOT (n > 0) /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_0_or_n_5_n
+SELECT n, m, s, flag FROM t WHERE n > 0 OR n < -5 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_1_0_n
+SELECT n, m, s, flag FROM t WHERE n + 1 > 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_3_n
+SELECT n, m, s, flag FROM t WHERE -n = 3 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_m_4_n_m
+SELECT n, m, s, flag FROM t WHERE n * m = 4 /**ASSERT NOT NULL(n, m)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_2_0_n
+SELECT n, m, s, flag FROM t WHERE n % 2 = 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__cast_n_as_varchar_1_n
+SELECT n, m, s, flag FROM t WHERE CAST(n AS VARCHAR) = '1' /**ASSERT NOT NULL(n)**/
+--~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_1_m_n_m
+SELECT n, m, s, flag FROM t WHERE n + 1 = m /**ASSERT NOT NULL(n, m)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_1_in_2_3_n
+SELECT n, m, s, flag FROM t WHERE n + 1 IN (2, 3) /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__n_1_is_not_null_n
+SELECT n, m, s, flag FROM t WHERE n + 1 IS NOT NULL /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__flag_flag
+SELECT n, m, s, flag FROM t WHERE flag /**ASSERT NOT NULL(flag)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__not_flag_flag
+SELECT n, m, s, flag FROM t WHERE NOT flag /**ASSERT NOT NULL(flag)**/  --~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__not_n_1_m_1_n
+SELECT n, m, s, flag FROM t WHERE NOT ((n = 1) = (m = 1)) /**ASSERT NOT NULL(n)**/
+--~ PROVED
+
+-- case: a_null_rejecting_conjunct_proves_its_columns_non_null__concat_ws_s_x_x_s
+SELECT n, m, s, flag FROM t WHERE concat_ws(s, 'x') = 'x' /**ASSERT NOT NULL(s)**/
+--~ PROVED
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_is_null
+SELECT n, m FROM t WHERE n IS NULL /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_is_distinct_from_1
+SELECT n, m FROM t WHERE n IS DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_is_not_distinct_from_1
+SELECT n, m FROM t WHERE n IS NOT DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_is_not_null
+SELECT n, m FROM t WHERE NOT (n IS NOT NULL) /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_0_is_not_false
+SELECT n, m FROM t WHERE (n > 0) IS NOT FALSE /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_0_is_null
+SELECT n, m FROM t WHERE (n > 0) IS NULL /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__coalesce_n_0_0
+SELECT n, m FROM t WHERE coalesce(n, 0) = 0 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__ifnull_n_0_0
+SELECT n, m FROM t WHERE ifnull(n, 0) = 0 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__case_when_n_is_null_then_1_end_1
+SELECT n, m FROM t WHERE CASE WHEN n IS NULL THEN 1 END = 1 /**ASSERT NOT NULL(n)**/
+--~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__concat_n_a_a
+SELECT n, m FROM t WHERE concat(n, 'a') = 'a' /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__greatest_n_5_5
+SELECT n, m FROM t WHERE greatest(n, 5) = 5 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__s_x_ax
+SELECT n, m FROM t WHERE s || 'x' = 'ax' /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_0_or_m_0
+SELECT n, m FROM t WHERE n > 0 OR m > 0 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_0_or_true
+SELECT n, m FROM t WHERE n > 0 OR TRUE /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_0_and_m_0_false
+SELECT n, m FROM t WHERE (n > 0 AND m > 0) = FALSE /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_0_and_m_0
+SELECT n, m FROM t WHERE NOT (n > 0 AND m > 0) /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__m_between_n_and_5
+SELECT n, m FROM t WHERE m BETWEEN n AND 5 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__m_in_1_n
+SELECT n, m FROM t WHERE m IN (1, n) /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_all_select_m_from_t_where_false
+SELECT n, m FROM t WHERE n > ALL (SELECT m FROM t WHERE FALSE) /**ASSERT NOT NULL(n)**/
+--~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_any_select_m_from_t
+SELECT n, m FROM t WHERE n >= ANY (SELECT m FROM t) /**ASSERT NOT NULL(n)**/
+--~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_in_select_m_from_t
+SELECT n, m FROM t WHERE NOT (n IN (SELECT m FROM t)) /**ASSERT NOT NULL(n)**/
+--~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_any_select_m_from_t_where_false
+SELECT n, m
+FROM t
+WHERE NOT (n = ANY (SELECT m FROM t WHERE FALSE))
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_all_select_m_from_t_where_false
+SELECT n, m
+FROM t
+WHERE NOT (n > ALL (SELECT m FROM t WHERE FALSE))
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_conjunct_true_on_a_null_rejects_nothing__n_1_is_not_true
+SELECT n, m FROM t WHERE (n = 1) IS NOT TRUE /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: an_inner_join_on_comparison_rejects_null
+CREATE TABLE r (id INTEGER PRIMARY KEY, n INTEGER);SELECT r.n
+FROM t
+JOIN r
+    ON r.id = t.id AND r.n + 1 > t.id
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: an_or_rejects_what_every_branch_rejects__n_0_and_m_0_or_n_0_n_outcome_proved
+SELECT n, m FROM t WHERE (n > 0 AND m > 0) OR n < 0 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: an_or_rejects_what_every_branch_rejects__n_0_and_m_0_or_n_0_m_outcome_unknown
+SELECT n, m FROM t WHERE (n > 0 AND m > 0) OR n < 0 /**ASSERT NOT NULL(m)**/
+--~ UNKNOWN
+
+-- case: an_or_rejects_what_every_branch_rejects__n_1_or_m_2_and_n_is_not_null_n_outcome_proved
+SELECT n, m FROM t WHERE n = 1 OR (m = 2 AND n IS NOT NULL) /**ASSERT NOT NULL(n)**/
+--~ PROVED
+
+-- case: an_or_rejects_what_every_branch_rejects__n_0_and_m_0_or_n_0_and_m_0_n_m_outcome_proved
+SELECT n, m
+FROM t
+WHERE (n > 0 AND m > 0) OR (n < 0 AND m < 0)
+/**ASSERT NOT NULL(n, m)**/  --~ PROVED
+
+-- case: an_or_rejects_what_every_branch_rejects__n_0_or_m_0_and_n_0_or_n_in_1_2_n_outcome_proved
+SELECT n, m
+FROM t
+WHERE n > 0 OR (m > 0 AND (n < 0 OR n IN (1, 2)))
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: an_or_rejects_what_every_branch_rejects__n_0_or_m_0_and_n_0_or_s_x_n_outcome_unknown
+SELECT n, m
+FROM t
+WHERE n > 0 OR (m > 0 AND (n < 0 OR s = 'x'))
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: an_or_rejects_what_every_branch_rejects__n_0_or_m_0_or_n_0_n_outcome_unknown
+SELECT n, m FROM t WHERE n > 0 OR m > 0 OR n < 0 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: an_inner_join_on_or_rejects_null
+CREATE TABLE r (id INTEGER PRIMARY KEY, n INTEGER);SELECT r.n
+FROM t
+JOIN r
+    ON (r.id = t.id AND r.n > 0) OR (r.id = t.n AND r.n < 0)
+/**ASSERT NOT NULL(n)**/  --~ PROVED

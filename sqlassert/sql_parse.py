@@ -39,6 +39,40 @@ _JOIN_MARKER_KIND = "sqlassert.join_marker_kind"
 _MARKER_SHAPED = re.compile(r"/\*\*.*?\*/", re.DOTALL)
 
 
+def _marker_shapes(sql: str) -> list[re.Match[str]]:
+    """Every `/**...*/` span written as SQL: not inside a `--` comment or a
+    quoted string or identifier. A `--` comment is how an author switches a
+    marker off; text in quotes is data. Offsets are those of `sql`."""
+    masked = list(sql)
+    index, quote = 0, None
+    while index < len(sql):
+        char = sql[index]
+        if quote:
+            if char == quote:
+                if sql.startswith(quote * 2, index):  # an escaped quote
+                    masked[index] = masked[index + 1] = " "
+                    index += 2
+                    continue
+                quote = None
+            elif char != "\n":
+                masked[index] = " "
+        elif char in "'\"":
+            quote = char
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            index = len(sql) if end < 0 else end + 2
+            continue
+        elif sql.startswith("--", index):
+            end = sql.find("\n", index)
+            end = len(sql) if end < 0 else end
+            masked[index:end] = " " * (end - index)
+            index = end
+            continue
+        index += 1
+    text = "".join(masked)
+    return [match for match in _MARKER_SHAPED.finditer(text)]
+
+
 class SqlassertToken(enum.Enum):
     """Token types sqlassert adds to a dialect.
 
@@ -717,7 +751,7 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
             f"{_marker_hint(match.group(0))}the markers are {recognized}",
             Origin(SQL, match.group(0), _line_of(sql, match.start())),
         )
-        for match in _MARKER_SHAPED.finditer(sql)
+        for match in _marker_shapes(sql)
         if not _is_recognized_marker(match.group(0))
     ]
 
@@ -748,7 +782,7 @@ def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diag
     recognising it — and the alternative to reporting that is a program whose
     assertions were never checked reporting as proved.
     """
-    written = [match for match in _MARKER_SHAPED.finditer(sql) if _is_recognized_marker(match.group(0))]
+    written = [match for match in _marker_shapes(sql) if _is_recognized_marker(match.group(0))]
     resolved = sum(
         1
         for statement in statements

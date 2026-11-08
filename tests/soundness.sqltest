@@ -1,0 +1,209 @@
+-- A proof is only ever as good as the relation it was proved about.
+--
+-- Every case here shares a bare relation name with a declared table without
+-- sharing its Unique Sets. Each must be UNKNOWN: an unsound PROVED is the worst
+-- defect this engine can have.
+
+-- case: a_from_subquery_does_not_inherit_a_declared_table_name_s_unique_set
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN (SELECT user_id AS id FROM sessions) AS users  --~ UNKNOWN
+    ON sessions.user_id = users.id
+
+-- case: a_cte_does_not_inherit_a_declared_table_name_s_unique_set
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+WITH users AS (SELECT user_id AS id FROM sessions)
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_id = users.id
+
+-- case: relations_in_different_schemas_are_different_relations
+CREATE TABLE a.users (id INTEGER PRIMARY KEY);
+CREATE TABLE b.users (id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN b.users  --~ UNKNOWN
+    ON sessions.user_id = b.users.id
+--~! undeclared-table
+
+-- case: a_duplicate_declaration_is_an_explicit_program_diagnostic
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE users (id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_id = users.id
+--~! duplicate-declaration
+--~! undeclared-table
+
+-- case: a_marker_reaches_its_join_through_join_modifier_keywords__join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_marker_reaches_its_join_through_join_modifier_keywords__inner_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ INNER JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_marker_reaches_its_join_through_join_modifier_keywords__left_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ LEFT JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_marker_reaches_its_join_through_join_modifier_keywords__left_outer_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ LEFT OUTER JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_marker_reaches_its_join_through_join_modifier_keywords__full_outer_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ FULL OUTER JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_marker_reaches_its_join_through_join_modifier_keywords__cross_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ CROSS JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: a_comment_shaped_like_a_marker_is_reported__spaced
+-- `/*...*/` is assertion syntax, so a near miss is likelier a mistyped
+-- marker than a note. Silently ignoring one would read to its author as a
+-- proof of a join nobody checked.
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /** ASSERT UNIQUE **/ JOIN users ON sessions.user_id = users.id
+--~ unrecognized-marker
+
+-- case: a_comment_shaped_like_a_marker_is_reported__one_closing_star
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**ASSERT UNIQUE*/ JOIN users ON sessions.user_id = users.id
+--~ unrecognized-marker
+
+-- case: a_comment_shaped_like_a_marker_is_reported__three_closing_stars
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**ASSERT UNIQUE***/ JOIN users ON sessions.user_id = users.id
+--~ unrecognized-marker
+
+-- case: a_comment_shaped_like_a_marker_is_reported__an_unknown_term
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**ASSERT UNIQE**/ JOIN users ON sessions.user_id = users.id
+--~ unrecognized-marker
+
+-- case: a_comment_shaped_like_a_marker_is_reported__an_unknown_verb
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**ENSURE UNIQUE**/ JOIN users ON sessions.user_id = users.id
+--~ unrecognized-marker
+
+-- case: a_comment_shaped_like_a_marker_is_reported__a_declared_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**DECLARE UNIQUE**/ JOIN users ON sessions.user_id = users.id
+--~ unrecognized-marker
+
+-- case: a_comment_shaped_like_a_marker_is_reported__a_doc_comment
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions /** explains this join **/ JOIN users
+--~ unrecognized-marker
+    ON sessions.user_id = users.id
+
+-- case: an_ordinary_comment_is_not_mistaken_for_a_marker__unique
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /* unique */
+JOIN users ON sessions.user_id = users.id
+
+-- case: an_ordinary_comment_is_not_mistaken_for_a_marker__p2
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /*UNIQUE*/
+JOIN users ON sessions.user_id = users.id
+
+-- case: an_ordinary_comment_is_not_mistaken_for_a_marker__explains_this_join
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /* explains this join */
+JOIN users ON sessions.user_id = users.id
+
+-- case: an_ordinary_comment_is_not_mistaken_for_a_marker__a_note
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions -- a note
+JOIN users ON sessions.user_id = users.id
+
+-- case: a_marker_is_recognized_whatever_its_case_or_inner_spacing__assert_unique
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**ASSERT UNIQUE**/ JOIN users ON sessions.user_id = users.id
+--~ PROVED
+
+-- case: a_marker_is_recognized_whatever_its_case_or_inner_spacing__p2
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**assert unique**/ JOIN users ON sessions.user_id = users.id
+--~ PROVED
+
+-- case: a_marker_is_recognized_whatever_its_case_or_inner_spacing__p3
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**Assert Unique**/ JOIN users ON sessions.user_id = users.id
+--~ PROVED
+
+-- case: a_marker_is_recognized_whatever_its_case_or_inner_spacing__p4
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT * FROM sessions /**ASSERT  UNIQUE**/ JOIN users ON sessions.user_id = users.id
+--~ PROVED

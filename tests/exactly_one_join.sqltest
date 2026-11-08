@@ -1,0 +1,675 @@
+-- Exactly One Join Assertions: `ASSERT EXACTLY ONE` before a JOIN.
+--
+-- Every left row matches exactly one right row. The at-most-one half is a Unique
+-- Join: the right-side predicate columns cover a Unique Set. The at-least-one half
+-- needs an ON of cross-input column equalities only, and Referential Coverage of
+-- the left columns as one tuple onto the exact right relation and columns; every
+-- left column must be non-null. Any join kind but semi and anti: the left row's
+-- matches decide it, whatever a right or full join pads on.
+
+CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE accounts (user_id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    buyer INTEGER REFERENCES users(id),
+    plain INTEGER NOT NULL
+);
+CREATE TABLE members (user_id INTEGER NOT NULL REFERENCES accounts(user_id));
+CREATE TABLE events (user_id INTEGER);
+
+-- case: a_simple_exactly_one_join_is_proved__inner_join
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id = users.id
+--~ PROVED
+
+-- case: a_simple_exactly_one_join_is_proved__left_join
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users  --~ PROVED
+    ON orders.user_id = users.id
+
+-- case: a_simple_exactly_one_join_is_proved__operands_reversed
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON users.id = orders.user_id
+--~ PROVED
+
+-- case: a_simple_exactly_one_join_is_proved__aliased_tables
+SELECT * FROM orders AS o /**ASSERT EXACTLY ONE**/ JOIN users AS u ON o.user_id = u.id
+--~ PROVED
+
+-- case: a_simple_exactly_one_join_is_proved__using
+SELECT * FROM members /**ASSERT EXACTLY ONE**/ JOIN accounts USING (user_id)  --~ PROVED
+
+-- case: a_simple_exactly_one_join_is_proved__right_join
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ RIGHT JOIN users  --~ PROVED
+    ON orders.user_id = users.id
+
+-- case: a_simple_exactly_one_join_is_proved__full_join
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ FULL JOIN users  --~ PROVED
+    ON orders.user_id = users.id
+
+-- case: an_unproved_exactly_one_join_is_unknown__nullable_left_column
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.buyer = users.id
+--~ UNKNOWN
+
+-- case: an_unproved_exactly_one_join_is_unknown__no_foreign_key
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.plain = users.id
+--~ UNKNOWN
+
+-- case: an_unproved_exactly_one_join_is_unknown__right_column_not_unique
+SELECT * FROM users /**ASSERT EXACTLY ONE**/ JOIN orders ON users.id = orders.user_id
+--~ UNKNOWN
+
+-- case: an_unproved_exactly_one_join_is_unknown__additional_predicate
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN users  --~ UNKNOWN
+    ON orders.user_id = users.id AND users.name = 'x'
+
+-- case: an_unproved_exactly_one_join_is_unknown__additional_equality
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN users  --~ UNKNOWN
+    ON orders.user_id = users.id AND orders.id = users.id
+
+-- case: an_unproved_exactly_one_join_is_unknown__equality_to_a_constant
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON users.id = 1  --~ UNKNOWN
+
+-- case: an_unproved_exactly_one_join_is_unknown__non_equality_predicate
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id < users.id
+--~ UNKNOWN
+
+-- case: an_unproved_exactly_one_join_is_unknown__right_join_without_coverage
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ RIGHT JOIN users  --~ UNKNOWN
+    ON orders.buyer = users.id
+
+-- case: an_unproved_exactly_one_join_is_unknown__cross_join
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS n FROM users) AS c  --~ UNKNOWN
+
+-- case: an_unproved_exactly_one_join_is_unknown__foreign_key_onto_a_narrowed_relation
+WITH active AS (SELECT * FROM users WHERE name = 'x')
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN active  --~ UNKNOWN
+    ON orders.user_id = active.id
+
+-- case: an_unproved_exactly_one_join_is_unknown__foreign_key_onto_another_relation
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN accounts  --~ UNKNOWN
+    ON orders.user_id = accounts.user_id
+
+-- case: a_limited_right_input_does_not_guarantee_a_match__select_id_from_users_limit_0
+SELECT *
+FROM orders o
+/**ASSERT EXACTLY ONE**/ JOIN (SELECT id FROM users LIMIT 0) u  --~ UNKNOWN
+    ON o.user_id = u.id
+
+-- case: a_limited_right_input_does_not_guarantee_a_match__select_id_from_users_limit_1
+SELECT *
+FROM orders o
+/**ASSERT EXACTLY ONE**/ JOIN (SELECT id FROM users LIMIT 1) u  --~ UNKNOWN
+    ON o.user_id = u.id
+
+-- case: a_limited_right_input_does_not_guarantee_a_match__p3
+SELECT *
+FROM orders o
+/**ASSERT EXACTLY ONE**/ JOIN (SELECT id FROM users UNION SELECT id FROM users LIMIT 1) u
+--~ UNKNOWN
+    ON o.user_id = u.id
+
+-- case: exactly_one_and_unique_markers_mark_separate_joins
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id = users.id
+--~ PROVED
+/**ASSERT MANY TO ONE**/ JOIN accounts ON orders.plain = accounts.user_id  --~ PROVED
+
+-- case: a_proved_exactly_one_left_join_pads_no_right_column
+SELECT o.id, u.id AS matched_id FROM orders AS o
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u ON u.id = o.user_id  --~ PROVED
+/**ASSERT NOT NULL(matched_id)**/  --~ PROVED
+
+-- case: a_proved_exactly_one_left_join_pads_no_right_column__program_2
+SELECT o.id, u.id AS matched_id FROM orders AS o
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u ON u.id = o.buyer  --~ UNKNOWN
+/**ASSERT NOT NULL(matched_id)**/  --~ UNKNOWN
+
+-- case: a_proved_exactly_one_join_keeps_the_left_inputs_key
+SELECT o.id, u.name FROM orders AS o
+/**ASSERT EXACTLY ONE**/ JOIN users AS u ON u.id = o.user_id  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_composite_or_derived_exactly_one_join_is_proved__semi_join
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ SEMI JOIN regions AS r  --~ PROVED
+    ON s.country = r.country AND s.code = r.code
+
+-- case: a_composite_or_derived_exactly_one_join_is_proved__composite_key
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ PROVED
+    ON s.country = r.country AND s.code = r.code
+
+-- case: a_composite_or_derived_exactly_one_join_is_proved__composite_pairs_in_another_order
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ LEFT JOIN regions AS r  --~ PROVED
+    ON r.code = s.code AND r.country = s.country
+
+-- case: a_composite_or_derived_exactly_one_join_is_proved__renamed_pass_through_columns
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+WITH s AS (SELECT id, country AS c, code AS k FROM shops), r AS (SELECT country AS rc, code AS rk, label FROM regions)
+SELECT *
+FROM s
+/**ASSERT EXACTLY ONE**/ JOIN r  --~ PROVED
+    ON s.c = r.rc AND s.k = r.rk
+
+-- case: a_composite_or_derived_exactly_one_join_is_proved__filtered_left_input
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM (SELECT * FROM shops WHERE id > 3) AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ PROVED
+    ON s.country = r.country AND s.code = r.code
+
+-- case: a_composite_or_derived_exactly_one_join_is_proved__p6
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM (SELECT * FROM shops WHERE maybe IS NOT NULL) AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ PROVED
+    ON s.country = r.country AND s.maybe = r.code
+
+-- case: an_exactly_one_join_over_derived_relations_is_proved__cte_on_the_left
+WITH o AS (SELECT id, user_id FROM orders)
+SELECT *
+FROM o
+/**ASSERT EXACTLY ONE**/ JOIN users  --~ PROVED
+    ON o.user_id = users.id
+
+-- case: an_exactly_one_join_over_derived_relations_is_proved__renamed_column_on_the_left
+SELECT *
+FROM (SELECT user_id AS uid FROM orders) AS o
+/**ASSERT EXACTLY ONE**/ JOIN users AS u  --~ PROVED
+    ON o.uid = u.id
+
+-- case: an_exactly_one_join_over_derived_relations_is_proved__projection_of_the_right_relation
+WITH u AS (SELECT id AS key, name FROM users)
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN u  --~ PROVED
+    ON orders.user_id = u.key
+
+-- case: an_exactly_one_join_over_derived_relations_is_proved__view_on_the_right
+CREATE VIEW people AS SELECT id, name FROM users;
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN people ON orders.user_id = people.id
+--~ PROVED
+
+-- case: an_exactly_one_join_over_derived_relations_is_proved__join_inside_the_left_input
+WITH o AS (SELECT orders.id, orders.user_id FROM orders JOIN accounts ON orders.plain = accounts.user_id)
+SELECT *
+FROM o
+/**ASSERT EXACTLY ONE**/ JOIN users  --~ PROVED
+    ON o.user_id = users.id
+
+-- case: an_exactly_one_join_over_derived_relations_is_proved__left_column_equal_to_the_referencing_column
+SELECT *
+FROM members
+JOIN orders
+    ON orders.plain = members.user_id
+/**ASSERT EXACTLY ONE**/ JOIN accounts  --~ PROVED
+    ON accounts.user_id = orders.plain
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__only_one_column_of_the_composite_key
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__p2
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country AND s.other = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__pairs_swapped_across_the_key
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.code AND s.code = r.country
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__nullable_referencing_component
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country AND s.maybe = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__no_foreign_key
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM loose AS l
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON l.country = r.country AND l.code = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__right_side_filter_in_on
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code AND r.label = 'x'
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__left_side_filter_in_on
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code AND s.other = s.country
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__narrowed_right_relation
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+WITH r AS (SELECT * FROM regions WHERE label = 'x')
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__right_relation_narrowed_by_a_join
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+WITH r AS (SELECT regions.* FROM regions JOIN loose ON regions.code = loose.code)
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__right_relation_duplicated_by_a_join
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+WITH r AS (SELECT regions.* FROM regions LEFT JOIN loose ON regions.code = loose.code)
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__computed_left_column
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM (SELECT upper(country) AS country, code FROM shops) AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code
+
+-- case: an_unproved_composite_or_derived_exactly_one_join_is_unknown__anti_join
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ ANTI JOIN regions AS r  --~ UNKNOWN
+    ON s.country = r.country AND s.code = r.code
+
+-- case: a_proved_composite_exactly_one_left_join_pads_no_right_column
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+
+        SELECT s.id, r.code AS matched FROM shops AS s
+        /**ASSERT EXACTLY ONE**/ LEFT JOIN regions AS r  --~ PROVED
+            ON r.country = s.country AND r.code = s.code
+        /**ASSERT NOT NULL(matched)**/  --~ PROVED
+
+-- case: a_proved_exactly_one_join_keeps_the_left_inputs_properties__unique_set_through_a_left_join
+SELECT o.id, u.name
+FROM orders AS o
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u  --~ PROVED
+    ON u.id = o.user_id
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_proved_exactly_one_join_keeps_the_left_inputs_properties__non_null_left_column
+SELECT o.user_id, u.name
+FROM orders AS o
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u  --~ PROVED
+    ON u.id = o.user_id
+/**ASSERT NOT NULL(user_id)**/  --~ PROVED
+
+-- case: a_proved_exactly_one_join_keeps_the_left_inputs_properties__enumerated_domain_of_a_left_column
+SELECT o.kind, u.name
+FROM (SELECT user_id, 'a' AS kind FROM orders) AS o
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u  --~ PROVED
+    ON u.id = o.user_id
+/**ASSERT ENUM(kind IN ('a'))**/  --~ PROVED
+
+-- case: a_proved_exactly_one_join_keeps_the_left_inputs_properties__foreign_key_of_a_left_column
+SELECT o.user_id, u.name
+FROM orders AS o
+/**ASSERT EXACTLY ONE**/ LEFT JOIN users AS u  --~ PROVED
+    ON u.id = o.user_id
+/**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/  --~ PROVED
+
+-- case: coverage_onto_an_exactly_one_join_carries_over_from_its_left_input
+CREATE TABLE refunds (order_id INTEGER NOT NULL REFERENCES orders(id));
+WITH enriched AS (
+    SELECT o.id, u.name
+    FROM orders AS o
+    /**ASSERT EXACTLY ONE**/ JOIN users AS u  --~ PROVED
+        ON u.id = o.user_id
+)
+SELECT *
+FROM refunds
+/**ASSERT EXACTLY ONE**/ JOIN enriched  --~ PROVED
+    ON refunds.order_id = enriched.id
+
+-- case: coverage_onto_an_unproved_inner_join_does_not_carry_over
+CREATE TABLE refunds (order_id INTEGER NOT NULL REFERENCES orders(id));
+WITH enriched AS (
+    SELECT o.id, u.name
+    FROM orders AS o
+    /**ASSERT EXACTLY ONE**/ JOIN users AS u  --~ UNKNOWN
+        ON u.id = o.buyer
+)
+SELECT *
+FROM refunds
+/**ASSERT EXACTLY ONE**/ JOIN enriched  --~ UNKNOWN
+    ON refunds.order_id = enriched.id
+
+-- case: a_nullable_left_column_is_reported_as_the_only_missing_evidence
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.buyer = users.id
+--~ UNKNOWN "PROVED: At most one match" "PROVED: At least one match" "UNKNOWN: Non-null left column"
+
+-- case: a_missing_foreign_key_is_reported_as_missing_guaranteed_matching
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.plain = users.id
+--~ UNKNOWN "PROVED: At most one match" "UNKNOWN: At least one match" "PROVED: Non-null left column"
+
+-- case: every_missing_half_is_reported_separately
+SELECT *
+FROM events
+/**ASSERT EXACTLY ONE**/ JOIN sessions
+--~ UNKNOWN "UNKNOWN: At most one match" "UNKNOWN: At least one match" "UNKNOWN: Non-null left column"
+    ON events.user_id = sessions.user_id
+
+-- case: an_additional_predicate_is_named_in_the_explanation
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN users
+--~ UNKNOWN "column-to-column equalities"
+    ON orders.user_id = users.id AND users.name = 'x'
+
+-- case: referential_coverage_onto_a_non_unique_column_still_needs_a_unique_right_column
+CREATE TABLE visits (user_id INTEGER NOT NULL REFERENCES sessions(user_id));
+SELECT *
+FROM visits
+/**ASSERT EXACTLY ONE**/ JOIN sessions
+--~ UNKNOWN "UNKNOWN: At most one match" "PROVED: At least one match" "PROVED: Non-null left column"
+    ON visits.user_id = sessions.user_id
+
+-- case: an_exactly_one_marker_in_an_unreferenced_cte_is_a_diagnostic
+WITH enriched AS (SELECT orders.id FROM orders /**ASSERT EXACTLY ONE**/ JOIN users ON orders.user_id = users.id)
+--~ unanalyzed-assertion "exactly one join assertion"
+SELECT *
+FROM orders
+
+-- case: an_exactly_one_marker_not_before_a_join_is_unattached
+SELECT * FROM orders /**ASSERT EXACTLY ONE**/ WHERE id = 1
+--~ unattached-marker "exactly one join marker"
+
+-- case: a_mistyped_exactly_one_marker_is_reported_with_the_marker_list
+SELECT * FROM orders /**ASSERT EXACTLY 1**/ JOIN users ON orders.user_id = users.id
+--~ unrecognized-marker "/**ASSERT EXACTLY ONE**/"
+
+-- case: every_missing_half_of_a_composite_join_is_named
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM loose AS l
+/**ASSERT EXACTLY ONE**/ JOIN shops AS s
+--~ UNKNOWN "UNKNOWN: At most one match" "UNKNOWN: At least one match" "No known Foreign Key from loose(country, code)" "PROVED: Non-null left columns"
+    ON l.country = s.country AND l.code = s.maybe
+
+-- case: each_nullable_left_column_is_named
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN regions AS r
+--~ UNKNOWN "PROVED: At most one match" "PROVED: At least one match" "UNKNOWN: Non-null left columns" "maybe may be NULL"
+    ON s.country = r.country AND s.maybe = r.code
+
+-- case: a_narrowed_right_relation_is_named_in_the_explanation
+CREATE TABLE regions (country VARCHAR, code VARCHAR, label VARCHAR, PRIMARY KEY (country, code));
+CREATE TABLE shops (
+    id INTEGER PRIMARY KEY,
+    country VARCHAR NOT NULL,
+    code VARCHAR NOT NULL,
+    other VARCHAR NOT NULL,
+    maybe VARCHAR,
+    FOREIGN KEY (country, code) REFERENCES regions(country, code),
+    FOREIGN KEY (country, maybe) REFERENCES regions(country, code)
+);
+CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
+WITH r AS (SELECT * FROM regions WHERE label = 'x')
+SELECT *
+FROM shops AS s
+/**ASSERT EXACTLY ONE**/ JOIN r
+--~ UNKNOWN "PROVED: At most one match" "UNKNOWN: At least one match" "may drop rows of its input"
+    ON s.country = r.country AND s.code = r.code
+
+-- case: an_extra_on_conjunct_leaves_only_matching_unknown
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN users
+--~ UNKNOWN "PROVED: At most one match" "UNKNOWN: At least one match" "PROVED: Non-null left columns"
+    ON orders.user_id = users.id AND users.name = 'x'

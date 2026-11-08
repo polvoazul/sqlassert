@@ -1,0 +1,40 @@
+-- Create View declarations lowered as shared Named Relations.
+--
+-- A view's body lowers through the same linker path as a CTE or FROM subquery,
+-- but unlike a CTE it is declared up front and visible from anywhere in the
+-- program, so it supports forward references, nesting, reuse, duplicate
+-- detection, and cycle detection that a CTE's local WITH scope does not need.
+
+-- case: a_view_may_reference_a_relation_declared_later_in_the_program
+CREATE VIEW active_users AS SELECT id FROM users WHERE id > 0;
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN active_users  --~ PROVED
+    ON sessions.user_id = active_users.id
+
+-- case: a_view_dropping_a_required_composite_key_member_is_unknown
+CREATE TABLE order_items (order_id INTEGER, line_no INTEGER, sku VARCHAR, PRIMARY KEY (order_id, line_no));
+CREATE TABLE orders (id INTEGER);
+CREATE VIEW partial AS SELECT order_id FROM order_items;
+
+SELECT *
+FROM orders
+/**ASSERT MANY TO ONE**/ JOIN partial  --~ UNKNOWN
+    ON orders.id = partial.order_id
+
+-- case: a_duplicate_view_declaration_is_an_explicit_diagnostic
+CREATE VIEW dup AS SELECT 1 AS id;
+CREATE VIEW dup AS SELECT 2 AS id;
+
+SELECT * FROM dup
+--~! duplicate-declaration
+
+-- case: a_view_duplicating_a_table_name_is_an_explicit_diagnostic
+CREATE TABLE dup (id INTEGER);
+CREATE VIEW dup AS SELECT 1 AS id;
+
+SELECT * FROM dup
+--~! duplicate-declaration

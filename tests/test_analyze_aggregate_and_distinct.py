@@ -61,26 +61,6 @@ def test_a_group_by_subquery_joined_on_part_of_a_composite_grouping_key_is_unkno
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_group_by_subquery_joined_on_its_full_composite_grouping_key_is_proved():
-    report = analyze(
-        """
-        CREATE TABLE orders (customer_id INTEGER, region VARCHAR, amount INTEGER);
-        CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
-
-        WITH per_customer_region AS (
-            SELECT customer_id, region, COUNT(*) AS n FROM orders GROUP BY customer_id, region
-        )
-        SELECT *
-        FROM customer_regions
-        /**ASSERT MANY TO ONE**/ JOIN per_customer_region
-            ON customer_regions.customer_id = per_customer_region.customer_id
-            AND customer_regions.region = per_customer_region.region
-        """
-    )
-
-    assert report.proved
-
-
 def test_an_aliased_grouping_key_maps_the_unique_set_to_the_outer_column(orders_and_customers):
     report = analyze(
         orders_and_customers
@@ -154,30 +134,6 @@ def test_a_grouping_key_absent_from_the_select_list_is_unsupported_and_unknown(o
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_computed_grouping_key_maps_the_unique_set_to_the_outer_column():
-    """A Grouping Key is a bound scalar expression, not just a bare column --
-    it maps to the outer column through the selected output that computes it
-    unrenamed, exactly like a bare column does."""
-    report = analyze(
-        """
-        CREATE TABLE orders (customer_id VARCHAR);
-        CREATE TABLE customers (id VARCHAR);
-
-        WITH per_customer AS (
-            SELECT UPPER(customer_id) AS ucid, COUNT(*) AS n
-            FROM orders
-            GROUP BY UPPER(customer_id)
-        )
-        SELECT *
-        FROM customers
-        /**ASSERT MANY TO ONE**/ JOIN per_customer
-            ON customers.id = per_customer.ucid
-        """
-    )
-
-    assert report.proved
-
-
 def test_rollup_is_unsupported_and_unknown(orders_and_customers):
     report = analyze(
         orders_and_customers
@@ -232,40 +188,6 @@ def test_having_is_unsupported_and_unknown(orders_and_customers):
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_parenthesized_aggregate_view_self_joined_on_its_grouping_key_is_proved():
-    """Regression test for the same parenthesized-body bug `test_analyze_views.py`
-    covers, exercised through the exact shape that surfaced it: a `GROUP BY`
-    aggregate view, self-joined through `USING`.
-    """
-    report = analyze(
-        """
-        CREATE TABLE orders (user_id INTEGER, amount INTEGER);
-        CREATE VIEW per_user AS (
-            SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY user_id
-        );
-
-        SELECT * FROM per_user AS a /**ASSERT MANY TO ONE**/ JOIN per_user AS b USING (user_id)
-        """
-    )
-
-    assert report.proved
-
-
-def test_a_positional_grouping_key_maps_to_its_selected_output():
-    report = analyze(
-        """
-        CREATE TABLE orders (user_id INTEGER, amount INTEGER);
-        CREATE VIEW per_user AS (
-            SELECT user_id, SUM(amount) AS spent FROM orders GROUP BY 1
-        );
-
-        SELECT * FROM per_user AS a /**ASSERT MANY TO ONE**/ JOIN per_user AS b USING (user_id)
-        """
-    )
-
-    assert report.proved
-
-
 # Distinct ---------------------------------------------------------------
 
 
@@ -297,45 +219,6 @@ def test_a_distinct_subquery_joined_on_part_of_its_output_set_is_unknown(orders_
         FROM customers
         /**ASSERT MANY TO ONE**/ JOIN distinct_pairs
             ON customers.id = distinct_pairs.customer_id
-        """
-    )
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
-
-def test_a_distinct_subquery_joined_on_its_full_composite_output_set_is_proved():
-    report = analyze(
-        """
-        CREATE TABLE orders (customer_id INTEGER, region VARCHAR);
-        CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
-
-        WITH distinct_pairs AS (
-            SELECT DISTINCT customer_id, region FROM orders
-        )
-        SELECT *
-        FROM customer_regions
-        /**ASSERT MANY TO ONE**/ JOIN distinct_pairs
-            ON customer_regions.customer_id = distinct_pairs.customer_id
-            AND customer_regions.region = distinct_pairs.region
-        """
-    )
-
-    assert report.proved
-
-
-def test_distinct_star_is_unsupported_and_unknown():
-    report = analyze(
-        """
-        CREATE TABLE orders (customer_id INTEGER);
-        CREATE TABLE customers (id INTEGER);
-
-        WITH distinct_star AS (
-            SELECT DISTINCT * FROM orders
-        )
-        SELECT *
-        FROM customers
-        /**ASSERT MANY TO ONE**/ JOIN distinct_star
-            ON customers.id = distinct_star.customer_id
         """
     )
 
@@ -449,47 +332,5 @@ def test_an_aggregate_nested_inside_a_distinct_still_earns_its_own_unique_set():
 
 # Scalar aggregates --------------------------------------------------------
 
-SCALAR = "CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL);"
-
-
-@pytest.mark.parametrize(
-    ("sql", "outcome"),
-    [
-        # Grouped by nothing: exactly one row, so every column set is unique.
-        ("SELECT count(*) AS n FROM t /**ASSERT NOT NULL UNIQUE(n)**/", Outcome.PROVED),
-        ("SELECT max(id) AS m, count(*) AS n FROM t /**ASSERT UNIQUE(m)**/", Outcome.PROVED),
-        # The one row of an empty input has a NULL sum.
-        ("SELECT sum(x) AS s FROM t /**ASSERT NOT NULL(s)**/", Outcome.UNKNOWN),
-        # A window aggregate keeps every row.
-        ("SELECT x, sum(id) OVER () AS s FROM t /**ASSERT UNIQUE(x)**/", Outcome.UNKNOWN),
-    ],
-)
-def test_a_scalar_aggregate_is_one_row(sql: str, outcome: Outcome):
-    report = analyze(SCALAR + sql)
-
-    assert [assertion.outcome for assertion in report.assertions] == [outcome]
-
-
-def test_a_bare_column_of_a_scalar_aggregate_may_be_null():
-    # MySQL allows it; over no rows the one output row has a NULL x.
-    report = analyze(SCALAR + "SELECT x, count(*) AS n FROM t /**ASSERT NOT NULL(x)**/", dialect="mysql")
-
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
-
 
 # SELECT without FROM ------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("sql", "outcome"),
-    [
-        # One row: every column set is unique, literals keep their values.
-        ("SELECT 'p' AS k, 1 AS n /**ASSERT NOT NULL UNIQUE(k)**/", Outcome.PROVED),
-        ("SELECT 'p' AS k /**ASSERT ENUM(k IN ('p'))**/", Outcome.PROVED),
-        ("SELECT 1 AS x WHERE 1 = 2 /**ASSERT UNIQUE(x)**/", Outcome.PROVED),
-        ("SELECT NULL AS x /**ASSERT NOT NULL(x)**/", Outcome.UNKNOWN),
-        ("WITH u AS (SELECT 'a' AS t UNION ALL SELECT 'a') SELECT t FROM u /**ASSERT UNIQUE(t)**/", Outcome.UNKNOWN),
-    ],
-)
-def test_a_select_without_from_is_one_row(sql: str, outcome: Outcome):
-    assert [assertion.outcome for assertion in analyze(sql).assertions] == [outcome]

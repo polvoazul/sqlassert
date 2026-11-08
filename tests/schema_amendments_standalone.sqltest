@@ -1,0 +1,33 @@
+-- Constraints added after `CREATE TABLE`: `ALTER TABLE ... ADD PRIMARY KEY /
+-- UNIQUE / FOREIGN KEY`, `ALTER COLUMN ... SET NOT NULL`, and `CREATE UNIQUE
+-- INDEX`. Each is the same Knowledge its `CREATE TABLE` form states. One that
+-- names no table created before it is diagnosed, as is any other `ALTER`.
+
+-- case: a_named_table_constraint_in_create_table_is_knowledge
+CREATE TABLE t (a INTEGER, b INTEGER, CONSTRAINT pk PRIMARY KEY (a), CONSTRAINT u UNIQUE (b));
+SELECT a, b FROM t /**ASSERT NOT NULL UNIQUE(a)**/  --~ PROVED
+/**ASSERT UNIQUE(b)**/  --~ PROVED
+
+-- case: a_constraint_on_a_table_not_created_before_it_is_diagnosed__alter_before_create
+ALTER TABLE users ADD UNIQUE (email);
+CREATE TABLE users (id INTEGER, email VARCHAR);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! constraint-without-table "users"
+
+-- case: a_constraint_on_a_table_not_created_before_it_is_diagnosed__index_before_create
+CREATE UNIQUE INDEX users_email ON users (email);
+CREATE TABLE users (id INTEGER, email VARCHAR);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! constraint-without-table "users"
+
+-- case: a_constraint_on_a_table_not_created_before_it_is_diagnosed__never_created
+ALTER TABLE users ADD UNIQUE (email);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! constraint-without-table "users"
+--~! undeclared-table "users"
+
+-- case: a_constraint_on_a_table_not_created_before_it_is_diagnosed__a_view
+CREATE VIEW users AS SELECT 1 AS email UNION ALL SELECT 1;
+ALTER TABLE users ADD UNIQUE (email);
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! constraint-without-table "users"

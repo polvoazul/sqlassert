@@ -3,7 +3,7 @@
 - **State:** open
 - **Labels:** check, ready-for-agent
 - **Created:** 2026-11-06
-- **Related:** [11: SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md), [36: corpus/test organization](0036-refactor-tests-for-corpus-and-oracle-scale.md)
+- **Related:** [11: SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md), [36: `.sqltest` cases](done/0036-refactor-tests-for-corpus-and-oracle-scale.md)
 
 ## Why
 

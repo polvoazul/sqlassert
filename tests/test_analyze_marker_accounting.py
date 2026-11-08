@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from sqlassert.diagnostics import UNRESOLVED_ASSERTED_COLUMN
 from sqlassert.ir.convert import IrParser
-from sqlassert.main import analyze
 from sqlassert.sql_parse import SqlParser
 
 COLUMN_MARKERS = [
@@ -88,31 +86,3 @@ def _cases(contexts: dict[str, str], markers: list[str]):
 )
 def test_every_marker_states_something_or_is_diagnosed(sql: str):
     assert _accounted_for(sql), sql
-
-
-def test_a_column_a_select_with_unknown_columns_cannot_resolve_is_diagnosed():
-    report = analyze("SELECT * FROM a JOIN b ON a.id = b.aid /**ASSERT UNIQUE(name)**/")
-    assert report.assertions == ()
-    diagnostic, = report.diagnostics
-    assert diagnostic.code == UNRESOLVED_ASSERTED_COLUMN
-    assert "name" in diagnostic.message
-    assert "line 1" in diagnostic.message
-
-
-def test_markers_sharing_a_line_are_accounted_for_separately():
-    sql = (
-        "CREATE TABLE t (id INT PRIMARY KEY); CREATE TABLE u (id INT PRIMARY KEY); "
-        "SELECT id FROM t WHERE id IN (SELECT id FROM u /**ASSERT UNIQUE(id)**/) /**ASSERT UNIQUE(id)**/"
-    )
-    report = analyze(sql)
-    assert len(report.assertions) + len(report.diagnostics) == 2
-
-
-def test_join_markers_sharing_a_line_are_accounted_for_separately():
-    sql = (
-        "CREATE TABLE t (id INT PRIMARY KEY); CREATE TABLE u (id INT PRIMARY KEY); "
-        "SELECT t.id FROM t /**ASSERT MANY TO ONE**/ JOIN u ON t.id = u.id "
-        "WHERE t.id IN (SELECT u.id FROM u /**ASSERT MANY TO ONE**/ JOIN t ON t.id = u.id)"
-    )
-    report = analyze(sql)
-    assert len(report.assertions) + len(report.diagnostics) == 2

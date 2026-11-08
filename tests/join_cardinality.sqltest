@@ -1,0 +1,27 @@
+-- Join cardinality markers, read in FROM order: the left input is everything
+-- before the join, the right its joined source.
+--
+-- `MANY TO ONE` repeats no left row, `ONE TO MANY` no right row, `ONE TO ONE`
+-- neither. `UNIQUE` (or `NOT MANY TO MANY`) is their disjunction: the join
+-- repeats rows of at most one input.
+
+CREATE TABLE customers (id INTEGER PRIMARY KEY);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);
+CREATE TABLE payments (customer_id INTEGER);
+CREATE TABLE profiles (customer_id INTEGER PRIMARY KEY);
+
+-- case: a_left_constant_in_on_binds_the_left_column
+SELECT * FROM customers /**ASSERT ONE TO MANY**/ JOIN payments ON customers.id = 7
+--~ PROVED
+
+-- case: one_to_many_through_a_chain_needs_the_whole_left_input_unique
+SELECT * FROM customers JOIN orders ON orders.customer_id = customers.id
+/**ASSERT ONE TO MANY**/ JOIN payments ON payments.customer_id = customers.id
+--~ UNKNOWN
+
+-- case: the_explanation_names_the_input_that_is_unique
+SELECT *
+FROM customers
+/**ASSERT UNIQUE**/ JOIN orders
+--~ PROVED "PROVED: one_to_many_join" "UNKNOWN: many_to_one_join"
+    ON orders.customer_id = customers.id

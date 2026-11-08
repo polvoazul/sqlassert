@@ -1,0 +1,32 @@
+-- Statements this engine does not model at all: neither a Create Statement of
+-- a supported kind (TABLE, VIEW, INDEX), a constraint-adding ALTER TABLE, nor a
+-- root select. Each must be a durable diagnostic, never a crash and never a
+-- silently-dropped statement.
+
+-- case: a_top_level_statement_that_is_neither_create_nor_select_is_diagnosed
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+INSERT INTO users VALUES (1);
+
+SELECT * FROM users
+--~! unsupported-statement
+
+-- case: a_plain_index_is_understood_and_states_nothing
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE INDEX idx_users_id ON users (id);
+CREATE TABLE sessions (user_id INTEGER);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+
+-- case: create_sequence_is_reported_and_dropped
+CREATE SEQUENCE seq;
+
+SELECT 1
+--~! unsupported-create-statement
+
+-- case: create_schema_is_accepted_silently
+CREATE SCHEMA analytics;
+
+SELECT 1
