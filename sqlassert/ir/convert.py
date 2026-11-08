@@ -1325,6 +1325,9 @@ class IrParser:
         builtin = dialect_builtins(self.semantics).get(type(expression))
         if builtin is not None and not quantified:
             function, keys = builtin
+            if type(expression) is exp.Cast and function.total is not None and self._is_json(expression.this, bindings):
+                # `CAST(JSON 'null' AS BIGINT)` is NULL.
+                function = replace(function, total=None)
             values = [value for key in keys for value in _as_list(expression.args[key])]
             if function.accepts(len(values)):
                 return ir.Call(origin=origin, function=function, arguments=tuple(lower(value) for value in values), description=description)
@@ -1357,6 +1360,31 @@ class IrParser:
                 "compare the timestamps themselves, or convert to one zone first (AT TIME ZONE 'UTC')",
                 origin,
             ))
+
+    def _is_json(self, node: exp.Expression, bindings: tuple[_Binding, ...]) -> bool:
+        """Whether `node`'s value is known to be JSON (or a VARIANT), whose
+        `null` a CAST turns into NULL. A column of unknown type is taken not to be."""
+        match node:
+            case exp.Paren() | exp.Nullif():
+                return self._is_json(node.this, bindings)
+            case exp.Cast():
+                return node.to.this in _JSON_TYPES
+            case exp.Column():
+                kind = self._declared_type(self._lower_expression(node, bindings))
+                return kind is not None and kind.this in _JSON_TYPES
+            case exp.ParseJSON() | exp.JSONExtract() | exp.JSONBExtract() | exp.JSONObject() | exp.JSONArray() | exp.JSONObjectAgg() | exp.JSONArrayAgg():
+                return True
+            case exp.Coalesce():
+                return any(self._is_json(each, bindings) for each in (node.this, *node.expressions))
+            case exp.Case():
+                arms = [arm.args["true"] for arm in node.args.get("ifs") or ()]
+                default = node.args.get("default")
+                return any(self._is_json(each, bindings) for each in (*arms, *([default] if default is not None else [])))
+            case exp.If():
+                false = node.args.get("false")
+                return any(self._is_json(each, bindings) for each in (node.args["true"], *([false] if false is not None else [])))
+            case _:
+                return False
 
     def _declared_type(self, expression: ir.ScalarExpr) -> exp.DataType | None:
         """The type a CREATE TABLE declares for the column `expression` reads,
@@ -1734,7 +1762,8 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[exp.Expression], tu
     where they raise an error rather than return NULL (`checked_arithmetic`:
     SQLite turns a NaN into NULL, MySQL a bad date CAST), and division and
     remainder only where division by zero raises too (`checked_division`).
-    `+`, `-` and negation are injective where exact arithmetic overflows into
+    A CAST from JSON is not total anywhere (`convert._is_json`): JSON `null`
+    is a value that casts to NULL. `+`, `-` and negation are injective where exact arithmetic overflows into
     an error. `||`, `concat()` and `concat_ws()` as each dialect treats NULL;
     `||` not at all where a setting decides what it means (MySQL: OR, or
     concatenation)."""
@@ -2074,6 +2103,9 @@ _IDENTITY_TYPES = {
 # Types whose values keep the zone they were given, where a TIMESTAMP WITH
 # TIME ZONE is not an instant only: a CAST to another type reads that zone.
 _ZONED_TYPES = {exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMETZ}
+
+# Types whose `null` (JSON's, a VARIANT's) is a non-null value that a CAST turns into NULL.
+_JSON_TYPES = {exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT, exp.DataType.Type.OBJECT}
 
 # Comparisons, whose operands a zoned timestamp's text may be.
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Like, exp.ILike, exp.Between)

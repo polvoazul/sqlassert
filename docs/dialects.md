@@ -41,6 +41,12 @@ not, and SQLGlot reads `INT` and `INTEGER` alike, so none is taken to be
 non-null). A ClickHouse primary key never rejects a duplicate, and its
 `concat_ws` is NULL for a NULL value, as Snowflake's. Hive has neither checked
 arithmetic nor enforced keys, and its `concat_ws` is not modelled.
+A CAST from JSON (or a VARIANT) may be NULL in every dialect: JSON `null` is
+a value, and `CAST(JSON 'null' AS BIGINT)` is NULL (DuckDB, Trino, Snowflake's
+`PARSE_JSON('null')::INT`). So a CAST is never taken to be non-null when its
+operand is known to be JSON: a column declared `JSON`, `JSONB`, `VARIANT` or
+`OBJECT`, a CAST to one, a JSON function, or a `COALESCE` or `CASE` of one. A
+column of unknown type is taken not to be JSON.
 `concat_ws()` is modelled only where it is listed: a NULL separator makes it
 NULL everywhere, but whether a NULL value is skipped differs.
 

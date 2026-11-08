@@ -310,7 +310,8 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
   BigQuery, Redshift, Trino); division likewise, except in DuckDB. MySQL (outside
   strict mode) and Spark (outside ANSI mode) may return NULL even from a
-  comparison. `||` and `concat()` follow each dialect's NULL handling.
+  comparison. A CAST from JSON may be NULL everywhere (JSON `null`). `||` and
+  `concat()` follow each dialect's NULL handling.
 - **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
   which also groups its operands differently, so it is an unknown function of
   its operands, with an `ambiguous-operator` warning: write `OR` or `CONCAT()`.
