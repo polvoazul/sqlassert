@@ -61,10 +61,14 @@ though `sum(o.total)` over it is multiplied. That is the intended change; the
 directional markers and the smell below cover the aggregate case. Alpha, so
 no compatibility path:
 
-- Tests keep `UNIQUE`. Only those that fail after the change switch to
-  `MANY TO ONE` (a `UNIQUE` expected UNKNOWN because only the left side is
-  unique), or to the new diagnostic (SEMI and ANTI joins, e.g. in
-  `test_analyze_join_kinds.py`).
+- Tests use the most specific marker that states their case: `MANY TO ONE`
+  (most of today's `UNIQUE` tests), `ONE TO MANY` or `ONE TO ONE`.
+  `NOT MANY TO MANY` is their disjunction, so a proof of either direction
+  proves it. A few tests keep `UNIQUE` / `NOT MANY TO MANY` end to end: one
+  proved through each direction, and the negative cases. A specific marker's
+  UNKNOWN doesn't imply `NOT MANY TO MANY`'s, so a many-to-many join (neither
+  side unique) is tested with `NOT MANY TO MANY` itself. SEMI and ANTI cases
+  (e.g. in `test_analyze_join_kinds.py`) move to the new diagnostic.
 - README "Unique Join Syntax", the CONTEXT.md glossary (Unique Join
   Assertion; add the cardinality terms), and `JOIN_MARKER_NOUNS` in
   `sql_parse.py`.
@@ -113,9 +117,9 @@ claim is checked on data, not only reasoned.
 
 - [ ] `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE`, `NOT MANY TO MANY` parse,
   attach before a join, and are proved by `unique_join` and its mirror.
-- [ ] `UNIQUE` means `NOT MANY TO MANY`; tests keep `UNIQUE` except those
-  that fail, which use `MANY TO ONE`; README, CONTEXT.md and suggestions
-  updated.
+- [ ] `UNIQUE` means `NOT MANY TO MANY`; tests use the most specific marker,
+  with a few end-to-end `UNIQUE` / `NOT MANY TO MANY` cases (proved each way,
+  and many to many UNKNOWN); README, CONTEXT.md and suggestions updated.
 - [ ] A cardinality marker on a SEMI or ANTI join is rejected with a diagnostic.
 - [ ] Explanations of `NOT MANY TO MANY` name the unique side.
 - [ ] The fan-trap/chasm-trap smell fires on both examples, stays silent on
