@@ -54,11 +54,11 @@ cannot be represented; never invent constraints to obtain a Proof.
 
 ## Reuse and interpretation
 
-Start with a small curated selection in the existing Python tests. Record the
-upstream commit, path, method/case, fixture assumptions and adaptations. For
-copied or adapted material, retain applicable attribution and provide the
-upstream [LICENSE](https://github.com/apache/calcite/blob/180f167e65f28c160d4d6ffab35fa37303f0ebe0/LICENSE)
-and [NOTICE](https://github.com/apache/calcite/blob/180f167e65f28c160d4d6ffab35fa37303f0ebe0/NOTICE).
+Read the source from a shallow clone at the pinned commit in the gitignored
+`vendor/calcite` (setup in issue 40). Start with a small curated selection of
+`.sqltest` cases, stating fixture assumptions explicitly. Cases are inspired by
+upstream tests, not copied; each carries a one-line comment naming the upstream
+test it was inspired by, and needs no attribution.
 
 Translate the expected Property explicitly: uniqueness with NULLs ignored is
 different from a null-equal strict key; an inferred predicate is different from

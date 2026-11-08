@@ -10,6 +10,8 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [40. Audit inference against Calcite and adapt targeted regressions](0040-audit-inference-against-calcite.md) — open
+- [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44; backlog of CLI, editor, framework, data quality and agent integrations)
+- [44. v1 external integrations](0044-v1-external-integrations.md) — open (child of 43: `check` CLI; analytical dialects, Postgres, MySQL; dbt)
 
 ## Order
 
@@ -24,6 +26,8 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
   #15's remaining Low smells and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
+- **Integrations (needs design, not yet prioritized):** #44 (v1: `check` CLI
+  and dialects, then dbt); the rest of #43 is backlog.
 - **P4, not planned:** #42 (lowering support v2): window functions (and
   #33's CTE part, which needs them), recursive CTEs, column lineage, LATERAL
   and UNNEST, ADD COLUMN, scalar subqueries in grouped select lists and in ON.
