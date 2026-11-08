@@ -178,7 +178,7 @@ def test_a_grouping_column_another_one_determines_is_redundant():
     assert "name" in improvement.message and "any_value" in improvement.message
 
 
-@pytest.mark.parametrize("grouping", ["1, 2", "id, name"])
+@pytest.mark.parametrize("grouping", ["1, 2", "id, name", "(), id, name"])
 def test_a_grouping_reference_uses_the_resolved_select_expression(grouping: str):
     sql = SCHEMA + f"SELECT id, name AS label, count(*) AS n FROM users GROUP BY {grouping}"
     improvement, = suggest(sql).improvements

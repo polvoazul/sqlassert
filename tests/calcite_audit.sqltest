@@ -12,6 +12,8 @@ CREATE TABLE r (id INTEGER PRIMARY KEY, lid INTEGER, x INTEGER);
 
 -- case: case_arm_padding_is_not_null_on_every_padded_row
 -- inspired by Strong.isNull (CASE): a CASE is NULL only when the arm it takes is
+-- Counterexample: l = {(1, 1, 0)}, r empty: z = 5 > 0 on the padded row, rid NULL.
+-- The subquery matters: the bug was the padding a computed column inherits.
 SELECT q.z, q.rid FROM (SELECT CASE l.k WHEN 1 THEN 5 ELSE r.x END AS z, r.id AS rid
 FROM l LEFT JOIN r ON r.lid = l.id) q WHERE q.z > 0 /**ASSERT NOT NULL(rid)**/  --~ UNKNOWN
 

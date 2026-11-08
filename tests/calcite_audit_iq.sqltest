@@ -141,10 +141,18 @@ FROM dept
 
 -- Grouping ------------------------------------------------------------------
 
--- `GROUP BY ()` is one group, like a query without GROUP BY. Missing proof.
+-- `GROUP BY ()` is one group, like a query without GROUP BY: one row, even
+-- over an empty input.
 -- case: group_by_empty_set_is_one_row
 -- inspired by agg.iq, "select count(*) from emp where deptno = 20 group by ()"
 SELECT count(*) AS c FROM emp WHERE deptno = 20 GROUP BY ()
+/**ASSERT UNIQUE(c)**/  --~ PROVED
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+
+-- case: group_by_empty_set_beside_a_column_groups_by_the_column
+-- inspired by agg.iq, "group by ()"
+SELECT deptno, count(*) AS c FROM emp GROUP BY (), deptno
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 /**ASSERT UNIQUE(c)**/  --~ UNKNOWN
 
 -- case: group_by_constant_expression_is_one_row

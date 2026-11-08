@@ -26,7 +26,7 @@ from sqlassert.properties import (
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
     JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_span, column_markers,
-    exhaustive_span, is_ambiguous_pipes, join_marker_kind, join_origin, literal_value, marker_position,
+    exhaustive_span, grouping, is_ambiguous_pipes, join_marker_kind, join_origin, literal_value, marker_position,
 )
 
 
@@ -774,12 +774,9 @@ class IrParser:
         return self._lower_expression(conjunct, bindings, schema_complete=schema_complete, line=_source_line(conjunct))
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
-        group = select.args.get("group")
-        if isinstance(group, exp.Group):
-            relation = self._lower_aggregate(lowered, select, group)
-        elif _is_scalar_aggregate(select):
-            # One row, however many rows its input has: grouped by nothing.
-            relation = self._lower_aggregate(lowered, select, exp.Group(expressions=[]))
+        keys = grouping(select)
+        if keys is not None:
+            relation = self._lower_aggregate(lowered, select, keys)
         elif select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None:
             relation = self._lower_distinct_on(lowered, select, select.args["distinct"].args["on"])
         elif select.args.get("distinct") is not None:
@@ -998,7 +995,7 @@ class IrParser:
             value = right_relation.output_columns[0]
             predicate = None
         else:
-            if any(select.args.get(key) for key in ("group", "having", "qualify", "distinct", "limit", "offset", "windows")) or _is_scalar_aggregate(select):
+            if grouping(select) is not None or any(select.args.get(key) for key in ("having", "qualify", "distinct", "limit", "offset", "windows")):
                 return None
             item = select.expressions[0]
             lowered_value = self._lower_expression(
@@ -1042,10 +1039,10 @@ class IrParser:
         kind, select, operand = matched
         if operand is None:
             source = _from_source(select)
-            if source is None or any(
-                select.args.get(key) for key in ("group", "having", "qualify", "distinct", "limit", "offset", "with", "windows")
-            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()) or _is_scalar_aggregate(select):
-                # A scalar aggregate returns one row whatever its WHERE: EXISTS is always true.
+            if source is None or grouping(select) is not None or any(
+                select.args.get(key) for key in ("having", "qualify", "distinct", "limit", "offset", "with", "windows")
+            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+                # Grouped by nothing (`grouping` is []), it returns one row whatever its WHERE: EXISTS is always true.
                 return None
             right = self._lower_source(source)
             for join in select.args.get("joins") or ():
@@ -1095,14 +1092,18 @@ class IrParser:
         )
         return ir.Project(origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation)
 
-    def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, group: exp.Group) -> ir.Aggregate | None:
-        if select.args.get("having") is not None or any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
+    def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[exp.Expression]) -> ir.Aggregate | None:
+        """`select` grouped by `keys`; [] is one group, one row however many rows its input has."""
+        group = select.args.get("group")
+        if select.args.get("having") is not None or (
+            group is not None and any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals"))
+        ):
             return None
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
 
         grouped_items: set[int] = set()
-        for group_expression in group.expressions:
+        for group_expression in keys:
             item = _matching_grouping_output(group_expression, select.expressions)
             if item is None:
                 return None
@@ -1110,7 +1111,7 @@ class IrParser:
 
         output_columns = self._aggregate_output_columns(select.expressions, lowered, grouped_items)
         grouping_outputs: list[ir.OutputColumn] = []
-        for group_expression in group.expressions:
+        for group_expression in keys:
             item = _matching_grouping_output(group_expression, select.expressions)
             grouping_outputs.append(output_columns[select.expressions.index(item)])
         calls = tuple(
@@ -2050,14 +2051,6 @@ def _aggregate_arguments(call: exp.AggFunc) -> list[exp.Expression]:
     if isinstance(this, exp.Distinct):
         return list(this.expressions)
     return [this, *call.expressions]
-
-
-def _is_scalar_aggregate(select: exp.Select) -> bool:
-    """An aggregate with no GROUP BY: an aggregate function outside any window."""
-    return select.args.get("qualify") is None and any(
-        isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window, exp.Select) is select
-        for item in select.expressions for node in item.find_all(exp.AggFunc)
-    )
 
 
 def _is_positional(join: exp.Join) -> bool:

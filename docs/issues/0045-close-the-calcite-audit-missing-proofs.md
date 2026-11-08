@@ -24,7 +24,8 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 1. **GROUP BY with HAVING** is not lowered, so the grouped query loses its key
    and its domains. Lower HAVING as a Filter above the Aggregate.
    `iq: having_keeps_the_grouping_key`, `nulls: pullup_aggregate_having_on_group_key`.
-2. **`GROUP BY ()`** is one row, like a scalar aggregate.
+2. ~~**`GROUP BY ()`** is one row, like a scalar aggregate.~~ Done: the
+   empty grouping set is dropped before lowering (`sql_parse.grouping`).
    `iq: group_by_empty_set_is_one_row`.
 3. **An unqualified USING column** is not resolved: in a RIGHT or FULL join
    it is `coalesce(left, right)`, and even an INNER join loses its domain.

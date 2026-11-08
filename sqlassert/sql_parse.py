@@ -937,6 +937,26 @@ def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:
     return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))
 
 
+def grouping(select: exp.Select) -> list[exp.Expression] | None:
+    """What `select` groups by, or None when it does not aggregate.
+
+    [] is one group: a scalar aggregate (an aggregate function outside any
+    window, with no GROUP BY) or `GROUP BY ()`. The empty grouping set groups
+    by nothing, so `GROUP BY (), a` is `GROUP BY a`. GROUPING SETS, ROLLUP and
+    CUBE are not in the list: the caller checks the Group for them. An
+    aggregate under QUALIFY is None: QUALIFY lowers it.
+    """
+    group = select.args.get("group")
+    if isinstance(group, exp.Group):
+        return [expression for expression in group.expressions if not (isinstance(expression, exp.Tuple) and not expression.expressions)]
+    if select.args.get("qualify") is None and any(
+        isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window, exp.Select) is select
+        for item in select.expressions for node in item.find_all(exp.AggFunc)
+    ):
+        return []
+    return None
+
+
 def marker_position(node: exp.Join | exp.Select | exp.Case) -> tuple[int, int] | None:
     """The source `(offset, line)` where a marker for this Join, Select, or
     simple CASE would be written, or None for a join no marker can precede,

@@ -41,7 +41,7 @@ from sqlassert.python_engine import Arena, Result
 from sqlassert.rules.column_set import RowIdentity
 from sqlassert.rules.nullability import Padding, _null_rejected, _null_sources, _on_rejected
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
-from sqlassert.sql_parse import ParsedProgram, marker_position
+from sqlassert.sql_parse import ParsedProgram, grouping, marker_position
 
 
 class Level(Enum):
@@ -362,13 +362,11 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
 
     One column always stays: grouping by nothing turns an empty input into one row.
     """
-    group = node.args.get("group")
-    if group is None or len(group.expressions) != len(aggregate.grouping_outputs):
+    expressions = grouping(node) or []
+    if len(expressions) != len(aggregate.grouping_outputs):
         return []
     # Grouping outputs are lowered in GROUP BY order.
-    written = {
-        column: expression.sql(dialect=dialect) for column, expression in zip(aggregate.grouping_outputs, group.expressions)
-    }
+    written = {column: expression.sql(dialect=dialect) for column, expression in zip(aggregate.grouping_outputs, expressions)}
     kept = list(aggregate.grouping_outputs)
     found = []
     for grouped in aggregate.grouping_outputs:

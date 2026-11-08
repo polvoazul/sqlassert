@@ -12,6 +12,9 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
 - [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44; backlog of CLI, editor, framework, data quality and agent integrations)
 - [44. v1 external integrations](0044-v1-external-integrations.md) — open (child of 43: `check` CLI; analytical dialects, Postgres, MySQL; dbt)
+- [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes per fact; docker for local engines, doc provenance for warehouses)
+- [47. Discovery: one base fetcher, a subclass per dialect](0047-discovery-base-class.md) — open (INFORMATION_SCHEMA base; keys taken as enforced; partial indexes skipped)
+- [48. dbt plugin as its own package](0048-dbt-plugin-package.md) — open (monorepo folder, own build, dbt-duckdb e2e tests)
 
 ## Order
 

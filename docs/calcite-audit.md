@@ -11,7 +11,8 @@ contracts, never Calcite's answers.
 
 Result: **five soundness bugs in sqlassert, all fixed** (below); **nine
 soundness problems in Calcite** that sqlassert does not share; **24 missing
-proofs**, filed as [issue 45](issues/0045-close-the-calcite-audit-missing-proofs.md).
+proofs**, filed as [issue 45](issues/0045-close-the-calcite-audit-missing-proofs.md)
+(item 2, `GROUP BY ()`, since closed).
 
 ## Files
 
