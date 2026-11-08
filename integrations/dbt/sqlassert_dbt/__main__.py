@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         if report is None:
             return EXIT_USAGE
         sys.stdout.write(format_text(report, explain=arguments.explain))
-        return exit_code(report)
+        return exit_code(report, require_proved=arguments.require_proved)
 
     passed = [argument for argument in arguments.dbt_arguments if argument != "--"]
     located = [*passed, "--project-dir", str(project)]
@@ -83,13 +83,17 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.write(format_text(report, explain=arguments.explain))
     proved = proved_tests(report)
     ran = run_dbt([arguments.command, *located, *(["--exclude", *proved] if proved else [])])
-    return ran if ran != 0 else exit_code(report)
+    return ran if ran != 0 else exit_code(report, require_proved=arguments.require_proved)
 
 
 def _common(command: argparse.ArgumentParser) -> None:
     command.add_argument("project", nargs="?", default=".", help="dbt project directory (default: .)")
     command.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
     command.add_argument("--explain", action="store_true", help="print each proof and failed proof")
+    command.add_argument(
+        "--require-proved", action="store_true",
+        help=f"exit {EXIT_FINDINGS} when a dbt test is not proved from the SQL, too, not only a marker",
+    )
 
 
 def proved_tests(report: DbtReport) -> list[str]:

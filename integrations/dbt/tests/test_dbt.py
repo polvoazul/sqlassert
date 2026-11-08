@@ -239,6 +239,20 @@ def test_command_exits_0_when_every_marker_is_proved(copy_project, capsys):
     assert main(["check", str(project), "--trust-upstream-tests"]) == 0
 
 
+def test_require_proved_fails_on_an_unproved_test(copy_project, capsys):
+    project = copy_project()
+
+    def edit(manifest):
+        node = node_named(manifest, "customers")
+        for text in ("/**ASSERT MANY TO ONE**/ ", "\n/**ASSERT NOT NULL(first_name)**/"):
+            node["compiled_code"] = node["compiled_code"].replace(text, "")
+            node["raw_code"] = node["raw_code"].replace(text, "")
+
+    edit_manifest(project, edit)
+    assert main(["check", str(project), "--trust-upstream-tests"]) == 0
+    assert main(["check", str(project), "--trust-upstream-tests", "--require-proved"]) == 1
+
+
 def test_command_exits_2_without_a_manifest(tmp_path, capsys):
     assert main(["check", str(tmp_path)]) == 2
     assert "manifest" in capsys.readouterr().err
