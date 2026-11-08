@@ -5,3 +5,4 @@ dist/
 tmp
 papers/
 vendor/
+__pycache__/
