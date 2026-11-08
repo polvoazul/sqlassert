@@ -7,7 +7,7 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence, Set
+from collections.abc import Callable, Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import Literal, assert_never
@@ -19,7 +19,7 @@ from sqlassert import ir
 from sqlassert.dialects import DialectSemantics, semantics
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.properties import (
-    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet,
+    EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullElements, NonNullUniqueSet,
     OneToManyJoin, OneToOneJoin, Property, ReferentialCoverage, UniqueJoin,
     UniqueSet,
 )
@@ -132,6 +132,9 @@ class IrParser:
     _declared_types: dict[ir.OutputColumn, exp.DataType] = field(default_factory=dict)
     # The comparisons already checked for a zoned timestamp's text, by id.
     _zone_checked: set[int] = field(default_factory=set)
+    # Each composite column or CAST a comparison reads, by id, with the
+    # comparison: a warning unless its elements are declared non-null.
+    _composite_comparisons: dict[int, tuple[Origin, str, str, ir.ScalarExpr]] = field(default_factory=dict)
     _marker_targets: dict[int, _Symbol] = field(default_factory=dict)
     _marker_references: list[_MarkerReference] = field(default_factory=list)
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
@@ -172,7 +175,7 @@ class IrParser:
         self._report_unanalyzed(ast)
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
-        warnings = [*self._undeclared_table_warnings(), *self._warnings]
+        warnings = [*self._undeclared_table_warnings(), *self._warnings, *self._composite_warnings()]
         return IrConversionResult(
             ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
                 scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys)),
@@ -1275,7 +1278,7 @@ class IrParser:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)
             return ir.OpaqueExpression(origin=origin, description=expression.sql(dialect=self.dialect))
         if isinstance(expression, _COMPARISONS):
-            self._check_zoned_text(expression, bindings, origin)
+            self._check_zoned_text(expression, lower, self._origin(expression, line or _source_line(expression)))
         description = expression.sql(dialect=self.dialect)
         quantified = isinstance(expression, exp.Binary) and any(
             isinstance(operand, (exp.Any, exp.All)) for operand in (expression.this, expression.expression)
@@ -1325,17 +1328,24 @@ class IrParser:
         builtin = dialect_builtins(self.semantics).get(type(expression))
         if builtin is not None and not quantified:
             function, keys = builtin
-            if type(expression) is exp.Cast and function.total is not None and self._is_json(expression.this, bindings):
+            if type(expression) is exp.Cast and function.total is not None and self._is_json(expression.this, lower):
                 # `CAST(JSON 'null' AS BIGINT)` is NULL.
                 function = replace(function, total=None)
             values = [value for key in keys for value in _as_list(expression.args[key])]
             if function.accepts(len(values)):
-                return ir.Call(origin=origin, function=function, arguments=tuple(lower(value) for value in values), description=description)
+                arguments = tuple(lower(value) for value in values)
+                composites = [
+                    (value, argument) for value, argument in zip(values, arguments)
+                    if function.name in _ORDER_COMPARISONS and function.total is not None and self._is_composite(value, lower)
+                ]
+                if composites:
+                    function, arguments = self._composite_comparison(expression, function, arguments, composites, self._origin(expression, line or _source_line(expression)))
+                return ir.Call(origin=origin, function=function, arguments=arguments, description=description)
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             return ir.OpaqueExpression(origin=origin, description=description)
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
 
-    def _check_zoned_text(self, comparison: exp.Expression, bindings: tuple[_Binding, ...], origin: Origin) -> None:
+    def _check_zoned_text(self, comparison: exp.Expression, lower: Callable[[exp.Expression], ir.ScalarExpr], origin: Origin) -> None:
         """Warn of a comparison with a CAST of a zoned timestamp, where it keeps
         its zone: equal instants cast to different text (or dates, or local
         times), so the comparison depends on the zone each value was given."""
@@ -1349,7 +1359,7 @@ class IrParser:
                 operand = operand.this
             if not isinstance(operand, exp.Cast) or operand.to.this in _ZONED_TYPES or not isinstance(operand.this, exp.Column):
                 continue
-            kind = self._declared_type(self._lower_expression(operand.this, bindings))
+            kind = self._declared_type(lower(operand.this))
             if kind is None or kind.this not in _ZONED_TYPES:
                 continue
             cast = operand.sql(dialect=self.dialect)
@@ -1361,28 +1371,95 @@ class IrParser:
                 origin,
             ))
 
-    def _is_json(self, node: exp.Expression, bindings: tuple[_Binding, ...]) -> bool:
+    def _composite_comparison(
+        self, comparison: exp.Expression, function: ir.Builtin, arguments: tuple[ir.ScalarExpr, ...],
+        composites: list[tuple[exp.Expression, ir.ScalarExpr]], origin: Origin,
+    ) -> tuple[ir.Builtin, tuple[ir.ScalarExpr, ...]]:
+        """A comparison of composites (ARRAYs, ROWs, MAPs), non-null only when
+        no element is NULL either: `ARRAY[1, NULL] <> ARRAY[1, NULL]` is NULL in
+        Trino. So it also takes each composite operand's Elements, as a
+        non-strict, total argument. A composite column or CAST, whose elements
+        the SQL does not show, is noted for a warning."""
+        assert function.total is not None
+        extra = len(composites)
+        widened = ir.Builtin(
+            name=function.name, strict=function.strict + (False,) * extra, total=function.total + (True,) * extra, injective=False,
+        )
+        elements = tuple(ir.Elements(origin=argument.origin, operand=argument) for _, argument in composites)
+        for value, argument in composites:
+            while isinstance(value, exp.Paren):
+                value = value.this
+            if isinstance(value, (exp.Column, exp.Cast)) and id(value) not in self._composite_comparisons:
+                self._composite_comparisons[id(value)] = (origin, comparison.sql(dialect=self.dialect), value.sql(dialect=self.dialect), argument)
+        return widened, arguments + elements
+
+    def _composite_warnings(self) -> list[Diagnostic]:
+        """A warning for each composite operand whose elements no NOT NULL
+        ELEMENTS declaration covers, on it or on a column it passes on from."""
+        declared = {column for item in self._declarations if isinstance(item, NonNullElements) for column in item.columns}
+        warnings = []
+        for origin, comparison, operand, argument in self._composite_comparisons.values():
+            expression, covered = argument, False
+            while isinstance(expression, ir.ColumnRef) and not covered:
+                covered = expression.column in declared
+                expression = expression.column.scalar_expr
+            if not covered:
+                warnings.append(Diagnostic(
+                    diag.COMPOSITE_COMPARISON,
+                    f"{comparison} compares {operand}, which may hold a NULL element, and a comparison of composites with "
+                    "a NULL element may be NULL (it is in Trino), so it is not taken to be non-null: if its elements are "
+                    "never NULL, say so with /**DECLARE NOT NULL ELEMENTS(...)**/ on a Select Expression that outputs it",
+                    origin,
+                ))
+        return warnings
+
+    def _is_composite(self, node: exp.Expression, lower: Callable[[exp.Expression], ir.ScalarExpr]) -> bool:
+        """Whether `node`'s value is known to be an ARRAY, ROW or MAP. A column
+        of unknown type is taken to be a scalar: composites are rare."""
+        match node:
+            case exp.Paren() | exp.Nullif():
+                return self._is_composite(node.this, lower)
+            case exp.Cast():
+                return node.to.this in _COMPOSITE_TYPES
+            case exp.Column():
+                kind = self._declared_type(lower(node))
+                return kind is not None and kind.this in _COMPOSITE_TYPES
+            case exp.Array() | exp.Struct() | exp.Map() | exp.VarMap():
+                return True
+            case exp.Coalesce():
+                return any(self._is_composite(each, lower) for each in (node.this, *node.expressions))
+            case exp.Case():
+                arms = [arm.args["true"] for arm in node.args.get("ifs") or ()]
+                default = node.args.get("default")
+                return any(self._is_composite(each, lower) for each in (*arms, *([default] if default is not None else [])))
+            case exp.If():
+                false = node.args.get("false")
+                return any(self._is_composite(each, lower) for each in (node.args["true"], *([false] if false is not None else [])))
+            case _:
+                return False
+
+    def _is_json(self, node: exp.Expression, lower: Callable[[exp.Expression], ir.ScalarExpr]) -> bool:
         """Whether `node`'s value is known to be JSON (or a VARIANT), whose
         `null` a CAST turns into NULL. A column of unknown type is taken not to be."""
         match node:
             case exp.Paren() | exp.Nullif():
-                return self._is_json(node.this, bindings)
+                return self._is_json(node.this, lower)
             case exp.Cast():
                 return node.to.this in _JSON_TYPES
             case exp.Column():
-                kind = self._declared_type(self._lower_expression(node, bindings))
+                kind = self._declared_type(lower(node))
                 return kind is not None and kind.this in _JSON_TYPES
             case exp.ParseJSON() | exp.JSONExtract() | exp.JSONBExtract() | exp.JSONObject() | exp.JSONArray() | exp.JSONObjectAgg() | exp.JSONArrayAgg():
                 return True
             case exp.Coalesce():
-                return any(self._is_json(each, bindings) for each in (node.this, *node.expressions))
+                return any(self._is_json(each, lower) for each in (node.this, *node.expressions))
             case exp.Case():
                 arms = [arm.args["true"] for arm in node.args.get("ifs") or ()]
                 default = node.args.get("default")
-                return any(self._is_json(each, bindings) for each in (*arms, *([default] if default is not None else [])))
+                return any(self._is_json(each, lower) for each in (*arms, *([default] if default is not None else [])))
             case exp.If():
                 false = node.args.get("false")
-                return any(self._is_json(each, bindings) for each in (node.args["true"], *([false] if false is not None else [])))
+                return any(self._is_json(each, lower) for each in (node.args["true"], *([false] if false is not None else [])))
             case _:
                 return False
 
@@ -1483,6 +1560,11 @@ class IrParser:
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
                 case "declared-not-null":
                     self._declarations.extend(NonNullColumn(column=column) for column in members)
+                case "not-null-elements":
+                    self._assertions.append(ir.Assertion(origin=origin, property=NonNullElements(columns=members)))
+                case "declared-not-null-elements":
+                    # One per column, so each column's elements are known on their own.
+                    self._declarations.extend(NonNullElements(columns=frozenset({column})) for column in members)
                 case "determines":
                     property = FunctionalDependency(determinant=members, dependent=dependent)
                     self._assertions.append(ir.Assertion(origin=origin, property=property))
@@ -2106,6 +2188,12 @@ _ZONED_TYPES = {exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMETZ}
 
 # Types whose `null` (JSON's, a VARIANT's) is a non-null value that a CAST turns into NULL.
 _JSON_TYPES = {exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Type.VARIANT, exp.DataType.Type.OBJECT}
+
+# Composite types: a comparison of their values may be NULL for a NULL element.
+_COMPOSITE_TYPES = {exp.DataType.Type.ARRAY, exp.DataType.Type.LIST, exp.DataType.Type.STRUCT, exp.DataType.Type.MAP, exp.DataType.Type.NESTED}
+
+# The Builtins that compare two values, which compare composites element by element.
+_ORDER_COMPARISONS = {"<>", ">", ">=", "<", "<=", "BETWEEN"}
 
 # Comparisons, whose operands a zoned timestamp's text may be.
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Like, exp.ILike, exp.Between)

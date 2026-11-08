@@ -41,7 +41,7 @@ import sqlassert.main
 from sqlassert import (
     ExactlyOneJoin, ManyToOneJoin, NonNullColumns, NonNullUniqueSet, OneToManyJoin, OneToOneJoin, Outcome, Report, UniqueJoin, UniqueSet,
 )
-from sqlassert.properties import EnumeratedDomain, ExhaustiveCase, ForeignKey, FunctionalDependency
+from sqlassert.properties import EnumeratedDomain, ExhaustiveCase, ForeignKey, FunctionalDependency, NonNullElements
 from sqlassert.ir import LiteralValue
 from sqlassert.ir.convert import IrParser
 from sqlassert.properties import Property
@@ -63,7 +63,7 @@ KNOWN_UNSOUND: dict[tuple[str, str], str] = {}
 # The marker kind each asserted Property is written with.
 _MARKER_KINDS: dict[type[Property], ColumnMarkerKind] = {
     UniqueSet: "unique", NonNullUniqueSet: "key", NonNullColumns: "not-null", ForeignKey: "foreign-key",
-    FunctionalDependency: "determines", EnumeratedDomain: "enum",
+    FunctionalDependency: "determines", EnumeratedDomain: "enum", NonNullElements: "not-null-elements",
 }
 
 
@@ -219,7 +219,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
             return _join_violation(join, property)
         case (
             ForeignKey(columns=asserted) | UniqueSet(columns=asserted) | NonNullColumns(columns=asserted)
-            | FunctionalDependency(determinant=asserted)
+            | NonNullElements(columns=asserted) | FunctionalDependency(determinant=asserted)
         ):
             kind = _MARKER_KINDS[type(property)]
             columns = {column.name.lower() for column in asserted}
@@ -263,7 +263,7 @@ def _declared(parsed: ParsedProgram) -> list[tuple[exp.Select, ColumnMarker]]:
 # What a marker's rows must satisfy. A declared Foreign Key is Referential
 # Coverage only: its target's uniqueness is still proved, so instances need
 # not respect it.
-type _Check = Literal["unique", "key", "not-null", "determines", "enum", "foreign-key", "coverage"]
+type _Check = Literal["unique", "key", "not-null", "not-null-elements", "determines", "enum", "foreign-key", "coverage"]
 
 
 def _checked(kind: ColumnMarkerKind) -> _Check:
@@ -274,6 +274,8 @@ def _checked(kind: ColumnMarkerKind) -> _Check:
             return "key"
         case "not-null" | "declared-not-null":
             return "not-null"
+        case "not-null-elements" | "declared-not-null-elements":
+            return "not-null-elements"
         case "determines" | "declared-determines":
             return "determines"
         case "enum" | "declared-enum":
@@ -300,6 +302,10 @@ def _violation_query(select: exp.Select, marker: ColumnMarker, kind: _Check) -> 
             query = f"{duplicates} UNION ALL SELECT *, NULL FROM ({nulls})"
         case "not-null":
             query = nulls
+        case "not-null-elements":
+            # A DuckDB list's `list_count` counts its non-null elements.
+            holes = " OR ".join(f"list_count({column}) < len({column})" for column in columns)
+            query = f"SELECT {', '.join(columns)} FROM {relation} WHERE {holes}"
         case "determines":
             # Rows agreeing on a non-null determinant with more than one
             # dependent value; DISTINCT counts NULL as one value.

@@ -47,6 +47,16 @@ a value, and `CAST(JSON 'null' AS BIGINT)` is NULL (DuckDB, Trino, Snowflake's
 operand is known to be JSON: a column declared `JSON`, `JSONB`, `VARIANT` or
 `OBJECT`, a CAST to one, a JSON function, or a `COALESCE` or `CASE` of one. A
 column of unknown type is taken not to be JSON.
+A comparison (`<>`, `<`, `BETWEEN`, ...) of composites, ARRAYs, ROWs or MAPs,
+is taken to be non-null only when no element of either operand is NULL
+either, in every dialect: Trino's `ARRAY[1, NULL] <> ARRAY[1, NULL]` and
+PostgreSQL's `ROW(1, NULL) = ROW(1, NULL)` are NULL (DuckDB's lists and
+PostgreSQL's arrays compare NULL elements as equal, but are not singled out).
+An operand is composite when declared or cast so, or built by `ARRAY[...]`,
+`ROW(...)` or `MAP(...)` (whose elements are not modelled); a column of
+unknown type is taken to be a scalar.
+`NOT NULL ELEMENTS` declares its elements non-null, and a comparison of a
+composite column or CAST without one warns (`composite-comparison`).
 `concat_ws()` is modelled only where it is listed: a NULL separator makes it
 NULL everywhere, but whether a NULL value is skipped differs.
 

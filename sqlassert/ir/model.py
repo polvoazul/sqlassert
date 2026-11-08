@@ -240,6 +240,16 @@ class AnyAggregate(ScalarExpr):
     input: ScalarExpr
 
 
+class Elements(ScalarExpr):
+    """Every element of a composite `operand` (an ARRAY's elements, a ROW's
+    fields, a MAP's values, nested ones included) as one value, non-null when
+    each element is. Not a value SQL computes: a comparison of composites
+    takes one per composite operand as a non-strict argument, since
+    `ARRAY[1, NULL] <> ARRAY[1, NULL]` and `ROW(1, NULL) = ROW(1, NULL)` may be NULL."""
+
+    operand: ScalarExpr
+
+
 class ColumnRef(ScalarExpr):
     """A direct reference to an upstream relation expression's output."""
 
@@ -305,7 +315,7 @@ def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
             return (column,)
         case OpaqueExpression() | Count() | AnyAggregate():
             return None
-        case Constant() | NullLiteral() | Call() | OpaquePureFunction() | Coalesce() | SimpleCase() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or():
+        case Constant() | NullLiteral() | Call() | OpaquePureFunction() | Coalesce() | SimpleCase() | Elements() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or():
             found: dict[OutputColumn, None] = {}
             for child in children(expression):
                 assert isinstance(child, ScalarExpr)
@@ -330,7 +340,7 @@ def injective_input(expression: ScalarExpr) -> OutputColumn | None:
             return injective_input(argument)
         case (
             Call() | Constant() | NullLiteral() | Coalesce() | SimpleCase() | OpaquePureFunction() | OpaqueExpression()
-            | Count() | AnyAggregate() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or()
+            | Count() | AnyAggregate() | Elements() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or()
         ):
             return None
         case _:
@@ -369,7 +379,7 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
             return tuple(column for column in strict_inputs(first) if all(column in columns for columns in rest))
         case (
             And() | Or() | Constant() | NullLiteral() | Coalesce() | SimpleCase() | OpaquePureFunction() | OpaqueExpression()
-            | Count() | AnyAggregate() | IsNull() | IsNotNull()
+            | Count() | AnyAggregate() | Elements() | IsNull() | IsNotNull()
         ):
             return ()
         case _:
@@ -383,7 +393,7 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
 # which makes `ScalarExpr.closed` and `RelationExpr.closed` sound.
 type AnyScalar = (
     ColumnRef | Constant | NullLiteral | Coalesce | SimpleCase | Call | OpaquePureFunction | OpaqueExpression
-    | Count | AnyAggregate | Equality | InList | IsNull | IsNotNull | And | Or
+    | Count | AnyAggregate | Elements | Equality | InList | IsNull | IsNotNull | And | Or
 )
 
 

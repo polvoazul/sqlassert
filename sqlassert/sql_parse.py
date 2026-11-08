@@ -94,6 +94,8 @@ class SqlassertToken(enum.Enum):
     SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN = enum.auto()
     SQLASSERT_NOT_NULL_OPEN = enum.auto()
     SQLASSERT_DECLARED_NOT_NULL_OPEN = enum.auto()
+    SQLASSERT_NOT_NULL_ELEMENTS_OPEN = enum.auto()
+    SQLASSERT_DECLARED_NOT_NULL_ELEMENTS_OPEN = enum.auto()
     SQLASSERT_FOREIGN_KEY_OPEN = enum.auto()
     SQLASSERT_DECLARED_FOREIGN_KEY_OPEN = enum.auto()
     SQLASSERT_DETERMINES_OPEN = enum.auto()
@@ -141,6 +143,8 @@ MARKERS = {
     "/**DECLARE NOT NULL UNIQUE(": SqlassertToken.SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN,
     "/**DECLARE PRIMARY KEY(": SqlassertToken.SQLASSERT_DECLARED_NON_NULL_UNIQUE_SET_OPEN,
     "/**DECLARE NOT NULL(": SqlassertToken.SQLASSERT_DECLARED_NOT_NULL_OPEN,
+    "/**ASSERT NOT NULL ELEMENTS(": SqlassertToken.SQLASSERT_NOT_NULL_ELEMENTS_OPEN,
+    "/**DECLARE NOT NULL ELEMENTS(": SqlassertToken.SQLASSERT_DECLARED_NOT_NULL_ELEMENTS_OPEN,
     "/**ASSERT FOREIGN KEY(": SqlassertToken.SQLASSERT_FOREIGN_KEY_OPEN,
     "/**DECLARE FOREIGN KEY(": SqlassertToken.SQLASSERT_DECLARED_FOREIGN_KEY_OPEN,
     "/**ASSERT DETERMINES(": SqlassertToken.SQLASSERT_DETERMINES_OPEN,
@@ -152,8 +156,9 @@ MARKERS = {
 
 type JoinMarkerKind = Literal["unique-join", "many-to-one-join", "one-to-many-join", "one-to-one-join", "exactly-one-join"]
 type ColumnMarkerKind = Literal[
-    "unique", "key", "not-null", "foreign-key", "determines", "enum",
-    "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines", "declared-enum",
+    "unique", "key", "not-null", "not-null-elements", "foreign-key", "determines", "enum",
+    "declared-unique", "declared-key", "declared-not-null", "declared-not-null-elements", "declared-foreign-key",
+    "declared-determines", "declared-enum",
 ]
 
 # The join markers, written immediately before a JOIN, and the kind each states.
@@ -184,7 +189,8 @@ _EXHAUSTIVE_AT = "sqlassert.exhaustive_at"
 
 # The open literals of a column marker, and the kind each one states --
 # "unique" is a nullable-tolerant Unique Set, "key" the stricter
-# Non-Null Unique Set, "not-null" non-nullness of every listed column, and
+# Non-Null Unique Set, "not-null" non-nullness of every listed column,
+# "not-null-elements" that no listed column's value has a NULL element, and
 # "foreign-key" a Foreign Key from the listed columns, "determines" a Functional
 # Dependency from the columns before `->` to those after, "enum" an Enumerated
 # Domain of the one column before `IN`. A "declared-" kind states
@@ -198,6 +204,8 @@ _COLUMN_MARKER_OPENS: dict[str, ColumnMarkerKind] = {
     "/**DECLARE NOT NULL UNIQUE(": "declared-key",
     "/**DECLARE PRIMARY KEY(": "declared-key",
     "/**DECLARE NOT NULL(": "declared-not-null",
+    "/**ASSERT NOT NULL ELEMENTS(": "not-null-elements",
+    "/**DECLARE NOT NULL ELEMENTS(": "declared-not-null-elements",
     "/**ASSERT FOREIGN KEY(": "foreign-key",
     "/**DECLARE FOREIGN KEY(": "declared-foreign-key",
     "/**ASSERT DETERMINES(": "determines",
@@ -208,8 +216,8 @@ _COLUMN_MARKER_OPENS: dict[str, ColumnMarkerKind] = {
 
 # Column marker kinds that are Property Declarations rather than Assertions.
 DECLARED_KINDS: frozenset[ColumnMarkerKind] = frozenset({
-    "declared-unique", "declared-key", "declared-not-null", "declared-foreign-key", "declared-determines",
-    "declared-enum",
+    "declared-unique", "declared-key", "declared-not-null", "declared-not-null-elements", "declared-foreign-key",
+    "declared-determines", "declared-enum",
 })
 
 # Column marker kinds followed by `REFERENCES relation(col, ...)`.
@@ -229,6 +237,8 @@ MARKER_NOUNS: dict[ColumnMarkerKind, str] = {
     "declared-unique": "unique set declaration",
     "declared-key": "not null unique declaration",
     "declared-not-null": "not null declaration",
+    "not-null-elements": "not null elements assertion",
+    "declared-not-null-elements": "not null elements declaration",
     "foreign-key": "foreign key assertion",
     "declared-foreign-key": "foreign key declaration",
     "determines": "functional dependency assertion",

@@ -7,8 +7,9 @@ A warning is a Diagnostic too, reported apart (`Report.warnings`): the program
 is supported, but a fact a connection would supply is missing, so analysis
 treats it as unknown (ADR 0005). So are a constraint the dialect does not
 enforce, and, about the SQL itself (`SQL_WARNINGS`), an operator whose
-meaning a setting decides and a comparison that depends on something the
-values do not show, like a zoned timestamp's zone (`dialects.py`).
+meaning a setting decides, a comparison that depends on something the
+values do not show, like a zoned timestamp's zone (`dialects.py`), and a
+comparison of composites whose elements may be NULL.
 Warnings never make a Report fail.
 """
 
@@ -23,6 +24,7 @@ AMBIGUOUS_COLUMN = "ambiguous-column"
 AMBIGUOUS_OPERATOR = "ambiguous-operator"
 CARDINALITY_ON_FILTERING_JOIN = "cardinality-on-filtering-join"
 CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
+COMPOSITE_COMPARISON = "composite-comparison"
 CONSTRAINT_WITHOUT_TABLE = "constraint-without-table"
 DUPLICATE_DECLARATION = "duplicate-declaration"
 INCOMPLETE_CATALOG_METADATA = "incomplete-catalog-metadata"
@@ -52,4 +54,4 @@ class Diagnostic:
 
 
 # Warnings about the SQL itself, which no connection answers: `analyze_database` keeps them.
-SQL_WARNINGS = frozenset({AMBIGUOUS_OPERATOR, ZONED_TIMESTAMP_CAST})
+SQL_WARNINGS = frozenset({AMBIGUOUS_OPERATOR, COMPOSITE_COMPARISON, ZONED_TIMESTAMP_CAST})

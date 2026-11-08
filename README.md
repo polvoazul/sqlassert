@@ -70,6 +70,20 @@ Uniqueness is proved through functional dependencies, so a key does not have to 
 
 `/**ASSERT NOT NULL(col, ...)**/` proves that every listed output column is non-null. One assertion covers the whole list, and an `UNKNOWN` explanation names each column that could not be proved. Non-nullness comes from `NOT NULL` and `PRIMARY KEY` constraints, declarations, non-null literals, `coalesce`/`ifnull`/`nvl` with at least one non-null argument, and null-rejecting conditions: a `WHERE` or inner-join `ON` conjunct `col = ...` or `col IS NOT NULL`. It follows pass-through and renamed columns through filters, projections, grouping keys, views, CTEs, and subqueries. The null-extended side of a `LEFT`, `RIGHT`, or `FULL` join is padded with NULLs, and a null-rejecting `WHERE` conjunct on any padded column (`where u.id = 5`) proves that join matched, so every column it padded is non-null again unless it is nullable for its own reasons. An `UNKNOWN` explanation names each source, such as "nickname is nullable in users" and "nickname is padded by the LEFT JOIN". Non-nullness is never guessed for other computed expressions or for set operations.
 
+### Not Null Elements
+
+`/**ASSERT NOT NULL ELEMENTS(col, ...)**/` proves that no listed column's value (an ARRAY, ROW or MAP) holds a NULL element, nested ones included; the value itself may still be NULL. No catalog states it, so it comes only from `/**DECLARE NOT NULL ELEMENTS(col, ...)**/`, followed through pass-through columns, `coalesce` and `CASE`. It matters for comparisons: `ARRAY[1, NULL] <> ARRAY[1, NULL]` and `ROW(1, NULL) = ROW(1, NULL)` are NULL in Trino, so a comparison of composites is non-null only when no element is NULL either. A comparison of a composite column or `CAST` warns (`composite-comparison`) unless its elements are declared. To declare them for a table, select it in a CTE or view that carries the declaration:
+
+```sql
+create table posts (id integer, tags array(varchar) not null, old_tags array(varchar) not null);
+with tagged as (select id, tags, old_tags from posts /**DECLARE NOT NULL ELEMENTS(tags, old_tags)**/)
+select id, tags <> old_tags as retagged from tagged /**ASSERT NOT NULL(retagged)**/
+```
+
+A column of unknown type is taken to be a scalar, not a composite. A
+constructor (`ARRAY[...]`, `ROW(...)`) is not modelled, so a comparison with
+one is never proved non-null.
+
 ### Foreign Key
 
 `/**ASSERT FOREIGN KEY(col, ...) REFERENCES relation(col, ...)**/` proves that the listed output columns reference a Unique Set of a named table, view, or CTE. Columns pair by position, so `FOREIGN KEY(org, owner) REFERENCES users(org, name)` pairs `org` with `org` and `owner` with `name`; listing the pairs in another order means the same Foreign Key.

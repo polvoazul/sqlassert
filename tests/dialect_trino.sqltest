@@ -90,3 +90,41 @@ SELECT k_id FROM o /**ASSERT FOREIGN KEY(k_id) REFERENCES k(id)**/  --~ UNKNOWN
 
 -- case: not_null_is_enforced
 SELECT n FROM t /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: comparing_arrays_may_be_null
+-- `ARRAY[1, NULL] <> ARRAY[1, NULL]` is NULL.
+CREATE TABLE a (id INTEGER NOT NULL, x ARRAY(INTEGER) NOT NULL, y ARRAY(INTEGER) NOT NULL, r ROW(f INTEGER) NOT NULL);
+SELECT x <> y AS v FROM a /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ composite-comparison "x <> y compares x, which may hold a NULL element"
+--~ composite-comparison "x <> y compares y"
+
+-- case: comparing_rows_may_be_null
+-- `ROW(1, NULL) = ROW(1, NULL)` is NULL.
+CREATE TABLE a (id INTEGER NOT NULL, r ROW(f INTEGER) NOT NULL);
+SELECT r < r AS v FROM a /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ composite-comparison
+
+-- case: comparing_arrays_with_declared_non_null_elements_is_non_null
+CREATE TABLE a (id INTEGER NOT NULL, x ARRAY(INTEGER) NOT NULL, y ARRAY(INTEGER) NOT NULL);
+WITH d AS (SELECT x, y FROM a /**DECLARE NOT NULL ELEMENTS(x, y)**/)
+SELECT x <> y AS v FROM d /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: one_operand_with_declared_elements_is_not_enough
+CREATE TABLE a (id INTEGER NOT NULL, x ARRAY(INTEGER) NOT NULL, y ARRAY(INTEGER) NOT NULL);
+WITH d AS (SELECT x, y FROM a /**DECLARE NOT NULL ELEMENTS(x)**/)
+SELECT x <> y AS v FROM d /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ composite-comparison "compares y"
+
+-- case: declared_elements_pass_through
+CREATE TABLE a (id INTEGER NOT NULL, x ARRAY(INTEGER));
+WITH d AS (SELECT x FROM a /**DECLARE NOT NULL ELEMENTS(x)**/)
+SELECT x FROM d /**ASSERT NOT NULL ELEMENTS(x)**/  --~ PROVED
+
+-- case: elements_are_not_known_without_a_declaration
+CREATE TABLE a (id INTEGER NOT NULL, x ARRAY(INTEGER));
+SELECT x FROM a /**ASSERT NOT NULL ELEMENTS(x)**/  --~ UNKNOWN
+
+-- case: a_cast_to_an_array_may_hold_a_null_element
+SELECT CAST(r AS ARRAY(VARCHAR)) <> CAST(s AS ARRAY(VARCHAR)) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ composite-comparison "compares CAST(r AS ARRAY(VARCHAR))"
+--~ composite-comparison "compares CAST(s AS ARRAY(VARCHAR))"

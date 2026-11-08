@@ -39,3 +39,19 @@ SELECT CAST(COALESCE(doc, '1'::JSON) AS BIGINT) AS v FROM j /**ASSERT NOT NULL(v
 -- case: a_cast_from_text_is_still_non_null
 CREATE TABLE j (id INTEGER NOT NULL, s VARCHAR NOT NULL);
 SELECT CAST(s AS BIGINT) AS v FROM j /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_comparison_of_lists_needs_non_null_elements
+-- Not singled out: DuckDB's `[1, NULL] <> [1, NULL]` is false, but Trino's is NULL.
+CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
+SELECT x <> x AS v FROM l /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+--~ composite-comparison
+
+-- case: declared_list_elements_pass_through
+CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
+WITH d AS (SELECT id, x FROM l /**DECLARE NOT NULL ELEMENTS(x)**/)
+SELECT x FROM d /**ASSERT NOT NULL ELEMENTS(x)**/  --~ PROVED
+
+-- case: a_comparison_of_lists_with_declared_elements_is_non_null
+CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
+WITH d AS (SELECT id, x FROM l /**DECLARE NOT NULL ELEMENTS(x)**/)
+SELECT x <> x AS v FROM d /**ASSERT NOT NULL(v)**/  --~ PROVED
