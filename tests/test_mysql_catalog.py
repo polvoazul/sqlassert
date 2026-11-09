@@ -117,11 +117,11 @@ def test_text_from_the_catalog_has_the_default_collation():
     assert assertion.outcome is Outcome.UNKNOWN
 
 
-def test_an_enum_from_the_catalog_may_hold_the_empty_string():
+def test_an_enum_from_the_catalog_holds_only_its_members():
     def outcome(values: str) -> Outcome:
         sql = f"SELECT status FROM customers /**ASSERT ENUM(status IN ({values}))**/"
         assertion, = analyze_database(sql, MySQLKnowledgeFetcher(_Connection()), dialect="mysql").assertions
         return assertion.outcome
 
-    assert outcome("'new', 'paid'") is Outcome.UNKNOWN
-    assert outcome("'new', 'paid', ''") is Outcome.PROVED
+    assert outcome("'new', 'paid'") is Outcome.PROVED
+    assert outcome("'new'") is Outcome.UNKNOWN

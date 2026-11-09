@@ -211,6 +211,17 @@ def test_an_unsupported_adapter_is_not_guessed(copy_project):
     assert analyze_project(project, dialect="duckdb").markers
 
 
+def test_only_the_latest_manifest_schema_is_read(copy_project):
+    project = copy_project()
+
+    def edit(manifest):
+        manifest["metadata"]["dbt_schema_version"] = "https://schemas.getdbt.com/dbt/manifest/v11.json"
+
+    edit_manifest(project, edit)
+    with pytest.raises(ProjectError, match="reads only the latest"):
+        analyze_project(project)
+
+
 def test_a_missing_manifest_is_a_project_error(tmp_path):
     with pytest.raises(ProjectError, match="dbt compile"):
         analyze_project(tmp_path)

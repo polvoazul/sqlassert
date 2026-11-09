@@ -1,8 +1,10 @@
-"""Read the parts of a dbt `manifest.json` (schema v12) that analysis needs.
+"""Read the parts of a dbt `manifest.json` that analysis needs.
 
-Only plain values leave this module: no dbt import, no Jinja. A field the
-manifest lacks reads as absent, never as a guess; a manifest that is not a
-JSON object of nodes is a `ManifestError`.
+Only the latest manifest schema is read (`SCHEMA`, written by dbt 1.8 through
+1.12); any other is a `ManifestError`, rather than a different shape read as
+if it were this one. Only plain values leave this module: no dbt import, no
+Jinja. A field the manifest lacks reads as absent, never as a guess; a
+manifest that is not a JSON object of nodes is a `ManifestError`.
 """
 
 from __future__ import annotations
@@ -12,6 +14,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+# The manifest schema this module reads: the latest dbt writes.
+SCHEMA = "https://schemas.getdbt.com/dbt/manifest/v12.json"
 
 
 class ManifestError(Exception):
@@ -118,6 +124,12 @@ def load_manifest(path: Path) -> Manifest:
     if not isinstance(document, dict) or not isinstance(document.get("nodes"), dict):
         raise ManifestError(f"{path} is not a dbt manifest: it has no nodes")
     metadata = _mapping(document.get("metadata"))
+    schema = _text(metadata.get("dbt_schema_version"))
+    if schema != SCHEMA:
+        raise ManifestError(
+            f"{path} has manifest schema {schema or 'unknown'}; sqlassert-dbt reads only the latest, {SCHEMA}: "
+            "compile with a current dbt"
+        )
     relations: dict[str, Relation] = {}
     tests: dict[str, Test] = {}
     for unique_id, node in document["nodes"].items():
@@ -136,7 +148,7 @@ def load_manifest(path: Path) -> Manifest:
     return Manifest(
         adapter_type=_text(metadata.get("adapter_type")),
         project_name=_text(metadata.get("project_name")),
-        schema_version=_text(metadata.get("dbt_schema_version")),
+        schema_version=schema,
         relations=relations,
         tests=tests,
     )

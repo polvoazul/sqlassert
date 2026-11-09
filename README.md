@@ -168,7 +168,7 @@ select status from o where status <> 'void' and status in ('new', 'paid')
 
 Domains come from `DECLARE ENUM` and external Knowledge, literals, `coalesce` of enumerated arguments, and simple `CASE` expressions (see below), and follow pass-through and renamed columns through filters, joins, aliases, grouping keys, `DISTINCT`, views, CTEs, and subqueries. A `WHERE` or inner-join `ON` conjunct `status = 'paid'` or `status IN ('new', 'paid')` narrows it, as does an outer join's `ON` on the side it pads. A domain crosses equalities: after `WHERE a = b` (or an inner-join `ON a = b`), `b`'s domain is `a`'s intersected with its own. An asserted set larger than the known domain is proved; an `UNKNOWN` explanation lists each possible value the assertion does not cover, such as "status may be 'void', which the assertion does not cover". A declaration does not claim that every listed value occurs. `UNION` columns, aggregates other than grouping keys, and other computed expressions are not enumerated.
 
-A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` compared by identity: with no `COLLATE`, in DuckDB or PostgreSQL (whose default collation is binary). A column of unknown type is not narrowed that way. A MySQL `ENUM` column may also hold `''`, which MySQL stores for a value outside its members outside strict mode or under `INSERT IGNORE`, so its domain includes `''`.
+A value keeps its SQL type: numeric `1`, string `'1'`, and `TRUE` are three values, and none covers another. A number is identified by how it is written, because that is its SQL type: `007` is `7`, but `1.0` (a decimal) and `1e0` (a double) are not `1`, so asserting `ENUM(n IN (1))` of a column known to be `1.0` is `UNKNOWN`. Narrowing is more careful than identity: SQL compares a column with a literal after implicit casts, so one value can equal two different literals -- a `FLOAT` equals both `0.1` and `0.100000001`, a `VARCHAR` `'1.4'` equals both `1` and `1.4`, and an `INTEGER` equals both `1` and `'1'`. Domains therefore never lose a value that might equal one on the other side. Distinct strings, too, can equal one value -- an `INTEGER` equals `'01'` and `'1'`, a `VARCHAR COLLATE NOCASE` equals `'a'` and `'A'` -- so they narrow each other only on a column declared `VARCHAR` or `TEXT` compared by identity: with no `COLLATE`, in DuckDB or PostgreSQL (whose default collation is binary). A column of unknown type is not narrowed that way. A MySQL `ENUM` column's domain is its members without trailing spaces, as MySQL stores them (under its default strict `sql_mode`).
 
 ### Exhaustive CASE
 
@@ -324,9 +324,10 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   warns (`zoned-timestamp-cast`).
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
   operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
-  BigQuery, Redshift, Trino); division likewise, except in DuckDB. MySQL (outside
-  strict mode) and Spark (outside ANSI mode) may return NULL even from a
-  comparison. A CAST from JSON may be NULL everywhere (JSON `null`). `||` and
+  BigQuery, Redshift, Trino); division likewise, except in DuckDB. Spark
+  (outside ANSI mode) may return NULL even from a comparison. MySQL is modelled
+  under its default strict `sql_mode`, in 8.4 and later: a comparison of
+  non-null operands is non-null, arithmetic is not taken as checked. A CAST from JSON may be NULL everywhere (JSON `null`). `||` and
   `concat()` follow each dialect's NULL handling.
 - **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
   which also groups its operands differently, so it is an unknown function of
@@ -437,7 +438,7 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 
 ### dbt
 
-The `sqlassert-dbt` plugin, a separate package in this repository (`integrations/dbt/`), checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). It reads only the manifest, so dbt itself is not needed where it runs.
+The `sqlassert-dbt` plugin, a separate package in this repository (`integrations/dbt/`), checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). It reads only the manifest, so dbt itself is not needed where it runs, and only the latest manifest schema (v12, written by dbt 1.8 through 1.12): compile with a current dbt.
 
 ```bash
 $ pip install ./integrations/dbt   # depends on sqlassert; sqlassert does not depend on it

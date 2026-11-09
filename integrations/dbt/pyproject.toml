@@ -19,8 +19,8 @@ sqlassert-dbt = "sqlassert_dbt.__main__:main"
 
 [project.optional-dependencies]
 test = [
-  "dbt-core>=1.10",
-  "dbt-duckdb>=1.9",
+  "dbt-core>=1.12",
+  "dbt-duckdb>=1.11",
   "pytest",
 ]
 

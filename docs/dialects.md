@@ -11,9 +11,11 @@ for dialects the oracle does not run.
 
 A flag may only claim what holds under *all* of the dialect's settings,
 because the SQL alone does not say which are in force (ADR 0005). Where a
-setting decides (MySQL's `sql_mode`, Spark's ANSI mode), the flag takes the
-weaker reading: the analysis loses a proof, never gains a wrong one. The one
-exception is the default collation: text without a `COLLATE` is taken to
+setting decides (Spark's ANSI mode), the flag takes the
+weaker reading: the analysis loses a proof, never gains a wrong one. Two
+exceptions. MySQL is modelled under its default strict `sql_mode`, in versions
+8.4 and later only: a looser `sql_mode`, `INSERT IGNORE` and older versions are
+out of scope. And the default collation: text without a `COLLATE` is taken to
 compare under the engine's shipped default, and a setting that changes it
 (DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`, Oracle's
 `NLS_COMP`) is out of scope, like MySQL's `foreign_key_checks = 0`. A dialect not listed gets `DialectSemantics()`:
@@ -24,9 +26,9 @@ before dialects were listed; see "Not done").
 
 | | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift | Trino |
 |---|---|---|---|---|---|---|---|---|
-| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no | no (overflow not documented to raise) | yes | no (ANSI off) | yes | yes |
+| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | no (ANSI off) | yes | yes |
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes | yes |
-| comparisons never NULL (`casts_raise`) | yes | yes | no | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
+| comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
@@ -92,10 +94,11 @@ identity, and a comparison with a `CAST` of a zoned column warns
 (`zoned-timestamp-cast`): its result depends on the zone each row was given.
 A dialect not listed is taken to keep the zone.
 
-MySQL ENUMs (`enum_error_value`): MySQL stores `''` for a value outside the
-members outside strict mode and under `INSERT IGNORE` in any mode, and strips
-trailing spaces from members, so an ENUM column's domain is its members
-without trailing spaces, plus `''`. Its comparisons follow the column's
+MySQL ENUMs (`enum_strips_trailing_spaces`): strict mode rejects a value
+outside the members (the `''` MySQL stores for one outside strict mode or
+under `INSERT IGNORE` is out of scope), and MySQL strips trailing spaces from
+members, so an ENUM column's domain is its members without trailing spaces.
+Its comparisons follow the column's
 collation, so `e = 'A'` keeps the member `'a'`; ENUM narrowing never treats
 distinct strings as distinct values there.
 
@@ -232,8 +235,8 @@ SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is
 VACUOUS for that engine (`^` in SQLite, an ENUM column in PostgreSQL). Each
 fact runs under the engine's defaults and again after the dialect's
-permissive settings (`PERMISSIVE`: MySQL `sql_mode = ''`, Spark ANSI off; a setting that
-changes the default collation is out of scope). It prints PASS, FAIL (with
+permissive settings (`PERMISSIVE`: Spark ANSI off; MySQL's strict `sql_mode`
+is assumed, and a setting that changes the default collation is out of scope). It prints PASS, FAIL (with
 the weaker setting to apply by hand), ERROR (the probe could not run) or
 VACUOUS per fact, and STRONGER for a weak setting the engine would also
 satisfy (never acted on). Unless `--dry-run`, it files the engine version
@@ -269,7 +272,7 @@ server when `SQLASSERT_TRINO` holds its connect arguments
 
 The drivers (`psycopg[binary]`, `pymysql`, `clickhouse-connect`, `trino`) are not
 dependencies; install them where the script runs (MySQL is reached at its
-port, so MySQL server 8.0, 8.4 and 9 images all work the same way). Wait for a
+port, so MySQL server 8.4 and 9 images work the same way; 8.0 is not supported). Wait for a
 container to accept connections before probing. Not certified on an engine:
 Spark and Databricks (a local Spark needs Java and a DB-API bridge), Hive,
 Oracle, MySQL's NDB engine, and the cloud warehouses, whose probes exist for

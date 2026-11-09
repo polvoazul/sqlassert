@@ -118,9 +118,10 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat_ws="skips-null",
     ),
     "mysql": DialectSemantics(
-        # MySQL under its default strict sql_mode only (docs/dialects.md):
-        # overflow and a bad CAST raise. Division by zero is NULL in any mode.
-        checked_arithmetic=True,
+        # MySQL under its default strict sql_mode only (docs/dialects.md), so
+        # a comparison of non-null operands is non-null. Not `checked_arithmetic`:
+        # `-x` of the least BIGINT is an exact DECIMAL rather than an error, and
+        # division by zero is NULL in any mode.
         # Not `text_is_binary`: the default collations ignore case (and
         # accents, and some trailing spaces).
         zoned_timestamp_is_instant=True,  # TIMESTAMP is converted to UTC.

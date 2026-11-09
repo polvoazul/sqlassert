@@ -1,13 +1,15 @@
--- MySQL semantics the rules depend on (`sqlassert/dialects.py`).
+-- MySQL semantics the rules depend on (`sqlassert/dialects.py`), under its
+-- default strict sql_mode only: a looser sql_mode, INSERT IGNORE and MySQL
+-- before 8.4 are out of scope.
 --
 -- The default collations ignore case, so distinct strings may compare equal;
 -- only a NO PAD binary collation compares text by identity. `||` is OR, or
 -- concatenation under sql_mode PIPES_AS_CONCAT, which also groups its
--- operands differently: it is an unknown function, with a warning. Out of
--- strict mode a bad CAST or date is NULL, and division by zero is NULL in any
--- mode, so arithmetic, CAST and comparisons may be NULL. An ENUM column holds
--- '' for a value outside its members (out of strict mode, or under INSERT
--- IGNORE), and its members lose trailing spaces. MySQL before 9.0 ignores a
+-- operands differently: it is an unknown function, with a warning. A
+-- comparison of non-null operands is non-null; arithmetic is not modelled as
+-- checked (`-x` of the least BIGINT is an exact DECIMAL), and division by zero
+-- is NULL in any mode. An ENUM column
+-- holds only its members, which lose trailing spaces. MySQL 8.4 ignores a
 -- column-level REFERENCES, and only InnoDB (and NDB) enforces foreign keys.
 
 -- dialect: mysql
@@ -31,11 +33,14 @@ SELECT concat(s, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 -- case: concat_of_non_null_arguments_is_non_null
 SELECT concat(n, 'x') AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
 
--- case: a_comparison_may_be_null
-SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+-- case: a_comparison_of_non_null_operands_is_non_null
+SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
 
--- case: addition_may_be_null
+-- case: addition_is_not_modelled_as_checked
 SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+
+-- case: division_may_be_null
+SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 
 -- case: text_under_the_default_collation_may_equal_distinct_strings
 SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
@@ -44,17 +49,11 @@ SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/ 
 -- Any COLLATE, binary or not, is not taken to compare by identity (issue 49).
 SELECT b FROM t WHERE b IN ('a', 'b') AND b = 'B' /**ASSERT ENUM(b IN ('a'))**/  --~ UNKNOWN
 
--- case: an_enum_column_may_hold_the_empty_string
-SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b'))**/  --~ UNKNOWN
+-- case: an_enum_column_holds_its_members_without_trailing_spaces
+SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b'))**/  --~ PROVED
 
--- case: an_enum_column_holds_its_members_without_trailing_spaces_or_the_empty_string
-SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b', ''))**/  --~ PROVED
-
--- case: an_enum_case_is_exhaustive_only_with_the_empty_string
-SELECT /**ASSERT EXHAUSTIVE**/ CASE e WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS v FROM t  --~ UNKNOWN
-
--- case: an_enum_case_with_the_empty_string_is_exhaustive
-SELECT /**ASSERT EXHAUSTIVE**/ CASE e WHEN 'a' THEN 1 WHEN 'b' THEN 2 WHEN '' THEN 3 END AS v FROM t  --~ PROVED
+-- case: an_enum_case_over_its_members_is_exhaustive
+SELECT /**ASSERT EXHAUSTIVE**/ CASE e WHEN 'a' THEN 1 WHEN 'b' THEN 2 END AS v FROM t  --~ PROVED
 
 -- case: an_enum_column_compares_without_case
 -- 'A' matches the member 'a'.
