@@ -34,9 +34,6 @@ Issues = "https://github.com/polvoazul/sqlassert/issues"
 sqlassert = "sqlassert.__main__:main"
 
 [project.optional-dependencies]
-duckdb = [
-  "duckdb>=2.0",
-]
 test = [
   "duckdb>=2.0",
   "hypothesis",

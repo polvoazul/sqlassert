@@ -153,12 +153,12 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   are never fetched. A missing object, an unreadable catalog, or incomplete
   metadata is a Diagnostic, and the Relation stays opaque. Subclasses own one
   database's catalog boundary: name resolution and metadata queries.
-  `discovery/duckdb.py` is the DuckDB adapter, behind the optional `duckdb`
-  extra. `discovery/information_schema.py` reads the standard
+  `discovery/information_schema.py` reads the standard
   `INFORMATION_SCHEMA` views through any DB-API connection, importing no
-  driver; one subclass per dialect (`postgres.py`, `mysql.py`, `redshift.py`,
-  `snowflake.py`, `bigquery.py`, `databricks.py`) overrides only the hooks
-  whose standard view is missing or incomplete there. `analyze_database(sql, fetcher,
+  driver; one subclass per dialect (`duckdb.py`, `postgres.py`, `mysql.py`,
+  `redshift.py`, `snowflake.py`, `bigquery.py`, `databricks.py`, `trino.py`)
+  overrides only the hooks whose standard view is missing or incomplete there
+  (DuckDB and PostgreSQL override all of them, with their own catalogs). `analyze_database(sql, fetcher,
   *, dialect=...)` in `main.py` composes it; `analyze` stays pure.
 - `dialects.py` is what each SQL dialect means by the constructs the rules
   depend on (`DialectSemantics`): which Builtins raise rather than return

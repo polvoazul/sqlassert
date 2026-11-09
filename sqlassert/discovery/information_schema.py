@@ -4,7 +4,7 @@
 views (`TABLES`, `COLUMNS`, `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE`,
 `REFERENTIAL_CONSTRAINTS`, `VIEWS`) through any DB-API 2.0 connection; it
 never imports a driver and never scans a table. A subclass per dialect
-(`discovery/postgres.py`, `mysql.py`, `redshift.py`, `snowflake.py`,
+(`discovery/duckdb.py`, `postgres.py`, `mysql.py`, `redshift.py`, `snowflake.py`,
 `bigquery.py`, `databricks.py`, `trino.py`) overrides only the hooks whose standard view
 is missing or incomplete there, and the parameter style.
 
@@ -173,7 +173,7 @@ ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION
         self, names: tuple[str, ...], scope: DatabaseRelationMetadata | None = None
     ) -> Mapping[str, DatabaseRelationMetadata]:
         catalog, path = self.session(scope)
-        candidates = {name: self._candidates(name, catalog, path) for name in names}
+        candidates = {name: self.candidates(name, catalog, path) for name in names}
         groups: dict[tuple[str, str], tuple[str, str, set[str]]] = {}
         for options in candidates.values():
             for candidate_catalog, schema, table in options:
@@ -256,7 +256,7 @@ ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION
         listed = next((listed for listed in spelled if listed), [])
         return listed[0] if len(listed) == 1 else None
 
-    def _candidates(self, name: str, catalog: str, path: tuple[str, ...]) -> list[tuple[str, str, str]]:
+    def candidates(self, name: str, catalog: str, path: tuple[str, ...]) -> list[tuple[str, str, str]]:
         """Every (catalog, schema, table) ``name`` may denote, in lookup order."""
         match name.split("."):
             case [table]:

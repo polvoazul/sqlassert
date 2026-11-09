@@ -199,9 +199,6 @@ dependencies = [
 dev = [
     { name = "ty" },
 ]
-duckdb = [
-    { name = "duckdb" },
-]
 test = [
     { name = "duckdb" },
     { name = "hypothesis" },
@@ -212,7 +209,6 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "case-conversion", specifier = ">=3.0.2" },
-    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=2.0" },
     { name = "duckdb", marker = "extra == 'test'", specifier = ">=2.0" },
     { name = "hypothesis", marker = "extra == 'test'" },
     { name = "pytest", marker = "extra == 'test'" },
@@ -220,7 +216,7 @@ requires-dist = [
     { name = "sqlglot", specifier = ">=30.30,<31" },
     { name = "ty", marker = "extra == 'dev'" },
 ]
-provides-extras = ["duckdb", "test", "dev"]
+provides-extras = ["test", "dev"]
 
 [[package]]
 name = "sqlglot"

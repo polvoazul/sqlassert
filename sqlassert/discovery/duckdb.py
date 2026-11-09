@@ -1,14 +1,20 @@
-"""The DuckDB catalog boundary: name resolution, metadata, and view definitions.
+"""DuckDB: the standard discovery, with DuckDB's `duckdb_*()` catalog functions.
 
-Reads DuckDB's `duckdb_*()` catalog functions only; it never scans a table
-or executes a query over user data.
+Every hook reads `duckdb_tables()`, `duckdb_views()`, `duckdb_columns()` or
+`duckdb_constraints()`; it never scans a table. Any DuckDB connection works
+(the `duckdb` module's, or one from any other client exposing `execute`), and
+sqlassert does not import a DuckDB driver.
+
+Queries run on the connection itself, not on a cursor: a DuckDB cursor is a
+new session, without the connection's temporary tables, `USE` or
+`search_path`, which decide what an unqualified name denotes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Sequence
+from typing import Any, Protocol
 
-import duckdb
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
@@ -16,133 +22,127 @@ from sqlglot.errors import SqlglotError
 from sqlassert.discovery.fetcher import (
     DatabaseColumn,
     DatabaseForeignKey,
-    DatabaseKnowledgeFetcher,
     DatabaseMetadataError,
     DatabaseRelationKind,
     DatabaseRelationMetadata,
-    DatabaseViewDefinition,
 )
+from sqlassert.discovery.information_schema import FoundRelation, InformationSchemaKnowledgeFetcher, Key
 
-type _Path = tuple[str, str, str]
+_SESSION = "SELECT current_database(), current_schema(), current_setting('search_path')"
 
 _RELATIONS = """
 SELECT database_name, schema_name, table_name, 'table' FROM duckdb_tables()
-WHERE lower(table_name) IN (SELECT unnest($names))
+WHERE lower(database_name) = %s AND lower(schema_name) = %s AND list_contains(%s, lower(table_name))
 UNION ALL
 SELECT database_name, schema_name, view_name, 'view' FROM duckdb_views()
-WHERE NOT internal AND lower(view_name) IN (SELECT unnest($names))
+WHERE NOT internal AND lower(database_name) = %s AND lower(schema_name) = %s AND list_contains(%s, lower(view_name))
 """
 
-_COLUMNS = """
-SELECT database_name, schema_name, table_name, column_name, is_nullable, data_type FROM duckdb_columns()
-WHERE list_contains($paths, [database_name, schema_name, table_name])
-ORDER BY database_name, schema_name, table_name, column_index
+_TABLES = "database_name = %s AND schema_name = %s AND list_contains(%s, table_name)"
+
+_COLUMNS = f"""
+SELECT table_name, column_name, is_nullable, data_type FROM duckdb_columns()
+WHERE {_TABLES}
+ORDER BY table_name, column_index
 """
+
+# duckdb_columns() drops collations; the stored CREATE TABLE keeps them.
+_TABLE_SQL = f"SELECT table_name, sql FROM duckdb_tables() WHERE {_TABLES}"
 
 # A foreign key's referenced table is in the referencing table's own catalog
 # and schema: DuckDB rejects foreign keys across them.
-_KEYS = """
-SELECT database_name, schema_name, table_name, constraint_type, constraint_column_names, referenced_table, referenced_column_names
+_CONSTRAINTS = f"""
+SELECT table_name, constraint_type, constraint_column_names, referenced_table, referenced_column_names
 FROM duckdb_constraints()
-WHERE constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY') AND list_contains($paths, [database_name, schema_name, table_name])
-ORDER BY database_name, schema_name, table_name, constraint_index
+WHERE constraint_type IN ({{kinds}}) AND {_TABLES}
+ORDER BY table_name, constraint_index
 """
 
-_VIEW = "SELECT sql FROM duckdb_views() WHERE database_name = ? AND schema_name = ? AND view_name = ?"
-
-# duckdb_columns() drops collations; the stored CREATE TABLE keeps them.
-_TABLE_SQL = """
-SELECT database_name, schema_name, table_name, sql FROM duckdb_tables()
-WHERE list_contains($paths, [database_name, schema_name, table_name])
-"""
+_VIEW = "SELECT sql FROM duckdb_views() WHERE database_name = %s AND schema_name = %s AND view_name = %s"
 
 
-class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
+class DuckDBConnection(Protocol):
+    def execute(self, query: str, parameters: Any = ..., /) -> Any: ...
+
+
+class DuckDBKnowledgeFetcher(InformationSchemaKnowledgeFetcher):
     type_dialect = "duckdb"
+    cross_catalog = True
+    _search_path: tuple[tuple[str, str], ...] = ()
 
-    def __init__(self, connection: duckdb.DuckDBPyConnection):
-        self.connection = connection
+    def __init__(self, connection: DuckDBConnection):
+        self.database = connection
 
-    def fetch_relation_metadata(
-        self, names: tuple[str, ...], scope: DatabaseRelationMetadata | None = None
-    ) -> Mapping[str, DatabaseRelationMetadata]:
-        try:
-            return self._fetch_relation_metadata(names, scope)
-        except duckdb.Error as error:
-            raise DatabaseMetadataError(str(error)) from error
+    def session(self, scope: DatabaseRelationMetadata | None) -> tuple[str, tuple[str, ...]]:
+        """Where an unqualified name is looked up: a view's own schema first,
+        then temporary objects, then the session's path. DuckDB's path spans
+        catalogs, so `candidates` reads it from `_search_path`."""
+        (database, schema, configured), = self._rows(_SESSION)
+        path: list[tuple[str, str]] = [(scope.catalog, scope.schema)] if scope is not None else []
+        path.append(("temp", "main"))
+        for entry in filter(None, (entry.strip() for entry in configured.split(","))):
+            qualifier, _, name = entry.rpartition(".")
+            path.append((qualifier or database, name))
+        path.append((database, schema))
+        self._search_path = tuple((catalog.lower(), schema.lower()) for catalog, schema in path)
+        return database, tuple(schema for _, schema in self._search_path)
 
-    def fetch_view_definition(self, relation: DatabaseRelationMetadata) -> DatabaseViewDefinition:
-        try:
-            row = self.connection.execute(_VIEW, [relation.catalog, relation.schema, relation.name]).fetchone()
-        except duckdb.Error as error:
-            raise DatabaseMetadataError(str(error)) from error
-        if row is None:
-            raise DatabaseMetadataError(f"view {relation.identity} is no longer in the catalog")
-        return DatabaseViewDefinition(sql=row[0])
+    def candidates(self, name: str, catalog: str, path: tuple[str, ...]) -> list[tuple[str, str, str]]:
+        """Every catalog path ``name`` may denote, in DuckDB's binding order."""
+        match name.lower().split("."):
+            case [table]:
+                return [(searched, schema, table) for searched, schema in self._search_path]
+            case [qualifier, table]:
+                # A schema in a searched catalog first, then a catalog's default schema.
+                catalogs = dict.fromkeys(searched for searched, _ in self._search_path)
+                return [(searched, qualifier, table) for searched in catalogs] + [(qualifier, "main", table)]
+            case [named, schema, table]:
+                return [(named, schema, table)]
+            case _:
+                return []
 
-    def _fetch_relation_metadata(
-        self, names: tuple[str, ...], scope: DatabaseRelationMetadata | None
-    ) -> dict[str, DatabaseRelationMetadata]:
-        unqualified = sorted({name.rsplit(".", 1)[-1].lower() for name in names})
-        catalog: dict[_Path, tuple[_Path, DatabaseRelationKind]] = {}
-        for database, schema, table, kind in self.connection.execute(_RELATIONS, {"names": unqualified}).fetchall():
-            path = (database, schema, table)
-            catalog[_lower(path)] = (path, DatabaseRelationKind(kind))
+    def relations(self, catalog: str, schema: str, names: Sequence[str]) -> list[FoundRelation]:
+        lookup = (catalog.lower(), schema.lower(), list(names))
+        return [
+            FoundRelation(database, found_schema, name, DatabaseRelationKind(kind))
+            for database, found_schema, name, kind in self._rows(_RELATIONS, lookup * 2)
+        ]
 
-        search_path = self._search_path(scope)
-        resolved: dict[str, tuple[_Path, DatabaseRelationKind]] = {}
-        for name in names:
-            found = next((catalog[path] for path in _candidates(name, search_path) if path in catalog), None)
-            if found is not None:
-                resolved[name] = found
+    def columns(self, catalog: str, schema: str, tables: Sequence[str]) -> list[tuple[str, DatabaseColumn]]:
+        lookup = (catalog, schema, list(tables))
+        collations = self._collations(catalog, schema, lookup)
+        return [
+            (table, DatabaseColumn(column, nullable, data_type, collations.get(table, {}).get(column.lower())))
+            for table, column, nullable, data_type in self._rows(_COLUMNS, lookup)
+        ]
 
-        tables = sorted({path for path, kind in resolved.values() if kind is DatabaseRelationKind.TABLE})
-        columns: dict[_Path, list[DatabaseColumn]] = {}
-        primary_keys: dict[_Path, tuple[str, ...]] = {}
-        unique_sets: dict[_Path, list[tuple[str, ...]]] = {}
-        foreign_keys: dict[_Path, list[DatabaseForeignKey]] = {}
-        if tables:
-            paths = [list(path) for path in tables]
-            collations = self._collations(paths)
-            for database, schema, table, column, nullable, data_type in self.connection.execute(_COLUMNS, {"paths": paths}).fetchall():
-                path = (database, schema, table)
-                collation = collations.get(path, {}).get(column.lower())
-                columns.setdefault(path, []).append(DatabaseColumn(column, nullable, data_type, collation))
-            rows = self.connection.execute(_KEYS, {"paths": paths}).fetchall()
-            for database, schema, table, constraint, members, referenced, referenced_members in rows:
-                path = (database, schema, table)
-                match constraint:
-                    case "PRIMARY KEY":
-                        primary_keys[path] = tuple(members)
-                    case "UNIQUE":
-                        unique_sets.setdefault(path, []).append(tuple(members))
-                    case "FOREIGN KEY":
-                        foreign_keys.setdefault(path, []).append(
-                            DatabaseForeignKey(tuple(members), f"{database}.{schema}.{referenced}", tuple(referenced_members))
-                        )
-                    case _:
-                        raise DatabaseMetadataError(f"unexpected constraint type {constraint}")
+    def keys(self, catalog: str, schema: str, tables: Sequence[str]) -> list[Key]:
+        return [
+            Key(table, tuple(members), kind == "PRIMARY KEY")
+            for table, kind, members, *_ in self._rows(_CONSTRAINTS.format(kinds="'PRIMARY KEY', 'UNIQUE'"), (catalog, schema, list(tables)))
+        ]
 
-        metadata = {
-            path: DatabaseRelationMetadata(
-                catalog=path[0], schema=path[1], name=path[2], kind=kind,
-                columns=tuple(columns.get(path, ())), primary_key=primary_keys.get(path, ()), unique_sets=tuple(unique_sets.get(path, ())),
-                foreign_keys=tuple(foreign_keys.get(path, ())),
-            )
-            for path, kind in resolved.values()
-        }
-        return {name: metadata[path] for name, (path, _) in resolved.items()}
+    def foreign_keys(self, catalog: str, schema: str, tables: Sequence[str]) -> list[tuple[str, DatabaseForeignKey]]:
+        return [
+            (table, DatabaseForeignKey(tuple(members), f"{catalog}.{schema}.{referenced}", tuple(referenced_members)))
+            for table, _, members, referenced, referenced_members
+            in self._rows(_CONSTRAINTS.format(kinds="'FOREIGN KEY'"), (catalog, schema, list(tables)))
+        ]
 
-    def _collations(self, paths: list[list[str]]) -> dict[_Path, dict[str, str]]:
+    def view_definition(self, relation: DatabaseRelationMetadata) -> str | None:
+        rows = self._rows(_VIEW, (relation.catalog, relation.schema, relation.name))
+        return rows[0][0] if rows else None
+
+    def _collations(self, catalog: str, schema: str, lookup: tuple[Any, ...]) -> dict[str, dict[str, str]]:
         """Each table's columns declared with a COLLATE, by name. The
         session's `default_collation` is not read: text without a COLLATE has
         the engine's shipped (binary) default (docs/dialects.md)."""
-        collations: dict[_Path, dict[str, str]] = {}
-        for database, schema, table, sql in self.connection.execute(_TABLE_SQL, {"paths": paths}).fetchall():
+        collations: dict[str, dict[str, str]] = {}
+        for table, sql in self._rows(_TABLE_SQL, lookup):
             try:
                 create = sqlglot.parse_one(sql, read="duckdb")
             except SqlglotError as error:
-                raise DatabaseMetadataError(f"definition of table {database}.{schema}.{table} could not be parsed: {error}") from error
+                raise DatabaseMetadataError(f"definition of table {catalog}.{schema}.{table} could not be parsed: {error}") from error
             own: dict[str, str] = {}
             for definition in create.find_all(exp.ColumnDef):
                 collate = next((
@@ -151,37 +151,13 @@ class DuckDBKnowledgeFetcher(DatabaseKnowledgeFetcher):
                 ), None)
                 if collate is not None:
                     own[definition.name.lower()] = collate.this.name
-            collations[(database, schema, table)] = own
+            collations[table] = own
         return collations
 
-    def _search_path(self, scope: DatabaseRelationMetadata | None) -> tuple[tuple[str, str], ...]:
-        """Where an unqualified name is looked up: a view's own schema first, then temporary objects, then the session's path."""
-        row = self.connection.execute("SELECT current_database(), current_schema(), current_setting('search_path')").fetchone()
-        assert row is not None
-        database, schema, configured = row
-        path: list[tuple[str, str]] = [(scope.catalog, scope.schema)] if scope is not None else []
-        path.append(("temp", "main"))
-        for entry in filter(None, (entry.strip() for entry in configured.split(","))):
-            qualifier, _, name = entry.rpartition(".")
-            path.append((qualifier or database, name))
-        path.append((database, schema))
-        return tuple((catalog.lower(), schema.lower()) for catalog, schema in path)
-
-
-def _lower(path: _Path) -> _Path:
-    return (path[0].lower(), path[1].lower(), path[2].lower())
-
-
-def _candidates(name: str, search_path: tuple[tuple[str, str], ...]) -> list[_Path]:
-    """Every catalog path ``name`` may denote, in DuckDB's binding order."""
-    parts = name.lower().split(".")
-    match parts:
-        case [table]:
-            return [(catalog, schema, table) for catalog, schema in search_path]
-        case [qualifier, table]:
-            # A schema in a searched catalog first, then a catalog's default schema.
-            return [(catalog, qualifier, table) for catalog in dict.fromkeys(catalog for catalog, _ in search_path)] + [(qualifier, "main", table)]
-        case [catalog, schema, table]:
-            return [(catalog, schema, table)]
-        case _:
-            return []
+    def _rows(self, sql: str, parameters: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        """The rows of one catalog query, run on the connection (see the module
+        docstring). Any driver error is a DatabaseMetadataError."""
+        try:
+            return [tuple(row) for row in self.database.execute(sql.replace("%s", "?"), list(parameters)).fetchall()]
+        except Exception as error:
+            raise DatabaseMetadataError(str(error)) from error

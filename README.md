@@ -397,8 +397,8 @@ for diagnostic in report.diagnostics:
 ```
 
 `analyze` reads only the SQL Program. To take tables, keys, and views from a
-live database instead of `CREATE` statements, pass a catalog fetcher
-(`pip install sqlassert[duckdb]`):
+live database instead of `CREATE` statements, pass a catalog fetcher. Fetchers
+take a connection from any driver you already use; sqlassert imports none:
 
 ```python
 import duckdb
