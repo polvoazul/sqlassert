@@ -21,7 +21,7 @@ classifiers = [
 # Reads target/manifest.json only: dbt itself is needed to compile the
 # project, not to check it, so it is a test dependency here.
 dependencies = [
-  "sqlassert",
+  "sqlassert>=0.3.1",
   "sqlglot>=30.30,<31",
 ]
 
