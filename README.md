@@ -1,17 +1,153 @@
 # sqlassert
 
-`sqlassert` is a Python library for adding safety checks to SQL before you run it.
+**sqlassert adds asserts and static proofs to your SQL, without touching your data, to catch common mistakes before they ship.**
 
-The goal is to catch common query mistakes at test time or build time, using fast static and schema-backed proofs instead of scanning production data. You can add `sqlassert` to your test suite and validate important queries offline, making them more resilient independent of the current contents of your database.
-
+Mark what a query must guarantee (this join never multiplies rows, this column is a key, this `CASE` covers every status) and sqlassert proves it from the SQL and schema alone. A proof holds for *any* data, not just the rows in the table today, and it runs in milliseconds in your test suite or CI, with no warehouse and no connection.
 
 ```bash
 pip install sqlassert
+sqlassert suggest my_query.sql    # what can already be proved, and what looks wrong
 ```
 
-_Alpha warning: Today `sqlassert` supports join cardinality assertions (Unique, Many To One, One To Many, One To One), Unique Set Assertions (including Non-Null Unique Sets), Not Null Assertions, direct Foreign Keys, and simple Exactly One Join Assertions. It is tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark, Redshift and Trino SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
+Using dbt? [`sqlassert-dbt`](https://github.com/polvoazul/sqlassert/tree/main/integrations/dbt#readme) proves your `unique`, `not_null`, `accepted_values` and `relationships` tests from the compiled SQL and **skips the ones that can't fail**, so `dbt build` runs fewer warehouse queries.
 
-## Features
+_Alpha: the markers (`/**ASSERT ...**/`, `/**DECLARE ...**/`) are the stable contract; the Python API may change. Tested with DuckDB, PostgreSQL, MySQL, Snowflake, BigQuery, Databricks / Spark, Redshift and Trino SQL (see [Dialects](#dialects)); only DuckDB programs are checked by the soundness oracle._
+
+## Pitfalls it catches
+
+### A join that silently multiplies rows
+
+It works today because every user has one email row. Then someone adds a second one, and every downstream count doubles. Say what the join must do:
+
+```sql
+create table users (id integer primary key, email varchar);
+create table user_emails (user_id integer, email varchar);
+
+select u.id, e.email
+from users u
+/**ASSERT MANY TO ONE**/ join user_emails e on e.user_id = u.id;
+```
+
+```console
+$ sqlassert check join.sql
+join.sql:6:1: error unproved-many-to-one-join: /**ASSERT MANY TO ONE**/ is not proved (UNKNOWN)
+```
+
+Nothing makes `user_emails.user_id` unique, so the join may fan out, and `--explain` says exactly that: "No known unique set on this relation — user_emails". Add the key (or a `GROUP BY`, `DISTINCT`, or `QUALIFY row_number() = 1`) and it is `PROVED`. From then on, a change that breaks it fails CI rather than corrupting a dashboard.
+
+### Fan traps: sums counted twice
+
+Two one-to-many joins from the same row, then a `sum`: each order is counted once per payment.
+
+```sql
+select c.id, sum(o.amount) as ordered, sum(p.amount) as paid
+from customers c
+join orders o on o.customer_id = c.id
+join payments p on p.customer_id = c.id
+group by c.id;
+```
+
+```console
+$ sqlassert suggest revenue.sql
+...
+low  line 9  Root Select  Fan trap  SUM(o.amount) reads rows that JOIN payments AS p may repeat: the join is not proved to repeat rows of only one input (fan trap), so a value may be counted more than once
+low  line 9  Root Select  Fan trap  SUM(p.amount) reads rows that JOIN payments AS p may repeat: ...
+```
+
+Chasm traps (`sum(c.credit)` over `customers JOIN orders`), scalar subqueries that can return two rows, and implicit casts in join keys are flagged the same way.
+
+### Joins that do nothing, and LIMITs that pick random rows
+
+```sql
+select o.id, u.name
+from orders o
+left join users u on u.id = o.user_id         -- user_id is NOT NULL REFERENCES users(id)
+left join coupons c on c.id = o.coupon_id     -- nothing from coupons is used
+order by u.name
+limit 10;
+```
+
+```console
+$ sqlassert suggest orders.sql
+high  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+high  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+mid   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
+...
+low   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine (id), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
+```
+
+Every `high` rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
+
+### A CASE that forgets the new status
+
+```sql
+with o as (
+  select * from orders
+  /**DECLARE ENUM(status IN ('new', 'paid', 'void', 'refunded'))**/
+)
+select id,
+  /**ASSERT EXHAUSTIVE**/ case status when 'new' then 'open' when 'paid' then 'closed' when 'void' then 'closed' end as state
+from o;
+```
+
+```console
+$ sqlassert check orders.sql --explain
+orders.sql:7:3: error unproved-exhaustive: /**ASSERT EXHAUSTIVE**/ is not proved (UNKNOWN)
+    #1 UNKNOWN: exhaustive_case — CASE status WHEN 'new' THEN 'open' ...
+      #2 UNKNOWN: status may be 'refunded', which no WHEN arm lists
+```
+
+Without the marker, `refunded` orders would quietly get a NULL `state`.
+
+### dbt tests that scan the warehouse for nothing
+
+```console
+$ sqlassert-dbt build . -- --target prod
+Proved statically (a test here can be skipped):
+  models/schema.yml  unique_stg_customers_customer_id  (test on stg_customers)
+...
+```
+
+Proved tests are passed to `dbt build` as `--exclude`, so they never run. See [sqlassert-dbt](https://github.com/polvoazul/sqlassert/tree/main/integrations/dbt#readme).
+
+## What it proves
+
+| Assertion | Marker | Guards against | `DECLARE` form |
+|---|---|---|---|
+| [Join cardinality](#join-cardinality) | `UNIQUE`, `MANY TO ONE`, `ONE TO MANY`, `ONE TO ONE` before a join | row multiplication | – |
+| [Exactly One Join](#exactly-one-join) | `EXACTLY ONE` before a join | rows multiplied *or dropped*; a LEFT JOIN that pads | – |
+| [Unique Set](#unique-set-and-non-null-unique-set) | `UNIQUE(cols)`, `NOT NULL UNIQUE(cols)`, `PRIMARY KEY(cols)` | duplicate keys, wrong grain | yes |
+| [Not Null](#not-null) | `NOT NULL(cols)` | NULLs from outer joins and nullable sources | yes |
+| [Not Null Elements](#not-null-elements) | `NOT NULL ELEMENTS(cols)` | NULLs inside arrays, rows and maps | yes |
+| [Foreign Key](#foreign-key) | `FOREIGN KEY(cols) REFERENCES rel(cols)` | orphaned rows | yes |
+| [Functional Dependency](#functional-dependency) | `DETERMINES(a -> b)` | a value that should follow from a key but doesn't | yes |
+| [Enum](#enum) | `ENUM(col IN (...))` | unexpected values | yes |
+| [Exhaustive CASE](#exhaustive-case) | `EXHAUSTIVE` before a `CASE` | a value no `WHEN` arm handles | – |
+
+Every marker is a SQL comment (`/**ASSERT ...**/`), so annotated SQL still runs unchanged on your database.
+
+| Tool | What it does |
+|---|---|
+| [`analyze(sql)`](#usage) | Python API: prove a SQL Program's markers from its `CREATE` statements, in your test suite. |
+| [`analyze_database`](#usage) | The same, with tables, keys and views read from a live catalog (metadata only, never rows). |
+| [`sqlassert check`](#checking-in-ci) | CLI for CI: text, JSON, SARIF and GitHub annotation output, `pyproject.toml` config. |
+| [`sqlassert suggest`](#suggesting-markers) | Lists provable markers, proved rewrites, and smells (fan traps, chasm traps, arbitrary LIMIT, ...). |
+| [`sqlassert-dbt`](https://github.com/polvoazul/sqlassert/tree/main/integrations/dbt#readme) | Checks a dbt project from its manifest and skips the tests the SQL proves. |
+
+| Dialect | Key constraints | Catalog fetcher | Dialect facts certified on a real engine |
+|---|---|---|---|
+| DuckDB | enforced | yes | yes, plus the soundness oracle |
+| PostgreSQL | enforced | yes | yes |
+| MySQL 8.4+ (strict `sql_mode`) | enforced | yes | yes |
+| Snowflake | unenforced, `RELY` | yes | – |
+| BigQuery | unenforced | yes | – |
+| Databricks / Spark | unenforced, `RELY` | yes | – |
+| Redshift | unenforced | yes | – |
+| Trino | none | yes (NOT NULL only) | – |
+
+Unenforced keys are trusted as declarations by default; `trust_unenforced_keys=False` keeps only those marked `RELY` (see [Dialects](#dialects)).
+
+## Assertions
 
 ### Join cardinality
 
@@ -299,7 +435,7 @@ also takes the project and default dataset. Trino's catalog has no keys, so
 
 Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
 `suggest`. What the analysis assumes of each dialect is in
-`sqlassert/dialects.py`, argued in [docs/dialects.md](docs/dialects.md):
+`sqlassert/dialects.py`, argued in [docs/dialects.md](https://github.com/polvoazul/sqlassert/blob/main/docs/dialects.md):
 
 - **Keys.** DuckDB, PostgreSQL and MySQL enforce primary, unique and foreign
   keys. Snowflake, BigQuery, Databricks / Spark, Redshift and Trino (which has
@@ -441,7 +577,7 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 The `sqlassert-dbt` plugin, a separate package in this repository (`integrations/dbt/`), checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). It reads only the manifest, so dbt itself is not needed where it runs, and only the latest manifest schema (v12, written by dbt 1.8 through 1.12): compile with a current dbt.
 
 ```bash
-$ pip install ./integrations/dbt   # depends on sqlassert; sqlassert does not depend on it
+$ pip install sqlassert-dbt   # depends on sqlassert; sqlassert does not depend on it
 $ sqlassert-dbt check . --trust-upstream-tests
 models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/ (customers)
 
@@ -556,4 +692,4 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 
 ## Roadmap
 
-Open work is tracked as one file per issue in [`docs/issues/`](docs/issues/README.md).
+Open work is tracked as one file per issue in [`docs/issues/`](https://github.com/polvoazul/sqlassert/blob/main/docs/issues/README.md).

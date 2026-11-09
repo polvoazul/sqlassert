@@ -1,17 +1,34 @@
 [build-system]
-requires = ["setuptools>=68", "setuptools-scm>=8"]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqlassert"
 dynamic = ["version"]
-description = "Generate SQL assertions from unique join markers."
+description = "Asserts and static proofs for your SQL, without touching your data."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fred Israel" }]
 requires-python = ">=3.13"
+keywords = ["sql", "static-analysis", "linter", "dbt", "data-quality", "join", "cardinality", "sqlglot"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: SQL",
+  "Topic :: Database",
+  "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
   "case-conversion>=3.0.2",
   "sqlglot>=28,<31",
 ]
+
+[project.urls]
+Homepage = "https://github.com/polvoazul/sqlassert"
+Issues = "https://github.com/polvoazul/sqlassert/issues"
 
 [project.scripts]
 sqlassert = "sqlassert.__main__:main"
@@ -41,6 +58,8 @@ testpaths = ["tests"]
 exclude = ["build", "dist"]
 
 [tool.setuptools_scm]
+# PyPI rejects local versions (+g<hash>): a main build is X.Y.Z.devN.
+local_scheme = "no-local-version"
 
 [tool.poetry]
 version = "0.0.0"

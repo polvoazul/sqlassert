@@ -1,9 +1,20 @@
 name: CI
 
+# Tests on every push and pull request. Publishing (see the jobs at the end)
+# happens only on a push to this repository, never on a pull request:
+#   - a push to main publishes a dev build (X.Y.Z.devN) to TestPyPI;
+#   - a tag vX.Y.Z publishes to PyPI (vX.Y.ZrcN: a pre-release, which pip
+#     installs only with --pre) and creates a GitHub release.
+# No token is stored: PyPI trusts this workflow through OIDC (Trusted
+# Publishing), configured on pypi.org and test.pypi.org for both projects.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   # The sqlassert package alone: dbt is never installed here.
@@ -38,3 +49,78 @@ jobs:
       - run: pip install -e ../.. -e ".[test]" ty
       - run: python -m pytest -q
       - run: ty check
+
+  # Both distributions, versioned by setuptools-scm from the git tag (or
+  # X.Y.Z.devN, the commits since the last tag, on main).
+  build:
+    if: github.event_name == 'push'
+    needs: [sqlassert, dbt-plugin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build --outdir dist
+      - run: python -m build --outdir dist integrations/dbt
+      - run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/sqlassert
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/sqlassert
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=""
+          if [[ "$TAG" =~ (a|b|rc)[0-9]+$ ]]; then prerelease="--prerelease"; fi
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" --generate-notes $prerelease
