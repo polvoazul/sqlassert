@@ -50,6 +50,8 @@ class _Symbol:
     # UNIQUE INDEX), shaped like the CREATE TABLE's own, and columns set NOT NULL.
     constraints: list[exp.Expression] = field(default_factory=list)
     not_null: set[str] = field(default_factory=set)
+    # Each unique index with an expression key part: its parts and statement.
+    expression_keys: list[tuple[list[exp.Expression], exp.Create]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,7 @@ class IrParser:
     _scalar_subqueries: list[tuple[AttachmentSite, ir.Join]] = field(default_factory=list)
     _sort_keys: dict[int, tuple[ir.OutputColumn, ...] | None] = field(default_factory=dict)
     _site_sort_keys: list[tuple[AttachmentSite, tuple[ir.OutputColumn, ...] | None]] = field(default_factory=list)
+    _set_operations: list[tuple[AttachmentSite, ir.SetOperation]] = field(default_factory=list)
     # Columns made up for names a query uses: of a table with no CREATE, or an
     # opaque relation (`_guessed`), and those a declared table does not have (`_absent`).
     _guessed: set[ir.OutputColumn] = field(default_factory=set)
@@ -184,7 +187,8 @@ class IrParser:
         warnings = [*self._undeclared_table_warnings(), *self._warnings, *self._composite_warnings()]
         return IrConversionResult(
             ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
-                scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys)),
+                scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys),
+                set_operations=tuple(self._set_operations)),
             tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
         )
 
@@ -231,8 +235,9 @@ class IrParser:
         self._symbols.append(symbol)
 
     def _declare_index(self, statement: exp.Create) -> None:
-        """A unique index over plain columns is a Unique Set, like UNIQUE; any
-        other index states nothing about the data."""
+        """A unique index over plain columns is a Unique Set, like UNIQUE; one
+        with an expression key part may be (`_expression_key`); a partial one,
+        or any other index, states nothing about the data."""
         index = statement.this
         table = index.args.get("table") if isinstance(index, exp.Index) else None
         if not isinstance(table, exp.Table):
@@ -247,9 +252,13 @@ class IrParser:
             column.this for column in columns
             if isinstance(column, exp.Ordered) and isinstance(column.this, exp.Column) and not column.this.table
         ]
-        if not columns or len(plain) != len(columns) or params.args.get("where") is not None:
-            # Uniqueness of expressions, or of only some rows, is not a Unique Set.
-            self._unsupported_create(statement, "a unique index that is partial or over expressions")
+        if not columns or params.args.get("where") is not None:
+            # Uniqueness of only some rows is not a Unique Set.
+            self._unsupported_create(statement, "a partial unique index")
+            return
+        if len(plain) != len(columns):
+            parts = [column.this if isinstance(column, exp.Ordered) else column for column in columns]
+            symbol.expression_keys.append(([part.unnest() for part in parts], statement))
             return
         schema = exp.Schema(expressions=[exp.to_identifier(column.name) for column in plain])
         symbol.constraints.append(exp.UniqueColumnConstraint(this=schema))
@@ -477,6 +486,10 @@ class IrParser:
                 operator=_SET_OPERATORS[type(query)], left=left, right=right, distinct=bool(query.args.get("distinct")),
                 by_name=bool(query.args.get("by_name")),
             )
+            last = _last_select(query.this)
+            position = marker_position(last) if last is not None else None
+            if relation.operator != "union" and position is not None:
+                self._set_operations.append((AttachmentSite(relation.operator.upper(), position[1], position[0], True), relation))
             return self._lower_limit(relation, query)
         if not isinstance(query, exp.Select):
             return None
@@ -1764,6 +1777,46 @@ class IrParser:
             if primary and (trust == "declared" or self.semantics.primary_key_not_null):
                 facts.extend(NonNullColumn(column=member) for member in members if member.name.lower() not in non_null)
             (self._knowledge if trust == "enforced" else self._declarations).extend(facts)
+        for parts, index in symbol.expression_keys:
+            members = self._expression_key(relation, parts, index)
+            if members is None:
+                continue
+            names = tuple(member.name for member in members)
+            trust = self._key_trust(exp.UniqueColumnConstraint(), symbol, names)
+            if trust is not None:
+                (self._knowledge if trust == "enforced" else self._declarations).append(UniqueSet(columns=frozenset(members)))
+
+    def _expression_key(
+        self, relation: ir.NamedRelation, parts: list[exp.Expression], index: exp.Create
+    ) -> tuple[ir.OutputColumn, ...] | None:
+        """The columns a unique index over `parts` makes a Unique Set, or None
+        (diagnosed) when it makes none.
+
+        Two rows equal and non-null on the columns the parts read would give
+        equal index keys, which the index forbids, when every part is a pure
+        function of its columns (equal inputs, equal keys: so only over columns
+        whose equal values are identical; under a case-insensitive collation
+        `'A' = 'a'` yet their bytes differ) and total in them (a NULL key part
+        exempts the row: `nullif(email, '')` lets every '' through). No
+        injectivity is needed: `lower(email)` unique makes `email` unique."""
+        bindings = tuple(_Binding(relation.name.lower(), column.name.lower(), column) for column in relation.output_columns)
+        found: dict[ir.OutputColumn, None] = {}
+        for part in parts:
+            lowered = self._lower_expression(part, bindings, schema_complete=relation.is_schema_complete)
+            inputs = ir.determinants(lowered)
+            text = part.sql(dialect=self.dialect)
+            if inputs is None:
+                problem = f"{text} is not a function of the table's columns"
+            elif not ir.total(lowered):
+                problem = f"{text} may be NULL where its columns are not, which exempts the row from the index"
+            elif not all(column in relation.output_columns and column.identity_comparison for column in inputs):
+                problem = f"{text} reads a column whose equal values may differ (a float, or text under a collation)"
+            else:
+                found.update(dict.fromkeys(inputs))
+                continue
+            self._unsupported_create(index, f"a unique index whose key states no Unique Set ({problem})")
+            return None
+        return tuple(found)
 
     def _key_trust(self, constraint: exp.Expression, symbol: _Symbol, columns: tuple[str, ...]) -> Literal["enforced", "declared"] | None:
         """Whether a key or foreign key constraint holds: enforced by the
@@ -2173,6 +2226,19 @@ def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
     if not isinstance(literal, exp.Literal) or literal.is_string or literal.this != "1":
         return None
     return window
+
+
+def _last_select(query: exp.Expression) -> exp.Select | None:
+    """The Select a set operation's left input ends with."""
+    while True:
+        unwrapped = _unwrap_query(query) if isinstance(query, exp.Query) else None
+        match unwrapped:
+            case exp.SetOperation():
+                query = unwrapped.expression
+            case exp.Select():
+                return unwrapped
+            case _:
+                return None
 
 
 _SET_OPERATORS: dict[type[exp.Expression], ir.SetOperator] = {exp.Union: "union", exp.Intersect: "intersect", exp.Except: "except"}

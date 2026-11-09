@@ -180,13 +180,13 @@ def test_a_grouping_column_another_one_determines_is_redundant():
 
 @pytest.mark.parametrize("grouping", ["1, 2", "id, name", "(), id, name"])
 def test_a_grouping_reference_uses_the_resolved_select_expression(grouping: str):
-    sql = SCHEMA + f"SELECT id, name AS label, count(*) AS n FROM users GROUP BY {grouping}"
+    sql = SCHEMA + f"SELECT id, name AS label, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY {grouping}"
     improvement, = suggest(sql).improvements
     assert "any_value(name) AS label" in improvement.message
 
 
 def test_a_grouping_improvement_remains_available_before_a_limit():
-    sql = SCHEMA + "SELECT id, name, count(*) AS n FROM users GROUP BY id, name LIMIT 5"
+    sql = SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY id, name LIMIT 5"
     assert rewrites(sql) == [Rewrite.REDUNDANT_GROUPING]
 
 
@@ -223,8 +223,81 @@ def test_the_last_grouping_column_is_never_redundant():
 
 
 def test_mutually_determined_grouping_columns_drop_only_one():
-    sql = SCHEMA + "SELECT id, user_id, count(*) AS n FROM orders WHERE id = user_id GROUP BY id, user_id"
+    sql = SCHEMA + (
+        "SELECT o.id, o.user_id, count(*) AS n FROM orders o JOIN sessions s ON s.user_id = o.id "
+        "WHERE o.id = o.user_id GROUP BY o.id, o.user_id"
+    )
     assert rewrites(sql) == [Rewrite.REDUNDANT_GROUPING]
+
+
+# A GROUP BY whose groups are single rows ----------------------------------------
+
+
+def test_a_group_by_over_a_key_of_its_input_is_a_projection():
+    sql = SCHEMA + (
+        "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, any_value(nick) AS a "
+        "FROM users GROUP BY id"
+    )
+    improvement, = suggest(sql).improvements
+    assert improvement.rewrite is Rewrite.GROUPING_PROJECTION
+    assert improvement.message.endswith(
+        "drop GROUP BY and write SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id + 1 AS s, nick AS a"
+    )
+
+
+def test_a_group_by_kept_unique_through_a_many_to_one_join_is_a_projection():
+    sql = SCHEMA + "SELECT o.id, max(u.name) AS name FROM orders o JOIN users u ON u.id = o.user_id GROUP BY o.id"
+    improvement, = suggest(sql).improvements
+    assert improvement.rewrite is Rewrite.GROUPING_PROJECTION
+    assert improvement.message.endswith("write SELECT o.id, u.name AS name")
+
+
+@pytest.mark.parametrize("query", [
+    # NULLs form one group: a nullable unique column is not enough.
+    "SELECT email, count(*) AS n FROM users GROUP BY email",
+    # Many sessions per user.
+    "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id",
+    # An aggregate read outside the select list, or with no one-row form here.
+    "SELECT id, count(*) AS n FROM users GROUP BY id ORDER BY count(*)",
+    "SELECT id, sum(id) FILTER (WHERE id > 1) AS s FROM users GROUP BY id",
+    "SELECT id, string_agg(name, ',') AS s FROM users GROUP BY id",
+    "SELECT id, sum(count(*)) OVER () AS s FROM users GROUP BY id",
+])
+def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projection(query: str):
+    assert Rewrite.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
+
+
+# EXCEPT and INTERSECT over a duplicate-free input -----------------------------------
+
+
+@pytest.mark.parametrize(("query", "message"), [
+    ("SELECT id FROM users EXCEPT SELECT user_id FROM sessions", "left input are alike, NULL equal to NULL, so EXCEPT removes no duplicates: write EXCEPT ALL"),
+    ("SELECT user_id FROM sessions INTERSECT SELECT id FROM users", "right input are alike, NULL equal to NULL, so INTERSECT removes no duplicates: write INTERSECT ALL"),
+    # The left input of the second EXCEPT is the first one's distinct result.
+    ("SELECT user_id FROM sessions EXCEPT SELECT id FROM users EXCEPT SELECT 3", "write EXCEPT ALL"),
+])
+def test_except_or_intersect_over_an_input_without_duplicates_can_keep_all(query: str, message: str):
+    improvement, = suggest(SCHEMA + query).improvements
+    assert improvement.rewrite is Rewrite.SET_OPERATION_ALL
+    assert improvement.message.endswith(message)
+
+
+@pytest.mark.parametrize("query", [
+    # EXCEPT removes duplicates of its left input only.
+    "SELECT user_id FROM sessions EXCEPT SELECT id FROM users",
+    # Set operations compare NULL equal to NULL: two NULL emails are duplicates.
+    "SELECT email FROM users EXCEPT SELECT 'x'",
+    "SELECT id FROM users EXCEPT ALL SELECT user_id FROM sessions",
+    "SELECT id FROM users UNION SELECT user_id FROM sessions",
+])
+def test_except_or_intersect_that_may_remove_a_duplicate_is_kept(query: str):
+    assert Rewrite.SET_OPERATION_ALL not in rewrites(SCHEMA + query)
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "bigquery", "snowflake", "oracle"])
+def test_except_all_is_not_suggested_where_the_dialect_lacks_it(dialect: str):
+    report = suggest(SCHEMA + "SELECT id FROM users EXCEPT SELECT user_id FROM sessions", dialect=dialect)
+    assert Rewrite.SET_OPERATION_ALL not in [improvement.rewrite for improvement in report.improvements]
 
 
 # Unused CTEs ------------------------------------------------------------------
@@ -318,8 +391,8 @@ EQUIVALENT = [
         Rewrite.INNER_JOIN,
     ),
     (
-        SCHEMA + "SELECT id, name, count(*) AS n FROM users GROUP BY 1, 2",
-        SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users GROUP BY 1",
+        SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
+        SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1",
         Rewrite.REDUNDANT_GROUPING,
     ),
     (
@@ -400,6 +473,35 @@ EQUIVALENT = [
         SCHEMA + "SELECT user_id FROM sessions",
         Rewrite.UNUSED_CTE,
     ),
+    (
+        SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, "
+        "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
+        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id + 1 AS s, "
+        "nick AS a, id AS v FROM users WHERE nick IS NULL OR id > 1",
+        Rewrite.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT o.id, max(u.nick) AS nick, count(u.nick) AS c FROM orders o LEFT JOIN users u ON u.id = o.user_id "
+        "GROUP BY o.id",
+        SCHEMA + "SELECT o.id, u.nick AS nick, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END AS c FROM orders o "
+        "LEFT JOIN users u ON u.id = o.user_id",
+        Rewrite.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT id, nick FROM users EXCEPT SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
+        SCHEMA + "SELECT id, nick FROM users EXCEPT ALL SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
+        Rewrite.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT user_id FROM sessions INTERSECT SELECT id FROM users",
+        SCHEMA + "SELECT user_id FROM sessions INTERSECT ALL SELECT id FROM users",
+        Rewrite.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
+        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT ALL SELECT ts FROM sessions",
+        Rewrite.SET_OPERATION_ALL,
+    ),
 ]
 
 
@@ -436,6 +538,14 @@ def test_the_equivalence_check_finds_a_rewrite_that_changes_the_result():
     )
     assert search.status == "counterexample"
     assert search.instance is not None
+
+
+def test_the_equivalence_check_finds_except_all_over_duplicates():
+    search = differing_instance(
+        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users",
+        SCHEMA + "SELECT user_id FROM sessions EXCEPT ALL SELECT id FROM users",
+    )
+    assert search.status == "counterexample"
 
 
 def test_a_later_left_join_on_a_column_that_is_not_padded_does_not_chain():

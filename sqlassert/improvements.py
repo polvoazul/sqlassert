@@ -16,6 +16,11 @@ as a multiset, and the evidence that it does:
 - A CTE nothing references.
 - A `WHERE EXISTS` or `IN` subquery (or a SEMI JOIN) every row passes: its
   semi join is proved Exactly One, so it keeps every row once.
+- A `GROUP BY` whose grouping columns are a key of its input, NULL equal to
+  NULL: each group is one row, so it is a projection.
+- An `EXCEPT` whose left input, or an `INTERSECT` either of whose inputs,
+  has no two rows alike: `EXCEPT ALL` and `INTERSECT ALL` give the same rows
+  without removing duplicates, where the dialect has them.
 
 Proofs come from the rules' internals (null sources, strict closure) as well
 as `Arena.prove`, since none of these facts is a Property. Whether a column
@@ -35,6 +40,7 @@ from typing import ClassVar
 from sqlglot import exp
 
 from sqlassert import ir
+from sqlassert.dialects import semantics
 from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
@@ -58,8 +64,10 @@ class Rewrite(Enum):
     FILTER_JOIN = "Filter-Only Join"
     REDUNDANT_DISTINCT = "Redundant DISTINCT"
     REDUNDANT_GROUPING = "Redundant GROUP BY"
+    GROUPING_PROJECTION = "GROUP BY of one row per group"
     REDUNDANT_SORT_KEY = "Redundant ORDER BY key"
     REDUNDANT_FILTER = "Redundant EXISTS"
+    SET_OPERATION_ALL = "EXCEPT ALL or INTERSECT ALL"
     UNUSED_CTE = "Unused CTE"
 
 
@@ -106,10 +114,13 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
             case ir.Distinct():
                 found.extend(_redundant_distinct(site, relation))
             case ir.Aggregate() if isinstance(node, exp.Select):
-                found.extend(_redundant_grouping(site, relation, node, dialect))
+                projection = _grouping_is_projection(site, relation, node, dialect)
+                found.extend([projection] if projection else _redundant_grouping(site, relation, node, dialect))
             case _:
                 pass  # Other Select Expressions have nothing to rewrite yet.
     found.extend(_unused_ctes(ast))
+    if semantics(dialect).set_operations_all:
+        found.extend(item for site, operation in program.set_operations if (item := _set_operation_all(site, operation)) is not None)
     return sorted(found, key=lambda item: item.site.offset)
 
 
@@ -357,6 +368,74 @@ def _strict_key(relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...])
     return columns
 
 
+def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> Improvement | None:
+    """A GROUP BY whose grouping columns no two input rows agree on, NULL
+    equal to NULL (GROUP BY puts NULLs in one group): every group is one row,
+    so the query is a projection, each aggregate its value over that row.
+    An empty input gives no rows either way. Silent when a grouping
+    expression is not a column, or an aggregate has no one-row form here
+    (`_one_row`), or is read outside the select list (ORDER BY, QUALIFY, a
+    window over it)."""
+    expressions = grouping(node) or []
+    outputs = aggregate.grouping_outputs
+    if not outputs or len(expressions) != len(outputs) or not all(isinstance(column.scalar_expr, ir.ColumnRef) for column in outputs):
+        return None
+    if any(
+        call.find_ancestor(exp.Select) is node and not any(_within(call, item) for item in node.expressions)
+        for call in node.find_all(exp.AggFunc)
+    ) or node.args.get("qualify") is not None or any(item.find(exp.Window) for item in node.expressions):
+        return None
+    keys = frozenset(column.scalar_expr.column for column in outputs if isinstance(column.scalar_expr, ir.ColumnRef))
+    evidence = _reaches_row_identity(_closure(aggregate.input, keys, frozenset()))
+    if not evidence.value:
+        return None
+    items = []
+    for item in node.expressions:
+        rewritten = _one_row(item.copy(), dialect)
+        if rewritten is None:
+            return None
+        items.append(rewritten)
+    names = ", ".join(expression.sql(dialect=dialect) for expression in expressions)
+    message = (
+        f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
+        f"drop GROUP BY and write SELECT {', '.join(items)}"
+    )
+    return Improvement(site, Rewrite.GROUPING_PROJECTION, message, evidence)
+
+
+def _one_row(item: exp.Expression, dialect: str) -> str | None:
+    """`item` with each aggregate in it replaced by its value over one row,
+    or None when an aggregate has no such form here: count(*) is 1, count(x)
+    is 1 unless x is NULL, sum, avg, min, max, any_value, bool_and and bool_or
+    are x. With or without DISTINCT, IGNORE or RESPECT NULLS; never with
+    FILTER, nor a count of several values."""
+    for call in list(item.find_all(exp.AggFunc)):
+        target: exp.Expression = call
+        while isinstance(target.parent, exp.IgnoreNulls | exp.RespectNulls):
+            target = target.parent
+        if isinstance(target.parent, exp.Filter) or any(value for key, value in call.args.items() if key not in {"this", "big_int"}):
+            return None
+        argument = call.this
+        if isinstance(argument, exp.Distinct):
+            if len(argument.expressions) != 1:
+                return None
+            argument = argument.expressions[0]
+        match call:
+            case exp.Count() if argument is None or isinstance(argument, exp.Star):
+                value: exp.Expression = exp.Literal.number(1)
+            case exp.Count():
+                value = exp.Case(ifs=[exp.If(this=exp.Is(this=argument.copy(), expression=exp.null()), true=exp.Literal.number(0))], default=exp.Literal.number(1))
+            case exp.Sum() | exp.Avg() | exp.Min() | exp.Max() | exp.AnyValue() | exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, exp.Expression) and not isinstance(argument, exp.Star | exp.Order):
+                value = argument.copy()
+            case _:
+                return None
+        if target is item:
+            item = value
+        else:
+            target.replace(value)
+    return item.sql(dialect=dialect)
+
+
 def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> list[Improvement]:
     """Each grouping column the grouping columns kept so far strictly determine.
 
@@ -389,6 +468,27 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
         )
         found.append(Improvement(site, Rewrite.REDUNDANT_GROUPING, message, closure.members[source]))
     return found
+
+
+# EXCEPT and INTERSECT over inputs without duplicates --------------------------------
+
+
+def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Improvement | None:
+    """`A EXCEPT B` keeps each distinct row of A that B lacks; `EXCEPT ALL`
+    keeps it as often as A has it more than B. When A has no two rows alike,
+    NULL equal to NULL as a set operation compares them, both keep each such
+    row once. `INTERSECT ALL` keeps a row as often as the input with fewer of
+    it, so a duplicate-free input on either side suffices."""
+    if not operation.distinct or operation.operator == "union":
+        return None
+    keyword = operation.operator.upper()
+    sides = [("left", operation.left)] + ([("right", operation.right)] if operation.operator == "intersect" else [])
+    for side, relation in sides:
+        evidence = _reaches_row_identity(_closure(relation, frozenset(relation.output_columns), frozenset()))
+        if evidence.value:
+            message = f"no two rows of the {side} input are alike, NULL equal to NULL, so {keyword} removes no duplicates: write {keyword} ALL"
+            return Improvement(site, Rewrite.SET_OPERATION_ALL, message, evidence)
+    return None
 
 
 # Unused CTEs ----------------------------------------------------------------------

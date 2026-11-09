@@ -106,8 +106,12 @@ lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
   `unsupported-create-statement` rather than silent: it is uniqueness the
   author wrote and sqlassert drops, the same reasoning as for markers. A
   plain index is accepted silently: it states nothing. Still open:
-  `ADD COLUMN`; a unique expression index over deterministic expressions does
-  imply its columns are unique, which is not used.
+  `ADD COLUMN`. Done since: a unique index over expressions makes the
+  columns they read a (lax) Unique Set when every expression is pure, total
+  in its columns (a NULL key part exempts the row: `nullif(email, '')`), and
+  reads only identity-compared columns; no injectivity is needed
+  (`convert._expression_key`, `ir.total`). `lower`/`upper` are not Builtins
+  yet, so `lower(email)` still states nothing (issue 45 #13).
 - [x] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Today this is silently UNKNOWN. Per

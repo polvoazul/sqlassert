@@ -356,6 +356,29 @@ def _exact_literal(expression: ScalarExpr) -> bool:
             return False
 
 
+def total(expression: ScalarExpr) -> bool:
+    """Whether `expression` is non-null whenever every column it reads is: a
+    column, a literal, `count(...)`, a Builtin total in its arguments over
+    total ones, or a coalesce with one total argument. NULL, CASE (a missed
+    WHEN), the IS family and comparisons (not inferred), and unmodelled
+    functions may be NULL on non-null columns."""
+    expression = expression.closed
+    match expression:
+        case ColumnRef() | Constant() | Count():
+            return True
+        case Call(total_arguments=tuple() as arguments):
+            return all(total(argument) for argument in arguments)
+        case Coalesce(arguments=arguments):
+            return any(total(argument) for argument in arguments)
+        case (
+            Call() | NullLiteral() | SimpleCase() | OpaquePureFunction() | OpaqueExpression() | AnyAggregate() | Elements()
+            | Equality() | InList() | IsNull() | IsNotNull() | And() | Or()
+        ):
+            return False
+        case _:
+            assert_never(expression)
+
+
 def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
     """The columns whose NULL makes `expression` NULL, in order of first use.
 
@@ -594,6 +617,9 @@ class Program:
     # name that does not resolve to one column, and for DISTINCT ON, whose
     # ORDER BY picks the rows it keeps.
     sort_keys: tuple[tuple[AttachmentSite, tuple[OutputColumn, ...] | None], ...] = ()
+    # Each INTERSECT and EXCEPT, sited where its keyword follows its left
+    # input's last Select (no marker attaches there).
+    set_operations: tuple[tuple[AttachmentSite, SetOperation], ...] = ()
     column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

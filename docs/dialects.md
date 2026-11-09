@@ -36,6 +36,7 @@ before dialects were listed; see "Not done").
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
+| `EXCEPT ALL`, `INTERSECT ALL` (`set_operations_all`) | yes | yes | yes (8.0.31) | no | no | yes | no | yes |
 
 Also: SQLite foreign keys are unenforced (`PRAGMA foreign_keys` is off by
 default) and its primary keys may be NULL (only an `INTEGER PRIMARY KEY` may
@@ -43,6 +44,10 @@ not, and SQLGlot reads `INT` and `INTEGER` alike, so none is taken to be
 non-null). A ClickHouse primary key never rejects a duplicate, and its
 `concat_ws` is NULL for a NULL value, as Snowflake's. Hive has neither checked
 arithmetic nor enforced keys, and its `concat_ws` is not modelled.
+`set_operations_all` only gates suggesting `EXCEPT ALL` and `INTERSECT ALL`
+(`suggest`): a wrong value suggests SQL the engine rejects, never a wrong
+proof, so it is no fact and is not certified. It is off for SQLite, Oracle
+(before 21c), ClickHouse and Hive, and any dialect not listed.
 A CAST from JSON (or a VARIANT) may be NULL in every dialect: JSON `null` is
 a value, and `CAST(JSON 'null' AS BIGINT)` is NULL (DuckDB, Trino, Snowflake's
 `PARSE_JSON('null')::INT`). So a CAST is never taken to be non-null when its

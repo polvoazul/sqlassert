@@ -185,8 +185,9 @@ Still open:
   smell and the redundant ORDER BY key (a High rewrite, `Redundant ORDER BY
   key`); issue 41 the Fan Trap and Chasm Trap. Still open: an ON conjunct the
   others imply, and EXCEPT always empty under coverage. Also High-level rewrites
-  (redundant `EXISTS`, `EXCEPT ALL`, whole `GROUP BY`, self-join, UNION and
-  INTERSECT simplification, redundant `LIMIT` on one row).
+  (self-join, UNION and INTERSECT simplification, redundant `LIMIT` on one
+  row). Done since: redundant `EXISTS`, `EXCEPT ALL` / `INTERSECT ALL`, whole
+  `GROUP BY` as a projection.
 - [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
   Done: `sqlassert suggest --annotate FILE` rewrites FILE with every
   suggested marker; for `-` it prints the annotated SQL instead of the list.
@@ -209,13 +210,13 @@ reasons about the query, not its plan, cost or cardinality.
 | Invisible join [2] | Join | † | n/a: column-store execution |
 | Early abort (5.6) | Selection | ∗ | add, High: `LIMIT`/`ORDER BY` on a Select proved to return at most one row is redundant (precondition: the empty set is a Unique Set) |
 | Accurate cardinalities (5.6) | Selection | ‡ | n/a: estimation |
-| Grouping is redundant [23] | Grouping | ∗ | add, High: a `GROUP BY` whose grouping columns are a Unique Set of its input is a projection (precondition: strict closure reaches the input's Row Identity, as for DISTINCT); aggregates then see one row each |
+| Grouping is redundant [23] | Grouping | ∗ | done, High `GROUP BY of one row per group`: grouping columns whose strict closure reaches the input's Row Identity make the query a projection; each aggregate becomes its one-row value (`count(*)` → 1, `count(x)` → CASE, `sum`/`avg`/`min`/`max`/`any_value`/`bool_and`/`bool_or` → x); result types may change. Silent for FILTER, an aggregate in ORDER BY, QUALIFY or a window, and other aggregates |
 | Accurate cardinalities (5.6) | Grouping | ‡ | n/a: estimation |
 | Avoid DISTINCT [101–103] | Projection | ∗ | covered: High "redundant DISTINCT" |
 | Reduce attributes (5.6) | Sorting | ∗ | add, High: `ORDER BY` keys after a prefix that is a Unique Set are redundant. Done in issue 38, as a case of the row below |
 | Unstable sorting (5.6) | Sorting | ∗ | add, Low: `ORDER BY … LIMIT` whose sort keys are not proved a Unique Set picks arbitrary rows among ties (the inverse precondition) |
-| EXCEPT to EXCEPT ALL [102] | Set ops | ∗ | add, High: `EXCEPT` → `EXCEPT ALL` when the left input is unique on all columns (strict) |
-| INTERSECT to INTERSECT ALL [60, 101] | Set ops | ∗ | add, High: same, for either input of `INTERSECT` |
+| EXCEPT to EXCEPT ALL [102] | Set ops | ∗ | done, High `EXCEPT ALL or INTERSECT ALL`: when the left input is unique on all columns (strict), where the dialect has it (`set_operations_all`) |
+| INTERSECT to INTERSECT ALL [60, 101] | Set ops | ∗ | done: same, for either input of `INTERSECT` |
 | INTERSECT to join [101, 102] | Set ops | † | n/a: cost-based |
 | Accurate cardinalities (5.6) | Set ops | ‡ | n/a: estimation |
 | Subquery to join [101, 102] | Other | ∗ | covered: WHERE subqueries lowered as semi joins (issue 23); not a suggestion, the join form is not simpler SQL |

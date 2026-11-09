@@ -79,7 +79,44 @@ SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
 ALTER TABLE users ADD UNIQUE (org, email);
 SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
 
--- case: a_unique_index_not_over_plain_columns_is_diagnosed_and_states_nothing__expression
+-- A unique index over pure, total expressions of identity-compared columns
+-- makes the columns they read a Unique Set: equal columns give equal keys.
+-- No injectivity is needed. Only lax: a NULL column exempts its row.
+-- case: a_unique_expression_index_makes_its_columns_unique__arithmetic
+CREATE UNIQUE INDEX users_next ON users ((id + 1));
+SELECT id FROM users
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_unique_expression_index_makes_its_columns_unique__several_columns_together
+CREATE UNIQUE INDEX users_sum ON users ((org + id));
+SELECT org, id FROM users
+/**ASSERT UNIQUE(org, id)**/  --~ PROVED
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_unique_expression_index_makes_its_columns_unique__beside_a_plain_column
+CREATE UNIQUE INDEX users_key ON users (org, (id + 1));
+SELECT org, id FROM users /**ASSERT UNIQUE(org, id)**/  --~ PROVED
+
+-- case: a_unique_expression_index_makes_its_columns_unique__coalesce_with_a_literal
+CREATE UNIQUE INDEX users_email ON users (coalesce(email, ''));
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ PROVED
+
+-- A key part that may be NULL on non-null columns exempts those rows: every
+-- '' email maps to NULL here.
+-- case: a_unique_expression_index_that_may_be_null_states_nothing__nullif
+CREATE UNIQUE INDEX users_email ON users (nullif(email, ''));
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
+--~! unsupported-create-statement "may be NULL where its columns are not"
+
+-- The "unique among active rows" idiom: (org, email) is not unique.
+-- case: a_unique_expression_index_that_may_be_null_states_nothing__case_without_else
+CREATE UNIQUE INDEX users_email ON users ((CASE org WHEN 1 THEN email END));
+SELECT org, email FROM users /**ASSERT UNIQUE(org, email)**/  --~ UNKNOWN
+--~! unsupported-create-statement "may be NULL where its columns are not"
+
+-- lower() is not yet a modelled Builtin, so it is not known to be total.
+-- case: a_unique_expression_index_that_may_be_null_states_nothing__unmodelled_function
 CREATE UNIQUE INDEX users_email ON users (lower(email));
 SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
 --~! unsupported-create-statement

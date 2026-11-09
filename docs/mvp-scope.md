@@ -5,7 +5,7 @@ The MVP proves Unique Join Assertions and Unique Set Assertions from a SQL Progr
 ## Included
 
 - `CREATE TABLE` and `CREATE VIEW` statements followed by at most one Root Select.
-- Constraints added after a table's `CREATE TABLE`: `ALTER TABLE ... ADD PRIMARY KEY / UNIQUE / FOREIGN KEY`, `ALTER COLUMN ... SET NOT NULL`, and `CREATE UNIQUE INDEX` over plain columns. One naming a table not created earlier is diagnosed; so is any other `ALTER TABLE` action, and a partial or expression unique index.
+- Constraints added after a table's `CREATE TABLE`: `ALTER TABLE ... ADD PRIMARY KEY / UNIQUE / FOREIGN KEY`, `ALTER COLUMN ... SET NOT NULL`, and `CREATE UNIQUE INDEX`. A unique index over expressions makes the columns they read a Unique Set when each expression is a pure function of identity-compared columns, non-null when they are (`lower` is not modelled yet, so not known to be). One naming a table not created earlier is diagnosed; so is any other `ALTER TABLE` action, a partial unique index, and an expression unique index that states no Unique Set.
 - Declaration collection followed by linker-style resolution, including forward references and cycle detection.
 - CTEs, FROM subqueries, and recursively expanded view definitions.
 - `NamedRelation`, `Alias`, `Project`, `Filter`, `Limit`, `Join`, `Aggregate`, `Distinct`, `SetOperation`, `QualifyByPartition`, and opaque/recursive relational operations.

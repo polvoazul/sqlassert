@@ -79,6 +79,10 @@ class DialectSemantics:
     enum_strips_trailing_spaces: bool = False
     # A zero-length string is NULL (Oracle): the literal '' is NULL.
     empty_string_is_null: bool = False
+    # `EXCEPT ALL` and `INTERSECT ALL` exist. Only gates suggesting them, so
+    # it is no soundness claim and is not certified: a wrong True suggests SQL
+    # the engine rejects, never a wrong proof.
+    set_operations_all: bool = False
 
     @property
     def rely(self) -> bool:
@@ -96,6 +100,7 @@ _SPARK = DialectSemantics(
     concat_ws="skips-null",
     unique_keys="rely",
     foreign_keys="rely",
+    set_operations_all=True,
 )
 
 _SEMANTICS: dict[str, DialectSemantics] = {
@@ -106,6 +111,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         pipes="strict",
         concat="skips-null",
         concat_ws="skips-null",
+        set_operations_all=True,
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,
@@ -116,6 +122,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         pipes="lenient",  # `ARRAY[1] || NULL` is `{1}`.
         concat="skips-null",
         concat_ws="skips-null",
+        set_operations_all=True,
     ),
     "mysql": DialectSemantics(
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
@@ -131,6 +138,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         inline_references=False,
         foreign_key_engines=frozenset({"innodb", "ndb", "ndbcluster"}),
         enum_strips_trailing_spaces=True,
+        set_operations_all=True,  # Since 8.0.31.
     ),
     "snowflake": DialectSemantics(
         # Not `checked_arithmetic`: its docs never say integer overflow raises.
@@ -189,6 +197,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # overload is NULL for a NULL array, and SQLGlot parses both alike.
         unique_keys="unenforced",
         foreign_keys="unenforced",
+        set_operations_all=True,
     ),
 }
 
