@@ -1840,14 +1840,19 @@ class IrParser:
             reason = f"{self.dialect} does not enforce it"
         elif isinstance(constraint, exp.Reference) and not meaning.inline_references:
             reason = f"{self.dialect} before 9.0 ignores a column-level REFERENCES"
-        elif foreign and meaning.foreign_key_engines is not None and (engine := _engine(symbol)) is not None and engine not in meaning.foreign_key_engines:
-            reason = f"ENGINE={engine} does not enforce foreign keys"
+        elif foreign and meaning.foreign_key_engines is not None and (engine := _engine(symbol)) not in meaning.foreign_key_engines:
+            reason = (
+                f"ENGINE={engine} does not enforce foreign keys" if engine is not None
+                else "its table names no ENGINE, and the server's default_storage_engine may not enforce foreign keys"
+            )
         if reason is None:
             return "enforced"
         if ("RELY" in options and meaning.rely) or self.trust_unenforced_keys:
             return "declared"
         kind = "foreign key" if foreign else "primary key" if isinstance(constraint, exp.PrimaryKey | exp.PrimaryKeyColumnConstraint) else "unique constraint"
         fixes = ["mark it RELY"] if meaning.rely else []
+        if foreign and meaning.foreign_key_engines is not None and _engine(symbol) is None:
+            fixes.append("write ENGINE=InnoDB")
         fixes.append("analyze with trust_unenforced_keys=True")
         self._warnings.append(Diagnostic(
             diag.UNENFORCED_CONSTRAINT,

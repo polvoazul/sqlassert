@@ -79,7 +79,8 @@ class Untested:
 @dataclass(frozen=True)
 class Problem:
     """A Diagnostic: a part of the project analysis could not model. A warning
-    names a fact a connection or the project could supply; it never fails."""
+    names a fact a connection or the project could supply; it never fails. An
+    error fails the check: a model whose own markers went unchecked."""
 
     code: str
     message: str

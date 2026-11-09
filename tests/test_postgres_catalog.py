@@ -204,3 +204,31 @@ def test_scripted_catalog_rows_become_metadata():
         assert found[name].primary_key == () and found[name].unique_sets == ()
         assert all(column.nullable for column in found[name].columns)
     assert any("k.conenforced" in operation for operation in connection.log)  # PostgreSQL 18.
+
+
+class _CaseCursor(_ScriptedCursor):
+    """A search path `s1, s2` with `s1."T"` (its key `id`) and `s2.t`, `s2."U"`
+    (no keys): names that differ only in case are distinct relations."""
+
+    ANSWERS = [
+        ("current_schemas(true)", [("shop", ["pg_catalog", "s1", "s2"], 170000)]),
+        ("c.relhassubclass", [
+            ("shop", "s1", "T", "r", False), ("shop", "s2", "t", "r", False), ("shop", "s2", "U", "r", False),
+        ]),
+        ("a.attname,", [("T", "id", False, "integer", None), ("t", "id", False, "integer", None), ("U", "id", False, "integer", None)]),
+        ("k.contype IN ('p', 'u')", [("T", "p", ["id"], "shop", None, None, [])]),
+        ("k.contype IN ('f')", []),
+        ("pg_catalog.pg_index", []),
+    ]
+
+
+class _CaseConnection(_ScriptedConnection):
+    def cursor(self) -> _ScriptedCursor:
+        return _CaseCursor(self.log)
+
+
+def test_a_name_never_resolves_to_a_relation_spelled_in_another_case():
+    found = PostgresKnowledgeFetcher(_CaseConnection()).fetch_relation_metadata(("t", "T", "u", "U"))
+    # Unquoted t (and "t") is s2.t; s1."T" shadows it only under a case-insensitive lookup.
+    # "T" may be either: written unquoted it means t. U is s2."U" whichever: unquoted u, U do not exist.
+    assert {name: metadata.identity for name, metadata in found.items()} == {"t": "shop.s2.t", "U": "shop.s2.U"}

@@ -35,6 +35,7 @@ from sqlassert_dbt.jinja import Rendered, Unrenderable, has_incremental_branch, 
 from sqlassert_dbt.manifest import Relation
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.ir.convert import IrParser
+from sqlassert.ir.model import LiteralValue
 from sqlassert.properties import (
     EnumeratedDomain, ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage,
     UniqueSet,
@@ -42,6 +43,7 @@ from sqlassert.properties import (
 from sqlassert.python_engine import Engine
 from sqlassert.reporting import Outcome, Report
 from sqlassert.rules.domain import _domain
+from sqlassert.rules.equality import _binary_text, _comparison_type, _identity_comparison
 from sqlassert.rules.uniqueness import minimal_keys
 from sqlassert.sql_parse import SqlParser, _marker_shapes
 from sqlassert.suggest import MAX_ENUM_VALUES
@@ -228,10 +230,12 @@ class TestResult:
 @dataclass(frozen=True)
 class MarkerResult:
     """One of the model's own markers in one branch. `line` is the body line;
-    `raw_line` the model file's line, when known."""
+    `raw_line` the model file's line, when known; `place` its position among
+    the markers on its line."""
 
     line: int
     raw_line: int | None
+    place: int
     marker: str
     outcome: Outcome
     explanation: str
@@ -349,7 +353,7 @@ class Builder:
             _coverage(assertion) if assertion.origin.line in tested and isinstance(assertion.property, ForeignKey) else assertion
             for assertion in program.assertions
         )
-        declarations = (*program.declarations, *self._declarations(program, model, reached))
+        declarations = (*program.declarations, *self._declarations(program, conversion.knowledge, model, reached))
         program = replace(program, assertions=assertions, declarations=declarations)
         diagnostics = ast.diagnostics + conversion.diagnostics
         report = Engine().run(program, conversion.knowledge, diagnostics, conversion.warnings)
@@ -410,7 +414,9 @@ class Builder:
             definitions.append(f"{_identifier(column.name, self.dialect)} {kind.sql(dialect=self.dialect)}")
         return definitions
 
-    def _declarations(self, program: ir.Program, model: Relation, reached: list[Relation]) -> list[Property]:
+    def _declarations(
+        self, program: ir.Program, knowledge: tuple[Property, ...], model: Relation, reached: list[Relation],
+    ) -> list[Property]:
         """The fact tests and constraints of every reached relation, as Properties of its IR."""
         named = {
             relation.name.lower(): relation for relation in program.named_relations
@@ -449,7 +455,10 @@ class Builder:
                         case "not_null":
                             declared.extend(NonNullColumn(column=column) for column in columns)
                         case "enum":
-                            declared.append(EnumeratedDomain(column=columns[0], values=frozenset(expectation.values)))
+                            with Engine().session(program, knowledge):
+                                identical = _holds_its_literals(columns[0], expectation.values, self.dialect)
+                            if identical:
+                                declared.append(EnumeratedDomain(column=columns[0], values=frozenset(expectation.values)))
                         case "coverage":
                             referenced = [
                                 found for other in relations_of(expectation.referenced or "")
@@ -560,17 +569,39 @@ def _tests(report: Report, tested: Mapping[int, Expectation]) -> dict[str, TestR
     return results
 
 
+def _holds_its_literals(column: ir.OutputColumn, values: Iterable[LiteralValue], dialect: str) -> bool:
+    """Whether `column IN (values)` passing means each value of `column` is one
+    of `values` as written: the comparison casts neither side and equates no
+    two distinct values. An integer column passes `IN ('01')` with 1, a
+    decimal one `IN (1)` with 1.00; of an unknown type nothing is known."""
+    declared = _comparison_type(column).value
+    if declared is None or not _identity_comparison(column).value:
+        return False
+    if _binary_text(column).value:
+        return all(value.type == "string" for value in values)
+    kind = exp.DataType.build(declared, dialect=dialect).this
+    if kind in exp.DataType.INTEGER_TYPES:
+        return all(value.type == "numeric" and value.text.lstrip("-").isdigit() for value in values)
+    if kind == exp.DataType.Type.BOOLEAN:
+        return all(value.type == "boolean" for value in values)
+    return False
+
+
 def _markers(report: Report, body: Body, body_lines: int) -> tuple[MarkerResult, ...]:
     found = []
     for assertion in report.assertions:
-        line = assertion.origin.line
-        if line is None or line > body_lines:
+        span = assertion.origin.span
+        if span is None or span.line > body_lines:
             continue
-        offset = _line_offset(body, line)
+        start = _line_start(body, span.line)
+        offset = start + span.column - 1
         if body.in_injected(offset):
             continue
+        end = body.text.find("\n", start) % (len(body.text) + 1)  # -1: the last line runs to the end.
+        on_line = [m.start() for m in _marker_shapes(body.text) if start <= m.start() < end]
         found.append(MarkerResult(
-            line, raw_line_of(body, line), _marker_on(body, line), assertion.outcome,
+            span.line, raw_line_of(body, span.line, offset), on_line.index(offset) if offset in on_line else 0,
+            _marker_at(body, offset), assertion.outcome,
             assertion.evidence.explain() if assertion.evidence is not None else "",
         ))
     return tuple(found)
@@ -597,13 +628,21 @@ def _problems(
     return tuple(found)
 
 
-def _line_offset(body: Body, line: int) -> int:
-    """The offset where `line` of the body starts its first marker, or its first non-space."""
+def _line_start(body: Body, line: int) -> int:
+    """The offset where `line` of the body starts."""
     start = 0
     for _ in range(line - 1):
         start = body.text.find("\n", start) + 1
         if start == 0:
             return len(body.text)
+    return start
+
+
+def _line_offset(body: Body, line: int) -> int:
+    """The offset where `line` of the body starts its first marker, or its first non-space."""
+    start = _line_start(body, line)
+    if start == len(body.text):
+        return start
     end = body.text.find("\n", start)
     end = len(body.text) if end < 0 else end
     markers = [m for m in _marker_shapes(body.text) if start <= m.start() < end]
@@ -613,19 +652,19 @@ def _line_offset(body: Body, line: int) -> int:
     return start + stripped
 
 
-def _marker_on(body: Body, line: int) -> str:
-    offset = _line_offset(body, line)
+def _marker_at(body: Body, offset: int) -> str:
     match = next((m for m in _marker_shapes(body.text) if m.start() == offset), None)
     return re.sub(r"\s+", " ", match.group(0)) if match else ""
 
 
-def raw_line_of(body: Body, line: int) -> int | None:
+def raw_line_of(body: Body, line: int, offset: int | None = None) -> int | None:
     """The model file's line that `line` of the body was rendered from, when known.
 
     Without a trusted rendering, a marker is found by its text: the k-th
     occurrence in the body is the k-th in the raw code, when both have equally
-    many; any other line, by its text when that occurs once in each."""
-    offset = _line_offset(body, line)
+    many; any other line, by its text when that occurs once in each.
+    `offset` is the marker's, when `line` has more than one."""
+    offset = _line_offset(body, line) if offset is None else offset
     if body.lines is not None:
         found = body.lines[offset] if offset < len(body.lines) else 0
         return found or None

@@ -10,7 +10,8 @@
 -- checked (`-x` of the least BIGINT is an exact DECIMAL), and division by zero
 -- is NULL in any mode. An ENUM column
 -- holds only its members, which lose trailing spaces. MySQL 8.4 ignores a
--- column-level REFERENCES, and only InnoDB (and NDB) enforces foreign keys.
+-- column-level REFERENCES, and only InnoDB (and NDB) enforces foreign keys:
+-- a table must name its ENGINE for them to be Knowledge.
 
 -- dialect: mysql
 CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL, m INT, s VARCHAR(10), b VARCHAR(10) COLLATE utf8mb4_0900_bin, e ENUM('a', 'b ') NOT NULL);
@@ -66,8 +67,15 @@ CREATE TABLE o (id INT PRIMARY KEY, t_id INT REFERENCES t (id));
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
 
 -- case: a_table_level_foreign_key_is_enforced
-CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (id));
+CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (id)) ENGINE=InnoDB;
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED
+
+-- case: a_foreign_key_of_a_table_naming_no_engine_is_unknown
+-- default_storage_engine decides, and may be MyISAM.
+-- trust_unenforced_keys: false
+CREATE TABLE o (id INT PRIMARY KEY, t_id INT, FOREIGN KEY (t_id) REFERENCES t (id));
+--~ unenforced-constraint "names no ENGINE" "ENGINE=InnoDB"
+SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
 
 -- case: a_myisam_table_ignores_foreign_keys
 -- trust_unenforced_keys: false

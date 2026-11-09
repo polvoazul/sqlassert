@@ -145,7 +145,8 @@ same way, in every dialect: `NOT ENFORCED` (BigQuery, PostgreSQL 18),
 `DEFERRABLE` (a transaction may see one violated), a PostgreSQL foreign key
 added by `ALTER TABLE ... NOT VALID`, a MySQL column-level `REFERENCES`
 (parsed and ignored before MySQL 9.0), a foreign key of a MySQL table whose
-`ENGINE` is not InnoDB or NDB.
+`ENGINE` is not InnoDB or NDB, or that names no `ENGINE` (the server's
+`default_storage_engine` decides, and may be MyISAM).
 
 ## Catalog fetchers
 
@@ -165,6 +166,10 @@ the hooks whose standard view is missing or incomplete there:
   do not cover, so it is columns only; so is a foreign table. A NOT NULL
   added `NOT VALID` does not count. A nondeterministic column collation is
   reported, since the default compares by identity and it does not.
+  Names that differ only in case are distinct relations, and the analysis
+  does not keep a name's quoting, so a name denotes a relation spelled as
+  written or folded to lower case, and none when relations spelled both ways
+  are on its search path (`t` and `"T"`: whether it was quoted decides).
 - MySQL: `COLUMN_TYPE` (an ENUM's members), unique indexes from `STATISTICS`
   with no functional key part, foreign keys from `KEY_COLUMN_USAGE`'s
   `REFERENCED_*` columns (only enforcing engines keep them).

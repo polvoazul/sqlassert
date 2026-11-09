@@ -19,6 +19,7 @@ from sqlassert_dbt.report import DbtReport, Location, MarkerOutcome, Problem, St
 from sqlassert.dialects import MODELLED_DIALECTS
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
+from sqlassert.sql_parse import _marker_shapes
 
 # The dialects sqlassert analyzes soundly: those `dialects.py` models. A dbt
 # adapter maps onto its SQLGlot dialect; one not modelled is analyzed only
@@ -142,8 +143,10 @@ class _Analysis:
             return outcome
         if relation.language != "sql" or relation.compiled_code is None:
             why = f"it is a {relation.language} model" if relation.language != "sql" else "it has no compiled code; run `dbt compile`"
+            # Its own markers go unchecked: that fails the check, not a fact a connection could supply.
+            severity = "error" if relation.language == "sql" and _has_markers(relation.raw_code) else "warning"
             outcome.problems.append(Problem(
-                UNANALYZED_MODEL, f"model {relation.name} was not analyzed: {why}", "warning",
+                UNANALYZED_MODEL, f"model {relation.name} was not analyzed: {why}", severity,
                 Location(relation.original_file_path), relation.name,
             ))
             outcome.tests.extend(self._outcome(e, relation, Status.NOT_PROVED, "its model was not analyzed") for e in own)
@@ -201,6 +204,11 @@ class _Analysis:
             case "not_null" | "enum":
                 return None  # Every row of the table came from one batch.
             case "unique" | "key":
+                if relation.incremental_predicates:
+                    return (
+                        "its incremental_predicates can keep an earlier row out of the match on its unique_key, "
+                        "so a key of every batch is not one of the table"
+                    )
                 key = {column.lower() for column in relation.unique_key}
                 if relation.incremental_strategy in _REPLACING_STRATEGIES and key == {column.lower() for column in e.columns}:
                     return None
@@ -215,7 +223,10 @@ class _Analysis:
         grouped: dict[tuple, list] = {}
         for index, (_, result) in enumerate(results):
             for marker in result.markers:
-                key = (marker.raw_line, marker.marker) if marker.raw_line is not None else (None, index, marker.line, marker.marker)
+                key = (
+                    (marker.raw_line, marker.place, marker.marker) if marker.raw_line is not None
+                    else (None, index, marker.line, marker.place, marker.marker)
+                )
                 grouped.setdefault(key, []).append(marker)
         found = []
         for markers in grouped.values():
@@ -319,3 +330,11 @@ def _raw_lines_in(message: str, body: Body) -> str:
 
 def _unique(problems: list[Problem]) -> list[Problem]:
     return list(dict.fromkeys(problems))
+
+
+_PROPERTY_MARKER = re.compile(r"/\*\*\s*(ASSERT|DECLARE)\b", re.IGNORECASE)
+
+
+def _has_markers(sql: str) -> bool:
+    """Whether `sql` writes a Property Marker."""
+    return any(_PROPERTY_MARKER.match(match.group()) for match in _marker_shapes(sql))

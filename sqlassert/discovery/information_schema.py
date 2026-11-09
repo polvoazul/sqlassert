@@ -82,6 +82,11 @@ class InformationSchemaKnowledgeFetcher(DatabaseKnowledgeFetcher):
     session_sql: str = "SELECT CURRENT_CATALOG, CURRENT_SCHEMA"
     # Whether a name may be qualified by a catalog other than the current one.
     cross_catalog: bool = False
+    # Whether names that differ only in case are distinct relations, an
+    # unquoted name folded to lower case (PostgreSQL). A name's quoting is not
+    # known here, so it denotes a relation spelled as it is or as it folds,
+    # and only when no other relation on its lookup path is spelled either way.
+    case_sensitive: bool = False
 
     def __init__(self, connection: Connection):
         self.connection = connection
@@ -173,15 +178,15 @@ ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION
         for options in candidates.values():
             for candidate_catalog, schema, table in options:
                 groups.setdefault((candidate_catalog.lower(), schema.lower()), (candidate_catalog, schema, set()))[2].add(table.lower())
-        found: dict[_Key, FoundRelation | None] = {}
+        found: dict[_Key, list[FoundRelation]] = {}
         for group_catalog, schema, tables in groups.values():
             for relation in self.relations(group_catalog, schema, sorted(tables)):
-                key = (relation.catalog.lower(), relation.schema.lower(), relation.name.lower())
-                # Names that differ only in case cannot be told apart here.
-                found[key] = relation if found.get(key, relation) == relation else None
+                listed = found.setdefault((relation.catalog.lower(), relation.schema.lower(), relation.name.lower()), [])
+                if relation not in listed:
+                    listed.append(relation)
         resolved: dict[str, FoundRelation] = {}
         for name, options in candidates.items():
-            match = next((found[key] for option in options if (key := _lower(option)) in found), None)
+            match = self._match(options, found)
             if match is not None:
                 resolved[name] = match
 
@@ -231,6 +236,25 @@ ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION
             return DatabaseViewDefinition(sql=text)
         name = exp.to_identifier(relation.name, quoted=True).sql(dialect=self.type_dialect)
         return DatabaseViewDefinition(sql=f"CREATE VIEW {name} AS {text}")
+
+    def _match(self, options: list[tuple[str, str, str]], found: Mapping[_Key, list[FoundRelation]]) -> FoundRelation | None:
+        """The relation the first of ``options`` with one names, or None when
+        a name cannot tell the relations it may denote apart."""
+        if not self.case_sensitive:
+            # Names that differ only in case cannot be told apart.
+            listed = next((found[key] for option in options if (key := _lower(option)) in found), [])
+            return listed[0] if len(listed) == 1 else None
+        spelled = [
+            [
+                relation for relation in found.get(_lower(option), ())
+                if relation.schema in {schema, schema.lower()} and relation.name in {table, table.lower()}
+            ]
+            for option in options for _, schema, table in [option]
+        ]
+        if len({relation.name for listed in spelled for relation in listed}) > 1:
+            return None  # `"T"` and `t` are both on the path: whether the name was quoted decides.
+        listed = next((listed for listed in spelled if listed), [])
+        return listed[0] if len(listed) == 1 else None
 
     def _candidates(self, name: str, catalog: str, path: tuple[str, ...]) -> list[tuple[str, str, str]]:
         """Every (catalog, schema, table) ``name`` may denote, in lookup order."""

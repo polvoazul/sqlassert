@@ -18,7 +18,7 @@ from sqlassert_dbt.manifest import load_manifest
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
 from dbt.cli.main import dbtRunner
-from dbt_runs import copy_source
+from dbt_runs import copy_source, dbt
 
 from sqlassert_dbt import __main__ as dbt_command
 from sqlassert_dbt.__main__ import main, proved_tests
@@ -91,8 +91,12 @@ def test_a_warn_severity_test_is_no_fact_downstream(report):
 
 def test_an_error_severity_test_is_a_fact_downstream(copy_project):
     project = copy_project()
-    edit_manifest(project, lambda m: node_named(m, "source_accepted_values_raw_orders_status__placed__shipped__returned")["config"].update(severity="ERROR"))
-    assert statuses(analyze_project(project, trust_upstream_tests=True))["accepted_values_stg_orders_status__placed__shipped__returned"][0] is Status.PROVED
+    name = "source_accepted_values_raw_orders_status__placed__shipped__returned"
+    edit_manifest(project, lambda m: node_named(m, name)["config"].update(severity="ERROR"))
+    found = next(e for e in expectations(load_manifest(project / "target" / "manifest.json")) if e.name == name)
+    assert found.is_fact
+    # raw.orders' column types are unknown, so its values are not known to be the literals as written.
+    assert statuses(analyze_project(project, trust_upstream_tests=True))["accepted_values_stg_orders_status__placed__shipped__returned"][0] is Status.NOT_PROVED
 
 
 def test_a_where_config_makes_a_test_no_fact(copy_project):
@@ -125,6 +129,18 @@ def test_an_incremental_key_holds_under_merge_on_that_unique_key(report):
     assert status is Status.NOT_PROVED and "keeps rows of earlier runs" in reason
 
 
+def test_incremental_predicates_leave_an_incremental_key_unproved(copy_project):
+    # A predicate can keep an earlier row out of the merge's match, so its key is inserted twice.
+    project = copy_project()
+    edit_manifest(project, lambda m: node_named(m, "orders_incremental")["config"].update(
+        incremental_predicates=["DBT_INTERNAL_DEST.order_id > 100"],
+    ))
+    found = statuses(analyze_project(project, trust_upstream_tests=True))
+    status, reason = found["unique_orders_incremental_order_id"]
+    assert status is Status.NOT_PROVED and "incremental_predicates" in reason
+    assert found["not_null_orders_incremental_order_id"][0] is Status.PROVED
+
+
 def test_both_incremental_branches_are_analyzed(report):
     marker = next(m for m in report.markers if m.model == "orders_incremental")
     assert (str(marker.location), marker.outcome) == ("models/orders_incremental.sql:8", Outcome.PROVED)
@@ -153,6 +169,21 @@ def test_an_unrenderable_branch_leaves_its_model_unproved(copy_project):
 # Markers in model files
 
 
+def test_a_model_with_markers_and_no_compiled_code_fails_the_check(copy_project):
+    project = copy_project()
+
+    def edit(manifest):
+        for name in ("active_customers", "stg_orders"):  # Markers; none.
+            node_named(manifest, name).pop("compiled_code")
+
+    edit_manifest(project, edit)
+    report = analyze_project(project, trust_upstream_tests=True)
+    unanalyzed = {problem.model: problem for problem in report.problems if problem.code == "dbt-unanalyzed-model"}
+    assert unanalyzed["active_customers"].severity == "error" and "dbt compile" in unanalyzed["active_customers"].message
+    assert unanalyzed["stg_orders"].severity == "warning"
+    assert report.failed
+
+
 def test_markers_map_back_to_the_model_file(report):
     assert markers(report) == {
         "models/active_customers.sql:4 /**ASSERT UNIQUE(customer_id)**/": Outcome.PROVED,
@@ -161,6 +192,20 @@ def test_markers_map_back_to_the_model_file(report):
         "models/customers.sql:12 /**ASSERT NOT NULL(first_name)**/": Outcome.UNKNOWN,
         "models/orders_incremental.sql:8 /**ASSERT UNIQUE(order_id)**/": Outcome.PROVED,
     }
+
+
+def test_markers_on_one_line_are_reported_each_as_written(tmp_path):
+    project = compile_with(tmp_path, {
+        "models/two_markers.sql": "select 1 as a, cast(null as int) as b\n/**ASSERT NOT NULL(a)**/ /**ASSERT NOT NULL(b)**/\n",
+    })
+    found = [
+        (str(marker.location), marker.marker, marker.outcome)
+        for marker in analyze_project(project, trust_upstream_tests=True).markers if marker.model == "two_markers"
+    ]
+    assert found == [
+        ("models/two_markers.sql:2", "/**ASSERT NOT NULL(a)**/", Outcome.PROVED),
+        ("models/two_markers.sql:2", "/**ASSERT NOT NULL(b)**/", Outcome.UNKNOWN),
+    ]
 
 
 def test_an_ephemeral_models_markers_are_reported_once(report):
@@ -389,6 +434,49 @@ def test_unique_combination_is_proved_by_a_non_null_unique_set_and_declares_a_un
 def test_accepted_values_are_strings_unless_unquoted(copy_project, quote, values):
     expectation = manifest_with_test(copy_project, "accepted_values", {"column_name": "first_name", "values": [1, "a"], "quote": quote})
     assert (expectation.values or None) == values
+
+
+def compile_with(tmp_path: Path, files: dict[str, str]) -> Path:
+    """`tests/dbt_project` with `files` added, compiled by dbt."""
+    project = copy_source(tmp_path)
+    for name, text in files.items():
+        (project / name).write_text(text)
+    assert dbt(project, "compile"), "dbt compile failed"
+    return project
+
+
+def test_accepted_values_declare_a_domain_only_of_a_column_they_compare_by_identity(tmp_path):
+    # DuckDB casts '01' to the integer column, so 1 passes `n in ('01')`: n's values are not '01'.
+    project = compile_with(tmp_path, {
+        "models/codes.sql": (
+            "{{ config(materialized='incremental', on_schema_change='fail') }}\n"
+            "select id as n, cast(amount as varchar) as code from {{ ref('raw_payments') }}\n"
+        ),
+        "models/codes_used.sql": (
+            "select n, code\nfrom {{ ref('codes') }}\n/**ASSERT ENUM(n IN ('01'))**/\n/**ASSERT ENUM(code IN ('a'))**/\n"
+        ),
+        "models/codes.yml": """version: 2
+models:
+  - name: codes
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: n
+        data_type: integer
+        tests:
+          - accepted_values:
+              arguments: {values: ['01']}
+      - name: code
+        data_type: varchar
+        tests:
+          - accepted_values:
+              arguments: {values: ['a']}
+""",
+    })
+    assert {
+        marker.marker: marker.outcome for marker in analyze_project(project, trust_upstream_tests=True).markers
+        if marker.model == "codes_used"
+    } == {"/**ASSERT ENUM(n IN ('01'))**/": Outcome.UNKNOWN, "/**ASSERT ENUM(code IN ('a'))**/": Outcome.PROVED}
 
 
 def test_unquoted_accepted_values_are_sql_literals(copy_project):

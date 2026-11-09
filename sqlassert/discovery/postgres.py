@@ -95,6 +95,7 @@ WHERE n.nspname = %s AND c.relname = %s AND c.relkind = 'v'
 
 class PostgresKnowledgeFetcher(InformationSchemaKnowledgeFetcher):
     type_dialect = "postgres"
+    case_sensitive = True
     _enforced = False
 
     def session(self, scope: DatabaseRelationMetadata | None) -> tuple[str, tuple[str, ...]]:

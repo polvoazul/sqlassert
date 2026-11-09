@@ -74,6 +74,8 @@ class Relation:
     contract_enforced: bool = False
     incremental_strategy: str | None = None
     unique_key: tuple[str, ...] = ()
+    # Whether `incremental_predicates` narrow which existing rows the merge matches.
+    incremental_predicates: bool = False
     column_types: Mapping[str, str] = field(default_factory=dict)
     extra_ctes: tuple[InjectedCte, ...] = ()
     source_name: str | None = None
@@ -193,6 +195,7 @@ def _relation(unique_id: str, node: dict) -> Relation:
         contract_enforced=bool(contract.get("enforced")),
         incremental_strategy=_text(config.get("incremental_strategy")),
         unique_key=_names(config.get("unique_key")),
+        incremental_predicates=bool(config.get("incremental_predicates")),
         column_types={str(key): str(value) for key, value in _mapping(config.get("column_types")).items()},
         extra_ctes=tuple(
             InjectedCte(id=str(cte.get("id")), sql=str(cte.get("sql")))
