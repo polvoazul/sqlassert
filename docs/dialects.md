@@ -254,7 +254,12 @@ under each passing fact's `engine` versions and each vacuous fact's
 `undefined` ones, and removes it from each failing one; it never adds a fact
 or strengthens one. An undefined fact claims nothing on that version, so
 when a later version supports the construct its probe runs there and
-decides. `--list` prints the probes without a connection.
+decides. `--list` prints the probes without a connection. A probe that expects an error
+(overflow, a failed cast, division by zero) declares the message it accepts as
+a regex; any other error fails, and so does a returned value that is not the
+exact result. An `injective` probe passes on the declared overflow error or on
+the exact result as text (DuckDB 2.0 widens `-x` of the least BIGINT to a
+HUGEINT); a wrapped, saturated, NULL or floating-point result fails.
 
 Certification is one-off: rerun it when adding a dialect, changing a fact, or
 supporting a new major version. The engines it was run on:

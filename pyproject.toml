@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
   "case-conversion>=3.0.2",
-  "sqlglot>=28,<31",
+  "sqlglot>=30.30,<31",
 ]
 
 [project.urls]
@@ -35,10 +35,10 @@ sqlassert = "sqlassert.__main__:main"
 
 [project.optional-dependencies]
 duckdb = [
-  "duckdb>=1.1",
+  "duckdb>=2.0",
 ]
 test = [
-  "duckdb>=1.1",
+  "duckdb>=2.0",
   "hypothesis",
   "pytest",
   "pytest-xdist",

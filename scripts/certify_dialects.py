@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import sqlglot
-from sqlglot import exp
+from sqlglot import Expr, exp
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -85,7 +85,7 @@ VERSION_SQL: dict[str, str] = {
 # Appended to each probe table's CREATE: ClickHouse needs a table engine.
 TABLE_SUFFIX: dict[str, str] = {"clickhouse": " ENGINE = Memory"}
 
-type Expect = Literal["true", "error", "error or true"]
+type Expect = Literal["true", "error or true"]
 type Outcome = Literal["PASS", "VACUOUS", "FAIL", "ERROR"]
 
 
@@ -106,6 +106,9 @@ class Check:
     attempts: tuple[str, ...] = ()
     tables: tuple[str, ...] = ()
     problem: str = ""
+    # An error whose message matches is a pass; any other error fails. A check
+    # that declares none fails on every error.
+    accepted_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,12 +142,12 @@ def candidate_facts(dialect: str) -> tuple[Fact, ...]:
     return tuple(fact for fact in facts(dialect, strong) if fact.name not in claimed)
 
 
-def _cast(value: exp.Expression | str, to: str) -> exp.Expression:
+def _cast(value: Expr | str, to: str) -> Expr:
     this = exp.Literal.string(value) if isinstance(value, str) else value
     return exp.Cast(this=this, to=exp.DataType.build(to))
 
 
-def _n(value: int) -> exp.Expression:
+def _n(value: int) -> Expr:
     return exp.Literal.number(value)
 
 
@@ -163,10 +166,10 @@ class _Shape:
     holds its fixed parameters and one repetition."""
 
     type: str
-    ordinary: tuple[exp.Expression, ...]
-    overflow: tuple[tuple[exp.Expression, ...], ...] = ()
-    bad: tuple[tuple[exp.Expression, ...], ...] = ()
-    extra: tuple[tuple[str, exp.Expression], ...] = ()
+    ordinary: tuple[Expr, ...]
+    overflow: tuple[tuple[Expr, ...], ...] = ()
+    bad: tuple[tuple[Expr, ...], ...] = ()
+    extra: tuple[tuple[str, Expr], ...] = ()
 
 
 _IMPLICIT_CAST = _Shape("INT", (_n(1), _n(2)), bad=((_n(1), _X),))
@@ -216,29 +219,40 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
         strict = builtin.strict_flags(count)
         total = builtin.total_flags(count)
 
-        def call(arguments: Sequence[exp.Expression]) -> exp.Expression:
+        def call(arguments: Sequence[Expr]) -> Expr:
             args: dict[str, Any] = dict(shape.extra)
+            if node is exp.ConcatWs:
+                # SQLGlot's node is NULL-strict and writes a dialect whose concat_ws skips
+                # NULL as a CASE around it; `coalesce` says the node is that dialect's own,
+                # so the probe runs the engine's concat_ws, not SQLGlot's emulation.
+                args["coalesce"] = sqlglot.Dialect.get_or_raise(sqlassert_dialect(dialect)).CONCAT_WS_COALESCE
             if variadic:
                 args[keys[0]] = list(arguments)
             else:
                 args.update(zip(keys, arguments, strict=True))
             return node(**args)
 
-        def null_at(arguments: Sequence[exp.Expression], positions: Iterable[int]) -> tuple[exp.Expression, ...]:
+        def null_at(arguments: Sequence[Expr], positions: Iterable[int]) -> tuple[Expr, ...]:
             nulls = set(positions)
             return tuple(_cast(exp.null(), shape.type) if i in nulls else argument for i, argument in enumerate(arguments))
 
         label = builtin.name
         guards = _spell(call(ordinary), label, dialect)
 
-        def probe(arguments: Sequence[exp.Expression], expect: Expect) -> Iterable[Check]:
-            """One check per way to write the call, guarded by the same way with ordinary arguments."""
+        def probe(arguments: Sequence[Expr], expect: Expect, exact: int | None = None, accepted_error: str = "") -> Iterable[Check]:
+            """One check per way to write the call, guarded by the same way with ordinary arguments.
+            With `exact`, the check passes when the call raises or returns exactly that
+            integer, as text (a float is not exact): an engine may widen the type (DuckDB 2.0 returns `-MIN` as a HUGEINT)."""
             spellings = _spell(call(arguments), label, dialect)
             if not spellings:
                 yield Check("", expect, problem=f"no {dialect} SQL parses to {node.__name__}")
             for key, text in spellings.items():
-                query = _is_null(text) if expect == "true" else _is_not_null(text) if expect == "error or true" else f"SELECT {text}"
-                yield Check(query, expect, guard=(f"SELECT {guards[key]}",) if key in guards else ())
+                query = (
+                    f"SELECT CASE WHEN CAST(({text}) AS VARCHAR(40)) = '{exact}' THEN 1 ELSE 0 END" if exact is not None
+                    else _is_null(text) if expect == "true"
+                    else _is_not_null(text)
+                )
+                yield Check(query, expect, guard=(f"SELECT {guards[key]}",) if key in guards else (), accepted_error=accepted_error)
 
         strict_positions = [i for i, flag in enumerate(strict) if flag]
         if strict_positions:
@@ -247,23 +261,43 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
         if total is not None:
             free = [i for i, flag in enumerate(total) if not flag]
             cases = [ordinary, *(case + ordinary[len(case):] for case in (*shape.overflow, *shape.bad))]
-            checks = tuple(check for case in cases for check in probe(null_at(case, free), "error or true"))
+            checks = tuple(check for case in cases for check in probe(null_at(case, free), "error or true", accepted_error=_DATA_ERROR))
             yield Fact(f"total({label})", _total_flag(label), checks)
         if builtin.injective:
-            checks = tuple(check for case in shape.overflow for check in probe(case, "error"))
+            checks = tuple(check for case in shape.overflow for check in probe(case, "error or true", exact=_exact(label, case), accepted_error=_OVERFLOW_ERROR))
             yield Fact(f"injective({label})", "checked_arithmetic=False", checks)
+
+
+# The messages of an error that is the engine checking a value: integer overflow, a
+# value out of range, a division by zero, a failed cast, and (for `total`: a failed
+# implicit cast is the engine refusing the program) a type error at bind time. Any
+# other error (syntax, an unknown function) fails the probe.
+_OVERFLOW_ERROR = r"(?i)overflow|out of range|out-of-range"
+_DATA_ERROR = (
+    _OVERFLOW_ERROR + r"|division by (zero|0)|divide by zero|divided by zero|cannot be cast|cannot cast|could not convert"
+    r"|conversion error|invalid input syntax|invalid (numeric|value|number|literal)|cannot parse|cannot convert|incorrect .* value|truncated"
+    r"|explicit type casts|no function matches|best candidate|operator does not exist|cannot be applied|no matching signature|illegal_type_of_argument"
+)
+_LEAST, _GREATEST = -(2**63), 2**63 - 1
+_EXACT = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b, "unary -": lambda a: -a}
+
+
+def _exact(name: str, case: Sequence[Expr]) -> int:
+    """The mathematically exact result of an overflow case."""
+    operands = [_LEAST if argument is _BIGINT_MIN else _GREATEST if argument is _BIGINT_MAX else int(argument.name) for argument in case]
+    return _EXACT[name](*operands)
 
 
 # Spellings SQLGlot does not write but parses to the Builtin's node.
 _SPELLINGS: dict[str, tuple[str, ...]] = {"//": ("{0} DIV {1}",)}
 
 
-def _spell(node: exp.Expression, name: str, dialect: str) -> dict[str, str]:
+def _spell(node: Expr, name: str, dialect: str) -> dict[str, str]:
     """`node` as the dialect's users may write it, by way of writing: each SQL
     that sqlassert parses back to the same node type (SQLGlot writes DuckDB's
     `concat()` as `||`, which treats NULL differently; MySQL writes integer
     division `a DIV b`)."""
-    arguments = [value for value in node.args.values() if isinstance(value, exp.Expression)]
+    arguments = [value for value in node.args.values() if isinstance(value, Expr)]
     listed = node.args.get("expressions") or []
     written = [argument.sql(dialect=dialect) for argument in [*arguments, *listed]]
     spellings = {"sqlglot": node.sql(dialect=dialect)}
@@ -447,10 +481,12 @@ def _check(cursor: Any, check: Check) -> tuple[Outcome, str]:
         try:
             rows = _execute(cursor, check.query)
         except Exception as error:  # noqa: BLE001 - any driver's error
-            return ("PASS" if check.expect != "true" else "FAIL"), f"{check.query} raised {_first_line(error)}"
+            message = _first_line(error)
+            accepted = bool(check.accepted_error) and re.search(check.accepted_error, str(error)) is not None
+            return ("PASS" if accepted else "FAIL"), f"{check.query} raised {message}" + ("" if accepted else f" (accepted: {check.accepted_error!r})")
         value = rows[0][0] if rows and rows[0] else None
         truthy = value in (1, True) or value == "1"
-        return ("PASS" if check.expect != "error" and truthy else "FAIL"), f"{check.query} returned {value!r}"
+        return ("PASS" if truthy else "FAIL"), f"{check.query} returned {value!r}"
     finally:
         _drop(cursor, check.tables)
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
@@ -263,7 +263,7 @@ def _accepted_key(cls: type[Property], item: Property) -> tuple:
 
 class Engine:
     @contextmanager
-    def session(self, program: ir.Program, knowledge: tuple[Property, ...] = ()) -> Iterator[Arena]:
+    def session(self, program: ir.Program, knowledge: tuple[Property, ...] = ()) -> Generator[Arena]:
         assert _active.get(None) is None, "An analysis arena is already active"
         # Importing registers analysis functions; inference remains in rules/.
         from sqlassert.rules import domain, equality, exactly_one, foreign_key, join_cardinality, nullability, uniqueness  # noqa: F401

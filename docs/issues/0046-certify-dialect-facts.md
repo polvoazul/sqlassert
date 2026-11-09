@@ -48,7 +48,7 @@ supporting a new major version.
 Done: provenance for every fact (`docs/dialect-provenance.json`), probes
 generated from the facts and the runner (`docs/dialects.md`, "Certifying
 facts"), `tests/test_dialect_certification.py`. Certified on engines: DuckDB
-1.5.2, SQLite 3.50.4, PostgreSQL 16.15, 17.11, 18.6, MySQL 8.0.46, 8.4.13,
+2.0.0, SQLite 3.50.4, PostgreSQL 16.15, 17.11, 18.6, MySQL 8.0.46, 8.4.13,
 9.7.4, ClickHouse 26.10.3.7, Trino 484. MariaDB is not a modelled dialect.
 
 Found and fixed (now the weaker setting, with `.sqltest` cases):

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import Literal, assert_never
 
-from sqlglot import exp
+from sqlglot import Expr, exp
 
 from sqlassert import diagnostics as diag
 from sqlassert import ir
@@ -48,10 +48,10 @@ class _Symbol:
     required_columns: set[str] = field(default_factory=set)
     # Table-level constraints added after CREATE TABLE (ALTER TABLE, CREATE
     # UNIQUE INDEX), shaped like the CREATE TABLE's own, and columns set NOT NULL.
-    constraints: list[exp.Expression] = field(default_factory=list)
+    constraints: list[Expr] = field(default_factory=list)
     not_null: set[str] = field(default_factory=set)
     # Each unique index with an expression key part: its parts and statement.
-    expression_keys: list[tuple[list[exp.Expression], exp.Create]] = field(default_factory=list)
+    expression_keys: list[tuple[list[Expr], exp.Create]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ class _ConstraintReference:
     target_columns: tuple[str, ...] | None
     origin: Origin
     # The `REFERENCES` or `FOREIGN KEY` constraint itself.
-    node: exp.Expression
+    node: Expr
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ class IrParser:
     _query_scopes: dict[int, dict[str, _Symbol]] = field(default_factory=dict)
     _table_symbols: dict[int, _Symbol] = field(default_factory=dict)
     _source_required: dict[int, set[str]] = field(default_factory=dict)
-    _source_expressions: dict[int, exp.Expression] = field(default_factory=dict)
+    _source_expressions: dict[int, Expr] = field(default_factory=dict)
     _named_relations: dict[_Symbol, ir.NamedRelation] = field(default_factory=dict)
     _resolving: set[_Symbol] = field(default_factory=set)
     _knowledge: list[Property] = field(default_factory=list)
@@ -268,7 +268,7 @@ class IrParser:
         setting columns NOT NULL. Any other action could invalidate what is
         known of the table, so a statement with one states nothing."""
         actions = statement.args.get("actions") or ()
-        added: list[exp.Expression] = []
+        added: list[Expr] = []
         not_null: list[str] = []
         for action in actions:
             match action:
@@ -297,7 +297,7 @@ class IrParser:
         if statement.args.get("not_valid"):
             self._unvalidated.update(id(constraint) for constraint in added)
 
-    def _created_before(self, table: exp.Table, statement: exp.Expression) -> _Symbol | None:
+    def _created_before(self, table: exp.Table, statement: Expr) -> _Symbol | None:
         """The table `statement` amends, which a CREATE TABLE earlier in the
         program must declare; otherwise the statement is diagnosed."""
         name = _qualified_name(table)
@@ -339,14 +339,17 @@ class IrParser:
 
         self._query_scopes[id(query)] = scope
         if isinstance(query, exp.SetOperation):
-            self._discover_query(query.this, scope)
-            self._discover_query(query.expression, scope)
+            # SQLGlot 30 wraps a nested set operation in a Subquery.
+            for side in (query.this, query.expression):
+                inner = _unwrap_query(side)
+                if inner is not None:
+                    self._discover_query(inner, scope)
             return
         if not isinstance(query, exp.Select):
             return
 
         sources = _direct_sources(query)
-        by_qualifier: dict[str, list[exp.Expression]] = {}
+        by_qualifier: dict[str, list[Expr]] = {}
         for source in sources:
             self._source_required.setdefault(id(source), set())
             self._source_expressions[id(source)] = source
@@ -438,7 +441,7 @@ class IrParser:
                     _ConstraintReference(symbol, columns, target, target_columns, self._origin(node.find_ancestor(exp.ColumnDef) or node), node)
                 )
 
-    def _require(self, source: exp.Expression, column: str) -> None:
+    def _require(self, source: Expr, column: str) -> None:
         self._source_required.setdefault(id(source), set()).add(column)
         if isinstance(source, exp.Table):
             self._table_symbols[id(source)].required_columns.add(column)
@@ -537,7 +540,7 @@ class IrParser:
         origin = self._origin(query)
         return ir.Limit(origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin), is_schema_complete=relation.is_schema_complete, input=relation, count=count)
 
-    def _lower_source(self, source: exp.Expression) -> _Lowered:
+    def _lower_source(self, source: Expr) -> _Lowered:
         if isinstance(source, exp.Table):
             symbol = self._table_symbols[id(source)]
             alias_name = source.alias or source.name
@@ -682,7 +685,7 @@ class IrParser:
         self._guessed.update(columns)
         return columns
 
-    def _recursive_relation(self, symbol: _Symbol, source: exp.Expression) -> ir.RecursiveRelation:
+    def _recursive_relation(self, symbol: _Symbol, source: Expr) -> ir.RecursiveRelation:
         origin = self._origin(source)
         return ir.RecursiveRelation(
             origin=origin,
@@ -795,7 +798,7 @@ class IrParser:
         return self._lower_condition(predicate, _conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
 
     def _lower_condition(
-        self, source: exp.Expression, conjuncts: list[exp.Expression], bindings: tuple[_Binding, ...], *, schema_complete: bool
+        self, source: Expr, conjuncts: list[Expr], bindings: tuple[_Binding, ...], *, schema_complete: bool
     ) -> ir.ScalarExpr:
         """The AND of `conjuncts`, the top-level conjuncts of `source`."""
         assert conjuncts, "a condition has at least one conjunct"
@@ -806,7 +809,7 @@ class IrParser:
         assert lowered is not None
         return lowered
 
-    def _lower_conjunct(self, conjunct: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.ScalarExpr:
+    def _lower_conjunct(self, conjunct: Expr, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.ScalarExpr:
         return self._lower_expression(conjunct, bindings, schema_complete=schema_complete, line=_source_line(conjunct))
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
@@ -980,7 +983,7 @@ class IrParser:
         return "unknown" if base in self._guessed else "yes"
 
     def _join_scalar_subqueries(
-        self, lowered: _Lowered, expressions: Sequence[exp.Expression]
+        self, lowered: _Lowered, expressions: Sequence[Expr]
     ) -> tuple[_Lowered, dict[ir.OutputColumn, ir.OutputColumn]]:
         """Each scalar subquery in `expressions` joined onto `lowered`, and
         where each of `lowered`'s columns went."""
@@ -1064,7 +1067,7 @@ class IrParser:
         )
         return _Lowered(join, bindings), remapped
 
-    def _subquery_join(self, lowered: _Lowered, conjunct: exp.Expression) -> _Lowered | None:
+    def _subquery_join(self, lowered: _Lowered, conjunct: Expr) -> _Lowered | None:
         """`EXISTS (SELECT ... FROM r WHERE p)` as a semi join of r on p, and
         `NOT EXISTS` as an anti join; `p` may read the outer row (a dependent
         join, so the IR stays a DAG). `x IN (SELECT a ...)` as a semi join on
@@ -1113,7 +1116,7 @@ class IrParser:
         )
         return _Lowered(relation, tuple(replace(binding, column=remapped[binding.column]) for binding in left.bindings))
 
-    def _project(self, lowered: _Lowered, items: list[exp.Expression], origin: Origin) -> ir.Project:
+    def _project(self, lowered: _Lowered, items: list[Expr], origin: Origin) -> ir.Project:
         output_columns = tuple(
             ir.OutputColumn(
                 origin=self._origin(item),
@@ -1128,7 +1131,7 @@ class IrParser:
         )
         return ir.Project(origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation)
 
-    def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[exp.Expression]) -> ir.Aggregate | None:
+    def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.Aggregate | None:
         """`select` grouped by `keys`; [] is one group, one row however many rows its input has."""
         group = select.args.get("group")
         if select.args.get("having") is not None or (
@@ -1186,7 +1189,7 @@ class IrParser:
             lowered, select, window.args.get("partition_by") or (), order.expressions if order else (),
         )
 
-    def _lower_distinct_on(self, lowered: _Lowered, select: exp.Select, on: exp.Expression) -> ir.QualifyByPartition | None:
+    def _lower_distinct_on(self, lowered: _Lowered, select: exp.Select, on: Expr) -> ir.QualifyByPartition | None:
         """`DISTINCT ON (k...)` keeps one row per distinct `k...`, like
         `QUALIFY ROW_NUMBER() OVER (PARTITION BY k...) = 1`. Its ORDER BY only
         picks which row survives, and may name outputs, so it is not lowered."""
@@ -1196,7 +1199,7 @@ class IrParser:
         return self._one_row_per_partition(lowered, select, keys, ())
 
     def _one_row_per_partition(
-        self, lowered: _Lowered, select: exp.Select, partitions: Sequence[exp.Expression], order: Sequence[exp.Ordered],
+        self, lowered: _Lowered, select: exp.Select, partitions: Sequence[Expr], order: Sequence[exp.Ordered],
     ) -> ir.QualifyByPartition | None:
         """Every partition key must be a selected output: the Unique Set is stated on outputs."""
         if not partitions or select.args.get("having") is not None or _star_only(select):
@@ -1220,7 +1223,7 @@ class IrParser:
             partition_outputs=tuple(partition_outputs), ordering=ordering,
         )
 
-    def _selected_output_columns(self, items: list[exp.Expression], lowered: _Lowered) -> tuple[ir.OutputColumn, ...]:
+    def _selected_output_columns(self, items: list[Expr], lowered: _Lowered) -> tuple[ir.OutputColumn, ...]:
         return tuple(
             ir.OutputColumn(
                 origin=self._origin(item),
@@ -1234,7 +1237,7 @@ class IrParser:
             for item in items
         )
 
-    def _aggregate_output_columns(self, items: list[exp.Expression], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
+    def _aggregate_output_columns(self, items: list[Expr], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
         output_columns: list[ir.OutputColumn] = []
         for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
@@ -1251,7 +1254,7 @@ class IrParser:
         return tuple(output_columns)
 
     def _lower_expression(
-        self, expression: exp.Expression, bindings: tuple[_Binding, ...], *, schema_complete: bool = False, line: int | None = None
+        self, expression: Expr, bindings: tuple[_Binding, ...], *, schema_complete: bool = False, line: int | None = None
     ) -> ir.ScalarExpr:
         """An unqualified column resolves by name across several sources only
         when every source's schema is complete: otherwise the one visible match
@@ -1262,7 +1265,7 @@ class IrParser:
         function of them (`_NOT_A_FUNCTION_OF_ITS_COLUMNS`)."""
         origin = self._origin(expression, line)
 
-        def lower(node: exp.Expression) -> ir.ScalarExpr:
+        def lower(node: Expr) -> ir.ScalarExpr:
             return self._lower_expression(node, bindings, schema_complete=schema_complete)
 
         if isinstance(expression, exp.Subquery) and id(expression) in self._scalar_values:
@@ -1364,7 +1367,7 @@ class IrParser:
             return ir.OpaqueExpression(origin=origin, description=description)
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
 
-    def _check_zoned_text(self, comparison: exp.Expression, lower: Callable[[exp.Expression], ir.ScalarExpr], origin: Origin) -> None:
+    def _check_zoned_text(self, comparison: Expr, lower: Callable[[Expr], ir.ScalarExpr], origin: Origin) -> None:
         """Warn of a comparison with a CAST of a zoned timestamp, where it keeps
         its zone: equal instants cast to different text (or dates, or local
         times), so the comparison depends on the zone each value was given."""
@@ -1391,8 +1394,8 @@ class IrParser:
             ))
 
     def _composite_comparison(
-        self, comparison: exp.Expression, function: ir.Builtin, arguments: tuple[ir.ScalarExpr, ...],
-        composites: list[tuple[exp.Expression, ir.ScalarExpr]], origin: Origin,
+        self, comparison: Expr, function: ir.Builtin, arguments: tuple[ir.ScalarExpr, ...],
+        composites: list[tuple[Expr, ir.ScalarExpr]], origin: Origin,
     ) -> tuple[ir.Builtin, tuple[ir.ScalarExpr, ...]]:
         """A comparison of composites (ARRAYs, ROWs, MAPs), non-null only when
         no element is NULL either: `ARRAY[1, NULL] <> ARRAY[1, NULL]` is NULL in
@@ -1432,7 +1435,7 @@ class IrParser:
                 ))
         return warnings
 
-    def _is_composite(self, node: exp.Expression, lower: Callable[[exp.Expression], ir.ScalarExpr]) -> bool:
+    def _is_composite(self, node: Expr, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
         """Whether `node`'s value is known to be an ARRAY, ROW or MAP. A column
         of unknown type is taken to be a scalar: composites are rare."""
         match node:
@@ -1457,7 +1460,7 @@ class IrParser:
             case _:
                 return False
 
-    def _is_json(self, node: exp.Expression, lower: Callable[[exp.Expression], ir.ScalarExpr]) -> bool:
+    def _is_json(self, node: Expr, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
         """Whether `node`'s value is known to be JSON (or a VARIANT), whose
         `null` a CAST turns into NULL. A column of unknown type is taken not to be."""
         match node:
@@ -1495,7 +1498,7 @@ class IrParser:
     def _lower_case(self, case: exp.Case, bindings: tuple[_Binding, ...], *, schema_complete: bool) -> ir.SimpleCase:
         """A simple CASE, and the assertion its marker states, once per CASE."""
 
-        def lower(expression: exp.Expression) -> ir.ScalarExpr:
+        def lower(expression: Expr) -> ir.ScalarExpr:
             return self._lower_expression(expression, bindings, schema_complete=schema_complete)
 
         arms = case.args.get("ifs") or ()
@@ -1517,7 +1520,7 @@ class IrParser:
             self._assertions.append(ir.Assertion(origin=origin, property=ExhaustiveCase(case=lowered)))
         return lowered
 
-    def _opaque_relation(self, source: exp.Expression, names=()) -> ir.OpaqueRelation:
+    def _opaque_relation(self, source: Expr, names=()) -> ir.OpaqueRelation:
         origin = self._origin(source)
         return ir.OpaqueRelation(
             origin=origin,
@@ -1746,7 +1749,7 @@ class IrParser:
         columns = {column.name.lower(): column for column in relation.output_columns}
         non_null = {column.lower() for column in symbol.not_null}
         # Each key's columns, its constraint, and whether it is a primary key.
-        keys: list[tuple[tuple[str, ...], exp.Expression, bool]] = []
+        keys: list[tuple[tuple[str, ...], Expr, bool]] = []
         for definition in statement.this.find_all(exp.ColumnDef):
             domain = _enum_type_values(definition, self.semantics)
             if domain is not None and definition.name.lower() in columns:
@@ -1787,7 +1790,7 @@ class IrParser:
                 (self._knowledge if trust == "enforced" else self._declarations).append(UniqueSet(columns=frozenset(members)))
 
     def _expression_key(
-        self, relation: ir.NamedRelation, parts: list[exp.Expression], index: exp.Create
+        self, relation: ir.NamedRelation, parts: list[Expr], index: exp.Create
     ) -> tuple[ir.OutputColumn, ...] | None:
         """The columns a unique index over `parts` makes a Unique Set, or None
         (diagnosed) when it makes none.
@@ -1818,7 +1821,7 @@ class IrParser:
             return None
         return tuple(found)
 
-    def _key_trust(self, constraint: exp.Expression, symbol: _Symbol, columns: tuple[str, ...]) -> Literal["enforced", "declared"] | None:
+    def _key_trust(self, constraint: Expr, symbol: _Symbol, columns: tuple[str, ...]) -> Literal["enforced", "declared"] | None:
         """Whether a key or foreign key constraint holds: enforced by the
         database (Knowledge), trusted by its author (a Property Declaration:
         marked `RELY`, or any unenforced one under `trust_unenforced_keys`),
@@ -1827,7 +1830,7 @@ class IrParser:
         assert symbol.statement is not None
         foreign = isinstance(constraint, exp.ForeignKey | exp.Reference)
         reference = constraint.args.get("reference") if isinstance(constraint, exp.ForeignKey) else constraint
-        options = {str(option).upper() for option in (reference.args.get("options") or ())} if isinstance(reference, exp.Expression) else set()
+        options = {str(option).upper() for option in (reference.args.get("options") or ())} if isinstance(reference, Expr) else set()
         meaning = self.semantics
         reason = None
         if "NOT ENFORCED" in options:
@@ -1862,7 +1865,7 @@ class IrParser:
         ))
         return None
 
-    def _origin(self, node: exp.Expression, line: int | None = None) -> Origin:
+    def _origin(self, node: Expr, line: int | None = None) -> Origin:
         return Origin(SQL, node.sql(dialect=self.dialect), line)
 
 
@@ -1873,13 +1876,13 @@ def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) ->
     )
 
 
-def _source_line(node: exp.Expression) -> int | None:
+def _source_line(node: Expr) -> int | None:
     """The first source line of `node`, from the positions SQLGlot keeps on its tokens."""
     lines = [descendant.meta["line"] for descendant in node.walk() if "line" in descendant.meta]
     return min(lines, default=None)
 
 
-def _subquery_conjunct(conjunct: exp.Expression) -> tuple[ir.JoinKind, exp.Select, exp.Expression | None] | None:
+def _subquery_conjunct(conjunct: Expr) -> tuple[ir.JoinKind, exp.Select, Expr | None] | None:
     """A WHERE conjunct lowered as a filtering join: its kind, the subquery,
     and the IN operand (None for EXISTS)."""
     match conjunct:
@@ -1895,7 +1898,7 @@ def _subquery_conjunct(conjunct: exp.Expression) -> tuple[ir.JoinKind, exp.Selec
 
 
 @cache
-def dialect_builtins(meaning: DialectSemantics) -> dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]]:
+def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Builtin, tuple[str, ...]]]:
     """Each modelled Builtin, by the SQLGlot node it lowers from (exactly that
     type: TRY_CAST, a subclass of CAST, may be NULL for a value), with the
     argument keys its parameters come from, a list key in place of a variadic
@@ -1924,7 +1927,7 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[exp.Expression], tu
         exp.BitwiseAnd: "&", exp.BitwiseOr: "|", exp.BitwiseXor: "^", exp.BitwiseLeftShift: "<<", exp.BitwiseRightShift: ">>",
     }
     division = {exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%"}
-    builtins: dict[type[exp.Expression], tuple[ir.Builtin, tuple[str, ...]]] = {
+    builtins: dict[type[Expr], tuple[ir.Builtin, tuple[str, ...]]] = {
         **{node: (builtin(name, 2, total=casts), ("this", "expression")) for node, name in binary.items()},
         exp.Mul: (builtin("*", 2, total=checked), ("this", "expression")),
         **{node: (builtin(name, 2, total=meaning.checked_division), ("this", "expression")) for node, name in division.items()},
@@ -1978,11 +1981,11 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[exp.Expression], tu
     return builtins
 
 
-def _as_list(value: exp.Expression | list[exp.Expression]) -> list[exp.Expression]:
+def _as_list(value: Expr | list[Expr]) -> list[Expr]:
     return value if isinstance(value, list) else [value]
 
 
-def _disjuncts(predicate: exp.Expression) -> list[exp.Expression]:
+def _disjuncts(predicate: Expr) -> list[Expr]:
     """The operands of a predicate's top-level ORs, parentheses removed."""
     while isinstance(predicate, exp.Paren):
         predicate = predicate.this
@@ -2002,7 +2005,7 @@ def _and(parts: tuple[ir.ScalarExpr, ...], origin: Origin) -> ir.ScalarExpr | No
             return ir.And(origin=origin, parts=parts)
 
 
-def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:
+def _conjuncts(predicate: Expr) -> list[Expr]:
     """The operands of a predicate's top-level ANDs, parentheses removed."""
     while isinstance(predicate, exp.Paren):
         predicate = predicate.this
@@ -2011,7 +2014,7 @@ def _conjuncts(predicate: exp.Expression) -> list[exp.Expression]:
     return [predicate]
 
 
-def _direct_sources(select: exp.Select) -> list[exp.Expression]:
+def _direct_sources(select: exp.Select) -> list[Expr]:
     source = _from_source(select)
     return ([] if source is None else [source]) + [join.this for join in select.args.get("joins") or ()]
 
@@ -2041,7 +2044,7 @@ def _asserted_cases(ast: ParsedProgram) -> list[exp.Case]:
     ]
 
 
-def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] | None:
+def _table_level_unique_columns(constraint: Expr) -> tuple[str, ...] | None:
     if isinstance(constraint, exp.PrimaryKey):
         return tuple(identifier.name for identifier in constraint.expressions)
     if isinstance(constraint, exp.UniqueColumnConstraint) and isinstance(constraint.this, exp.Schema):
@@ -2049,7 +2052,7 @@ def _table_level_unique_columns(constraint: exp.Expression) -> tuple[str, ...] |
     return None
 
 
-def _table_constraints(symbol: _Symbol) -> list[exp.Expression]:
+def _table_constraints(symbol: _Symbol) -> list[Expr]:
     """A declared table's table-level constraints, named or not: its CREATE
     TABLE's, then those added later."""
     assert symbol.statement is not None
@@ -2058,7 +2061,7 @@ def _table_constraints(symbol: _Symbol) -> list[exp.Expression]:
     return own + symbol.constraints
 
 
-def _unwrap_constraints(constraints: Iterable[exp.Expression]) -> list[exp.Expression]:
+def _unwrap_constraints(constraints: Iterable[Expr]) -> list[Expr]:
     """`CONSTRAINT name ...` is the constraints it names."""
     return [
         inner for constraint in constraints
@@ -2066,11 +2069,11 @@ def _unwrap_constraints(constraints: Iterable[exp.Expression]) -> list[exp.Expre
     ]
 
 
-def _is_added_constraint(constraint: exp.Expression) -> bool:
+def _is_added_constraint(constraint: Expr) -> bool:
     return isinstance(constraint, exp.PrimaryKey | exp.ForeignKey) or _table_level_unique_columns(constraint) is not None
 
 
-def _references(symbol: _Symbol) -> list[tuple[tuple[str, ...], exp.Table, tuple[str, ...] | None, exp.Expression]]:
+def _references(symbol: _Symbol) -> list[tuple[tuple[str, ...], exp.Table, tuple[str, ...] | None, Expr]]:
     """Every `REFERENCES` constraint of a table, column-level and table-level,
     as `(columns, referenced table, referenced columns, node)`. Referenced
     columns are None when omitted, meaning the referenced primary key."""
@@ -2135,17 +2138,17 @@ def _qualified_name(table: exp.Table) -> str:
     return ".".join(part for part in (table.catalog, table.db, table.name) if part)
 
 
-def _unwrap_query(body: exp.Expression | None) -> exp.Query | None:
+def _unwrap_query(body: Expr | None) -> exp.Query | None:
     while isinstance(body, exp.Subquery):
         body = body.this
     return body if isinstance(body, exp.Query) else None
 
 
-def _arg(node: exp.Expression, name: str) -> exp.Expression | None:
+def _arg(node: Expr, name: str) -> Expr | None:
     return node.args.get(f"{name}_") or node.args.get(name)
 
 
-def _from_source(select: exp.Query) -> exp.Expression | None:
+def _from_source(select: exp.Query) -> Expr | None:
     source = _arg(select, "from")
     return source.this if isinstance(source, exp.From) else None
 
@@ -2154,7 +2157,7 @@ def _from_source(select: exp.Query) -> exp.Expression | None:
 _SCALAR_QUALIFIER = "\0scalar"
 
 
-def _scalar_subqueries(expression: exp.Expression) -> list[exp.Subquery]:
+def _scalar_subqueries(expression: Expr) -> list[exp.Subquery]:
     """The scalar subqueries `expression` evaluates itself: not one under
     EXISTS, IN, ANY or ALL, nor inside another subquery."""
     found = []
@@ -2200,27 +2203,27 @@ def _selected_output_names(select: exp.Select) -> tuple[str, ...]:
     return tuple(item.alias_or_name for item in select.expressions if not isinstance(item, exp.Star))
 
 
-def _matching_output(group_expression: exp.Expression, items: list[exp.Expression]) -> exp.Expression | None:
+def _matching_output(group_expression: Expr, items: list[Expr]) -> Expr | None:
     return next(
         (item for item in items if (item.this if isinstance(item, exp.Alias) else item) == group_expression),
         None,
     )
 
 
-def _matching_grouping_output(group_expression: exp.Expression, items: list[exp.Expression]) -> exp.Expression | None:
+def _matching_grouping_output(group_expression: Expr, items: list[Expr]) -> Expr | None:
     if isinstance(group_expression, exp.Literal) and group_expression.is_int:
         position = int(group_expression.this)
         return items[position - 1] if 1 <= position <= len(items) else None
     return _matching_output(group_expression, items)
 
 
-def _is_bare_aggregate_expression(expression: exp.Expression) -> bool:
+def _is_bare_aggregate_expression(expression: Expr) -> bool:
     return any(isinstance(node, exp.Column) for node in expression.walk()) and not any(
         isinstance(node, exp.AggFunc) for node in expression.walk()
     )
 
 
-def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
+def _row_number_equals_one(predicate: Expr) -> exp.Window | None:
     if not isinstance(predicate, exp.EQ):
         return None
     left, right = predicate.this, predicate.expression
@@ -2233,7 +2236,7 @@ def _row_number_equals_one(predicate: exp.Expression) -> exp.Window | None:
     return window
 
 
-def _last_select(query: exp.Expression) -> exp.Select | None:
+def _last_select(query: Expr) -> exp.Select | None:
     """The Select a set operation's left input ends with."""
     while True:
         unwrapped = _unwrap_query(query) if isinstance(query, exp.Query) else None
@@ -2246,7 +2249,7 @@ def _last_select(query: exp.Expression) -> exp.Select | None:
                 return None
 
 
-_SET_OPERATORS: dict[type[exp.Expression], ir.SetOperator] = {exp.Union: "union", exp.Intersect: "intersect", exp.Except: "except"}
+_SET_OPERATORS: dict[type[Expr], ir.SetOperator] = {exp.Union: "union", exp.Intersect: "intersect", exp.Except: "except"}
 
 
 # Types whose equal values are identical: no collation (text has a comparison
@@ -2306,7 +2309,7 @@ def _engine(symbol: _Symbol) -> str | None:
     return engine.name.lower() if engine is not None else None
 
 
-def _aggregate_arguments(call: exp.AggFunc) -> list[exp.Expression]:
+def _aggregate_arguments(call: exp.AggFunc) -> list[Expr]:
     """The value arguments of an aggregate call: none for `count(*)`, the
     listed ones under DISTINCT."""
     this = call.this

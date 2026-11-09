@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar
 
-from sqlglot import exp
+from sqlglot import Expr, exp
 
 from sqlassert import ir
 from sqlassert.dialects import semantics
@@ -153,7 +153,7 @@ def _syntax_at_sites(ast: ParsedProgram) -> dict[tuple[int, bool], exp.Join | ex
     return index
 
 
-def _nodes(ast: ParsedProgram, *types: type[exp.Expression]) -> Iterator:
+def _nodes(ast: ParsedProgram, *types: type[Expr]) -> Iterator:
     for statement in (*ast.create_statements, ast.root_select):
         if statement is not None:
             yield from statement.find_all(*types)
@@ -325,8 +325,8 @@ def _right_or_full_join_follows(node: exp.Join) -> bool:
     return any((other.side or "").upper() in {"RIGHT", "FULL"} for other in later)
 
 
-def _within(node: exp.Expression, ancestor: exp.Expression) -> bool:
-    current: exp.Expression | None = node
+def _within(node: Expr, ancestor: Expr) -> bool:
+    current: Expr | None = node
     while current is not None:
         if current is ancestor:
             return True
@@ -403,14 +403,14 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
     return Improvement(site, Rewrite.GROUPING_PROJECTION, message, evidence)
 
 
-def _one_row(item: exp.Expression, dialect: str) -> str | None:
+def _one_row(item: Expr, dialect: str) -> str | None:
     """`item` with each aggregate in it replaced by its value over one row,
     or None when an aggregate has no such form here: count(*) is 1, count(x)
     is 1 unless x is NULL, sum, avg, min, max, any_value, bool_and and bool_or
     are x. With or without DISTINCT, IGNORE or RESPECT NULLS; never with
     FILTER, nor a count of several values."""
     for call in list(item.find_all(exp.AggFunc)):
-        target: exp.Expression = call
+        target: Expr = call
         while isinstance(target.parent, exp.IgnoreNulls | exp.RespectNulls):
             target = target.parent
         if isinstance(target.parent, exp.Filter) or any(value for key, value in call.args.items() if key not in {"this", "big_int"}):
@@ -422,10 +422,10 @@ def _one_row(item: exp.Expression, dialect: str) -> str | None:
             argument = argument.expressions[0]
         match call:
             case exp.Count() if argument is None or isinstance(argument, exp.Star):
-                value: exp.Expression = exp.Literal.number(1)
+                value: Expr = exp.Literal.number(1)
             case exp.Count():
                 value = exp.Case(ifs=[exp.If(this=exp.Is(this=argument.copy(), expression=exp.null()), true=exp.Literal.number(0))], default=exp.Literal.number(1))
-            case exp.Sum() | exp.Avg() | exp.Min() | exp.Max() | exp.AnyValue() | exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, exp.Expression) and not isinstance(argument, exp.Star | exp.Order):
+            case exp.Sum() | exp.Avg() | exp.Min() | exp.Max() | exp.AnyValue() | exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
                 value = argument.copy()
             case _:
                 return None
@@ -524,5 +524,5 @@ def _unused_ctes(ast: ParsedProgram) -> list[Improvement]:
     return found
 
 
-def _table_names(node: exp.Expression, skip: exp.Expression | None = None) -> set[str]:
+def _table_names(node: Expr, skip: Expr | None = None) -> set[str]:
     return {table.name.lower() for table in node.find_all(exp.Table) if skip is None or not _within(table, skip)}

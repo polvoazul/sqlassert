@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
-from sqlglot import exp
+from sqlglot import Expr, exp
 from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.scope import traverse_scope
 
@@ -391,7 +391,7 @@ def _table(name: str) -> exp.Table:
     return exp.table_(table, db=db, catalog=catalog)
 
 
-def _created_table(statement: exp.Expression) -> exp.Table | None:
+def _created_table(statement: Expr) -> exp.Table | None:
     target = statement.this if isinstance(statement, exp.Create) else None
     if isinstance(target, exp.Schema):
         target = target.this

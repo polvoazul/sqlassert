@@ -22,7 +22,7 @@ classifiers = [
 # project, not to check it, so it is a test dependency here.
 dependencies = [
   "sqlassert",
-  "sqlglot>=28,<31",
+  "sqlglot>=30.30,<31",
 ]
 
 [project.urls]

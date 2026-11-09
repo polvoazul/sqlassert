@@ -106,3 +106,24 @@ def test_a_function_is_probed_as_written_not_as_sqlglot_rewrites_it():
     fact, = (fact for fact in certify.facts("duckdb") if fact.name == "total(concat)")
 
     assert all("concat(" in check.query.lower() for check in fact.checks)
+
+
+def test_an_error_passes_only_when_the_probe_declares_its_message():
+    cursor = sqlite3.connect(":memory:").cursor()
+    boom = "SELECT abs(-9223372036854775807 - 1)"  # SQLite: "integer overflow"
+    syntax = "SELEKT 1"
+
+    declared = certify.Check(boom, "error or true", accepted_error=r"(?i)overflow")
+    assert certify._check(cursor, declared)[0] == "PASS"
+    assert certify._check(cursor, certify.Check(boom, "error or true", accepted_error=r"(?i)out of range"))[0] == "FAIL"
+    assert certify._check(cursor, certify.Check(boom, "error or true"))[0] == "FAIL"
+    # A syntax error is no overflow, whatever else the probe accepts.
+    outcome, message = certify._check(cursor, certify.Check(syntax, "error or true", accepted_error=r"(?i)overflow"))
+    assert outcome == "FAIL" and "syntax error" in message
+
+
+def test_a_returned_value_passes_only_when_exact():
+    cursor = sqlite3.connect(":memory:").cursor()
+    assert certify._check(cursor, certify.Check("SELECT 1", "error or true"))[0] == "PASS"
+    assert certify._check(cursor, certify.Check("SELECT 0", "error or true", accepted_error=".*"))[0] == "FAIL"
+    assert certify._check(cursor, certify.Check("SELECT NULL", "error or true", accepted_error=".*"))[0] == "FAIL"

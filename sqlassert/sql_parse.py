@@ -19,7 +19,7 @@ import enum
 import re
 
 import sqlglot
-from sqlglot import exp
+from sqlglot import Expr, exp
 from sqlglot import tokens as sqlglot_tokens
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError, SqlglotError
@@ -266,7 +266,7 @@ _DECIMAL = re.compile(r"\d+\.\d*|\.\d+")
 _EXPONENT = re.compile(r"(\d+\.?\d*|\.\d+)[eE][+-]?\d+")
 
 
-def literal_value(expression: exp.Expression) -> LiteralValue | None:
+def literal_value(expression: Expr) -> LiteralValue | None:
     """The typed value of a string, numeric, or boolean literal, or None for
     any other expression. A numeric literal may be negated."""
     if isinstance(expression, exp.Boolean):
@@ -322,7 +322,7 @@ class UnattachedMarker(ParseError):
 _FLAT_SET_OPERATION_DIALECTS = frozenset({"oracle"})
 
 
-def _intersect_first(chain: exp.Expression | None) -> exp.Expression | None:
+def _intersect_first(chain: Expr | None) -> Expr | None:
     """A left-to-right chain of set operations, with INTERSECT bound first.
 
     SQLGlot reads `a UNION ALL b INTERSECT c` as `(a UNION ALL b) INTERSECT c`;
@@ -333,7 +333,7 @@ def _intersect_first(chain: exp.Expression | None) -> exp.Expression | None:
     if not isinstance(chain, exp.SetOperation):
         return chain
     operations: list[exp.SetOperation] = []
-    node: exp.Expression = chain
+    node: Expr = chain
     while isinstance(node, exp.SetOperation):
         operations.append(node)
         node = node.this
@@ -346,7 +346,7 @@ def _intersect_first(chain: exp.Expression | None) -> exp.Expression | None:
     for key in modifiers:
         chain.set(key, None)
     # Fold each INTERSECT into its left neighbour's right operand, then chain the rest left to right.
-    terms: list[exp.Expression] = [node]
+    terms: list[Expr] = [node]
     joiners: list[exp.SetOperation] = []
     for operation in operations:
         right = operation.expression
@@ -370,13 +370,13 @@ def _intersect_first(chain: exp.Expression | None) -> exp.Expression | None:
 _AMBIGUOUS_PIPES = "sqlassert_ambiguous_pipes"
 
 
-def _ambiguous_pipes(**kwargs: exp.Expression) -> exp.Or:
+def _ambiguous_pipes(**kwargs: Expr) -> exp.Or:
     node = exp.Or(**kwargs)
     node.meta[_AMBIGUOUS_PIPES] = True
     return node
 
 
-def is_ambiguous_pipes(node: exp.Expression) -> bool:
+def is_ambiguous_pipes(node: Expr) -> bool:
     """Whether `node` is a `||` that a setting may make OR or concatenation
     (MySQL's `PIPES_AS_CONCAT`): written as an OR, which its operands bound."""
     return isinstance(node, exp.Or) and bool(node.meta.get(_AMBIGUOUS_PIPES))
@@ -720,7 +720,7 @@ class ParsedProgram:
     is always an immutable tuple."""
 
     # CREATE and ALTER TABLE statements, in program order.
-    create_statements: tuple[exp.Expression, ...] = ()
+    create_statements: tuple[Expr, ...] = ()
     root_select: exp.Query | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
 
@@ -748,7 +748,7 @@ class SqlParser:
         except SqlglotError as error:
             return ParsedProgram(diagnostics=(*diagnostics, self._unparseable(sql, error)))
 
-        creates: list[exp.Expression] = []
+        creates: list[Expr] = []
         selects: list[exp.Query] = []
 
         for statement in statements:
@@ -876,7 +876,7 @@ def _marker_hint(text: str) -> str:
     return ""
 
 
-def _unresolved_markers(sql: str, statements: list[exp.Expression]) -> list[Diagnostic]:
+def _unresolved_markers(sql: str, statements: list[Expr]) -> list[Diagnostic]:
     """Recognized markers that did not become assertions.
 
     Every marker in the source should have reached a join, a Select, or a CASE, or
@@ -937,7 +937,7 @@ def exhaustive_span(case: exp.Case) -> Span | None:
     return case.meta.get(_EXHAUSTIVE_AT)
 
 
-def _is_alter_table(statement: exp.Expression) -> bool:
+def _is_alter_table(statement: Expr) -> bool:
     return isinstance(statement, exp.Alter) and (statement.args.get("kind") or "").upper() == "TABLE"
 
 
@@ -947,7 +947,7 @@ def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:
     return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))
 
 
-def grouping(select: exp.Select) -> list[exp.Expression] | None:
+def grouping(select: exp.Select) -> list[Expr] | None:
     """What `select` groups by, or None when it does not aggregate.
 
     [] is one group: a scalar aggregate (an aggregate function outside any

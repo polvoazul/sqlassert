@@ -34,7 +34,7 @@ import sqlglot
 from hypothesis import HealthCheck, assume, find, settings
 from hypothesis import strategies as st
 from hypothesis.errors import NoSuchExample, Unsatisfiable
-from sqlglot import exp
+from sqlglot import Expr, exp
 
 import sqlassert
 import sqlassert.main
@@ -454,12 +454,12 @@ def _case_violation(case: exp.Case) -> str:
 _MATCHED = '"__sqlassert_matched"'
 
 
-def _with_context(node: exp.Expression, query: str) -> str:
+def _with_context(node: Expr, query: str) -> str:
     """`query` prefixed with every CTE in scope at `node` from enclosing queries.
 
     A CTE whose own body holds `node` brings only the CTEs defined before it.
     """
-    ctes: list[exp.Expression] = []
+    ctes: list[Expr] = []
     recursive = False
     # The node's own CTEs too: a Foreign Key may reference one of them.
     own = node.args.get("with_") or node.args.get("with")
@@ -511,7 +511,7 @@ class _Database:
         for check in self.foreign_keys:
             self.connection.execute(check)
 
-    def _foreign_key_checks(self, statements: tuple[exp.Expression, ...]) -> list[str]:
+    def _foreign_key_checks(self, statements: tuple[Expr, ...]) -> list[str]:
         """DDL Foreign Keys checked as coverage queries after the whole instance is loaded."""
         checks = []
         for statement in statements:
@@ -543,7 +543,7 @@ class _Database:
                 checks.append(_violation_query(exp.select("*").from_(source.copy()), marker, "coverage"))
         return checks
 
-    def _create(self, statements: tuple[exp.Expression, ...]) -> None:
+    def _create(self, statements: tuple[Expr, ...]) -> None:
         """Run the DDL. A program may reference a relation declared later, which
         DuckDB rejects, so a failed statement is retried once the others ran."""
         pending = [sql for statement in statements if (sql := _runnable_create(statement))]
@@ -651,15 +651,18 @@ class _Database:
                 self.connection.executemany(f"INSERT INTO {table.name} VALUES ({placeholders})", rows)
 
 
-def _runnable_create(statement: exp.Expression) -> str:
+def _runnable_create(statement: Expr) -> str:
     """The statement as DuckDB runs it. A table created from a query becomes a
     view, so its contents follow from generated data instead of being generated.
     DuckDB cannot ALTER TABLE ... ADD UNIQUE, so that becomes a unique index.
     Foreign Keys are removed here and checked after loading the complete instance."""
-    statement = statement.transform(lambda node: None if (
+    transformed = statement.transform(lambda node: None if (
         isinstance(node, exp.ForeignKey)
         or isinstance(node, exp.ColumnConstraint) and isinstance(node.args.get("kind"), exp.Reference)
     ) else node)
+    if transformed is None:  # the statement was itself a Foreign Key
+        return ""
+    statement = transformed
     for constraint in reversed(list(statement.find_all(exp.Constraint, exp.AddConstraint))):
         if not constraint.expressions:
             constraint.pop()
