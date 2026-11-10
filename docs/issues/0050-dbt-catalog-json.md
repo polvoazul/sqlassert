@@ -1,9 +1,8 @@
 # 50. dbt: read `catalog.json`
 
-- **State:** not planned
-- **Labels:** dbt, integrations
+- **State:** open
+- **Labels:** dbt, integrations, P2
 - **Created:** 2026-11-08
-- **Parent:** [43. External integrations](0043-external-integrations.md) (from 44)
 
 `sqlassert-dbt` reads only `manifest.json`, so the columns of sources, seeds,
 snapshots and uncontracted models are unknown (a `dbt-unknown-columns`

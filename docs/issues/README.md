@@ -11,12 +11,13 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: Properties under a collation; today any COLLATE is not identity)
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
-- [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44, 50-54; backlog of CLI, editor, framework, data quality and agent integrations)
+- [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44, 51-54; backlog of CLI, editor, framework, data quality and agent integrations)
 - [51. Validate Snowflake against a real engine](0051-validate-snowflake-against-a-real-engine.md) — not planned (P4, child of 43)
 - [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)
 - [53. Validate Databricks against a real engine](0053-validate-databricks-against-a-real-engine.md) — not planned (P4, child of 43)
 - [54. Validate Redshift against a real engine](0054-validate-redshift-against-a-real-engine.md) — not planned (P4, child of 43)
-- [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md) — not planned (dbt, child of 43: column lists and types for sources and seeds, opt-in)
+- [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md) — open (P2: opt-in column lists and types for sources and seeds)
+- [55. Run `sqlassert-dbt suggest` on dbt model files](0055-dbt-suggest-model-files.md) — open
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
@@ -29,7 +30,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P1:** none open. #41 and #38 are done.
 - **P2:** #37 (Paulley audit's missing rules); #45 (Calcite audit's missing
   proofs; its lowering items, HAVING and USING first, lose proofs on common
-  SQL); #15's remaining Low smells and High rewrites.
+  SQL); #15's remaining Low smells and High rewrites; #50 (dbt catalog metadata).
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
 - **Integrations:** #44 (v1: `check` CLI, dialects, dbt) is done; the rest of
