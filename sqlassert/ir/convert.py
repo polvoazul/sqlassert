@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
-from typing import Literal, assert_never
+from typing import Literal, TypeGuard, assert_never
 
 from sqlglot import Expr, exp
 
@@ -356,7 +356,7 @@ class IrParser:
             qualifier = source.alias_or_name.lower()
             if qualifier:
                 by_qualifier.setdefault(qualifier, []).append(source)
-            if isinstance(source, exp.Table):
+            if _is_named_table(source):
                 symbol = self._symbol_for_table(source, scope)
                 self._table_symbols[id(source)] = symbol
             elif isinstance(source, exp.Subquery):
@@ -443,7 +443,7 @@ class IrParser:
 
     def _require(self, source: Expr, column: str) -> None:
         self._source_required.setdefault(id(source), set()).add(column)
-        if isinstance(source, exp.Table):
+        if _is_named_table(source):
             self._table_symbols[id(source)].required_columns.add(column)
 
     def _propagate_required_columns(self) -> None:
@@ -541,7 +541,7 @@ class IrParser:
         return ir.Limit(origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin), is_schema_complete=relation.is_schema_complete, input=relation, count=count)
 
     def _lower_source(self, source: Expr) -> _Lowered:
-        if isinstance(source, exp.Table):
+        if _is_named_table(source):
             symbol = self._table_symbols[id(source)]
             alias_name = source.alias or source.name
             # An unaliased table may be named with its schema: `s1.t.k`.
@@ -2132,6 +2132,14 @@ def _created_table(statement: exp.Create) -> exp.Table | None:
     if isinstance(target, exp.Schema):
         target = target.this
     return target if isinstance(target, exp.Table) else None
+
+
+def _is_named_table(source: Expr) -> TypeGuard[exp.Table]:
+    """A FROM source naming a table, view or CTE. SQLGlot parses a
+    table-valued function (`json_each(x)`, `read_parquet('f')`,
+    `generate_series(1, 3)`) as a Table whose `this` is the call: its rows
+    are opaque, like an UNNEST, and it names no relation."""
+    return isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier)
 
 
 def _qualified_name(table: exp.Table) -> str:

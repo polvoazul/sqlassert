@@ -55,3 +55,11 @@ SELECT x FROM d /**ASSERT NOT NULL ELEMENTS(x)**/  --~ PROVED
 CREATE TABLE l (id INTEGER NOT NULL, x INTEGER[] NOT NULL);
 WITH d AS (SELECT id, x FROM l /**DECLARE NOT NULL ELEMENTS(x)**/)
 SELECT x <> x AS v FROM d /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_table_function_is_an_opaque_source_not_a_table
+-- SQLGlot parses json_each(...) in FROM as a Table whose name is the call;
+-- it names no relation, so no undeclared-table warning, and its rows are unknown.
+SELECT t.id FROM t JOIN json_each('[1, 2]') AS a ON true /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_table_function_alone_reads_no_table
+SELECT * FROM generate_series(1, 3) AS g
