@@ -12,6 +12,7 @@ from dbt.cli.main import dbtRunner
 from dbt_runs import copy_source, dbt
 
 from sqlassert_dbt import ProjectError, SuggestReport, analyze_project, suggest_models
+from sqlassert_dbt.report import Problem, WarningLimit
 from sqlassert_dbt import __main__ as dbt_command
 from sqlassert_dbt.__main__ import main
 from sqlassert.reporting import Outcome
@@ -226,3 +227,36 @@ def test_each_model_is_reported_as_soon_as_it_is_analyzed(compiled):
     assert "dbt-unknown-columns" in {problem.code for problem in parts[-1].problems}
     assert report.models == ("stg_orders", "customer_orders")
     assert report.suggestions == parts[0].suggestions + parts[1].suggestions
+
+
+def test_warnings_past_the_limit_of_their_code_are_suppressed_and_counted():
+    limit = WarningLimit(2)
+    warning = Problem("ambiguous-column", "column x", "warning")
+    other = Problem("undeclared-table", "table t", "warning")
+    error = Problem("dbt-unanalyzed-model", "model m", "error")
+    printed = [line for problem in (warning, warning, warning, other, warning, error, error, error) for line in limit.lines(problem)]
+    assert printed == [
+        "warning ambiguous-column: column x",
+        "warning ambiguous-column: column x",
+        "warning: suppressing further 'ambiguous-column' warnings (--warning-limit 0 prints every one)",
+        "warning undeclared-table: table t",
+        *["error dbt-unanalyzed-model: model m"] * 3,
+    ]
+    assert limit.suppressed == 2
+    assert WarningLimit(0).lines(warning) == ["warning ambiguous-column: column x"]
+
+
+def test_suggest_takes_a_warning_limit(compiled, monkeypatch, capsys):
+    fake_dbt(monkeypatch)
+    main(["suggest", str(compiled / "models"), "--warning-limit", "1"])
+    out = capsys.readouterr().out
+    assert out.count("warning dbt-unknown-columns") == 1
+    assert "suppressing further 'dbt-unknown-columns' warnings" in out
+    assert out.rstrip().endswith("suppressed)")
+
+
+def test_core_advice_for_unknown_columns_points_at_the_catalog(compiled):
+    report = analyze_project(compiled, trust_upstream_tests=True)
+    ambiguous = [problem for problem in report.problems if problem.code == "ambiguous-column"]
+    assert ambiguous and all("analyze_database" not in problem.message for problem in report.problems)
+    assert "dbt docs generate" in ambiguous[0].message

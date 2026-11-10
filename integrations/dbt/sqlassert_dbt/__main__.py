@@ -24,7 +24,9 @@ from pathlib import Path
 
 from sqlassert.check import EXIT_FINDINGS, EXIT_OK, EXIT_USAGE
 from sqlassert_dbt.project import ProjectError, analyze_project, suggest_models
-from sqlassert_dbt.report import DbtReport, exit_code, format_suggestion_blocks, format_suggestion_summary, format_text
+from sqlassert_dbt.report import (
+    DEFAULT_WARNING_LIMIT, DbtReport, WarningLimit, exit_code, format_suggestion_blocks, format_suggestion_summary, format_text,
+)
 
 # The dbt flags that narrow which nodes run: under any of them, the tests of
 # what a model reads may not run, so they are no facts.
@@ -84,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     suggest.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
     _catalog(suggest)
+    _warning_limit(suggest)
     suggest.add_argument("--explain", action="store_true", help="print each suggestion's evidence")
     suggest.add_argument(
         "--trust-upstream-tests", action="store_true",
@@ -104,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         report = _analyze(project, arguments.manifest, arguments.dialect, arguments.trust_upstream_tests, arguments)
         if report is None:
             return EXIT_USAGE
-        sys.stdout.write(format_text(report, explain=arguments.explain))
+        sys.stdout.write(format_text(report, explain=arguments.explain, warning_limit=arguments.warning_limit))
         return exit_code(report, require_proved=arguments.require_proved)
 
     passed = [argument for argument in arguments.dbt_arguments if argument != "--"]
@@ -116,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     report = _analyze(project, None, arguments.dialect, not selecting, arguments)
     if report is None:
         return EXIT_USAGE
-    sys.stdout.write(format_text(report, explain=arguments.explain))
+    sys.stdout.write(format_text(report, explain=arguments.explain, warning_limit=arguments.warning_limit))
     proved = proved_tests(report)
     ran = run_dbt([arguments.command, *located, *(["--exclude", *proved] if proved else [])])
     return ran if ran != 0 else exit_code(report, require_proved=arguments.require_proved)
@@ -146,16 +149,17 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
     compiled = run_dbt(["compile", *located], to_stderr=True)
     if compiled != 0:
         return compiled
+    limit = WarningLimit(arguments.warning_limit)
     try:
         report = suggest_models(
             project, relative, dialect=arguments.dialect, trust_upstream_tests=arguments.trust_upstream_tests,
             catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
-            on_model=lambda part: print(format_suggestion_blocks(part, explain=arguments.explain), end="", flush=True),
+            on_model=lambda part: print(format_suggestion_blocks(part, explain=arguments.explain, limit=limit), end="", flush=True),
         )
     except ProjectError as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)
         return EXIT_USAGE
-    sys.stdout.write(format_suggestion_summary(report))
+    sys.stdout.write(format_suggestion_summary(report, limit))
     return EXIT_FINDINGS if report.failed else EXIT_OK
 
 
@@ -173,8 +177,16 @@ def _catalog(command: argparse.ArgumentParser) -> None:
     )
 
 
+def _warning_limit(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--warning-limit", type=int, default=DEFAULT_WARNING_LIMIT, metavar="N",
+        help=f"print at most N warnings of each code, then say the rest are suppressed (default {DEFAULT_WARNING_LIMIT}; 0: all)",
+    )
+
+
 def _common(command: argparse.ArgumentParser) -> None:
     command.add_argument("project", nargs="?", default=".", help="dbt project directory (default: .)")
+    _warning_limit(command)
     command.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
     _catalog(command)
     command.add_argument("--explain", action="store_true", help="print each proof and failed proof")

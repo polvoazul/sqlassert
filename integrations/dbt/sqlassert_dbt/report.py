@@ -7,7 +7,7 @@ severity.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
@@ -137,12 +137,43 @@ class SuggestReport:
         return any(problem.severity == "error" for problem in self.problems)
 
 
+# How many warnings of one code are printed before the rest are suppressed.
+DEFAULT_WARNING_LIMIT = 10
+
+
+@dataclass
+class WarningLimit:
+    """Prints at most `limit` warnings of each code (0: every one), then one
+    line saying the rest are suppressed. Errors are always printed. One
+    instance spans every block of a streamed listing."""
+
+    limit: int = DEFAULT_WARNING_LIMIT
+    seen: dict[str, int] = field(default_factory=dict)
+
+    def lines(self, problem: Problem) -> list[str]:
+        where = f"{problem.location}: " if problem.location is not None else ""
+        line = f"{where}{problem.severity} {problem.code}: {problem.message}"
+        if problem.severity == "error" or not self.limit:
+            return [line]
+        count = self.seen[problem.code] = self.seen.get(problem.code, 0) + 1
+        if count <= self.limit:
+            return [line]
+        if count == self.limit + 1:
+            return [f"warning: suppressing further '{problem.code}' warnings (--warning-limit 0 prints every one)"]
+        return []
+
+    @property
+    def suppressed(self) -> int:
+        return sum(max(0, count - self.limit) for count in self.seen.values()) if self.limit else 0
+
+
 def format_suggestions(report: SuggestReport, *, explain: bool = False) -> str:
     """The models' blocks, then the summary."""
-    return format_suggestion_blocks(report, explain=explain) + format_suggestion_summary(report)
+    limit = WarningLimit()
+    return format_suggestion_blocks(report, explain=explain, limit=limit) + format_suggestion_summary(report, limit)
 
 
-def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False) -> str:
+def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False, limit: WarningLimit | None = None) -> str:
     """One block per model, each suggestion one aligned row, then the report's
     warnings and errors; each block ends in a blank line, so blocks printed as
     models finish read as one listing."""
@@ -159,18 +190,23 @@ def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False) ->
             lines.append("  " + "  ".join(cell.ljust(width) for cell, width in zip(row[:4], widths)) + "  " + row[4])
             if explain and item.explanation:
                 lines.extend("      " + line for line in item.explanation.splitlines())
+    limit = limit or WarningLimit(0)
     for problem in report.problems:
-        where = f"{problem.location}: " if problem.location is not None else ""
-        lines.append(f"{where}{problem.severity} {problem.code}: {problem.message}")
+        lines.extend(limit.lines(problem))
     return "".join(line + "\n" for line in lines) + ("\n" if lines else "")
 
 
-def format_suggestion_summary(report: SuggestReport) -> str:
+def format_suggestion_summary(report: SuggestReport, limit: WarningLimit | None = None) -> str:
     counts = {level: sum(item.level == level for item in report.suggestions) for level in ("high", "mid", "low")}
     return (
         f"{counts['high']} improvements, {counts['mid']} markers, {counts['low']} smells in {len(report.models)} models, "
-        f"{sum(p.severity == 'error' for p in report.problems)} errors, {sum(p.severity == 'warning' for p in report.problems)} warnings\n"
+        f"{sum(p.severity == 'error' for p in report.problems)} errors, "
+        f"{sum(p.severity == 'warning' for p in report.problems)} warnings{_suppressed(limit)}\n"
     )
+
+
+def _suppressed(limit: WarningLimit | None) -> str:
+    return f" ({limit.suppressed} suppressed)" if limit is not None and limit.suppressed else ""
 
 
 def exit_code(report: DbtReport, *, require_proved: bool = False) -> int:
@@ -180,8 +216,9 @@ def exit_code(report: DbtReport, *, require_proved: bool = False) -> int:
     return EXIT_FINDINGS if report.failed or unproved else EXIT_OK
 
 
-def format_text(report: DbtReport, *, explain: bool = False) -> str:
+def format_text(report: DbtReport, *, explain: bool = False, warning_limit: int = DEFAULT_WARNING_LIMIT) -> str:
     lines: list[str] = []
+    limit = WarningLimit(warning_limit)
 
     def evidence(text: str) -> None:
         if explain and text:
@@ -192,8 +229,7 @@ def format_text(report: DbtReport, *, explain: bool = False) -> str:
         if marker.outcome is Outcome.UNKNOWN or explain:
             evidence(marker.explanation)
     for problem in report.problems:
-        where = f"{problem.location}: " if problem.location is not None else ""
-        lines.append(f"{where}{problem.severity} {problem.code}: {problem.message}")
+        lines.extend(limit.lines(problem))
     proved = [test for test in report.tests if test.status is Status.PROVED]
     unproved = [test for test in report.tests if test.status is Status.NOT_PROVED]
     if proved:
@@ -221,5 +257,6 @@ def format_text(report: DbtReport, *, explain: bool = False) -> str:
         f"{len(proved)} proved, {len(unproved)} not proved, {len(report.untested)} untested properties, "
         f"{len(report.markers)} markers ({markers_unknown} unknown), "
         f"{sum(p.severity == 'error' for p in report.problems)} errors, {sum(p.severity == 'warning' for p in report.problems)} warnings"
+        f"{_suppressed(limit)}"
     )
     return "\n".join(lines) + "\n"

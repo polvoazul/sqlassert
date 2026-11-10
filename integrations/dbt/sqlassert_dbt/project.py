@@ -389,6 +389,7 @@ class _Analysis:
                 else:
                     location = Location(relation.original_file_path)
                 message = _raw_lines_in(diagnostic.message, body) if problem.raw_line is not None else diagnostic.message
+                message = _DBT_ADVICE.sub(_dbt_advice, message)
                 found.append(Problem(diagnostic.code, message, "warning" if problem.warning else "error", location, relation.name))
         return found
 
@@ -580,6 +581,20 @@ def _raw_lines_in(message: str, body: Body) -> str:
         return f"line {line}" if line is not None else match.group(0)
 
     return re.sub(r"\bline (\d+)\b", replaced, message)
+
+
+# Core's advice for a table with unknown columns, and what supplies them in a dbt project.
+_DBT_ADVICE = re.compile(
+    r"declare (it|those tables) with CREATE TABLE,\s+or analyze with a database connection \(analyze_database\)"
+)
+
+
+def _dbt_advice(match: re.Match[str]) -> str:
+    them = "it" if match.group(1) == "it" else "them"
+    return (
+        f"or give {them} known columns: `dbt docs generate` writes target/catalog.json, read when present, "
+        "or an enforced model contract lists them"
+    )
 
 
 def _unique(problems: list[Problem]) -> list[Problem]:
