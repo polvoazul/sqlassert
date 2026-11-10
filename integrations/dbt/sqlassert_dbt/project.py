@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import re
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,11 +83,14 @@ def analyze_project(
 def suggest_models(
     project_dir: Path, files: list[str], *, manifest_path: Path | None = None, dialect: str | None = None,
     trust_upstream_tests: bool = False, catalog_path: Path | None = None,
+    on_model: Callable[[SuggestReport], None] | None = None,
 ) -> SuggestReport:
     """What `sqlassert suggest` finds in each model whose file is one of
     `files` (paths relative to `project_dir`; a directory stands for every
     model of the project under it, "." for all), with the relations each
-    reads declared as `analyze_project` declares them."""
+    reads declared as `analyze_project` declares them. `on_model` is called
+    with each model's part of the report as soon as it is analyzed, and last
+    with the warnings about what they read."""
     analysis = _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path)
     manifest = analysis.manifest
     by_path = {
@@ -107,7 +111,17 @@ def suggest_models(
                 f"{manifest_path or project_dir / 'target' / 'manifest.json'}"
             )
         models.extend(model for model in found if model not in models)
-    return analysis.suggest(dialect, models)
+    parts = []
+    for part in analysis.suggest(dialect, models):
+        if on_model is not None:
+            on_model(part)
+        parts.append(part)
+    return SuggestReport(
+        next((part.dialect for part in parts if part.dialect is not None), None),
+        tuple(model for part in parts for model in part.models),
+        tuple(item for part in parts for item in part.suggestions),
+        tuple(_unique([problem for part in parts for problem in part.problems])),
+    )
 
 
 def _analysis(project_dir: Path, manifest_path: Path | None, trust_upstream_tests: bool, catalog_path: Path | None) -> _Analysis:
@@ -159,24 +173,27 @@ class _Analysis:
             problems.extend(self._shared_problems(builder, undeclared))
         return DbtReport(dialect, tuple(tests), tuple(markers), tuple(untested), tuple(_unique(problems)))
 
-    def suggest(self, requested: str | None, models: list[Relation]) -> SuggestReport:
+    def suggest(self, requested: str | None, models: list[Relation]) -> Iterator[SuggestReport]:
+        """One report per model as it is analyzed, then one of the warnings
+        about what they read (or, for an unsupported dialect, that error alone)."""
         problems: list[Problem] = []
         dialect = self._dialect(requested, problems)
         if dialect is None:
-            return SuggestReport(None, (), (), tuple(problems))
+            yield SuggestReport(None, (), (), tuple(problems))
+            return
         builder = self._builder(dialect, problems)
-        found: list[ModelSuggestion] = []
         undeclared: set[str] = set()
         for relation in models:
             unanalyzed = self._unanalyzed(relation)
             if unanalyzed is not None:
-                problems.append(unanalyzed)
+                yield SuggestReport(dialect, (), (), (unanalyzed,))
                 continue
+            found: list[Problem] = []
             bodies = branches(relation, self.manifest.relations)
             for warning in bodies.warnings:
-                problems.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
+                found.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
             if bodies.unrendered is not None:
-                problems.append(Problem(
+                found.append(Problem(
                     UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its smells are listed",
                     "warning", Location(relation.original_file_path), relation.name,
                 ))
@@ -184,11 +201,10 @@ class _Analysis:
             results = [builder.suggest(relation, body, own) for body in bodies.bodies]
             for body, result in zip(bodies.bodies, results):
                 undeclared |= result.undeclared
-                problems.extend(self._problems(relation, [(body, result)]))
-            found.extend(_combined(relation, results, complete=bodies.unrendered is None))
-        problems.extend(self._shared_problems(builder, undeclared))
-        analyzed = tuple(relation.name for relation in models if self._unanalyzed(relation) is None)
-        return SuggestReport(dialect, analyzed, tuple(found), tuple(_unique(problems)))
+                found.extend(self._problems(relation, [(body, result)]))
+            suggested = _combined(relation, results, complete=bodies.unrendered is None)
+            yield SuggestReport(dialect, (relation.name,), tuple(suggested), tuple(_unique(found)))
+        yield SuggestReport(dialect, (), (), tuple(_unique([*problems, *self._shared_problems(builder, undeclared)])))
 
     def _shared_problems(self, builder: Builder, undeclared: set[str]) -> list[Problem]:
         """The warnings about the relations models read, once for the project."""

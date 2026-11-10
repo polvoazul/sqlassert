@@ -214,3 +214,15 @@ def test_every_suggested_marker_pasted_at_its_line_is_proved(tmp_path):
     outcomes = {(str(marker.location), marker.marker): marker.outcome for marker in checked.markers}
     assert len(pasted) >= 8
     assert all(outcomes[str(item.location), item.text] is Outcome.PROVED for item in pasted)
+
+
+def test_each_model_is_reported_as_soon_as_it_is_analyzed(compiled):
+    parts: list[SuggestReport] = []
+    report = suggest_models(
+        compiled, ["models/stg_orders.sql", "models/customer_orders.sql"], trust_upstream_tests=True, on_model=parts.append,
+    )
+    # One part per model, in order, then the warnings about what they read.
+    assert [part.models for part in parts] == [("stg_orders",), ("customer_orders",), ()]
+    assert "dbt-unknown-columns" in {problem.code for problem in parts[-1].problems}
+    assert report.models == ("stg_orders", "customer_orders")
+    assert report.suggestions == parts[0].suggestions + parts[1].suggestions

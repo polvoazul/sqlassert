@@ -11,11 +11,11 @@ each model reads declared. `sqlassert-dbt` is its command line (`__main__.py`).
 from sqlassert_dbt.project import SUPPORTED_DIALECTS, ProjectError, analyze_project, suggest_models
 from sqlassert_dbt.report import (
     DbtReport, Location, MarkerOutcome, ModelSuggestion, Problem, Status, SuggestReport, TestOutcome, Untested,
-    exit_code, format_suggestions, format_text,
+    exit_code, format_suggestion_blocks, format_suggestion_summary, format_suggestions, format_text,
 )
 
 __all__ = [
     "SUPPORTED_DIALECTS", "DbtReport", "Location", "MarkerOutcome", "ModelSuggestion", "Problem",
     "ProjectError", "Status", "SuggestReport", "TestOutcome", "Untested", "analyze_project", "exit_code",
-    "format_suggestions", "format_text", "suggest_models",
+    "format_suggestion_blocks", "format_suggestion_summary", "format_suggestions", "format_text", "suggest_models",
 ]

@@ -138,7 +138,14 @@ class SuggestReport:
 
 
 def format_suggestions(report: SuggestReport, *, explain: bool = False) -> str:
-    """One block per model, each suggestion one aligned row, warnings and errors after."""
+    """The models' blocks, then the summary."""
+    return format_suggestion_blocks(report, explain=explain) + format_suggestion_summary(report)
+
+
+def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False) -> str:
+    """One block per model, each suggestion one aligned row, then the report's
+    warnings and errors; each block ends in a blank line, so blocks printed as
+    models finish read as one listing."""
     lines: list[str] = []
     for model in report.models:
         items = [item for item in report.suggestions if item.model == model]
@@ -147,25 +154,23 @@ def format_suggestions(report: SuggestReport, *, explain: bool = False) -> str:
             continue
         rows = [(str(item.location), item.level, item.label, item.kind, item.text) for item in items]
         widths = [max(len(row[i]) for row in rows) for i in range(4)]
-        if lines:
-            lines.append("")
         lines.append(f"{model}:")
         for row, item in zip(rows, items):
             lines.append("  " + "  ".join(cell.ljust(width) for cell, width in zip(row[:4], widths)) + "  " + row[4])
             if explain and item.explanation:
                 lines.extend("      " + line for line in item.explanation.splitlines())
-    if report.problems:
-        lines.append("")
     for problem in report.problems:
         where = f"{problem.location}: " if problem.location is not None else ""
         lines.append(f"{where}{problem.severity} {problem.code}: {problem.message}")
+    return "".join(line + "\n" for line in lines) + ("\n" if lines else "")
+
+
+def format_suggestion_summary(report: SuggestReport) -> str:
     counts = {level: sum(item.level == level for item in report.suggestions) for level in ("high", "mid", "low")}
-    lines.append("")
-    lines.append(
+    return (
         f"{counts['high']} improvements, {counts['mid']} markers, {counts['low']} smells in {len(report.models)} models, "
-        f"{sum(p.severity == 'error' for p in report.problems)} errors, {sum(p.severity == 'warning' for p in report.problems)} warnings"
+        f"{sum(p.severity == 'error' for p in report.problems)} errors, {sum(p.severity == 'warning' for p in report.problems)} warnings\n"
     )
-    return "\n".join(lines) + "\n"
 
 
 def exit_code(report: DbtReport, *, require_proved: bool = False) -> int:

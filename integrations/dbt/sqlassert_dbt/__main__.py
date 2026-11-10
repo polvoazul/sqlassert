@@ -24,7 +24,7 @@ from pathlib import Path
 
 from sqlassert.check import EXIT_FINDINGS, EXIT_OK, EXIT_USAGE
 from sqlassert_dbt.project import ProjectError, analyze_project, suggest_models
-from sqlassert_dbt.report import DbtReport, exit_code, format_suggestions, format_text
+from sqlassert_dbt.report import DbtReport, exit_code, format_suggestion_blocks, format_suggestion_summary, format_text
 
 # The dbt flags that narrow which nodes run: under any of them, the tests of
 # what a model reads may not run, so they are no facts.
@@ -150,11 +150,12 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
         report = suggest_models(
             project, relative, dialect=arguments.dialect, trust_upstream_tests=arguments.trust_upstream_tests,
             catalog_path=_path(arguments.catalog),
+            on_model=lambda part: print(format_suggestion_blocks(part, explain=arguments.explain), end="", flush=True),
         )
     except ProjectError as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)
         return EXIT_USAGE
-    sys.stdout.write(format_suggestions(report, explain=arguments.explain))
+    sys.stdout.write(format_suggestion_summary(report))
     return EXIT_FINDINGS if report.failed else EXIT_OK
 
 
