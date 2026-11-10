@@ -1,9 +1,9 @@
 """Analyze a dbt project from its `target/manifest.json`, without dbt.
 
-Each model is analyzed in a Program of its own (`program.py`): its own tests
-are Assertions, the passing tests of what it reads are Property Declarations.
-An incremental model is analyzed once per `is_incremental()` branch, and a
-claim about it holds only when it holds in both.
+The project is one Program (`program.py`), built once per run: each model's
+tests are Assertions, the passing tests of what it reads are Property
+Declarations. An incremental model is analyzed once per `is_incremental()`
+branch, and a claim about it holds only when it holds in both.
 
 `target/catalog.json`, when present (or `--catalog PATH`), lists the columns of the tables a model reads
 (sources, seeds, snapshots, incremental models) that the manifest leaves
@@ -25,7 +25,7 @@ from pathlib import Path
 from sqlassert_dbt.expectations import Expectation, PropertyKind, expectations
 from sqlassert_dbt.manifest import Catalog, CatalogTable, Column, Manifest, ManifestError, Relation, load_catalog, load_manifest
 from sqlassert_dbt.program import (
-    QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, Suggested, SuggestResult, _canonical, branches, raw_line_of,
+    QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, Suggested, SuggestResult, _canonical, raw_line_of,
 )
 from sqlassert_dbt.report import (
     DbtReport, Location, MarkerOutcome, ModelSuggestion, Problem, Status, SuggestReport, TestOutcome, Untested,
@@ -165,9 +165,12 @@ class _Analysis:
         tests: list[TestOutcome] = []
         markers: list[MarkerOutcome] = []
         untested: list[Untested] = []
-        undeclared: set[str] = set()
         builder = self._builder(dialect, problems) if dialect is not None else None
-        for relation in sorted(self.manifest.relations.values(), key=lambda relation: relation.unique_id):
+        relations = sorted(self.manifest.relations.values(), key=lambda relation: relation.unique_id)
+        if builder is not None:
+            builder.build(relation for relation in relations if relation.resource_type == "model" and self._unanalyzed(relation) is None)
+            builder.check()
+        for relation in relations:
             own = [e for e in self.expectations if e.node == relation.unique_id]
             if builder is None:
                 tests.extend(self._outcome(e, relation, Status.NOT_PROVED, "the project's dialect is not supported") for e in own)
@@ -177,9 +180,8 @@ class _Analysis:
             markers.extend(outcome.markers)
             untested.extend(outcome.untested)
             problems.extend(outcome.problems)
-            undeclared |= outcome.undeclared
         if builder is not None:
-            problems.extend(self._shared_problems(builder, undeclared))
+            problems.extend(self._shared_problems(builder))
         return DbtReport(dialect, tuple(tests), tuple(markers), tuple(untested), tuple(_unique(problems)))
 
     def suggest(self, requested: str | None, models: list[Relation]) -> Iterator[SuggestReport]:
@@ -191,33 +193,37 @@ class _Analysis:
             yield SuggestReport(None, (), (), tuple(problems))
             return
         builder = self._builder(dialect, problems)
-        undeclared: set[str] = set()
-        for relation in models:
-            unanalyzed = self._unanalyzed(relation)
-            if unanalyzed is not None:
-                yield SuggestReport(dialect, (), (), (unanalyzed,))
-                continue
-            found: list[Problem] = []
-            bodies = branches(relation, self.manifest.relations)
-            for warning in bodies.warnings:
-                found.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
-            if bodies.unrendered is not None:
-                found.append(Problem(
-                    UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its smells are listed",
-                    "warning", Location(relation.original_file_path), relation.name,
-                ))
-            own = [e for e in self.expectations if e.node == relation.unique_id]
-            results = [builder.suggest(relation, body, own) for body in bodies.bodies]
-            for body, result in zip(bodies.bodies, results):
-                undeclared |= result.undeclared
-                found.extend(self._problems(relation, [(body, result)]))
-            suggested = _combined(relation, results, complete=bodies.unrendered is None)
-            yield SuggestReport(dialect, (relation.name,), tuple(suggested), tuple(_unique(found)))
-        yield SuggestReport(dialect, (), (), tuple(_unique([*problems, *self._shared_problems(builder, undeclared)])))
+        analyzed = [relation for relation in models if self._unanalyzed(relation) is None]
+        builder.build(analyzed)
+        with builder.suggester(analyzed) as suggester:
+            for relation in models:
+                unanalyzed = self._unanalyzed(relation)
+                if unanalyzed is not None:
+                    yield SuggestReport(dialect, (), (), (unanalyzed,))
+                    continue
+                found: list[Problem] = []
+                bodies = builder.branches(relation)
+                for warning in bodies.warnings:
+                    found.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
+                if bodies.unrendered is not None:
+                    found.append(Problem(
+                        UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its smells are listed",
+                        "warning", Location(relation.original_file_path), relation.name,
+                    ))
+                own = [e for e in self.expectations if e.node == relation.unique_id]
+                results = builder.suggest(suggester, relation, own)
+                found.extend(self._problems(relation, list(zip(bodies.bodies, results))))
+                suggested = _combined(relation, results, complete=bodies.unrendered is None)
+                yield SuggestReport(dialect, (relation.name,), tuple(suggested), tuple(_unique(found)))
+        yield SuggestReport(dialect, (), (), tuple(_unique([*problems, *self._shared_problems(builder)])))
 
-    def _shared_problems(self, builder: Builder, undeclared: set[str]) -> list[Problem]:
-        """The warnings about the relations models read, once for the project."""
-        problems = []
+    def _shared_problems(self, builder: Builder) -> list[Problem]:
+        """The warnings about the relations models read, and the Diagnostics
+        of no model's SQL, once for the project."""
+        problems = [
+            Problem(d.code, _DBT_ADVICE.sub(_dbt_advice, d.message), "warning" if warning else "error")
+            for d, warning in builder.loose
+        ]
         if builder.untrusted:
             problems.append(Problem(
                 UNTRUSTED_UPSTREAM_TESTS,
@@ -226,7 +232,7 @@ class _Analysis:
                 "or run through `sqlassert-dbt build`",
                 "warning",
             ))
-        for node in sorted(undeclared):
+        for node in sorted(builder.undeclared):
             relation = self.manifest.relations[node]
             if self.catalog is not None:
                 catalog = "catalog.json lists none it could use (see any dbt-catalog warning)"
@@ -287,18 +293,15 @@ class _Analysis:
             outcome.tests.extend(self._outcome(e, relation, Status.NOT_PROVED, "its model was not analyzed") for e in own)
             return outcome
 
-        found = branches(relation, self.manifest.relations)
+        found = builder.branches(relation)
         for warning in found.warnings:
             outcome.problems.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
         if found.unrendered is not None:
             outcome.problems.append(Problem(
                 UNANALYZED_BRANCH, f"model {relation.name}: {found.unrendered}", "warning", Location(relation.original_file_path), relation.name,
             ))
-        analyzed = tuple(e for e in own if e.asserted is not None and e.unprovable is None)
-        results = [(body, builder.analyze(relation, body, analyzed)) for body in found.bodies]
+        results = builder.analyze(relation)
         complete = found.unrendered is None
-        for _, result in results:
-            outcome.undeclared |= result.undeclared
 
         for expectation in own:
             outcome.tests.append(self._test(expectation, relation, results, complete, found.unrendered))
@@ -421,10 +424,9 @@ class _ModelOutcome:
     markers: list[MarkerOutcome]
     untested: list[Untested]
     problems: list[Problem]
-    undeclared: set[str]
 
     def __init__(self) -> None:
-        self.tests, self.markers, self.untested, self.problems, self.undeclared = [], [], [], [], set()
+        self.tests, self.markers, self.untested, self.problems = [], [], [], []
 
 
 def _catalog_columns(

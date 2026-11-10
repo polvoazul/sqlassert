@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from sqlassert_dbt import DbtReport, ProjectError, Status, analyze_project
+from sqlassert_dbt import DbtReport, ProjectError, Status, analyze_project, suggest_models
 from sqlassert_dbt.expectations import expectations
 from sqlassert_dbt.jinja import Unrenderable, render
 from sqlassert_dbt.manifest import load_manifest
@@ -560,3 +560,44 @@ def test_the_plugin_reads_the_manifest_without_importing_dbt():
             else:
                 continue
             assert not any(name.split(".")[0] in {"dbt", "dbt_common"} for name in names), path
+
+
+def test_an_incremental_batch_reads_its_own_previous_rows_without_its_tests(tmp_path):
+    # The incremental branch reads {{ this }}: the rows before this run, which
+    # its own tests (checked after the run) say nothing about. Were they facts
+    # of what the batch reads, unique(order_id) would prove itself.
+    project = compile_with(tmp_path, {
+        "models/reloaded.sql": (
+            "{{ config(materialized='incremental', unique_key='order_id', incremental_strategy='merge') }}\n"
+            "{% if is_incremental() %}\n"
+            "select order_id from {{ this }}\n"
+            "{% else %}\n"
+            "select order_id from {{ ref('stg_orders') }}\n"
+            "{% endif %}\n"
+        ),
+        "models/reloaded.yml": (
+            "version: 2\nmodels:\n  - name: reloaded\n    columns:\n      - name: order_id\n        tests: [unique]\n"
+        ),
+    })
+    report = analyze_project(project, trust_upstream_tests=True)
+    status, reason = statuses(report)["unique_reloaded_order_id"]
+    assert status is Status.NOT_PROVED and reason == "its Property is not proved from the SQL"
+    # Its previous run is unknown by nature, never a table with unknown columns to declare.
+    assert not any("reloaded" in problem.message for problem in report.problems if problem.code == "dbt-unknown-columns")
+
+
+def test_a_model_that_does_not_parse_is_left_out_alone(tmp_path):
+    project = compile_with(tmp_path, {
+        "models/broken.sql": "select order_id from {{ ref('stg_orders') }} where (\n",
+        "models/natural.sql": "select * from {{ ref('stg_orders') }} natural join {{ ref('stg_customers') }}\n",
+        "models/reads_broken.sql": "select order_id from {{ ref('broken') }}\n",
+    })
+    report = analyze_project(project, trust_upstream_tests=True)
+    by_model = {(problem.model, problem.code) for problem in report.problems}
+    assert ("broken", "sql-parse-failed") in by_model
+    assert ("natural", "unsupported-natural-join") in by_model
+    # Everything else is analyzed as before; what reads it sees a table of unknown columns.
+    assert statuses(report)["unique_stg_customers_customer_id"][0] is Status.PROVED
+    assert ("broken", "dbt-unknown-columns") in by_model
+    suggested = suggest_models(project, ["models"], trust_upstream_tests=True)
+    assert any(item.model == "customer_orders" for item in suggested.suggestions)

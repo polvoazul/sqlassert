@@ -1,26 +1,26 @@
-"""One dbt model as one SQL Program, analyzed once per `is_incremental()` branch.
+"""A dbt project as one SQL Program: every model a run analyzes, and
+everything those read, parsed and lowered once (`Builder`).
 
-The Program puts the model's SQL first, as a FROM subquery of a Root Select,
-on the Program's own first line, so a line of the model's SQL is the same line
-of the Program. The model's tests follow as Assertion Markers on that Root
-Select, one per line. Every relation the model reads (and every relation its
-relationships tests reference) is declared after it: a model whose rows are
-its query (a view, a table rebuilt each run) as a `CREATE VIEW` of its compiled
-SQL with its own assertions blanked out, anything else (a source, seed,
-snapshot, incremental model) as a table with unknown columns, or with a
-`CREATE TABLE` when its columns are known completely. Tests of those relations
+A model whose rows are its query (a view, a table rebuilt each run) is a
+`CREATE VIEW` under its relation name whose body reads the model's SQL as a
+FROM subquery, starting on a line of its own, so each line of the model's SQL
+is one line of the Program; its tests follow as Assertion Markers on that
+body, one per line. Any other relation (a source, seed, snapshot, incremental
+model) is a table, with a `CREATE TABLE` when its columns are known
+completely. An incremental model's `is_incremental()` branches, and an
+ephemeral model's body, are views of their own under generated names. Tests
 that are facts become Property Declarations, bound to the IR after linking.
 
 Nothing here writes a marker the author did not: the generated markers live on
-the generated Root Select only, so the Property Markers stay the one
-user-facing contract.
+the generated bodies only, so the Property Markers stay the one user-facing
+contract.
 """
 
 from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 
 import sqlglot
@@ -37,6 +37,7 @@ from sqlassert.diagnostics import Diagnostic
 from sqlassert.improvements import Improvement, Level
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.ir.model import LiteralValue
+from sqlassert.provenance import AttachmentSite
 from sqlassert.properties import (
     EnumeratedDomain, ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage,
     UniqueSet,
@@ -90,8 +91,10 @@ class Branches:
     warnings: tuple[str, ...] = ()
 
 
-def branches(model: Relation, relations: Mapping[str, Relation]) -> Branches:
-    """The compiled body, and for an incremental model the other branch too."""
+def branches(model: Relation, relations: Mapping[str, Relation], this: str | None = None) -> Branches:
+    """The compiled body, and for an incremental model the other branch too.
+    With `this`, both branches of an incremental model read `{{ this }}` as
+    that relation instead of the model's own."""
     compiled = _strip_end(model.compiled_code or "")
     joined = ", ".join(cte.sql for cte in model.extra_ctes)
     warnings: list[str] = []
@@ -122,6 +125,14 @@ def branches(model: Relation, relations: Mapping[str, Relation]) -> Branches:
     if taken is None or (not taken) not in renderings:
         reason = failure or "rendering the raw code did not reproduce dbt's compiled code"
         return Branches((first,), f"the other is_incremental() branch was not analyzed: {reason}", tuple(warnings))
+    if this is not None:
+        try:
+            redirected = [
+                render(model.raw_code, incremental=flag, resolve=_resolver(model, relations, this)) for flag in (False, True)
+            ]
+        except Unrenderable as error:
+            return Branches((first,), f"the other is_incremental() branch was not analyzed: {error}", tuple(warnings))
+        return Branches(tuple(_inject(rendered, joined, model.raw_code) for rendered in redirected), None, tuple(warnings))
     return Branches((first, _inject(renderings[not taken], joined, model.raw_code)), None, tuple(warnings))
 
 
@@ -194,14 +205,14 @@ def _inject(rendered: Rendered, joined: str, raw_code: str) -> Body:
     )
 
 
-def _resolver(model: Relation, relations: Mapping[str, Relation]):
+def _resolver(model: Relation, relations: Mapping[str, Relation], this: str | None = None):
     from sqlassert_dbt.expectations import resolve
 
     def resolved(function: str, arguments: tuple[object, ...], options: dict[str, object]) -> str:
         if function == "this":
             if model.relation_name is None:
                 raise Unrenderable("{{ this }} of a model with no relation")
-            return model.relation_name
+            return this or model.relation_name
         found = resolve(function, tuple(str(argument) for argument in arguments), options, model.depends_on, relations)
         if found is None:
             raise Unrenderable(f"{function}{arguments} does not resolve among the model's dependencies")
@@ -269,8 +280,6 @@ class BranchResult:
     markers: tuple[MarkerResult, ...] = ()
     problems: tuple[Problem, ...] = ()
     additions: tuple[Addition, ...] = ()
-    # Relations reached that are tables with unknown columns.
-    undeclared: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -293,22 +302,65 @@ class Suggested:
 class SuggestResult:
     suggested: tuple[Suggested, ...] = ()
     problems: tuple[Problem, ...] = ()
-    undeclared: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
-class _Program:
-    """A model's Program, parsed and lowered with the facts of what it reads
-    declared; `placed` maps a line to the test whose marker it holds."""
+class Statement:
+    """One body of a model in the project's Program: a view named `name`
+    whose body reads the model's SQL as a FROM subquery, its tests as markers
+    after it. `first_line` and `first_offset` are where the body starts in the
+    Program; `placed` maps a Program line to the test whose marker it holds."""
 
-    sql: str
-    ast: ParsedProgram
-    conversion: IrConversionResult
-    reached: list[Relation]
-    body_lines: int
+    model: Relation
+    body: Body
+    name: str
+    first_line: int
+    first_offset: int
+    last_line: int
     placed: dict[int, Expectation]
     unplaced: dict[str, TestResult]
-    undeclared: frozenset[str]
+
+    @property
+    def body_lines(self) -> int:
+        return self.body.text.count("\n") + 1
+
+    def holds(self, line: int) -> bool:
+        """Whether Program `line` is the statement's, its `create view` line included."""
+        return self.first_line - 1 <= line <= self.last_line
+
+    def local(self, line: int) -> int | None:
+        """Program `line` as a line of the body, None when it is not one."""
+        local = line - self.first_line + 1
+        return local if 1 <= local <= self.body_lines else None
+
+    def has_site(self, site: AttachmentSite) -> bool:
+        return 0 <= site.offset - self.first_offset <= len(self.body.text) and self.local(site.line) is not None
+
+
+@dataclass(frozen=True)
+class _Text:
+    """A statement's text and where its parts land in it."""
+
+    text: str
+    placed: dict[int, Expectation]
+    unplaced: dict[str, TestResult]
+
+
+def _previous(relation_name: str, dialect: str) -> str:
+    """How an incremental model's batch reads its own table (`{{ this }}`):
+    a table of its own with unknown columns, never the model's table, whose
+    facts (its tests) describe the rows after this run, not before it."""
+    try:
+        table = exp.to_table(relation_name, dialect=dialect)
+    except SqlglotError:
+        table = exp.to_table(exp.to_identifier(relation_name).sql(dialect=dialect))
+    table.set("this", exp.to_identifier(f"{table.name}__sqlassert_previous", quoted=True))
+    return table.sql(dialect=dialect)
+
+
+# Diagnostics that leave a statement's SQL unusable in the Program: they make
+# `suggest` refuse every suggestion, or analysis every proof, for all models.
+_ISOLATED = _UNPARSEABLE | {diag.DUPLICATE_DECLARATION, diag.UNSUPPORTED_NATURAL_JOIN}
 
 
 @dataclass(frozen=True)
@@ -352,15 +404,23 @@ def _names(columns: Iterable[ir.OutputColumn]) -> frozenset[str]:
     return frozenset(column.name.lower() for column in columns)
 
 
-# The generated Root Select reads the model's body as a FROM subquery,
-# starting on the Program's first line.
-_PREFIX = "select * from ("
-
-
 @dataclass
 class Builder:
-    """Builds and analyzes the Programs of one project. Bodies of other
-    relations are parsed once and reused for every model that reads them."""
+    """Builds the one Program of a project run and reads each model's
+    results back from it.
+
+    Every model a run analyzes, and every relation those read, enters one
+    Program, parsed and lowered once: a model whose rows are its query (a
+    view, a table rebuilt each run) as a view of its SQL, under its relation
+    name, with its tests as Assertion Markers; any other relation as a table,
+    with its columns when they are known completely. An incremental model is
+    a table to what reads it, and each of its `is_incremental()` branches a
+    view of its own; so is an ephemeral model's body, which its readers have
+    inlined. The passing tests and constraints that are facts become
+    Property Declarations of their relations. A model whose SQL alone does
+    not parse, or that would make the whole Program refuse analysis, is left
+    out with its Diagnostics, and its readers see a table of unknown columns.
+    """
 
     relations: Mapping[str, Relation]
     expectations: tuple[Expectation, ...]
@@ -369,12 +429,29 @@ class Builder:
     # under `dbt build`. Plain `dbt run` runs no test, so by default only
     # enforced contract constraints are facts.
     trust_upstream_tests: bool = False
+    # Every column of a relation, in order, from catalog.json: used for a
+    # table no enforced contract types completely.
+    catalog_columns: Mapping[str, tuple[Column, ...]] = field(default_factory=dict)
     # The upstream tests that would have been facts had they been trusted.
     untrusted: set[str] = field(default_factory=set)
-    # Every column of a relation, in order, from catalog.json (`--catalog`):
-    # used for a table no enforced contract types completely.
-    catalog_columns: Mapping[str, tuple[Column, ...]] = field(default_factory=dict)
-    _usable: dict[str, bool] = field(default_factory=dict)
+    # Relations the Program reads as tables with unknown columns.
+    undeclared: set[str] = field(default_factory=set)
+    # Diagnostics of no model's SQL: (Diagnostic, is a warning).
+    loose: list[tuple[Diagnostic, bool]] = field(default_factory=list)
+    _branches: dict[str, Branches] = field(default_factory=dict)
+    _statements: dict[str, list[Statement]] = field(default_factory=dict)
+    _left_out: dict[str, list[tuple[Body, BranchResult]]] = field(default_factory=dict)
+    _sql: str = ""
+    _ast: ParsedProgram | None = None
+    _conversion: IrConversionResult | None = None
+    _report: Report | None = None
+    _read: set[str] = field(default_factory=set)
+
+    def branches(self, model: Relation) -> Branches:
+        if model.unique_id not in self._branches:
+            this = _previous(model.relation_name, self.dialect) if model.relation_name and model.materialized == "incremental" else None
+            self._branches[model.unique_id] = branches(model, self.relations, this)
+        return self._branches[model.unique_id]
 
     def facts(self, node: str) -> list[Expectation]:
         found = [e for e in self.expectations if e.node == node and e.is_fact]
@@ -383,137 +460,274 @@ class Builder:
         self.untrusted.update(e.unique_id for e in found if e.kind == "test")
         return [e for e in found if e.kind == "constraint"]
 
-    def is_view(self, relation: Relation) -> bool:
-        """Whether `relation` enters a Program as its query rather than as a table."""
-        if relation.resource_type != "model" or relation.language != "sql" or relation.compiled_code is None:
-            return False
-        if relation.materialized not in QUERY_MATERIALIZATIONS | {"ephemeral"}:
-            return False
-        if relation.unique_id not in self._usable:
-            parsed = SqlParser(self.dialect).parse(_blank_assertions(_strip_end(relation.compiled_code)))
-            self._usable[relation.unique_id] = parsed.root_select is not None and not any(
-                d.code in _UNPARSEABLE for d in parsed.diagnostics
-            )
-        return self._usable[relation.unique_id]
+    def _is_view(self, relation: Relation) -> bool:
+        """Whether `relation`'s readers read its query rather than a table."""
+        return (
+            relation.resource_type == "model" and relation.language == "sql" and relation.compiled_code is not None
+            and relation.materialized in QUERY_MATERIALIZATIONS and relation.relation_name is not None
+        )
 
-    def reached(self, model: Relation, tests: Iterable[Expectation]) -> list[Relation]:
-        """Every relation the model's Program needs: what it reads, through
-        views and ephemeral models, and what its tests reference."""
-        pending = [*model.depends_on, *(e.referenced for e in tests if e.referenced is not None)]
-        seen: dict[str, Relation] = {}
+    # Building ---------------------------------------------------------------
+
+    def build(self, models: Iterable[Relation]) -> None:
+        """The Program of `models` and every relation they read."""
+        selected = {model.unique_id: model for model in models}
+        reached: dict[str, Relation] = {}
+        self._read = set()
+        pending = list(selected)
         while pending:
             node = pending.pop()
-            if node in seen or node == model.unique_id or node not in self.relations:
+            if node in reached or node not in self.relations:
                 continue
-            relation = self.relations[node]
-            seen[node] = relation
-            if self.is_view(relation):
-                pending.extend(relation.depends_on)
-        return list(seen.values())
+            relation = reached[node] = self.relations[node]
+            tests = [e for e in self.expectations if e.node == node]
+            if node in selected or self._is_view(relation) or relation.materialized == "ephemeral":
+                read = [*relation.depends_on, *(e.referenced for e in tests if e.referenced is not None)]
+                self._read.update(read)
+                pending.extend(read)
+        bodies: dict[str, list[tuple[Body, str]]] = {}
+        for node, relation in reached.items():
+            if relation.resource_type != "model" or relation.language != "sql" or relation.compiled_code is None:
+                continue
+            found = self.branches(relation).bodies
+            if self._is_view(relation) and len(found) == 1:
+                bodies[node] = [(found[0], relation.relation_name or relation.name)]
+            elif node in selected:
+                bodies[node] = [(body, _synthetic(relation, index, self.dialect)) for index, body in enumerate(found)]
+        tests = {e.node: [] for e in self.expectations}
+        for e in self.expectations:
+            if e.asserted is not None and e.unprovable is None:
+                tests[e.node].append(e)
+        # A body whose SQL alone does not parse stays out of the Program.
+        for node, found in list(bodies.items()):
+            for body, name in found:
+                text = self._text(self.relations[node], body, name, tests.get(node, []))
+                parsed = SqlParser(self.dialect).parse(text.text)
+                if parsed.root_select is not None or len(parsed.create_statements) != 1 or any(
+                    d.code in _UNPARSEABLE for d in parsed.diagnostics
+                ):
+                    # The statement's body starts on its second line.
+                    self._leave_out(self.relations[node], bodies, parsed.diagnostics, lambda line, body=body: (
+                        line - 1 if 1 <= line - 1 <= body.text.count("\n") + 1 else None
+                    ))
+                    break
+        while True:
+            self._assemble(reached, bodies, tests)
+            assert self._ast is not None and self._conversion is not None
+            blocking = [
+                d for d in (*self._ast.diagnostics, *self._conversion.diagnostics)
+                if d.code in _ISOLATED and d.origin is not None and d.origin.line is not None
+            ]
+            culprits = {
+                statement.model.unique_id: statement.model for statement in self._all()
+                for d in blocking if d.origin is not None and d.origin.line is not None and statement.holds(d.origin.line)
+            }
+            if not culprits:
+                break
+            for node, model in culprits.items():
+                own = [d for d in blocking if (s := self._holding(_line(d) or 0)) is not None and s.model.unique_id == node]
+                self._leave_out(model, bodies, own, lambda line: (s.local(line) if (s := self._holding(line)) else None))
+        self._attribute()
 
-    def _program(self, model: Relation, body: Body, tests: tuple[Expectation, ...]) -> _Program:
-        """The model's Program: its body under a Root Select carrying `tests`
-        as markers, then every relation it reaches, with their facts declared."""
-        reached = self.reached(model, tests)
-        body_lines = body.text.count("\n") + 1
-        lines = [f"{_PREFIX}{body.text}", f") as {_identifier(model.name, self.dialect)}"]
+    def _all(self) -> Iterator[Statement]:
+        return (statement for found in self._statements.values() for statement in found)
+
+    def _leave_out(
+        self, model: Relation, bodies: dict[str, list[tuple[Body, str]]], diagnostics: Iterable[Diagnostic],
+        local: Callable[[int], int | None],
+    ) -> None:
+        """`model` out of the Program, with `diagnostics` its own; `local`
+        maps a diagnostic's line to a line of the model's body."""
+        found = bodies.pop(model.unique_id, [])
+        results = []
+        for body, _ in found:
+            problems = []
+            for d in diagnostics:
+                at = _line(d)
+                line = local(at) if at is not None else None
+                problems.append(Problem(d, False, line, raw_line_of(body, line) if line is not None else None))
+            results.append((body, BranchResult(problems=tuple(problems))))
+        self._left_out[model.unique_id] = results
+
+    def _holding(self, line: int) -> Statement | None:
+        return next((statement for statement in self._all() if statement.holds(line)), None)
+
+    def _text(self, model: Relation, body: Body, name: str, tests: list[Expectation]) -> _Text:
+        """A body's statement, `placed` keyed by its own lines (the first is 1)."""
+        lines = [f"create view {name} as select * from (", body.text, f") as {_identifier(model.name, self.dialect)}"]
         placed: dict[int, Expectation] = {}
         unplaced: dict[str, TestResult] = {}
+        first = 2 + body.text.count("\n") + 1  # The `) as` line.
         for expectation in tests:
             marker = self._marker(expectation)
             if marker is None:
                 unplaced[expectation.unique_id] = TestResult(False, "it references a relation with no name in the warehouse")
                 continue
-            placed[body_lines + 1 + len(placed) + 1] = expectation
             lines.append(marker)
+            placed[first + len(placed) + 1] = expectation
         lines.append(";")
-        undeclared: set[str] = set()
-        for relation in reached:
-            statement = self._declaration(relation)
-            if statement is None and relation.materialized != "ephemeral":
-                undeclared.add(relation.unique_id)
-            if statement:
-                lines.append(statement)
-        sql = "\n".join(lines) + "\n"
+        return _Text("\n".join(lines), placed, unplaced)
 
-        ast = SqlParser(self.dialect).parse(sql)
-        conversion = IrParser(self.dialect).parse(ast)
+    def _assemble(self, reached: Mapping[str, Relation], bodies: Mapping[str, list[tuple[Body, str]]], tests: Mapping[str, list[Expectation]]) -> None:
+        parts: list[str] = []
+        line, offset = 1, 0
+        self._statements = {}
+        self.undeclared = set()
+        for node, relation in reached.items():
+            if relation.materialized == "ephemeral":
+                continue  # Inlined as a CTE wherever it is read.
+            if node in bodies and self._is_view(relation) or node not in self._read:
+                continue  # Its view is its query, or nothing reads it.
+            statement = self._table(relation)
+            if statement is None:
+                self.undeclared.add(node)
+                continue
+            parts.append(statement)
+            line += statement.count("\n") + 1
+            offset += len(statement) + 1
+        for node, found in bodies.items():
+            model = self.relations[node]
+            for body, name in found:
+                text = self._text(model, body, name, tests.get(node, []))
+                self._statements.setdefault(node, []).append(Statement(
+                    model, body, name, line + 1, offset + text.text.index("\n") + 1,
+                    line + text.text.count("\n"), {line - 1 + local: e for local, e in text.placed.items()}, text.unplaced,
+                ))
+                parts.append(text.text)
+                line += text.text.count("\n") + 1
+                offset += len(text.text) + 1
+        self._sql = "\n".join(parts) + "\n"
+        self._ast = SqlParser(self.dialect).parse(self._sql)
+        conversion = IrParser(self.dialect).parse(self._ast)
         program = conversion.program
+        placed = {line for statement in self._all() for line in statement.placed}
         assertions = tuple(
             _coverage(assertion) if assertion.origin.line in placed and isinstance(assertion.property, ForeignKey) else assertion
             for assertion in program.assertions
         )
-        declarations = (*program.declarations, *self._declarations(program, conversion.knowledge, model, reached))
-        conversion = replace(conversion, program=replace(program, assertions=assertions, declarations=declarations))
-        return _Program(sql, ast, conversion, reached, body_lines, placed, unplaced, frozenset(undeclared))
+        declarations = (*program.declarations, *self._declarations(program, conversion.knowledge, reached))
+        self._conversion = replace(conversion, program=replace(program, assertions=assertions, declarations=declarations))
 
-    def analyze(self, model: Relation, body: Body, tests: tuple[Expectation, ...]) -> BranchResult:
-        built = self._program(model, body, tests)
-        program, knowledge = built.conversion.program, built.conversion.knowledge
-        diagnostics = built.ast.diagnostics + built.conversion.diagnostics
-        report = Engine().run(program, knowledge, diagnostics, built.conversion.warnings)
-        return BranchResult(
-            tests={**built.unplaced, **_tests(report, built.placed)},
-            markers=_markers(report, body, built.body_lines),
-            problems=_problems(
-                report.diagnostics, report.warnings, body, built.body_lines, built.placed, [model, *built.reached], self.dialect,
-            ),
-            additions=self._additions(program, knowledge, diagnostics, model),
-            undeclared=built.undeclared,
-        )
-
-    def suggest(self, model: Relation, body: Body, own: Iterable[Expectation] = ()) -> SuggestResult:
-        """What `sqlassert suggest` finds in the model's own SQL, with what it
-        reads declared. A marker of its Root Select that `own` (the model's
-        tests and constraints) already states is left out, or cut to the part
-        none states."""
-        built = self._program(model, body, ())
-        # Only the model's own SQL: what it reads is suggested on in its own run.
-        with Suggester(
-            built.sql, built.ast, built.conversion, dialect=self.dialect,
-            sites=lambda site: site.line <= built.body_lines and 0 <= site.offset - len(_PREFIX) <= len(body.text),
-        ) as suggester:
-            report = suggester.suggest()
-        root = f"subquery {model.name}".lower()
-        stated = _Stated.of(own)
-        relations = dict(built.conversion.program.attachment_sites)
-        found = []
-        for item in (*report.improvements, *report.suggestions, *report.smells):
-            site = item.site
-            cut = False
-            if isinstance(item, Suggestion) and site.label.lower() == root:
-                relation = relations[site]
-                order = () if isinstance(relation, ir.SimpleCase) else relation.output_columns
-                marker = stated.untested(item.property, item.marker, order, self.dialect)
-                if marker is None:
-                    continue
-                item, cut = replace(item, marker=marker), marker != item.marker
-            offset = site.offset - len(_PREFIX)
-            if site.line > built.body_lines or not 0 <= offset <= len(body.text):
-                continue  # The generated Root Select, or a relation the model reads.
-            # A trailing marker follows the Select Expression's last character,
-            # or the last one copied from the model file when a tag wrote it.
-            anchor = max(offset - 1, 0) if site.trailing else offset
-            while site.trailing and body.lines is not None and anchor > 0 and not body.lines[anchor]:
-                anchor -= 1
-            if body.in_injected(anchor):
+    def _attribute(self) -> None:
+        """Diagnostics of no statement, kept once for the project. A table
+        with unknown columns is reported once as such, and a model's own
+        table read through `{{ this }}` is unknown by nature."""
+        assert self._ast is not None and self._conversion is not None
+        names = self._names()
+        self.loose = []
+        for diagnostic, warning in [
+            *((d, False) for d in (*self._ast.diagnostics, *self._conversion.diagnostics)),
+            *((d, True) for d in self._conversion.warnings),
+        ]:
+            if _about(diagnostic, names):
                 continue
-            match item:
-                case Improvement():
-                    kind, text = item.rewrite.value, item.message
-                case Suggestion():
-                    kind, text = "Not Null" if cut else item.kind, item.marker
-                case Smell():
-                    kind, text = item.concern.value, item.message
-            found.append(Suggested(
-                item.level, site.line, _site_line(body, site.line, anchor, site.trailing),
-                "Root Select" if site.label.lower() == root else site.label, kind, text, item.evidence.explain(), site.trailing,
-            ))
-        return SuggestResult(
-            tuple(found),
-            _problems(report.diagnostics, report.warnings, body, built.body_lines, {}, [model, *built.reached], self.dialect),
-            built.undeclared,
+            line = _line(diagnostic)
+            if line is None or self._holding(line) is None:
+                self.loose.append((diagnostic, warning))
+
+    def _names(self) -> set[str]:
+        """How the Program names every relation of the project, and every
+        incremental model's previous run."""
+        names = {_canonical(relation.relation_name, self.dialect) for relation in self.relations.values()}
+        return names | {
+            _canonical(_previous(relation.relation_name, self.dialect), self.dialect)
+            for relation in self.relations.values() if relation.relation_name and relation.materialized == "incremental"
+        }
+
+    def _table(self, relation: Relation) -> str | None:
+        if relation.relation_name is None:
+            return None
+        columns = self._complete_columns(relation)
+        if columns is None:
+            return None
+        return f"create table {relation.relation_name} ({', '.join(columns)});"
+
+    # Reading results ----------------------------------------------------------
+
+    def check(self) -> None:
+        """Analyze the Program: every statement's assertions, once."""
+        assert self._conversion is not None and self._ast is not None
+        conversion = self._conversion
+        self._report = Engine().run(
+            conversion.program, conversion.knowledge, self._ast.diagnostics + conversion.diagnostics, conversion.warnings,
         )
+
+    def analyze(self, model: Relation) -> list[tuple[Body, BranchResult]]:
+        """Each of `model`'s bodies and what checking it found. `check` first."""
+        if model.unique_id in self._left_out:
+            return self._left_out[model.unique_id]
+        report = self._report
+        assert report is not None and self._conversion is not None
+        found = []
+        for statement in self._statements.get(model.unique_id, []):
+            found.append((statement.body, BranchResult(
+                tests={**statement.unplaced, **_tests(report, statement.placed)},
+                markers=_markers(report, statement),
+                problems=_problems(report.diagnostics, report.warnings, statement, self._names()),
+                additions=self._additions(statement),
+            )))
+        return found
+
+    def suggester(self, models: Iterable[Relation]) -> Suggester:
+        """A Suggester over the Program, for the bodies of `models` only."""
+        assert self._conversion is not None and self._ast is not None
+        statements = [statement for model in models for statement in self._statements.get(model.unique_id, [])]
+        return Suggester(
+            self._sql, self._ast, self._conversion, dialect=self.dialect,
+            sites=lambda site: any(statement.has_site(site) for statement in statements),
+        )
+
+    def suggest(self, suggester: Suggester, model: Relation, own: Iterable[Expectation] = ()) -> list[SuggestResult]:
+        """What `sqlassert suggest` finds in each of `model`'s bodies. A
+        marker of its Root Select that `own` (the model's tests and
+        constraints) already states is left out, or cut to the part none states."""
+        if model.unique_id in self._left_out:
+            return [SuggestResult((), result.problems) for _, result in self._left_out[model.unique_id]]
+        assert self._conversion is not None and self._ast is not None
+        stated = _Stated.of(own)
+        relations = dict(self._conversion.program.attachment_sites)
+        results = []
+        for statement in self._statements.get(model.unique_id, []):
+            body = statement.body
+            report = suggester.suggest(statement.has_site)
+            root = f"subquery {model.name}".lower()
+            found = []
+            for item in (*report.improvements, *report.suggestions, *report.smells):
+                site = item.site
+                cut = False
+                if isinstance(item, Suggestion) and site.label.lower() == root:
+                    relation = relations[site]
+                    order = () if isinstance(relation, ir.SimpleCase) else relation.output_columns
+                    marker = stated.untested(item.property, item.marker, order, self.dialect)
+                    if marker is None:
+                        continue
+                    item, cut = replace(item, marker=marker), marker != item.marker
+                offset = site.offset - statement.first_offset
+                line = statement.local(site.line)
+                assert line is not None
+                # A trailing marker follows the Select Expression's last character,
+                # or the last one copied from the model file when a tag wrote it.
+                anchor = max(offset - 1, 0) if site.trailing else offset
+                while site.trailing and body.lines is not None and anchor > 0 and not body.lines[anchor]:
+                    anchor -= 1
+                if body.in_injected(anchor):
+                    continue
+                match item:
+                    case Improvement():
+                        kind, text = item.rewrite.value, item.message
+                    case Suggestion():
+                        kind, text = "Not Null" if cut else item.kind, item.marker
+                    case Smell():
+                        kind, text = item.concern.value, item.message
+                found.append(Suggested(
+                    item.level, line, _site_line(body, line, anchor, site.trailing),
+                    "Root Select" if site.label.lower() == root else site.label, kind, text, item.evidence.explain(), site.trailing,
+                ))
+            results.append(SuggestResult(
+                tuple(found),
+                _problems(self._ast.diagnostics + self._conversion.diagnostics, self._conversion.warnings, statement, self._names()),
+            ))
+        return results
 
     def _marker(self, expectation: Expectation) -> str | None:
         columns = ", ".join(_identifier(column, self.dialect) for column in expectation.columns)
@@ -534,19 +748,6 @@ class Builder:
                 return f"/**ASSERT FOREIGN KEY({columns}) REFERENCES {target.relation_name}({referenced})**/"
             case None:
                 return None
-
-    def _declaration(self, relation: Relation) -> str | None:
-        if relation.relation_name is None:
-            return None
-        if self.is_view(relation):
-            if relation.materialized == "ephemeral":
-                return None  # dbt inlined it as a CTE wherever it is read.
-            body = _blank_assertions(_strip_end(relation.compiled_code or ""))
-            return f"create view {relation.relation_name} as\n{body}\n;"
-        columns = self._complete_columns(relation)
-        if columns is None:
-            return None
-        return f"create table {relation.relation_name} ({', '.join(columns)});"
 
     def _complete_columns(self, relation: Relation) -> list[str] | None:
         """Column definitions known to be all of a table's columns: an enforced
@@ -582,10 +783,8 @@ class Builder:
             definitions.append(f"{_identifier(column.name, self.dialect)} {kind.sql(dialect=self.dialect)}")
         return definitions
 
-    def _declarations(
-        self, program: ir.Program, knowledge: tuple[Property, ...], model: Relation, reached: list[Relation],
-    ) -> list[Property]:
-        """The fact tests and constraints of every reached relation, as Properties of its IR."""
+    def _declarations(self, program: ir.Program, knowledge: tuple[Property, ...], reached: Mapping[str, Relation]) -> list[Property]:
+        """The fact tests and constraints of every relation, as Properties of its IR."""
         named = {
             relation.name.lower(): relation for relation in program.named_relations
             if relation.role in {ir.RelationRole.TABLE, ir.RelationRole.VIEW}
@@ -600,7 +799,7 @@ class Builder:
             if relation.materialized == "ephemeral":
                 names = {
                     match.group(1).lower()
-                    for source in (model, *reached) for cte in source.extra_ctes
+                    for source in reached.values() for cte in source.extra_ctes
                     if cte.id == node and (match := _CTE_NAME.match(cte.sql))
                 }
                 return [r for name in names for r in ctes.get(name, [])]
@@ -608,9 +807,9 @@ class Builder:
             return [named[canonical]] if canonical in named else []
 
         declared: list[Property] = []
-        for relation in reached:
-            for expectation in self.facts(relation.unique_id):
-                for target in relations_of(relation.unique_id):
+        for node in reached:
+            for expectation in self.facts(node):
+                for target in relations_of(node):
                     columns = _columns(target, expectation.columns)
                     if columns is None:
                         continue  # A column nothing reads; its facts cannot matter.
@@ -639,21 +838,22 @@ class Builder:
                             pass
         return declared
 
-    def _additions(
-        self, program: ir.Program, knowledge: tuple[Property, ...], diagnostics: tuple[Diagnostic, ...], model: Relation,
-    ) -> tuple[Addition, ...]:
-        """Unique Sets, Not Null columns and Enumerated Domains proved of the model."""
-        root = program.root
-        if root is None or any(d.code in _UNPARSEABLE | {diag.DUPLICATE_DECLARATION} for d in diagnostics):
+    def _additions(self, statement: Statement) -> tuple[Addition, ...]:
+        """Unique Sets, Not Null columns and Enumerated Domains proved of a body."""
+        assert self._conversion is not None
+        program, knowledge = self._conversion.program, self._conversion.knowledge
+        view = next(
+            (relation for relation in program.named_relations if relation.name.lower() == _canonical(statement.name, self.dialect)),
+            None,
+        )
+        root = view.body if view is not None else None
+        if root is None:
             return ()
         names = [column.name.lower() for column in root.output_columns]
         columns = tuple(column for column in root.output_columns if names.count(column.name.lower()) == 1)
         found: list[Addition] = []
         with Engine().session(program, knowledge) as arena:
-            non_null = {
-                column: arena.prove(NonNullColumns(columns=frozenset((column,))))
-                for column in columns
-            }
+            non_null = {column: arena.prove(NonNullColumns(columns=frozenset((column,)))) for column in columns}
             for key in minimal_keys(root):
                 if not set(key) <= set(columns):
                     continue
@@ -677,13 +877,60 @@ class Builder:
         return tuple(found)
 
 
-def _blank_assertions(sql: str) -> str:
-    """`sql` with its Assertion Markers blanked: another model's assertions are
-    checked when that model is analyzed, not wherever it is read."""
-    for match in reversed(_marker_shapes(sql)):
-        if re.sub(r"\s+", " ", match.group(0)).upper().startswith("/**ASSERT "):
-            sql = sql[:match.start()] + re.sub(r"[^\n]", " ", match.group(0)) + sql[match.end():]
-    return sql
+def _synthetic(model: Relation, index: int, dialect: str) -> str:
+    """The view of one body of a model whose readers read a table instead."""
+    stem = re.sub(r"\W", "_", model.unique_id)
+    return exp.to_identifier(f"{stem}__sqlassert_body_{index + 1}", quoted=True).sql(dialect=dialect)
+
+
+def _line(diagnostic: Diagnostic) -> int | None:
+    return diagnostic.origin.line if diagnostic.origin is not None else None
+
+
+def _about(diagnostic: Diagnostic, names: set[str]) -> bool:
+    """Whether `diagnostic` is a table with unknown columns among `names`,
+    reported once for the project instead (or unknown by nature)."""
+    return diagnostic.code == diag.UNDECLARED_TABLE and any(f"table {name} has" in diagnostic.message.lower() for name in names)
+
+
+def _markers(report: Report, statement: Statement) -> tuple[MarkerResult, ...]:
+    body = statement.body
+    found = []
+    for assertion in report.assertions:
+        span = assertion.origin.span
+        line = statement.local(span.line) if span is not None else None
+        if span is None or line is None:
+            continue
+        start = _line_start(body, line)
+        offset = start + span.column - 1
+        if body.in_injected(offset):
+            continue
+        end = body.text.find("\n", start) % (len(body.text) + 1)  # -1: the last line runs to the end.
+        on_line = [m.start() for m in _marker_shapes(body.text) if start <= m.start() < end]
+        found.append(MarkerResult(
+            line, raw_line_of(body, line, offset), on_line.index(offset) if offset in on_line else 0,
+            _marker_at(body, offset), assertion.outcome,
+            assertion.evidence.explain() if assertion.evidence is not None else "",
+        ))
+    return tuple(found)
+
+
+def _problems(
+    diagnostics: Iterable[Diagnostic], warnings: Iterable[Diagnostic], statement: Statement, names: set[str],
+) -> tuple[Problem, ...]:
+    """The Diagnostics of a body's own SQL: those of another relation are
+    reported with it, a table with unknown columns once for the project."""
+    body = statement.body
+    found = []
+    for diagnostic, warning in [*((d, False) for d in diagnostics), *((d, True) for d in warnings)]:
+        line = _line(diagnostic)
+        if line is None or not statement.holds(line) or line in statement.placed or _about(diagnostic, names):
+            continue
+        local = statement.local(line)
+        if local is not None and body.in_injected(_line_offset(body, local)):
+            continue
+        found.append(Problem(diagnostic, warning, local, raw_line_of(body, local) if local is not None else None))
+    return tuple(found)
 
 
 def _identifier(name: str, dialect: str) -> str:
@@ -753,48 +1000,6 @@ def _holds_its_literals(column: ir.OutputColumn, values: Iterable[LiteralValue],
     if kind == exp.DataType.Type.BOOLEAN:
         return all(value.type == "boolean" for value in values)
     return False
-
-
-def _markers(report: Report, body: Body, body_lines: int) -> tuple[MarkerResult, ...]:
-    found = []
-    for assertion in report.assertions:
-        span = assertion.origin.span
-        if span is None or span.line > body_lines:
-            continue
-        start = _line_start(body, span.line)
-        offset = start + span.column - 1
-        if body.in_injected(offset):
-            continue
-        end = body.text.find("\n", start) % (len(body.text) + 1)  # -1: the last line runs to the end.
-        on_line = [m.start() for m in _marker_shapes(body.text) if start <= m.start() < end]
-        found.append(MarkerResult(
-            span.line, raw_line_of(body, span.line, offset), on_line.index(offset) if offset in on_line else 0,
-            _marker_at(body, offset), assertion.outcome,
-            assertion.evidence.explain() if assertion.evidence is not None else "",
-        ))
-    return tuple(found)
-
-
-def _problems(
-    diagnostics: Iterable[Diagnostic], warnings: Iterable[Diagnostic], body: Body, body_lines: int,
-    tested: Mapping[int, Expectation], reached: list[Relation], dialect: str,
-) -> tuple[Problem, ...]:
-    """The Diagnostics about the model's own SQL; those about another relation
-    are reported when that relation is analyzed, and a table with unknown
-    columns is reported once for the project (the model's own, read through
-    `{{ this }}`, is its previous run and unknown by nature)."""
-    reached_names = {_canonical(relation.relation_name, dialect) for relation in reached}
-    found = []
-    for diagnostic, warning in [*((d, False) for d in diagnostics), *((d, True) for d in warnings)]:
-        line = diagnostic.origin.line if diagnostic.origin is not None else None
-        if diagnostic.code == diag.UNDECLARED_TABLE and any(
-            f"table {name} has" in diagnostic.message.lower() for name in reached_names
-        ):
-            continue
-        if line is not None and (line > body_lines or line in tested or body.in_injected(_line_offset(body, line))):
-            continue
-        found.append(Problem(diagnostic, warning, line, raw_line_of(body, line) if line is not None else None))
-    return tuple(found)
 
 
 def _site_line(body: Body, line: int, anchor: int, trailing: bool) -> int | None:
