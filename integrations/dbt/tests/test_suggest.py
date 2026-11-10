@@ -121,7 +121,7 @@ def test_command_compiles_what_the_models_read_and_lists_by_model(compiled, monk
     assert code == 0
     assert calls == [[
         "compile", "--target", "dev", "--select", "+path:models/stg_orders.sql", "+path:models/customer_orders.sql",
-        "--project-dir", str(compiled.resolve()),
+        "--project-dir", str(compiled.resolve()), "--profiles-dir", str(compiled.resolve()),
     ]]
     out = capsys.readouterr().out.splitlines()
     assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  mid  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/"]
@@ -138,11 +138,45 @@ def test_command_explains_and_keeps_the_callers_selection(compiled, monkeypatch,
     assert "PROVED" in capsys.readouterr().out
 
 
+def test_command_takes_the_project_directory_for_every_model(compiled, monkeypatch, capsys):
+    calls = fake_dbt(monkeypatch)
+    monkeypatch.chdir(compiled.parent)
+
+    assert main(["suggest", compiled.name, "--trust-upstream-tests"]) == 0
+
+    # The whole project compiles; no selection.
+    assert "--select" not in calls[0]
+    assert "in 9 models" in capsys.readouterr().out
+
+
+def test_command_takes_a_directory_of_models(compiled, monkeypatch, capsys):
+    calls = fake_dbt(monkeypatch)
+
+    main(["suggest", str(compiled / "models")])
+
+    assert calls[0][calls[0].index("--select") + 1] == "+path:models"
+    assert "in 9 models" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("given", [["--profiles-dir", "elsewhere"], ["--profiles-dir=elsewhere"]])
+def test_a_profiles_dir_of_the_callers_is_kept(compiled, monkeypatch, given):
+    calls = fake_dbt(monkeypatch)
+    main(["suggest", str(compiled / "models/stg_orders.sql"), "--", *given])
+    assert calls[0].count(str(compiled.resolve())) == 1  # --project-dir only
+
+
+def test_dbt_profiles_dir_is_kept(compiled, monkeypatch):
+    calls = fake_dbt(monkeypatch)
+    monkeypatch.setenv("DBT_PROFILES_DIR", "elsewhere")
+    main(["suggest", str(compiled / "models/stg_orders.sql")])
+    assert "--profiles-dir" not in calls[0]
+
+
 def test_command_needs_a_project_around_the_files(tmp_path, monkeypatch, capsys):
     fake_dbt(monkeypatch)
     (tmp_path / "model.sql").write_text("select 1")
     assert main(["suggest", str(tmp_path / "model.sql")]) == 2
-    assert "no dbt_project.yml" in capsys.readouterr().err
+    assert "no dbt_project.yml at or above" in capsys.readouterr().err
 
 
 def test_command_runs_dbt_selecting_by_path_from_another_directory(tmp_path, monkeypatch, capsys):

@@ -35,6 +35,10 @@ facts, since `dbt build` runs them first in the same invocation. If the
 arguments after `--` select nodes (`--select`, `--exclude`, `--selector`, ...),
 an upstream test may not run, so none is trusted.
 
+A `profiles.yml` kept in the project directory is found without
+`--profiles-dir` (by `build`, `test` and `suggest`), unless the working
+directory has one or `DBT_PROFILES_DIR` is set.
+
 ## Check without dbt
 
 `check` reads only `target/manifest.json`, so dbt does not need to be installed
@@ -104,8 +108,10 @@ stg_orders:
   models/stg_orders.sql:2  mid  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/
 ```
 
-It runs `dbt compile` on those models and what they read (arguments after
-`--` go to dbt; a `--select` of your own replaces that selection), then lists
+Pass model files, a directory of models, or the project directory for every
+model (`sqlassert-dbt suggest .`). It runs `dbt compile` on those models and
+what they read (arguments after `--` go to dbt; a `--select` of your own
+replaces that selection), then lists
 what [`sqlassert suggest`](https://github.com/polvoazul/sqlassert#readme)
 finds in each model, with the relations it reads declared as `check` declares
 them: `high` rewrites that keep the result, `mid` markers that will be

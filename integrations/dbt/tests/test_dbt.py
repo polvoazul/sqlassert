@@ -334,7 +334,8 @@ def test_build_compiles_checks_then_builds_without_the_proved_tests(copy_project
     assert code == 1  # dbt passed; a marker is UNKNOWN
     assert "models/customers.sql:12: UNKNOWN /**ASSERT NOT NULL(first_name)**/" in capsys.readouterr().out
     compile_, build = calls
-    assert compile_ == ["compile", "--target", "dev", "--project-dir", str(project)]
+    # The project holds its profiles.yml, which dbt would not look for there.
+    assert compile_ == ["compile", "--target", "dev", "--project-dir", str(project), "--profiles-dir", str(project.resolve())]
     excluded = build[build.index("--exclude") + 1:]
     assert build[:4] == ["build", "--target", "dev", "--project-dir"]
     # Upstream tests run in the same invocation, so they are facts.

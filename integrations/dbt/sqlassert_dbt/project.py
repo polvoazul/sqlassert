@@ -84,19 +84,29 @@ def suggest_models(
     trust_upstream_tests: bool = False, catalog_path: Path | None = None,
 ) -> SuggestReport:
     """What `sqlassert suggest` finds in each model whose file is one of
-    `files` (paths relative to `project_dir`), with the relations each reads
-    declared as `analyze_project` declares them."""
+    `files` (paths relative to `project_dir`; a directory stands for every
+    model of the project under it, "." for all), with the relations each
+    reads declared as `analyze_project` declares them."""
     analysis = _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path)
     manifest = analysis.manifest
     by_path = {
         relation.original_file_path: relation for relation in manifest.relations.values() if relation.resource_type == "model"
     }
-    models = []
+    own = {path: relation for path, relation in by_path.items() if relation.package_name == manifest.project_name}
+    models: list[Relation] = []
     for file in files:
-        relation = by_path.get(Path(file).as_posix())
-        if relation is None:
-            raise ProjectError(f"{file} is not a model of the project in {manifest_path or project_dir / 'target' / 'manifest.json'}")
-        models.append(relation)
+        path = Path(file).as_posix()
+        if path in by_path:
+            found = [by_path[path]]
+        else:  # A directory: every model of the project under it.
+            prefix = "" if path == "." else path.rstrip("/") + "/"
+            found = [own[key] for key in sorted(own) if key.startswith(prefix)]
+        if not found:
+            raise ProjectError(
+                f"{file} is not a model of the project, nor a directory holding one, in "
+                f"{manifest_path or project_dir / 'target' / 'manifest.json'}"
+            )
+        models.extend(model for model in found if model not in models)
     return analysis.suggest(dialect, models)
 
 

@@ -9,14 +9,15 @@ with every test the SQL proves excluded. dbt runs the tests of what a model
 reads in the same invocation, so they are facts, unless DBT_ARGS select nodes
 (a selection may leave an upstream test out).
 
-`sqlassert-dbt suggest MODEL_FILE... [-- DBT_ARGS]` runs `dbt compile` on
-those models and what they read, then lists what `sqlassert suggest` finds in
+`sqlassert-dbt suggest PATH... [-- DBT_ARGS]` runs `dbt compile` on the
+models in those files or directories and what they read, then lists what `sqlassert suggest` finds in
 each: rewrites, markers to paste, smells, at the model file's lines.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -72,11 +73,14 @@ def main(argv: list[str] | None = None) -> int:
         description="Run `dbt compile` on the models and what they read, then list what sqlassert can prove about each "
         "model file: rewrites that keep its result, markers to paste, smells. Arguments after -- go to dbt. "
         f"Exit status: {EXIT_OK}, or {EXIT_FINDINGS} when an error is reported, {EXIT_USAGE} on bad arguments.",
-        usage="sqlassert-dbt suggest [options] MODEL_FILE... [-- DBT_ARGS]",
+        usage="sqlassert-dbt suggest [options] PATH... [-- DBT_ARGS]",
     )
-    suggest.add_argument("files", nargs="+", metavar="MODEL_FILE", help="model .sql files of one dbt project")
     suggest.add_argument(
-        "--project-dir", help="dbt project directory (default: the nearest one holding the first MODEL_FILE)",
+        "files", nargs="+", metavar="PATH",
+        help="model .sql files or directories of models (the project's own directory: every model) of one dbt project",
+    )
+    suggest.add_argument(
+        "--project-dir", help="dbt project directory (default: the nearest one holding the first PATH)",
     )
     suggest.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
     suggest.add_argument("--catalog", help=_CATALOG_HELP)
@@ -104,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         return exit_code(report, require_proved=arguments.require_proved)
 
     passed = [argument for argument in arguments.dbt_arguments if argument != "--"]
-    located = [*passed, "--project-dir", str(project)]
+    located = [*passed, "--project-dir", str(project), *_profiles(project.resolve(), passed)]
     compiled = run_dbt(["compile", *located])
     if compiled != 0:
         return compiled
@@ -119,24 +123,27 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
-    files = [Path(file).resolve() for file in arguments.files]
+    paths = [Path(path).resolve() for path in arguments.files]
     if arguments.project_dir is not None:
         project = Path(arguments.project_dir).resolve()
     else:
-        project = next((folder for folder in files[0].parents if (folder / "dbt_project.yml").is_file()), None)
+        first = paths[0]
+        candidates = [first, *first.parents] if first.is_dir() else list(first.parents)
+        project = next((folder for folder in candidates if (folder / "dbt_project.yml").is_file()), None)
         if project is None:
-            print(f"sqlassert-dbt: no dbt_project.yml above {arguments.files[0]}; pass --project-dir", file=sys.stderr)
+            print(f"sqlassert-dbt: no dbt_project.yml at or above {arguments.files[0]}; pass --project-dir", file=sys.stderr)
             return EXIT_USAGE
     relative = []
-    for given, file in zip(arguments.files, files):
-        if not file.is_relative_to(project):
+    for given, path in zip(arguments.files, paths):
+        if not path.is_relative_to(project):
             print(f"sqlassert-dbt: {given} is outside the dbt project {project}", file=sys.stderr)
             return EXIT_USAGE
-        relative.append(file.relative_to(project).as_posix())
+        relative.append(path.relative_to(project).as_posix())
     selecting = any(argument.split("=")[0] in SELECTION_FLAGS for argument in passed)
-    # Only the models and what they read need compiled code.
-    selection = [] if selecting else ["--select", *(f"+path:{file}" for file in relative)]
-    compiled = run_dbt(["compile", *passed, *selection, "--project-dir", str(project)], to_stderr=True)
+    # Only the models and what they read need compiled code; the whole project, for its own directory.
+    selection = [] if selecting or "." in relative else ["--select", *(f"+path:{path}" for path in relative)]
+    located = [*passed, *selection, "--project-dir", str(project), *_profiles(project, passed)]
+    compiled = run_dbt(["compile", *located], to_stderr=True)
     if compiled != 0:
         return compiled
     try:
@@ -181,6 +188,17 @@ def _analyze(project: Path, manifest: str | None, dialect: str | None, trust: bo
     except ProjectError as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)
         return None
+
+
+def _profiles(project: Path, passed: list[str]) -> list[str]:
+    """`--profiles-dir PROJECT` when the project holds the profiles.yml dbt
+    would not otherwise find: dbt looks in the working directory, then
+    DBT_PROFILES_DIR, then ~/.dbt, never in the project."""
+    if any(argument.split("=")[0] == "--profiles-dir" for argument in passed) or os.environ.get("DBT_PROFILES_DIR"):
+        return []
+    if not (project / "profiles.yml").is_file() or (Path.cwd() / "profiles.yml").is_file():
+        return []
+    return ["--profiles-dir", str(project)]
 
 
 def _path(value: str | None) -> Path | None:
