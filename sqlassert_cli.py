@@ -9,19 +9,6 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-# How each suggested Property reads in the listing.
-_KINDS = {
-    "ExactlyOneJoin": "Exactly One Join",
-    "OneToOneJoin": "One To One Join",
-    "ManyToOneJoin": "Many To One Join",
-    "OneToManyJoin": "One To Many Join",
-    "UniqueJoin": "Unique Join",
-    "UniqueSet": "Unique Set",
-    "NonNullUniqueSet": "Non-Null Unique Set",
-    "NonNullColumns": "Not Null",
-}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sqlassert")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -95,7 +82,7 @@ def _suggest(arguments: argparse.Namespace) -> int:
     rows = [
         (i.level.value, f"line {i.site.line}", i.site.label, i.rewrite.value, i.message) for i in report.improvements
     ] + [
-        (s.level.value, f"line {s.site.line}", s.site.label, _KINDS[type(s.property).__name__], s.marker)
+        (s.level.value, f"line {s.site.line}", s.site.label, s.kind, s.marker)
         for s in report.suggestions
     ] + [
         (s.level.value, f"line {s.site.line}", s.site.label, s.concern.value, s.message) for s in report.smells

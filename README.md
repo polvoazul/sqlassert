@@ -603,6 +603,14 @@ $ sqlassert-dbt build . -- --target prod   # or: sqlassert-dbt test
 
 It runs `dbt compile`, prints the check, then runs `dbt build` (or `dbt test`) with every proved test passed as `--exclude`. dbt runs the upstream tests in that same invocation, so they are trusted, unless the arguments after `--` select nodes (`--select`, `--exclude`, `--selector`, ...), which may leave one out. The exit code is dbt's when dbt fails, else that of the check.
 
+To see what sqlassert can prove about the models you are editing, as `sqlassert suggest` would on plain SQL:
+
+```bash
+$ sqlassert-dbt suggest models/customers.sql models/stg_orders.sql --explain -- --target dev
+```
+
+It compiles those models and what they read, then lists the rewrites, markers and smells for each model at its file's lines, with what the model reads declared as `check` declares it. In an incremental model, a rewrite or marker is listed only when both `is_incremental()` branches prove it.
+
 ## Details
 
 ### Join Cardinality Syntax

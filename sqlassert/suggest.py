@@ -28,7 +28,7 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.improvements import Improvement, Level, Rewrite, improvements
-from sqlassert.ir.convert import IrParser
+from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.smells import Concern, Smell, smells
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import (
@@ -38,7 +38,7 @@ from sqlassert.properties import (
 from sqlassert.python_engine import Arena, Engine, Result
 from sqlassert.provenance import AttachmentSite
 from sqlassert.rules.domain import _domain
-from sqlassert.sql_parse import SqlParser
+from sqlassert.sql_parse import ParsedProgram, SqlParser
 
 DEFAULT_MAX_SIZE = 3
 
@@ -49,7 +49,7 @@ MAX_ENUM_VALUES = 10
 
 __all__ = [
     "Candidate", "Concern", "Improvement", "Level", "Rewrite", "Smell", "Suggestion", "SuggestionReport", "annotate",
-    "candidates", "suggest",
+    "candidates", "suggest", "suggest_parsed",
 ]
 
 
@@ -71,6 +71,11 @@ class Suggestion:
     marker: str
     evidence: Result[bool]
     level: ClassVar[Level] = Level.MID
+
+    @property
+    def kind(self) -> str:
+        """The Property's name, as a listing shows it."""
+        return _KINDS[type(self.property)]
 
 
 @dataclass(frozen=True)
@@ -120,7 +125,15 @@ def suggest(
     Properties the SQL already asserts or declares are left out.
     """
     ast = SqlParser(dialect).parse(sql)
-    conversion = IrParser(dialect, trust_unenforced_keys).parse(ast)
+    return suggest_parsed(sql, ast, IrParser(dialect, trust_unenforced_keys).parse(ast), dialect=dialect, max_size=max_size)
+
+
+def suggest_parsed(
+    sql: str, ast: ParsedProgram, conversion: IrConversionResult, *, dialect: str = DEFAULT_DIALECT,
+    max_size: int = DEFAULT_MAX_SIZE,
+) -> SuggestionReport:
+    """`suggest` of a Program already parsed and lowered: for a caller that
+    adds Property Declarations to `conversion.program` before proving."""
     program, diagnostics = conversion.program, ast.diagnostics + conversion.diagnostics
     if any(diagnostic.code in _BLOCKING for diagnostic in diagnostics):
         return SuggestionReport(sql, (), diagnostics, warnings=conversion.warnings)
@@ -168,6 +181,20 @@ def suggest(
     )
     return SuggestionReport(sql, kept, diagnostics, tuple(found), conversion.warnings, tuple(concerns))
 
+
+# How each suggested Property reads in a listing.
+_KINDS: dict[type[Property], str] = {
+    ExactlyOneJoin: "Exactly One Join",
+    OneToOneJoin: "One To One Join",
+    ManyToOneJoin: "Many To One Join",
+    OneToManyJoin: "One To Many Join",
+    UniqueJoin: "Unique Join",
+    UniqueSet: "Unique Set",
+    NonNullUniqueSet: "Non-Null Unique Set",
+    NonNullColumns: "Not Null",
+    EnumeratedDomain: "Enumerated Domain",
+    ExhaustiveCase: "Exhaustive Case",
+}
 
 # The join Properties, strongest first.
 _JOIN_PROPERTIES = (ExactlyOneJoin, OneToOneJoin, ManyToOneJoin, OneToManyJoin, UniqueJoin)

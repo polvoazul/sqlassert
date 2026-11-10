@@ -106,6 +106,68 @@ class DbtReport:
         )
 
 
+@dataclass(frozen=True)
+class ModelSuggestion:
+    """What `sqlassert suggest` finds in a model's SQL: a rewrite a proof
+    justifies (`level` high), a marker that will be PROVED (mid), or a result
+    the SQL leaves unspecified (low). `location` is the model file's line when
+    known, else the compiled file's; `kind` names the rewrite, Property or
+    concern; `text` is the marker to paste or the message."""
+
+    model: str
+    location: Location
+    level: str
+    label: str
+    kind: str
+    text: str
+    explanation: str = ""
+
+
+@dataclass(frozen=True)
+class SuggestReport:
+    """`models` names every model analyzed, with suggestions or none."""
+
+    dialect: str | None
+    models: tuple[str, ...] = ()
+    suggestions: tuple[ModelSuggestion, ...] = ()
+    problems: tuple[Problem, ...] = ()
+
+    @property
+    def failed(self) -> bool:
+        return any(problem.severity == "error" for problem in self.problems)
+
+
+def format_suggestions(report: SuggestReport, *, explain: bool = False) -> str:
+    """One block per model, each suggestion one aligned row, warnings and errors after."""
+    lines: list[str] = []
+    for model in report.models:
+        items = [item for item in report.suggestions if item.model == model]
+        if not items:
+            lines.append(f"{model}: nothing to suggest")
+            continue
+        rows = [(str(item.location), item.level, item.label, item.kind, item.text) for item in items]
+        widths = [max(len(row[i]) for row in rows) for i in range(4)]
+        if lines:
+            lines.append("")
+        lines.append(f"{model}:")
+        for row, item in zip(rows, items):
+            lines.append("  " + "  ".join(cell.ljust(width) for cell, width in zip(row[:4], widths)) + "  " + row[4])
+            if explain and item.explanation:
+                lines.extend("      " + line for line in item.explanation.splitlines())
+    if report.problems:
+        lines.append("")
+    for problem in report.problems:
+        where = f"{problem.location}: " if problem.location is not None else ""
+        lines.append(f"{where}{problem.severity} {problem.code}: {problem.message}")
+    counts = {level: sum(item.level == level for item in report.suggestions) for level in ("high", "mid", "low")}
+    lines.append("")
+    lines.append(
+        f"{counts['high']} improvements, {counts['mid']} markers, {counts['low']} smells in {len(report.models)} models, "
+        f"{sum(p.severity == 'error' for p in report.problems)} errors, {sum(p.severity == 'warning' for p in report.problems)} warnings"
+    )
+    return "\n".join(lines) + "\n"
+
+
 def exit_code(report: DbtReport, *, require_proved: bool = False) -> int:
     """`EXIT_FINDINGS` when the report failed or, under `require_proved`, a
     test is not proved: for a project whose every test the SQL must back."""

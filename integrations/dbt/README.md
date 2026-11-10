@@ -91,6 +91,29 @@ only when they fail on any failing row: not a test with `severity: warn`, a
 `where:` config, or `error_if`/`fail_calc` thresholds. A constraint counts only
 on a contracted table whose adapter enforces it.
 
+## Suggest from the models you're editing
+
+```bash
+$ sqlassert-dbt suggest models/customers.sql models/stg_orders.sql --trust-upstream-tests -- --target dev
+customers:
+  models/customers.sql:7   mid  CTE orders   Unique Set  /**ASSERT UNIQUE(customer_id)**/
+  models/customers.sql:11  mid  Root Select  Not Null    /**ASSERT NOT NULL(customer_id, n_orders)**/
+
+stg_orders:
+  models/stg_orders.sql:2  mid  Root Select  Non-Null Unique Set  /**ASSERT NOT NULL UNIQUE(order_id)**/
+```
+
+It runs `dbt compile` on those models and what they read (arguments after
+`--` go to dbt; a `--select` of your own replaces that selection), then lists
+what [`sqlassert suggest`](https://github.com/polvoazul/sqlassert#readme)
+finds in each model, with the relations it reads declared as `check` declares
+them: `high` rewrites that keep the result, `mid` markers that will be
+`PROVED` when pasted at the end of their line, `low` smells. `--explain`
+prints each one's evidence. A line inside SQL that dbt inlined or that a tag
+wrote is given in the compiled file instead. In an incremental model, a
+rewrite or marker is listed only when both `is_incremental()` branches prove
+it. dbt's own output goes to stderr.
+
 ## Markers in models
 
 You can also write sqlassert markers straight into a model, and they are checked

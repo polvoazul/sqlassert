@@ -34,7 +34,8 @@ from sqlassert_dbt.expectations import Expectation, PropertyKind
 from sqlassert_dbt.jinja import Rendered, Unrenderable, has_incremental_branch, render
 from sqlassert_dbt.manifest import Relation
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.ir.convert import IrParser
+from sqlassert.improvements import Improvement, Level
+from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.ir.model import LiteralValue
 from sqlassert.properties import (
     EnumeratedDomain, ForeignKey, NonNullColumn, NonNullColumns, NonNullUniqueSet, Property, ReferentialCoverage,
@@ -45,8 +46,9 @@ from sqlassert.reporting import Outcome, Report
 from sqlassert.rules.domain import _domain
 from sqlassert.rules.equality import _binary_text, _comparison_type, _identity_comparison
 from sqlassert.rules.uniqueness import minimal_keys
-from sqlassert.sql_parse import SqlParser, _marker_shapes
-from sqlassert.suggest import MAX_ENUM_VALUES
+from sqlassert.smells import Smell
+from sqlassert.sql_parse import ParsedProgram, SqlParser, _marker_shapes
+from sqlassert.suggest import MAX_ENUM_VALUES, Suggestion, suggest_parsed
 
 # Materializations whose relation holds exactly the rows of the model's query
 # when its children are built. An incremental model's table keeps rows of
@@ -271,6 +273,49 @@ class BranchResult:
     undeclared: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class Suggested:
+    """An Improvement, marker or Smell `sqlassert suggest` finds in a model's
+    SQL: `line` in its body, `raw_line` in its file when known; `kind` the
+    rewrite, Property or concern; `text` the marker to paste or the message."""
+
+    level: Level
+    line: int
+    raw_line: int | None
+    label: str
+    kind: str
+    text: str
+    explanation: str
+    trailing: bool = False
+
+
+@dataclass(frozen=True)
+class SuggestResult:
+    suggested: tuple[Suggested, ...] = ()
+    problems: tuple[Problem, ...] = ()
+    undeclared: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _Program:
+    """A model's Program, parsed and lowered with the facts of what it reads
+    declared; `placed` maps a line to the test whose marker it holds."""
+
+    sql: str
+    ast: ParsedProgram
+    conversion: IrConversionResult
+    reached: list[Relation]
+    body_lines: int
+    placed: dict[int, Expectation]
+    unplaced: dict[str, TestResult]
+    undeclared: frozenset[str]
+
+
+# The generated Root Select reads the model's body as a FROM subquery,
+# starting on the Program's first line.
+_PREFIX = "select * from ("
+
+
 @dataclass
 class Builder:
     """Builds and analyzes the Programs of one project. Bodies of other
@@ -322,10 +367,12 @@ class Builder:
                 pending.extend(relation.depends_on)
         return list(seen.values())
 
-    def analyze(self, model: Relation, body: Body, tests: tuple[Expectation, ...]) -> BranchResult:
+    def _program(self, model: Relation, body: Body, tests: tuple[Expectation, ...]) -> _Program:
+        """The model's Program: its body under a Root Select carrying `tests`
+        as markers, then every relation it reaches, with their facts declared."""
         reached = self.reached(model, tests)
         body_lines = body.text.count("\n") + 1
-        lines = [f"select * from ({body.text}", f") as {_identifier(model.name, self.dialect)}"]
+        lines = [f"{_PREFIX}{body.text}", f") as {_identifier(model.name, self.dialect)}"]
         placed: dict[int, Expectation] = {}
         unplaced: dict[str, TestResult] = {}
         for expectation in tests:
@@ -348,21 +395,62 @@ class Builder:
         ast = SqlParser(self.dialect).parse(sql)
         conversion = IrParser(self.dialect).parse(ast)
         program = conversion.program
-        tested = {line: e for line, e in placed.items()}
         assertions = tuple(
-            _coverage(assertion) if assertion.origin.line in tested and isinstance(assertion.property, ForeignKey) else assertion
+            _coverage(assertion) if assertion.origin.line in placed and isinstance(assertion.property, ForeignKey) else assertion
             for assertion in program.assertions
         )
         declarations = (*program.declarations, *self._declarations(program, conversion.knowledge, model, reached))
-        program = replace(program, assertions=assertions, declarations=declarations)
-        diagnostics = ast.diagnostics + conversion.diagnostics
-        report = Engine().run(program, conversion.knowledge, diagnostics, conversion.warnings)
+        conversion = replace(conversion, program=replace(program, assertions=assertions, declarations=declarations))
+        return _Program(sql, ast, conversion, reached, body_lines, placed, unplaced, frozenset(undeclared))
+
+    def analyze(self, model: Relation, body: Body, tests: tuple[Expectation, ...]) -> BranchResult:
+        built = self._program(model, body, tests)
+        program, knowledge = built.conversion.program, built.conversion.knowledge
+        diagnostics = built.ast.diagnostics + built.conversion.diagnostics
+        report = Engine().run(program, knowledge, diagnostics, built.conversion.warnings)
         return BranchResult(
-            tests={**unplaced, **_tests(report, tested)},
-            markers=_markers(report, body, body_lines),
-            problems=_problems(report, body, body_lines, tested, [model, *reached], self.dialect),
-            additions=self._additions(program, conversion.knowledge, diagnostics, model),
-            undeclared=frozenset(undeclared),
+            tests={**built.unplaced, **_tests(report, built.placed)},
+            markers=_markers(report, body, built.body_lines),
+            problems=_problems(
+                report.diagnostics, report.warnings, body, built.body_lines, built.placed, [model, *built.reached], self.dialect,
+            ),
+            additions=self._additions(program, knowledge, diagnostics, model),
+            undeclared=built.undeclared,
+        )
+
+    def suggest(self, model: Relation, body: Body) -> SuggestResult:
+        """What `sqlassert suggest` finds in the model's own SQL, with what it reads declared."""
+        built = self._program(model, body, ())
+        report = suggest_parsed(built.sql, built.ast, built.conversion, dialect=self.dialect)
+        root = f"subquery {model.name}".lower()
+        found = []
+        for item in (*report.improvements, *report.suggestions, *report.smells):
+            site = item.site
+            offset = site.offset - len(_PREFIX)
+            if site.line > built.body_lines or not 0 <= offset <= len(body.text):
+                continue  # The generated Root Select, or a relation the model reads.
+            # A trailing marker follows the Select Expression's last character,
+            # or the last one copied from the model file when a tag wrote it.
+            anchor = max(offset - 1, 0) if site.trailing else offset
+            while site.trailing and body.lines is not None and anchor > 0 and not body.lines[anchor]:
+                anchor -= 1
+            if body.in_injected(anchor):
+                continue
+            match item:
+                case Improvement():
+                    kind, text = item.rewrite.value, item.message
+                case Suggestion():
+                    kind, text = item.kind, item.marker
+                case Smell():
+                    kind, text = item.concern.value, item.message
+            found.append(Suggested(
+                item.level, site.line, _site_line(body, site.line, anchor, site.trailing),
+                "Root Select" if site.label.lower() == root else site.label, kind, text, item.evidence.explain(), site.trailing,
+            ))
+        return SuggestResult(
+            tuple(found),
+            _problems(report.diagnostics, report.warnings, body, built.body_lines, {}, [model, *built.reached], self.dialect),
+            built.undeclared,
         )
 
     def _marker(self, expectation: Expectation) -> str | None:
@@ -608,7 +696,8 @@ def _markers(report: Report, body: Body, body_lines: int) -> tuple[MarkerResult,
 
 
 def _problems(
-    report: Report, body: Body, body_lines: int, tested: Mapping[int, Expectation], reached: list[Relation], dialect: str,
+    diagnostics: Iterable[Diagnostic], warnings: Iterable[Diagnostic], body: Body, body_lines: int,
+    tested: Mapping[int, Expectation], reached: list[Relation], dialect: str,
 ) -> tuple[Problem, ...]:
     """The Diagnostics about the model's own SQL; those about another relation
     are reported when that relation is analyzed, and a table with unknown
@@ -616,7 +705,7 @@ def _problems(
     `{{ this }}`, is its previous run and unknown by nature)."""
     reached_names = {_canonical(relation.relation_name, dialect) for relation in reached}
     found = []
-    for diagnostic, warning in [*((d, False) for d in report.diagnostics), *((d, True) for d in report.warnings)]:
+    for diagnostic, warning in [*((d, False) for d in diagnostics), *((d, True) for d in warnings)]:
         line = diagnostic.origin.line if diagnostic.origin is not None else None
         if diagnostic.code == diag.UNDECLARED_TABLE and any(
             f"table {name} has" in diagnostic.message.lower() for name in reached_names
@@ -626,6 +715,27 @@ def _problems(
             continue
         found.append(Problem(diagnostic, warning, line, raw_line_of(body, line) if line is not None else None))
     return tuple(found)
+
+
+def _site_line(body: Body, line: int, anchor: int, trailing: bool) -> int | None:
+    """The model file's line of a suggestion's site, when known. Without a
+    trusted rendering, a line is found by its whole text (a trailing site's own
+    text is a mere ")" or alike), else by the lines around it: when every line
+    before it, or every line after it, is the model file's, it is that line."""
+    if body.lines is not None or not trailing:
+        found = raw_line_of(body, line, anchor)
+    else:
+        line = body.text.count("\n", 0, anchor) + 1
+        found = raw_line_of(body, line)
+    if found is not None or body.lines is not None:
+        return found
+    compiled, raw = body.text.split("\n"), _strip_end(body.raw_code).split("\n")
+    if compiled[:line - 1] == raw[:line - 1] and line <= len(raw):
+        return line
+    after = len(compiled) - line
+    if after and compiled[line:] == raw[len(raw) - after:] and len(raw) > after:
+        return len(raw) - after
+    return None
 
 
 def _line_start(body: Body, line: int) -> int:
@@ -683,4 +793,4 @@ def raw_line_of(body: Body, line: int, offset: int | None = None) -> int | None:
     return body.raw_code.count("\n", 0, body.raw_code.index(text)) + 1
 
 
-__all__ = ["Body", "Branches", "Builder", "BranchResult", "branches", "raw_line_of"]
+__all__ = ["Body", "Branches", "Builder", "BranchResult", "SuggestResult", "Suggested", "branches", "raw_line_of"]

@@ -14,9 +14,14 @@ from pathlib import Path
 
 from sqlassert_dbt.expectations import Expectation, PropertyKind, expectations
 from sqlassert_dbt.manifest import Manifest, Relation, load_manifest
-from sqlassert_dbt.program import QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, branches, raw_line_of
-from sqlassert_dbt.report import DbtReport, Location, MarkerOutcome, Problem, Status, TestOutcome, Untested
+from sqlassert_dbt.program import (
+    QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, Suggested, SuggestResult, branches, raw_line_of,
+)
+from sqlassert_dbt.report import (
+    DbtReport, Location, MarkerOutcome, ModelSuggestion, Problem, Status, SuggestReport, TestOutcome, Untested,
+)
 from sqlassert.dialects import MODELLED_DIALECTS
+from sqlassert.improvements import Level
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
 from sqlassert.sql_parse import _marker_shapes
@@ -57,14 +62,38 @@ def analyze_project(
     `trust_upstream_tests` makes the passing tests of what a model reads facts
     about it, which holds when they run before it, as under `dbt build`.
     """
+    manifest = _load(project_dir, manifest_path)
+    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests).run(dialect)
+
+
+def suggest_models(
+    project_dir: Path, files: list[str], *, manifest_path: Path | None = None, dialect: str | None = None,
+    trust_upstream_tests: bool = False,
+) -> SuggestReport:
+    """What `sqlassert suggest` finds in each model whose file is one of
+    `files` (paths relative to `project_dir`), with the relations each reads
+    declared as `analyze_project` declares them."""
+    manifest = _load(project_dir, manifest_path)
+    by_path = {
+        relation.original_file_path: relation for relation in manifest.relations.values() if relation.resource_type == "model"
+    }
+    models = []
+    for file in files:
+        relation = by_path.get(Path(file).as_posix())
+        if relation is None:
+            raise ProjectError(f"{file} is not a model of the project in {manifest_path or project_dir / 'target' / 'manifest.json'}")
+        models.append(relation)
+    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests).suggest(dialect, models)
+
+
+def _load(project_dir: Path, manifest_path: Path | None) -> Manifest:
     from sqlassert_dbt.manifest import ManifestError
 
     path = manifest_path or project_dir / "target" / "manifest.json"
     try:
-        manifest = load_manifest(path)
+        return load_manifest(path)
     except ManifestError as error:
         raise ProjectError(f"{error}; run `dbt compile` (or `dbt build`) first") from error
-    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests).run(dialect)
 
 
 @dataclass
@@ -95,7 +124,44 @@ class _Analysis:
             untested.extend(outcome.untested)
             problems.extend(outcome.problems)
             undeclared |= outcome.undeclared
-        if builder is not None and builder.untrusted:
+        if builder is not None:
+            problems.extend(self._shared_problems(builder, undeclared))
+        return DbtReport(dialect, tuple(tests), tuple(markers), tuple(untested), tuple(_unique(problems)))
+
+    def suggest(self, requested: str | None, models: list[Relation]) -> SuggestReport:
+        problems: list[Problem] = []
+        dialect = self._dialect(requested, problems)
+        if dialect is None:
+            return SuggestReport(None, (), (), tuple(problems))
+        builder = Builder(self.manifest.relations, self.expectations, dialect, self.trust_upstream_tests)
+        found: list[ModelSuggestion] = []
+        undeclared: set[str] = set()
+        for relation in models:
+            unanalyzed = self._unanalyzed(relation)
+            if unanalyzed is not None:
+                problems.append(unanalyzed)
+                continue
+            bodies = branches(relation, self.manifest.relations)
+            for warning in bodies.warnings:
+                problems.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
+            if bodies.unrendered is not None:
+                problems.append(Problem(
+                    UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its smells are listed",
+                    "warning", Location(relation.original_file_path), relation.name,
+                ))
+            results = [builder.suggest(relation, body) for body in bodies.bodies]
+            for body, result in zip(bodies.bodies, results):
+                undeclared |= result.undeclared
+                problems.extend(self._problems(relation, [(body, result)]))
+            found.extend(_combined(relation, results, complete=bodies.unrendered is None))
+        problems.extend(self._shared_problems(builder, undeclared))
+        analyzed = tuple(relation.name for relation in models if self._unanalyzed(relation) is None)
+        return SuggestReport(dialect, analyzed, tuple(found), tuple(_unique(problems)))
+
+    def _shared_problems(self, builder: Builder, undeclared: set[str]) -> list[Problem]:
+        """The warnings about the relations models read, once for the project."""
+        problems = []
+        if builder.untrusted:
             problems.append(Problem(
                 UNTRUSTED_UPSTREAM_TESTS,
                 f"{len(builder.untrusted)} passing test(s) of the relations models read were not used as facts, since nothing "
@@ -116,7 +182,19 @@ class _Analysis:
                 f"and nullability come from its passing tests only: {supply}",
                 "warning", Location(relation.patch_path or relation.original_file_path), relation.label,
             ))
-        return DbtReport(dialect, tuple(tests), tuple(markers), tuple(untested), tuple(_unique(problems)))
+        return problems
+
+    def _unanalyzed(self, relation: Relation) -> Problem | None:
+        """Why a model's SQL cannot be analyzed, or None."""
+        if relation.language == "sql" and relation.compiled_code is not None:
+            return None
+        why = f"it is a {relation.language} model" if relation.language != "sql" else "it has no compiled code; run `dbt compile`"
+        # Its own markers go unchecked: that fails the check, not a fact a connection could supply.
+        severity = "error" if relation.language == "sql" and _has_markers(relation.raw_code) else "warning"
+        return Problem(
+            UNANALYZED_MODEL, f"model {relation.name} was not analyzed: {why}", severity,
+            Location(relation.original_file_path), relation.name,
+        )
 
     def _dialect(self, requested: str | None, problems: list[Problem]) -> str | None:
         if requested is not None:
@@ -141,14 +219,9 @@ class _Analysis:
                 for e in own
             )
             return outcome
-        if relation.language != "sql" or relation.compiled_code is None:
-            why = f"it is a {relation.language} model" if relation.language != "sql" else "it has no compiled code; run `dbt compile`"
-            # Its own markers go unchecked: that fails the check, not a fact a connection could supply.
-            severity = "error" if relation.language == "sql" and _has_markers(relation.raw_code) else "warning"
-            outcome.problems.append(Problem(
-                UNANALYZED_MODEL, f"model {relation.name} was not analyzed: {why}", severity,
-                Location(relation.original_file_path), relation.name,
-            ))
+        unanalyzed = self._unanalyzed(relation)
+        if unanalyzed is not None:
+            outcome.problems.append(unanalyzed)
             outcome.tests.extend(self._outcome(e, relation, Status.NOT_PROVED, "its model was not analyzed") for e in own)
             return outcome
 
@@ -242,7 +315,7 @@ class _Analysis:
             found.append(MarkerOutcome(relation.name, location, first.marker, outcome, explanation))
         return found
 
-    def _problems(self, relation: Relation, results: list[tuple[Body, BranchResult]]) -> list[Problem]:
+    def _problems(self, relation: Relation, results: list[tuple[Body, BranchResult]] | list[tuple[Body, SuggestResult]]) -> list[Problem]:
         found = []
         for body, result in results:
             for problem in result.problems:
@@ -289,6 +362,63 @@ class _ModelOutcome:
 
     def __init__(self) -> None:
         self.tests, self.markers, self.untested, self.problems, self.undeclared = [], [], [], [], set()
+
+
+def _combined(relation: Relation, results: list[SuggestResult], *, complete: bool) -> list[ModelSuggestion]:
+    """What every branch suggests: a rewrite or marker must hold in each run
+    dbt may do, so it is kept only when every branch was analyzed and proves
+    it; a smell in any branch is one. The Root Select may end on another line
+    in each branch, so a marker after it is matched by its text alone, and
+    placed after the latest end."""
+    order = {Level.HIGH: 0, Level.MID: 1, Level.LOW: 2}
+    keyed: list[dict[tuple, list[Suggested]]] = []
+    for index, result in enumerate(results):
+        found: dict[tuple, list[Suggested]] = {}
+        for item in result.suggested:
+            if item.trailing and item.label == "Root Select":
+                where: tuple = ("end",)
+            else:
+                where = (item.raw_line,) if item.raw_line is not None else (None, index, item.line)
+            found.setdefault(where + (item.label, item.kind, item.text), []).append(item)
+        keyed.append(found)
+    kept: dict[tuple, list[Suggested]] = {}
+    for found in keyed:
+        for key, items in found.items():
+            proved = items[0].level is not Level.LOW
+            if proved and not (complete and all(key in other for other in keyed)):
+                continue
+            kept.setdefault(key, []).extend(items)
+    placed = []
+    for key, items in kept.items():
+        item = items[0]
+        if key[0] == "end":
+            lines = [found.raw_line for found in items if found.raw_line is not None]
+            raw_line = _past_block_ends(relation.raw_code, max(lines)) if len(lines) == len(items) else None
+        else:
+            raw_line = item.raw_line
+        placed.append((item, raw_line))
+    placed.sort(key=lambda pair: (order[pair[0].level], pair[1] or pair[0].line, pair[0].line))
+    return [
+        ModelSuggestion(
+            relation.name,
+            Location(relation.original_file_path, raw_line) if raw_line is not None
+            else Location(relation.compiled_path or relation.original_file_path, item.line),
+            item.level.value, item.label, item.kind, item.text, item.explanation,
+        )
+        for item, raw_line in placed
+    ]
+
+
+_BLOCK_END = re.compile(r"\s*\{%-?\s*end\w*\s*-?%\}\s*")
+
+
+def _past_block_ends(raw_code: str, line: int) -> int:
+    """`line`, or the last of the lines right after it that only close a Jinja
+    block: a marker pasted at its end is outside every block `line` is in."""
+    lines = raw_code.split("\n")
+    while line < len(lines) and _BLOCK_END.fullmatch(lines[line]):
+        line += 1
+    return line
 
 
 def _schema_entry(

@@ -8,6 +8,10 @@ checked too: `dbt compile`, then the check, then `dbt build` (or `dbt test`)
 with every test the SQL proves excluded. dbt runs the tests of what a model
 reads in the same invocation, so they are facts, unless DBT_ARGS select nodes
 (a selection may leave an upstream test out).
+
+`sqlassert-dbt suggest MODEL_FILE... [-- DBT_ARGS]` runs `dbt compile` on
+those models and what they read, then lists what `sqlassert suggest` finds in
+each: rewrites, markers to paste, smells, at the model file's lines.
 """
 
 from __future__ import annotations
@@ -18,18 +22,19 @@ import sys
 from pathlib import Path
 
 from sqlassert.check import EXIT_FINDINGS, EXIT_OK, EXIT_USAGE
-from sqlassert_dbt.project import ProjectError, analyze_project
-from sqlassert_dbt.report import DbtReport, exit_code, format_text
+from sqlassert_dbt.project import ProjectError, analyze_project, suggest_models
+from sqlassert_dbt.report import DbtReport, exit_code, format_suggestions, format_text
 
 # The dbt flags that narrow which nodes run: under any of them, the tests of
 # what a model reads may not run, so they are no facts.
 SELECTION_FLAGS = frozenset({"-s", "--select", "-m", "--models", "--model", "--exclude", "--selector", "--resource-type", "--resource-types"})
 
 
-def run_dbt(arguments: list[str]) -> int:
-    """Run dbt from PATH with `arguments`; its exit status."""
+def run_dbt(arguments: list[str], *, to_stderr: bool = False) -> int:
+    """Run dbt from PATH with `arguments`; its exit status. `to_stderr` sends
+    its output there, leaving stdout to the report."""
     try:
-        return subprocess.run(["dbt", *arguments], check=False).returncode
+        return subprocess.run(["dbt", *arguments], check=False, stdout=sys.stderr if to_stderr else None).returncode
     except FileNotFoundError:
         print("sqlassert-dbt: dbt is not on PATH", file=sys.stderr)
         return EXIT_USAGE
@@ -61,7 +66,33 @@ def main(argv: list[str] | None = None) -> int:
         )
         _common(command)
         command.add_argument("dbt_arguments", nargs=argparse.REMAINDER, help="-- then arguments for dbt")
+    suggest = commands.add_parser(
+        "suggest",
+        help="`dbt compile`, then list the rewrites, markers and smells sqlassert finds in model files",
+        description="Run `dbt compile` on the models and what they read, then list what sqlassert can prove about each "
+        "model file: rewrites that keep its result, markers to paste, smells. Arguments after -- go to dbt. "
+        f"Exit status: {EXIT_OK}, or {EXIT_FINDINGS} when an error is reported, {EXIT_USAGE} on bad arguments.",
+        usage="sqlassert-dbt suggest [options] MODEL_FILE... [-- DBT_ARGS]",
+    )
+    suggest.add_argument("files", nargs="+", metavar="MODEL_FILE", help="model .sql files of one dbt project")
+    suggest.add_argument(
+        "--project-dir", help="dbt project directory (default: the nearest one holding the first MODEL_FILE)",
+    )
+    suggest.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
+    suggest.add_argument("--explain", action="store_true", help="print each suggestion's evidence")
+    suggest.add_argument(
+        "--trust-upstream-tests", action="store_true",
+        help="take the passing tests of what each model reads as facts about it: true when they run first, as in `dbt build`",
+    )
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["suggest"] and "--" in argv:
+        # Files take every positional, so the dbt arguments are split off by hand.
+        split = argv.index("--")
+        arguments = parser.parse_args(argv[:split])
+        return _suggest(arguments, argv[split + 1:])
     arguments = parser.parse_args(argv)
+    if arguments.command == "suggest":
+        return _suggest(arguments, [])
     project = Path(arguments.project)
 
     if arguments.command == "check":
@@ -84,6 +115,36 @@ def main(argv: list[str] | None = None) -> int:
     proved = proved_tests(report)
     ran = run_dbt([arguments.command, *located, *(["--exclude", *proved] if proved else [])])
     return ran if ran != 0 else exit_code(report, require_proved=arguments.require_proved)
+
+
+def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
+    files = [Path(file).resolve() for file in arguments.files]
+    if arguments.project_dir is not None:
+        project = Path(arguments.project_dir).resolve()
+    else:
+        project = next((folder for folder in files[0].parents if (folder / "dbt_project.yml").is_file()), None)
+        if project is None:
+            print(f"sqlassert-dbt: no dbt_project.yml above {arguments.files[0]}; pass --project-dir", file=sys.stderr)
+            return EXIT_USAGE
+    relative = []
+    for given, file in zip(arguments.files, files):
+        if not file.is_relative_to(project):
+            print(f"sqlassert-dbt: {given} is outside the dbt project {project}", file=sys.stderr)
+            return EXIT_USAGE
+        relative.append(file.relative_to(project).as_posix())
+    selecting = any(argument.split("=")[0] in SELECTION_FLAGS for argument in passed)
+    # Only the models and what they read need compiled code.
+    selection = [] if selecting else ["--select", *(f"+path:{file}" for file in relative)]
+    compiled = run_dbt(["compile", *passed, *selection, "--project-dir", str(project)], to_stderr=True)
+    if compiled != 0:
+        return compiled
+    try:
+        report = suggest_models(project, relative, dialect=arguments.dialect, trust_upstream_tests=arguments.trust_upstream_tests)
+    except ProjectError as error:
+        print(f"sqlassert-dbt: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    sys.stdout.write(format_suggestions(report, explain=arguments.explain))
+    return EXIT_FINDINGS if report.failed else EXIT_OK
 
 
 def _common(command: argparse.ArgumentParser) -> None:

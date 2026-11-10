@@ -294,6 +294,15 @@ def test_the_cli_prints_one_line_per_suggestion(tmp_path, capsys):
     assert len(lines) == len(suggest(path.read_text()).suggestions)
 
 
+def test_the_cli_names_every_suggested_property(tmp_path, capsys):
+    path = tmp_path / "query.sql"
+    path.write_text("CREATE TABLE t (a INT NOT NULL, s TEXT NOT NULL);\nSELECT CASE s WHEN 'p' THEN 'x' ELSE 'y' END AS k FROM t")
+
+    assert main(["suggest", str(path)]) == 0
+
+    assert "Enumerated Domain  /**ASSERT ENUM(k IN ('x', 'y'))**/" in capsys.readouterr().out
+
+
 def test_the_cli_can_explain_the_evidence(tmp_path, capsys):
     path = tmp_path / "query.sql"
     path.write_text(SCHEMA + "SELECT id FROM users")
