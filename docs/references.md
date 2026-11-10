@@ -65,3 +65,84 @@ Key insights for sqlassert:
   & Darwen, *Relational Database Writings 1989–1991*). FD inference through
   relational operators.
 - **Beeri & Bernstein (1979)** — linear-time attribute closure.
+
+### FD libraries in other optimizers
+
+- **CockroachDB `FuncDepSet`** —
+  [`pkg/sql/opt/props/func_dep.go`](https://github.com/cockroachdb/cockroach/blob/master/pkg/sql/opt/props/func_dep.go)
+  (Go; CockroachDB Software License, so read, don't copy). Strict and lax FDs
+  and keys, constants, equivalences, not-null columns; `ComputeClosure`,
+  `ReduceCols`, `ProjectCols`, `MakeLeftOuter`, `MakeFullOuter`, `MakeApply`,
+  `MakeMax1Row`, `Verify`. Its header cites Paulley and lists where it departs
+  from him. Most relevant: **its lax FD is stricter than Paulley's** (his
+  Def 2.19 variant). Paulley allows rows `(1, 1), (1, NULL)` under `a ~~> b`;
+  CockroachDB forbids them, so a lax FD turns strict once only the determinant
+  is non-null. Compare with our lax rules before implementing. It also uses
+  no tuple identifier (ι). Audit corpus: `pkg/sql/opt/memo/testdata/logprops/*`
+  prints an `fd:` line per plan node (260 in `join` alone), like Calcite's
+  `RelMetadataTest`.
+- **TiDB `FDSet`** —
+  [`pkg/planner/funcdep`](https://pkg.go.dev/github.com/pingcap/tidb/pkg/planner/funcdep).
+  Same strict/lax model; upgrades lax FDs to strict from predicates. Apache
+  license, so code is reusable.
+- **Calcite `FuncDepSet`** — being added under CALCITE-7205; recheck our
+  [Calcite audit](calcite-audit.md) against it when it lands.
+
+### Testing database logic (paper 1: soundness of derived properties)
+
+- **Rigger & Su — SQLancer** ([github](https://github.com/sqlancer/sqlancer),
+  MIT; 400+ bugs in widely used DBMSs). Oracles compare query *results*: PQS
+  (OSDI 2020) picks a pivot row and builds a query that must return it; NoREC
+  (ESEC/FSE 2020) compares an optimized query with an unoptimizable rewrite;
+  TLP (OOPSLA 2020) checks `Q = Q WHERE p ∪ Q WHERE NOT p ∪ Q WHERE p IS
+  NULL`. Later: Query Plan Guidance, CERT (cardinality estimates),
+  Differential Query Plans, CODDTest. Our angle: an oracle on the derived
+  *property* (key, FD, max-one-row), which names the faulty rule, and is
+  complete for SPJ queries on 2-row instances (Paulley Thm 11/12).
+- **ParSEval** (PVLDB 18, 2025) — plan-aware test-database generation to
+  refute query equivalence. Prior art for our tiny-instance generator.
+
+### SQL semantics across engines (paper 3: dialect certification)
+
+- **Guagliardo & Libkin — *A Formal Semantics of SQL Queries, Its Validation,
+  and Applications*** (PVLDB 11(1), 2017,
+  [pdf](https://www.pure.ed.ac.uk/ws/files/46755003/Guagliardo_Libkin_2017_A_Formal_Semantics.pdf)).
+  Semantics for SELECT-FROM-WHERE with subqueries, bags and NULLs, validated
+  on random queries against PostgreSQL and Oracle. Proves basic SQL ≡
+  relational algebra with bags and NULLs; shows 3-valued logic is not needed.
+  One model; we certify facts per dialect and version.
+- **Guagliardo & Libkin — *How "Standard" is the SQL Standard?*** (AMW 2018,
+  [pdf](https://www.ceur-ws.org/Vol-2100/paper16.pdf)). Engines claiming the
+  standard diverge even on simple statements; no reference implementation or
+  test suite exists. The motivation section paper 3 needs.
+
+### Query equivalence verifiers (whole-rewrite proofs; we prove one property)
+
+- **Chu, Murphy, Roesch, Cheung & Suciu — UDP** (PVLDB 2018,
+  [arXiv](https://arxiv.org/abs/1802.02229)). U-semiring semantics; queries
+  become U-expressions, keys and FKs become identities; 68 rewrites verified.
+  The Cosette line; Liu et al. use it. Weak on NULLs.
+- **Wang, Pan & Cheung — QED** (PVLDB 17(11), 2024,
+  [pdf](https://vldb.org/pvldb/vol17/p3602-wang.pdf)). Q-expressions in
+  first-order logic with full NULL semantics and integrity constraints, via
+  SMT. Compares with SPES and UDP.
+- **Ding et al. — SQLSolver** (SIGMOD 2024,
+  [github](https://github.com/SJTU-IPADS/SQLSolver)). Equivalence via LIA*
+  (linear integer arithmetic with unbounded sums) reduced to SMT; proves
+  346/359 Calcite and Spark rewrite pairs.
+- **Wang et al. — WeTune** (SIGMOD 2022). Enumerates plan templates to
+  discover rewrite rules, verifies them with SMT; 1106 rules. Rule
+  constraints include keys and not-null: a list of assertions worth proving.
+- **He, Zhao, Wang & Wang — VeriEQL** (OOPSLA 2024, distinguished paper,
+  [arXiv](https://arxiv.org/abs/2403.03193)). Bounded equivalence over
+  symbolic tuples (integers + uninterpreted functions), NULLs and rich
+  integrity constraints; >95% of its benchmarks need constraints. Its
+  counterexamples found bugs in MySQL and Calcite. Candidate for the deferred
+  symbolic oracle in issue 11.
+
+### SQL lint (suggest smells)
+
+- **Dintyala, Narechania & Arulraj — SQLCheck** (SIGMOD 2020,
+  [arXiv](https://arxiv.org/abs/2004.10232)). Detects anti-patterns by query
+  plus data analysis, ranks them by impact, suggests rule-based fixes;
+  studied 1406 open-source applications. Heuristic; our smells are proved.
