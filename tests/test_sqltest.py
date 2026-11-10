@@ -124,7 +124,7 @@ def test_an_include_is_relative_to_the_root_and_may_carry_annotations(tmp_path: 
         tmp_path,
         "-- include: schemas/s.sql\n-- case: c\nSELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED\n",
         **{"schemas/s.sql": "-- include: schemas/u.sql\n" + SCHEMA,
-           "schemas/u.sql": "CREATE VIEW mv AS SELECT * FROM missing;\n--~! undeclared-table\n"},
+           "schemas/u.sql": "CREATE VIEW mv AS SELECT * FROM missing;  --~ undeclared-table\n"},
     )
     assert found["c"].sources[0].path == (tmp_path / "schemas/u.sql").resolve()
     assert problems(found["c"]) == []

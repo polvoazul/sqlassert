@@ -7,7 +7,5 @@
 
 -- case: offline_analysis_stays_pure_and_unknown
 SELECT *
-FROM orders
-/**ASSERT MANY TO ONE**/ JOIN users ON orders.user_id = users.id  --~ UNKNOWN
---~! undeclared-table
---~! undeclared-table
+FROM orders  --~ undeclared-table
+/**ASSERT MANY TO ONE**/ JOIN users ON orders.user_id = users.id  --~ UNKNOWN, undeclared-table

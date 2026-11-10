@@ -24,7 +24,7 @@ SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
 ALTER TABLE users ADD UNIQUE (email);
 SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
 --~! constraint-without-table "users"
---~! undeclared-table "users"
+--~ undeclared-table "users"
 
 -- case: a_constraint_on_a_table_not_created_before_it_is_diagnosed__a_view
 CREATE VIEW users AS SELECT 1 AS email UNION ALL SELECT 1;

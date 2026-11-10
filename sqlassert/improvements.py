@@ -32,7 +32,7 @@ columns are unknown -- is left alone.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar
@@ -82,8 +82,12 @@ class Improvement:
     level: ClassVar[Level] = Level.HIGH
 
 
-def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect: str) -> list[Improvement]:
-    """Every Improvement for `program`, in source order. `arena` must be active."""
+def improvements(
+    ast: ParsedProgram, program: ir.Program, arena: Arena, dialect: str,
+    wanted: Callable[[AttachmentSite], bool] = lambda site: True,
+) -> list[Improvement]:
+    """Every Improvement for `program` at a site `wanted` accepts, in source
+    order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
     parents: dict[ir.RelationExpr, list[ir.RelationExpr]] = {}
     for relation in program.relations():
@@ -93,7 +97,7 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
     found: list[Improvement] = []
     sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
-        if isinstance(relation, ir.SimpleCase):
+        if isinstance(relation, ir.SimpleCase) or not wanted(site):
             continue  # A CASE has nothing to rewrite yet.
         if relation not in parents and relation is not program.root:
             # Unreachable: lowered inside a Select that is opaque as a whole.
@@ -118,9 +122,12 @@ def improvements(ast: ParsedProgram, program: ir.Program, arena: Arena, dialect:
                 found.extend([projection] if projection else _redundant_grouping(site, relation, node, dialect))
             case _:
                 pass  # Other Select Expressions have nothing to rewrite yet.
-    found.extend(_unused_ctes(ast))
+    found.extend(item for item in _unused_ctes(ast) if wanted(item.site))
     if semantics(dialect).set_operations_all:
-        found.extend(item for site, operation in program.set_operations if (item := _set_operation_all(site, operation)) is not None)
+        found.extend(
+            item for site, operation in program.set_operations
+            if wanted(site) and (item := _set_operation_all(site, operation)) is not None
+        )
     return sorted(found, key=lambda item: item.site.offset)
 
 

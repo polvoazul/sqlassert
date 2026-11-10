@@ -27,6 +27,7 @@ A smell is reported only when sqlassert sees the whole Select Expression; an
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar
@@ -62,14 +63,18 @@ class Smell:
     level: ClassVar[Level] = Level.LOW
 
 
-def smells(ast: ParsedProgram, program: ir.Program, arena: Arena) -> list[Smell]:
-    """Every Smell in `program`, in source order. `arena` must be active."""
+def smells(
+    ast: ParsedProgram, program: ir.Program, arena: Arena, wanted: Callable[[AttachmentSite], bool] = lambda site: True,
+) -> list[Smell]:
+    """Every Smell in `program` at a site `wanted` accepts, in source order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
     reachable = set(program.nodes())
     found: list[Smell] = []
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
     sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
+        if not wanted(site):
+            continue
         node = syntax.get((site.offset, site.trailing))
         if isinstance(relation, ir.Limit) and relation in reachable and isinstance(node, exp.Select):
             found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
@@ -79,7 +84,7 @@ def smells(ast: ParsedProgram, program: ir.Program, arena: Arena) -> list[Smell]
         if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
             found.extend(_traps(site, aggregate, join_labels))
     for site, join in program.scalar_subqueries:
-        if join in reachable:
+        if join in reachable and wanted(site):
             found.extend(_scalar_subquery(site, join))
     return sorted(found, key=lambda item: item.site.offset)
 

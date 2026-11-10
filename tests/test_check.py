@@ -65,7 +65,7 @@ def test_warnings_never_fail_the_check(project, capsys):
     code, out, _ = run(capsys, "w.sql")
 
     assert code == EXIT_OK
-    assert out.startswith("w.sql: warning undeclared-table: ")
+    assert out.startswith("w.sql:1: warning undeclared-table: ")
 
 
 def test_a_diagnostic_fails_the_check_without_any_assertion(project, capsys):
@@ -283,7 +283,7 @@ def test_json_lists_every_assertion_and_finding_with_its_span(project, capsys):
     assert unknown["severity"] == "error"
     assert unknown["evidence"].startswith("#1 UNKNOWN: many_to_one_join")
     assert (warning["path"], warning["severity"], warning["code"], warning["location"]) == (
-        "w.sql", "warning", "undeclared-table", None
+        "w.sql", "warning", "undeclared-table", {"line": 1}
     )
     assert document["summary"] == {"files": 2, "assertions": 1, "proved": 0, "unknown": 1, "errors": 1, "warnings": 1}
 
@@ -320,7 +320,8 @@ def test_sarif_is_a_structurally_valid_2_1_0_log(project, capsys):
         "startLine": 4, "startColumn": 3, "endLine": 4, "endColumn": 27,
     }
     assert by_rule["undeclared-table"]["level"] == "warning"
-    assert "region" not in by_rule["undeclared-table"]["locations"][0]["physicalLocation"]
+    # The table's first reference: a line, no column.
+    assert by_rule["undeclared-table"]["locations"][0]["physicalLocation"]["region"] == {"startLine": 1}
 
 
 def test_github_annotations_land_on_the_marker(project, capsys):
@@ -335,7 +336,7 @@ def test_github_annotations_land_on_the_marker(project, capsys):
         "::error file=q.sql,line=4,endLine=4,col=3,endColumn=27,title=sqlassert unproved-many-to-one-join::"
         "/**ASSERT MANY TO ONE**/ is not proved (UNKNOWN)%0A#1 UNKNOWN: many_to_one_join"
     )
-    assert warning.startswith("::warning file=w.sql,title=sqlassert undeclared-table::table events has no CREATE TABLE")
+    assert warning.startswith("::warning file=w.sql,line=1,title=sqlassert undeclared-table::table events has no CREATE TABLE")
 
 
 def test_github_annotations_drop_columns_for_a_marker_across_lines(project, capsys):

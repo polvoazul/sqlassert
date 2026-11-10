@@ -48,7 +48,7 @@ from sqlassert.rules.equality import _binary_text, _comparison_type, _identity_c
 from sqlassert.rules.uniqueness import minimal_keys
 from sqlassert.smells import Smell
 from sqlassert.sql_parse import ParsedProgram, SqlParser, _marker_shapes
-from sqlassert.suggest import MAX_ENUM_VALUES, Suggestion, suggest_parsed
+from sqlassert.suggest import MAX_ENUM_VALUES, Suggester, Suggestion
 
 # Materializations whose relation holds exactly the rows of the model's query
 # when its children are built. An incremental model's table keeps rows of
@@ -469,10 +469,11 @@ class Builder:
         none states."""
         built = self._program(model, body, ())
         # Only the model's own SQL: what it reads is suggested on in its own run.
-        report = suggest_parsed(
+        with Suggester(
             built.sql, built.ast, built.conversion, dialect=self.dialect,
             sites=lambda site: site.line <= built.body_lines and 0 <= site.offset - len(_PREFIX) <= len(body.text),
-        )
+        ) as suggester:
+            report = suggester.suggest()
         root = f"subquery {model.name}".lower()
         stated = _Stated.of(own)
         relations = dict(built.conversion.program.attachment_sites)

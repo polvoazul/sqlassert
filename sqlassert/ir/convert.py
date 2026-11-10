@@ -50,6 +50,8 @@ class _Symbol:
     # UNIQUE INDEX), shaped like the CREATE TABLE's own, and columns set NOT NULL.
     constraints: list[Expr] = field(default_factory=list)
     not_null: set[str] = field(default_factory=set)
+    # Where the SQL first reads it: an undeclared table's warning points there.
+    first_line: int | None = None
     # Each unique index with an expression key part: its parts and statement.
     expression_keys: list[tuple[list[Expr], exp.Create]] = field(default_factory=list)
 
@@ -198,7 +200,7 @@ class IrParser:
                 diag.UNDECLARED_TABLE,
                 f"table {symbol.name} has no CREATE TABLE in the program, so its keys, nullability and column types are unknown: "
                 "declare it with CREATE TABLE, or analyze with a database connection (analyze_database)",
-                symbol.origin,
+                replace(symbol.origin, line=symbol.first_line or symbol.origin.line),
             )
             for symbol in self._symbols
             if symbol.role is ir.RelationRole.TABLE and symbol.statement is None
@@ -407,7 +409,10 @@ class IrParser:
                     self._discover_query(body, scope)
 
     def _symbol_for_table(self, table: exp.Table, scope: dict[str, _Symbol]) -> _Symbol:
-        return self._symbol_for_name(_qualified_name(table), scope, Origin(SQL, table.sql(dialect=self.dialect)))
+        symbol = self._symbol_for_name(_qualified_name(table), scope, Origin(SQL, table.sql(dialect=self.dialect)))
+        if symbol.first_line is None:
+            symbol.first_line = _source_line(table)
+        return symbol
 
     def _symbol_for_name(self, name: str, scope: dict[str, _Symbol], origin: Origin) -> _Symbol:
         key = name.lower()
@@ -1294,7 +1299,7 @@ class IrParser:
                     f"column {expression.name} is unqualified and more than one source may own it ({sources}), "
                     "since some have no declared columns: qualify it, declare those tables with CREATE TABLE, "
                     "or analyze with a database connection (analyze_database)",
-                    origin,
+                    origin if origin.line is not None else replace(origin, line=_source_line(expression)),
                 ))
             if len(matches) == 1:
                 return ir.ColumnRef(origin=origin, column=matches[0].column)

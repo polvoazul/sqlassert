@@ -28,21 +28,19 @@ CREATE TABLE a.users (id INTEGER PRIMARY KEY);
 CREATE TABLE b.users (id INTEGER);
 
 SELECT *
-FROM sessions
+FROM sessions  --~ undeclared-table
 /**ASSERT MANY TO ONE**/ JOIN b.users  --~ UNKNOWN
     ON sessions.user_id = b.users.id
---~! undeclared-table
 
 -- case: a_duplicate_declaration_is_an_explicit_program_diagnostic
 CREATE TABLE users (id INTEGER PRIMARY KEY);
 CREATE TABLE users (id INTEGER);
 
 SELECT *
-FROM sessions
+FROM sessions  --~ undeclared-table
 /**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
     ON sessions.user_id = users.id
 --~! duplicate-declaration
---~! undeclared-table
 
 -- case: a_marker_reaches_its_join_through_join_modifier_keywords__join
 CREATE TABLE users (id INTEGER PRIMARY KEY);

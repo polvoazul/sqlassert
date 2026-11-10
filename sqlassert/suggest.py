@@ -17,6 +17,7 @@ callers that judge candidates by other means.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, fields
 from decimal import Decimal
 from itertools import combinations
@@ -48,8 +49,8 @@ DEFAULT_MAX_SIZE = 3
 MAX_ENUM_VALUES = 10
 
 __all__ = [
-    "Candidate", "Concern", "Improvement", "Level", "Rewrite", "Smell", "Suggestion", "SuggestionReport", "annotate",
-    "candidates", "suggest", "suggest_parsed",
+    "Candidate", "Concern", "Improvement", "Level", "Rewrite", "Smell", "Suggester", "Suggestion", "SuggestionReport",
+    "annotate", "candidates", "suggest", "suggest_parsed",
 ]
 
 
@@ -130,36 +131,73 @@ def suggest(
 
 def suggest_parsed(
     sql: str, ast: ParsedProgram, conversion: IrConversionResult, *, dialect: str = DEFAULT_DIALECT,
-    max_size: int = DEFAULT_MAX_SIZE, sites: Callable[[AttachmentSite], bool] | None = None,
+    max_size: int = DEFAULT_MAX_SIZE,
 ) -> SuggestionReport:
     """`suggest` of a Program already parsed and lowered: for a caller that
-    adds Property Declarations to `conversion.program` before proving. With
-    `sites`, only what it accepts is suggested on, and nothing elsewhere is
-    proved: for a caller that wants one part of a larger Program."""
-    wanted = sites or (lambda site: True)
-    program, diagnostics = conversion.program, ast.diagnostics + conversion.diagnostics
-    if any(diagnostic.code in _BLOCKING for diagnostic in diagnostics):
-        return SuggestionReport(sql, (), diagnostics, warnings=conversion.warnings)
-    present = (*program.declarations, *(assertion.property for assertion in program.assertions))
-    marked_non_null = {
-        column
-        for item in present
-        for column in (
-            (item.column,) if isinstance(item, NonNullColumn) else item.columns if isinstance(item, NonNullColumns) else ()
-        )
-    }
-    marked_joins = {item.join for item in present if isinstance(item, _JOIN_PROPERTIES)}
-    marked_cases = {item.case for item in present if isinstance(item, ExhaustiveCase)}
-    reachable = set(program.nodes())
-    suggestions: list[Suggestion] = []
-    with Engine().session(program, conversion.knowledge) as arena:
-        found = [item for item in improvements(ast, program, arena, dialect) if wanted(item.site)]
-        concerns = [item for item in smells(ast, program, arena) if wanted(item.site)]
-        for site, relation in program.attachment_sites:
-            if not wanted(site):
+    adds Property Declarations to `conversion.program` before proving."""
+    with Suggester(sql, ast, conversion, dialect=dialect, max_size=max_size) as suggester:
+        return suggester.suggest()
+
+
+class Suggester:
+    """`suggest` over one lowered Program, one part at a time, for a caller
+    that wants each part as soon as it is found: proofs are memoized across
+    parts, and Improvements and Smells are found once, for every site
+    `sites` accepts (all by default). Use it as a context manager: it holds
+    the Program's analysis session."""
+
+    def __init__(
+        self, sql: str, ast: ParsedProgram, conversion: IrConversionResult, *, dialect: str = DEFAULT_DIALECT,
+        max_size: int = DEFAULT_MAX_SIZE, sites: Callable[[AttachmentSite], bool] | None = None,
+    ):
+        self.sql, self.ast, self.conversion, self.dialect, self.max_size = sql, ast, conversion, dialect, max_size
+        self.sites = sites or (lambda site: True)
+        self.program = conversion.program
+        self.diagnostics = ast.diagnostics + conversion.diagnostics
+        self.blocked = any(diagnostic.code in _BLOCKING for diagnostic in self.diagnostics)
+        present = (*self.program.declarations, *(assertion.property for assertion in self.program.assertions))
+        self.marked = {_identity(item) for item in present}
+        self.marked_non_null = {
+            column
+            for item in present
+            for column in (
+                (item.column,) if isinstance(item, NonNullColumn) else item.columns if isinstance(item, NonNullColumns) else ()
+            )
+        }
+        self.marked_joins = {item.join for item in present if isinstance(item, _JOIN_PROPERTIES)}
+        self.marked_cases = {item.case for item in present if isinstance(item, ExhaustiveCase)}
+        self.reachable = set(self.program.nodes())
+        self._session: AbstractContextManager[Arena] | None = None
+        self._arena: Arena | None = None
+        self._improvements: list[Improvement] = []
+        self._smells: list[Smell] = []
+
+    def __enter__(self) -> Suggester:
+        self._session = Engine().session(self.program, self.conversion.knowledge)
+        self._arena = self._session.__enter__()
+        if not self.blocked:
+            self._improvements = improvements(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
+            self._smells = smells(self.ast, self.program, self._arena, wanted=self.sites)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        assert self._session is not None
+        self._session.__exit__(*exc)  # ty: ignore[invalid-argument-type]
+
+    def suggest(self, sites: Callable[[AttachmentSite], bool] | None = None) -> SuggestionReport:
+        """What is found at the sites both `sites` and the Suggester's accept."""
+        arena = self._arena
+        assert arena is not None, "use the Suggester as a context manager"
+        wanted = sites or (lambda site: True)
+        if self.blocked:
+            return SuggestionReport(self.sql, (), self.diagnostics, warnings=self.conversion.warnings)
+        suggestions: list[Suggestion] = []
+        dialect, reachable = self.dialect, self.reachable
+        for site, relation in self.program.attachment_sites:
+            if not (self.sites(site) and wanted(site)):
                 continue
             match relation:
-                case ir.Join() if not site.trailing and relation not in marked_joins and relation in reachable:
+                case ir.Join() if not site.trailing and relation not in self.marked_joins and relation in reachable:
                     # The strongest proved form. Not many to many is implied by each
                     # cardinality, so it is never suggested on its own; a semi or
                     # anti join outputs no right rows, so no cardinality applies.
@@ -171,20 +209,22 @@ def suggest_parsed(
                     # Already marked, or unreachable: lowered inside a Select that is
                     # opaque as a whole (one with HAVING, say), so nothing is known about it.
                     pass
-                case ir.SimpleCase() if relation not in marked_cases and relation in reachable and _markable(relation):
+                case ir.SimpleCase() if relation not in self.marked_cases and relation in reachable and _markable(relation):
                     suggestions.extend(_proved(arena, site, ExhaustiveCase(case=relation), (), dialect))
                 case ir.SimpleCase():
                     pass  # Already marked, unreachable, or with a WHEN no marker allows.
                 case _ if relation in reachable:
-                    suggestions.extend(_select_suggestions(arena, site, relation, max_size, marked_non_null, dialect))
-    marked = {_identity(item) for item in present}
-    kept = tuple(
-        sorted(
-            (suggestion for suggestion in suggestions if _identity(suggestion.property) not in marked),
-            key=lambda suggestion: suggestion.site.offset,
+                    suggestions.extend(_select_suggestions(arena, site, relation, self.max_size, self.marked_non_null, dialect))
+        kept = tuple(
+            sorted(
+                (suggestion for suggestion in suggestions if _identity(suggestion.property) not in self.marked),
+                key=lambda suggestion: suggestion.site.offset,
+            )
         )
-    )
-    return SuggestionReport(sql, kept, diagnostics, tuple(found), conversion.warnings, tuple(concerns))
+        return SuggestionReport(
+            self.sql, kept, self.diagnostics, tuple(item for item in self._improvements if wanted(item.site)),
+            self.conversion.warnings, tuple(item for item in self._smells if wanted(item.site)),
+        )
 
 
 # How each suggested Property reads in a listing.

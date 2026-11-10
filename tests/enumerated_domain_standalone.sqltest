@@ -5,9 +5,8 @@
 -- crosses value equalities. NULL is never in a domain: `NOT NULL` governs it.
 
 -- case: strings_meet_conservatively_on_a_column_of_unknown_type
-WITH t AS (SELECT * FROM ext /**DECLARE ENUM(v IN ('01'))**/)
+WITH t AS (SELECT * FROM ext /**DECLARE ENUM(v IN ('01'))**/)  --~ undeclared-table
 SELECT v
 FROM t
 WHERE v = '1'
 /**ASSERT ENUM(v IN ('2'))**/  --~ UNKNOWN
---~! undeclared-table
