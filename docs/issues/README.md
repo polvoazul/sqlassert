@@ -16,6 +16,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)
 - [53. Validate Databricks against a real engine](0053-validate-databricks-against-a-real-engine.md) — not planned (P4, child of 43)
 - [54. Validate Redshift against a real engine](0054-validate-redshift-against-a-real-engine.md) — not planned (P4, child of 43)
+- [56. dbt: read the live warehouse catalog in the plugin's commands](0056-dbt-live-connection.md) — open (needs a decision: how to get the connection)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
