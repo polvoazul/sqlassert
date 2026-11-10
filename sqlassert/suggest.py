@@ -157,7 +157,7 @@ def suggest(
                     suggestions.extend(_proved(arena, site, ExhaustiveCase(case=relation), (), dialect))
                 case ir.SimpleCase():
                     pass  # Already marked, unreachable, or with a WHEN no marker allows.
-                case _:
+                case _ if relation in reachable:
                     suggestions.extend(_select_suggestions(arena, site, relation, max_size, marked_non_null, dialect))
     marked = {_identity(item) for item in present}
     kept = tuple(
