@@ -36,7 +36,8 @@ _JOIN_MARKER_KIND = "sqlassert.join_marker_kind"
 
 # A comment opening with `/**` is how an author writes an assertion or a
 # Property Declaration.
-_MARKER_SHAPED = re.compile(r"/\*\*.*?\*/", re.DOTALL)
+# `/**/` is an empty comment, not the start of a marker.
+_MARKER_SHAPED = re.compile(r"/\*\*(?!/).*?\*/", re.DOTALL)
 
 
 def _marker_shapes(sql: str) -> list[re.Match[str]]:
@@ -768,7 +769,10 @@ class SqlParser:
         # reconcile what the source contains against what parsing produced.
         diagnostics.extend(_unresolved_markers(sql, statements))
         diagnostics.extend(
-            Diagnostic(diag.UNSUPPORTED_NATURAL_JOIN, "NATURAL JOIN is unsupported and an anti-pattern; write an explicit JOIN with ON or USING", Origin(SQL, join.sql(dialect=self.dialect)))
+            Diagnostic(
+                diag.UNSUPPORTED_NATURAL_JOIN, "NATURAL JOIN is unsupported and an anti-pattern; write an explicit JOIN with ON or USING",
+                Origin(SQL, join.sql(dialect=self.dialect), min((node.meta["line"] for node in join.walk() if "line" in node.meta), default=None)),
+            )
             for statement in statements for join in statement.find_all(exp.Join) if join.args.get("method") == "NATURAL"
         )
 

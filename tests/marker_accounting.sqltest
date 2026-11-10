@@ -56,3 +56,8 @@ SELECT a, 'it''s /**ASSERT UNIQUE(a)**/' AS note FROM t
 CREATE TABLE t (a INTEGER);
 SELECT a, 'first line
 /**ASSERT UNIQUE(a)**/' AS note FROM t
+
+-- case: an_empty_comment_is_not_a_marker
+-- `/**/` closes itself: it must not open a marker running to the next `*/`.
+CREATE TABLE t (id INTEGER PRIMARY KEY);
+SELECT /**/ id FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED
