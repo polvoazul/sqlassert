@@ -16,7 +16,7 @@ callers that judge candidates by other means.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, fields
 from decimal import Decimal
 from itertools import combinations
@@ -130,10 +130,13 @@ def suggest(
 
 def suggest_parsed(
     sql: str, ast: ParsedProgram, conversion: IrConversionResult, *, dialect: str = DEFAULT_DIALECT,
-    max_size: int = DEFAULT_MAX_SIZE,
+    max_size: int = DEFAULT_MAX_SIZE, sites: Callable[[AttachmentSite], bool] | None = None,
 ) -> SuggestionReport:
     """`suggest` of a Program already parsed and lowered: for a caller that
-    adds Property Declarations to `conversion.program` before proving."""
+    adds Property Declarations to `conversion.program` before proving. With
+    `sites`, only what it accepts is suggested on, and nothing elsewhere is
+    proved: for a caller that wants one part of a larger Program."""
+    wanted = sites or (lambda site: True)
     program, diagnostics = conversion.program, ast.diagnostics + conversion.diagnostics
     if any(diagnostic.code in _BLOCKING for diagnostic in diagnostics):
         return SuggestionReport(sql, (), diagnostics, warnings=conversion.warnings)
@@ -150,9 +153,11 @@ def suggest_parsed(
     reachable = set(program.nodes())
     suggestions: list[Suggestion] = []
     with Engine().session(program, conversion.knowledge) as arena:
-        found = improvements(ast, program, arena, dialect)
-        concerns = smells(ast, program, arena)
+        found = [item for item in improvements(ast, program, arena, dialect) if wanted(item.site)]
+        concerns = [item for item in smells(ast, program, arena) if wanted(item.site)]
         for site, relation in program.attachment_sites:
+            if not wanted(site):
+                continue
             match relation:
                 case ir.Join() if not site.trailing and relation not in marked_joins and relation in reachable:
                     # The strongest proved form. Not many to many is implied by each

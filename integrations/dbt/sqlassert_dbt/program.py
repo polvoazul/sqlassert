@@ -468,7 +468,11 @@ class Builder:
         tests and constraints) already states is left out, or cut to the part
         none states."""
         built = self._program(model, body, ())
-        report = suggest_parsed(built.sql, built.ast, built.conversion, dialect=self.dialect)
+        # Only the model's own SQL: what it reads is suggested on in its own run.
+        report = suggest_parsed(
+            built.sql, built.ast, built.conversion, dialect=self.dialect,
+            sites=lambda site: site.line <= built.body_lines and 0 <= site.offset - len(_PREFIX) <= len(body.text),
+        )
         root = f"subquery {model.name}".lower()
         stated = _Stated.of(own)
         relations = dict(built.conversion.program.attachment_sites)
