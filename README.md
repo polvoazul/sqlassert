@@ -574,7 +574,7 @@ Low-level smells come last: places whose result the SQL leaves unspecified. `rep
 
 ### dbt
 
-The `sqlassert-dbt` plugin, a separate package in this repository (`integrations/dbt/`), checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). It reads only the manifest, so dbt itself is not needed where it runs, and only the latest manifest schema (v12, written by dbt 1.8 through 1.12): compile with a current dbt.
+The `sqlassert-dbt` plugin, a separate package in this repository (`integrations/dbt/`), checks a compiled dbt project from its `target/manifest.json` (run `dbt compile` or `dbt build` first). It reads only the manifest, so dbt itself is not needed where it runs, and only the latest manifest schema (v12, written by dbt 1.8 through 1.12): compile with a current dbt. `--catalog target/catalog.json` (written by `dbt docs generate`) adds the columns and types of sources, seeds and other tables the manifest leaves unknown, except where the project shows the catalog stale.
 
 ```bash
 $ pip install sqlassert-dbt   # depends on sqlassert; sqlassert does not depend on it

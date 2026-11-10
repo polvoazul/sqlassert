@@ -70,6 +70,7 @@ Three lists come out:
 | `--explain` | Print each proof, and each failed proof. |
 | `--dialect NAME` | Analyze under this dialect instead of the adapter's. |
 | `--manifest PATH` | Read another manifest (default `PROJECT/target/manifest.json`). |
+| `--catalog PATH` | Read column lists and types from a `catalog.json` (also on `build`, `test` and `suggest`). See below. |
 
 Exit codes: `0` every marker proved; `1` a marker is `UNKNOWN` or an error was
 reported (unproved tests fail it only with `--require-proved`); `2` the
@@ -134,6 +135,34 @@ test that made this provable, the marker turns `UNKNOWN` and CI fails before
 the join fans out in production. See the
 [sqlassert README](https://github.com/polvoazul/sqlassert#readme) for every
 marker.
+
+## Columns from `catalog.json`
+
+The manifest lists no columns for sources, seeds, snapshots or uncontracted
+incremental models, so `SELECT *` over them cannot be expanded, an unqualified
+column may be ambiguous, and their types are unknown (a `dbt-unknown-columns`
+warning). `dbt docs generate` writes `target/catalog.json` with every
+relation's columns and types, as the warehouse had them:
+
+```bash
+$ dbt docs generate
+$ sqlassert-dbt check . --catalog target/catalog.json
+```
+
+It is opt-in and trusted like a connection: it can prove more, never less.
+It has no keys and no nullability, so those still come from tests and
+contracts. A catalog is a snapshot, so an entry is not used where the project
+shows it stale:
+
+- **Another target** (`dbt-catalog-other-relation`): the catalog names the
+  relation in another database or schema than the manifest does.
+- **A changed seed** (`dbt-catalog-stale`): the seed's CSV header lists other
+  columns.
+- **An enforced contract** (`dbt-catalog-stale`): a contract that lists other
+  columns wins.
+
+A source whose warehouse table changed after `docs generate` cannot be told
+apart; regenerate the catalog when sources change.
 
 ## Details
 

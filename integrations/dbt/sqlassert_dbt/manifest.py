@@ -1,4 +1,4 @@
-"""Read the parts of a dbt `manifest.json` that analysis needs.
+"""Read the parts of a dbt `manifest.json` (and, opted into, `catalog.json`) that analysis needs.
 
 Only the latest manifest schema is read (`SCHEMA`, written by dbt 1.8 through
 1.12); any other is a `ManifestError`, rather than a different shape read as
@@ -18,10 +18,12 @@ from typing import Any
 
 # The manifest schema this module reads: the latest dbt writes.
 SCHEMA = "https://schemas.getdbt.com/dbt/manifest/v12.json"
+# The catalog schema `dbt docs generate` writes.
+CATALOG_SCHEMA = "https://schemas.getdbt.com/dbt/catalog/v1.json"
 
 
 class ManifestError(Exception):
-    """The manifest is missing, unreadable, or not shaped like a dbt manifest."""
+    """The manifest (or catalog) is missing, unreadable, or not shaped like one dbt writes."""
 
 
 @dataclass(frozen=True)
@@ -252,3 +254,55 @@ def _names(value: object) -> tuple[str, ...]:
     if isinstance(value, list):
         return tuple(str(item) for item in value)
     return ()
+
+
+@dataclass(frozen=True)
+class CatalogTable:
+    """One relation as `dbt docs generate` found it in the warehouse: every
+    column, in order, with its type as the warehouse writes it. No keys and
+    no nullability: the catalog has neither."""
+
+    unique_id: str
+    database: str | None
+    schema: str
+    name: str
+    columns: tuple[Column, ...]
+
+
+@dataclass(frozen=True)
+class Catalog:
+    generated_at: str | None
+    tables: Mapping[str, CatalogTable] = field(default_factory=dict)
+
+
+def load_catalog(path: Path) -> Catalog:
+    """The relations of a dbt `catalog.json`, by unique_id."""
+    try:
+        document = json.loads(path.read_text())
+    except OSError as error:
+        raise ManifestError(f"cannot read {path}: {error.strerror or error}") from error
+    except ValueError as error:
+        raise ManifestError(f"{path} is not JSON: {error}") from error
+    if not isinstance(document, dict):
+        raise ManifestError(f"{path} is not a dbt catalog")
+    metadata = _mapping(document.get("metadata"))
+    schema = _text(metadata.get("dbt_schema_version"))
+    if schema != CATALOG_SCHEMA:
+        raise ManifestError(f"{path} has catalog schema {schema or 'unknown'}; sqlassert-dbt reads only {CATALOG_SCHEMA}")
+    tables: dict[str, CatalogTable] = {}
+    for section in ("nodes", "sources"):
+        for unique_id, entry in _mapping(document.get(section)).items():
+            if not isinstance(entry, dict):
+                continue
+            where = _mapping(entry.get("metadata"))
+            columns = sorted(
+                (column for column in _mapping(entry.get("columns")).values() if isinstance(column, dict)),
+                key=lambda column: column.get("index") if isinstance(column.get("index"), int) else 0,
+            )
+            if not columns or _text(where.get("schema")) is None or _text(where.get("name")) is None:
+                continue
+            tables[unique_id] = CatalogTable(
+                unique_id, _text(where.get("database")), str(where["schema"]), str(where["name"]),
+                tuple(Column(str(column.get("name")), _text(column.get("type"))) for column in columns),
+            )
+    return Catalog(_text(metadata.get("generated_at")), tables)

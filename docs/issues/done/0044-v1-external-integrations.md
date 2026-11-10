@@ -100,7 +100,7 @@ does and any other gets an `unenforced-constraint` warning
   `dbt compile`, checks the markers, then `dbt build`/`dbt test` with every
   proved test passed as `--exclude`; upstream tests are trusted unless
   DBT_ARGS select nodes. `--require-proved` fails on an unproved test.
-- Reading `catalog.json`: later, [50](../0050-dbt-catalog-json.md).
+- Reading `catalog.json`: later, [50](0050-dbt-catalog-json.md).
 
 ## Open questions
 

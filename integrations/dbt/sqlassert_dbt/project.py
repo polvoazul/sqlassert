@@ -4,18 +4,27 @@ Each model is analyzed in a Program of its own (`program.py`): its own tests
 are Assertions, the passing tests of what it reads are Property Declarations.
 An incremental model is analyzed once per `is_incremental()` branch, and a
 claim about it holds only when it holds in both.
+
+Opted into, `catalog.json` lists the columns of the tables a model reads
+(sources, seeds, snapshots, incremental models) that the manifest leaves
+unknown. It describes the warehouse when `dbt docs generate` ran, so it is
+trusted like a connection: it may add proofs, never change what the SQL and
+the manifest alone prove. An entry is left out where the project shows it is
+stale: another target's relation, a seed whose CSV has other columns, a model
+whose enforced contract lists others.
 """
 
 from __future__ import annotations
 
+import csv
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from sqlassert_dbt.expectations import Expectation, PropertyKind, expectations
-from sqlassert_dbt.manifest import Manifest, Relation, load_manifest
+from sqlassert_dbt.manifest import Catalog, CatalogTable, Column, Manifest, ManifestError, Relation, load_catalog, load_manifest
 from sqlassert_dbt.program import (
-    QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, Suggested, SuggestResult, branches, raw_line_of,
+    QUERY_MATERIALIZATIONS, Body, BranchResult, Builder, Suggested, SuggestResult, _canonical, branches, raw_line_of,
 )
 from sqlassert_dbt.report import (
     DbtReport, Location, MarkerOutcome, ModelSuggestion, Problem, Status, SuggestReport, TestOutcome, Untested,
@@ -46,14 +55,17 @@ UNANALYZED_BRANCH = "dbt-unanalyzed-branch"
 UNKNOWN_COLUMNS = "dbt-unknown-columns"
 EPHEMERAL_NOT_LOCATED = "dbt-ephemeral-not-located"
 UNTRUSTED_UPSTREAM_TESTS = "dbt-untrusted-upstream-tests"
+CATALOG_OTHER_RELATION = "dbt-catalog-other-relation"
+CATALOG_STALE = "dbt-catalog-stale"
 
 
 class ProjectError(Exception):
-    """The project cannot be analyzed at all: no manifest, or an unreadable one."""
+    """The project cannot be analyzed at all: no manifest, or an unreadable one (or catalog)."""
 
 
 def analyze_project(
     project_dir: Path, *, manifest_path: Path | None = None, dialect: str | None = None, trust_upstream_tests: bool = False,
+    catalog_path: Path | None = None,
 ) -> DbtReport:
     """Every test and marker of the dbt project at `project_dir`.
 
@@ -61,19 +73,21 @@ def analyze_project(
     adapter sqlassert does not support leaves every model unanalyzed.
     `trust_upstream_tests` makes the passing tests of what a model reads facts
     about it, which holds when they run before it, as under `dbt build`.
+    `catalog_path` names a `catalog.json` whose columns and types complete
+    the tables the manifest leaves unknown.
     """
-    manifest = _load(project_dir, manifest_path)
-    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests).run(dialect)
+    return _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path).run(dialect)
 
 
 def suggest_models(
     project_dir: Path, files: list[str], *, manifest_path: Path | None = None, dialect: str | None = None,
-    trust_upstream_tests: bool = False,
+    trust_upstream_tests: bool = False, catalog_path: Path | None = None,
 ) -> SuggestReport:
     """What `sqlassert suggest` finds in each model whose file is one of
     `files` (paths relative to `project_dir`), with the relations each reads
     declared as `analyze_project` declares them."""
-    manifest = _load(project_dir, manifest_path)
+    analysis = _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path)
+    manifest = analysis.manifest
     by_path = {
         relation.original_file_path: relation for relation in manifest.relations.values() if relation.resource_type == "model"
     }
@@ -83,17 +97,20 @@ def suggest_models(
         if relation is None:
             raise ProjectError(f"{file} is not a model of the project in {manifest_path or project_dir / 'target' / 'manifest.json'}")
         models.append(relation)
-    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests).suggest(dialect, models)
+    return analysis.suggest(dialect, models)
 
 
-def _load(project_dir: Path, manifest_path: Path | None) -> Manifest:
-    from sqlassert_dbt.manifest import ManifestError
-
+def _analysis(project_dir: Path, manifest_path: Path | None, trust_upstream_tests: bool, catalog_path: Path | None) -> _Analysis:
     path = manifest_path or project_dir / "target" / "manifest.json"
     try:
-        return load_manifest(path)
+        manifest = load_manifest(path)
     except ManifestError as error:
         raise ProjectError(f"{error}; run `dbt compile` (or `dbt build`) first") from error
+    try:
+        catalog = load_catalog(catalog_path) if catalog_path is not None else None
+    except ManifestError as error:
+        raise ProjectError(f"{error}; `dbt docs generate` writes target/catalog.json") from error
+    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests, catalog, project_dir)
 
 
 @dataclass
@@ -101,6 +118,13 @@ class _Analysis:
     manifest: Manifest
     expectations: tuple[Expectation, ...]
     trust_upstream_tests: bool = False
+    catalog: Catalog | None = None
+    project_dir: Path = Path(".")
+
+    def _builder(self, dialect: str, problems: list[Problem]) -> Builder:
+        columns, found = _catalog_columns(self.manifest, self.catalog, self.project_dir, dialect)
+        problems.extend(found)
+        return Builder(self.manifest.relations, self.expectations, dialect, self.trust_upstream_tests, catalog_columns=columns)
 
     def run(self, requested: str | None) -> DbtReport:
         problems: list[Problem] = []
@@ -109,10 +133,7 @@ class _Analysis:
         markers: list[MarkerOutcome] = []
         untested: list[Untested] = []
         undeclared: set[str] = set()
-        builder = (
-            Builder(self.manifest.relations, self.expectations, dialect, self.trust_upstream_tests)
-            if dialect is not None else None
-        )
+        builder = self._builder(dialect, problems) if dialect is not None else None
         for relation in sorted(self.manifest.relations.values(), key=lambda relation: relation.unique_id):
             own = [e for e in self.expectations if e.node == relation.unique_id]
             if builder is None:
@@ -133,7 +154,7 @@ class _Analysis:
         dialect = self._dialect(requested, problems)
         if dialect is None:
             return SuggestReport(None, (), (), tuple(problems))
-        builder = Builder(self.manifest.relations, self.expectations, dialect, self.trust_upstream_tests)
+        builder = self._builder(dialect, problems)
         found: list[ModelSuggestion] = []
         undeclared: set[str] = set()
         for relation in models:
@@ -172,10 +193,13 @@ class _Analysis:
             ))
         for node in sorted(undeclared):
             relation = self.manifest.relations[node]
+            catalog = (
+                "catalog.json lists none it could use (see any dbt-catalog warning)" if self.catalog is not None
+                else "--catalog target/catalog.json, after `dbt docs generate`, lists them"
+            )
             supply = (
-                "an enforced model contract listing every column's data_type declares them"
-                if relation.resource_type == "model"
-                else "only the warehouse's catalog lists them"
+                f"an enforced model contract listing every column's data_type declares them, or {catalog}"
+                if relation.resource_type == "model" else catalog
             )
             problems.append(Problem(
                 UNKNOWN_COLUMNS,
@@ -363,6 +387,68 @@ class _ModelOutcome:
 
     def __init__(self) -> None:
         self.tests, self.markers, self.untested, self.problems, self.undeclared = [], [], [], [], set()
+
+
+def _catalog_columns(
+    manifest: Manifest, catalog: Catalog | None, project_dir: Path, dialect: str,
+) -> tuple[dict[str, tuple[Column, ...]], list[Problem]]:
+    """The catalog's columns of each relation, unless the project shows the
+    entry stale, and a warning for each one left out."""
+    if catalog is None:
+        return {}, []
+    columns: dict[str, tuple[Column, ...]] = {}
+    problems: list[Problem] = []
+    other: list[str] = []
+    for unique_id, table in catalog.tables.items():
+        relation = manifest.relations.get(unique_id)
+        if relation is None:
+            continue
+        if _canonical(relation.relation_name, dialect) != _name_of(table).lower():
+            other.append(f"{relation.resource_type} {relation.label} is {_name_of(table)} there, {relation.relation_name} here")
+            continue
+        listed = [column.name.lower() for column in table.columns]
+        where = Location(relation.patch_path or relation.original_file_path)
+        if relation.resource_type == "seed":
+            header = _csv_header(project_dir / relation.original_file_path)
+            if header is not None and [name.lower() for name in header] != listed:
+                problems.append(Problem(
+                    CATALOG_STALE,
+                    f"catalog.json lists columns {', '.join(listed)} for seed {relation.name}, but its CSV has "
+                    f"{', '.join(header)}: it predates the seed's last change, so they were not used; "
+                    "run `dbt seed` and `dbt docs generate`",
+                    "warning", Location(relation.original_file_path), relation.label,
+                ))
+                continue
+        contract = [column.name.lower() for column in relation.columns]
+        if relation.contract_enforced and contract and sorted(contract) != sorted(listed):
+            problems.append(Problem(
+                CATALOG_STALE,
+                f"catalog.json lists columns {', '.join(listed)} for model {relation.name}, but its enforced contract "
+                f"lists {', '.join(contract)}: the contract is used; run `dbt build` and `dbt docs generate`",
+                "warning", where, relation.label,
+            ))
+        columns[unique_id] = table.columns
+    if other:
+        problems.append(Problem(
+            CATALOG_OTHER_RELATION,
+            f"catalog.json names {len(other)} relation(s) differently from the manifest, so their columns were not used: "
+            f"it was generated for another target ({other[0]}); run `dbt docs generate` with this target",
+            "warning",
+        ))
+    return columns, problems
+
+
+def _name_of(table: CatalogTable) -> str:
+    return ".".join(part for part in (table.database, table.schema, table.name) if part)
+
+
+def _csv_header(path: Path) -> list[str] | None:
+    """A seed's column names, None when its file cannot be read."""
+    try:
+        with path.open(newline="") as file:
+            return next(csv.reader(file), None)
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return None
 
 
 def _combined(relation: Relation, results: list[SuggestResult], *, complete: bool) -> list[ModelSuggestion]:

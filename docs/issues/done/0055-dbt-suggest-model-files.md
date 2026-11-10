@@ -3,7 +3,7 @@
 - **State:** done
 - **Labels:** dbt, integrations
 - **Created:** 2026-11-10
-- **Related:** [50. dbt: read `catalog.json`](../0050-dbt-catalog-json.md)
+- **Related:** [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md)
 
 As a dbt user, I want to pass one or more model files to
 `sqlassert-dbt suggest` and see what SQLAssert can prove about them. The
@@ -35,4 +35,4 @@ goes after the latest end, past a closing `{% endif %}`. Every pasted marker
 in the test project round-trips as PROVED.
 
 Upstream tests are trusted only with `--trust-upstream-tests`, as in `check`.
-Sources still have unknown columns ([50](../0050-dbt-catalog-json.md)).
+`--catalog` completes the columns of sources ([50](0050-dbt-catalog-json.md)).

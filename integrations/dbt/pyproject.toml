@@ -36,6 +36,7 @@ sqlassert-dbt = "sqlassert_dbt.__main__:main"
 test = [
   "dbt-core>=1.12",
   "dbt-duckdb>=1.11",
+  "duckdb",
   "pytest",
 ]
 

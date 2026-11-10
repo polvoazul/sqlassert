@@ -16,12 +16,11 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)
 - [53. Validate Databricks against a real engine](0053-validate-databricks-against-a-real-engine.md) — not planned (P4, child of 43)
 - [54. Validate Redshift against a real engine](0054-validate-redshift-against-a-real-engine.md) — not planned (P4, child of 43)
-- [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md) — open (P2: opt-in column lists and types for sources and seeds)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 55, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -29,7 +28,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P1:** none open. #41 and #38 are done.
 - **P2:** #37 (Paulley audit's missing rules); #45 (Calcite audit's missing
   proofs; its lowering items, HAVING and USING first, lose proofs on common
-  SQL); #15's remaining Low smells and High rewrites; #50 (dbt catalog metadata).
+  SQL); #15's remaining Low smells and High rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
 - **Integrations:** #44 (v1: `check` CLI, dialects, dbt) is done; the rest of
@@ -78,4 +77,5 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [44. v1 external integrations](done/0044-v1-external-integrations.md)
 - [47. Discovery: one base fetcher, a subclass per dialect](done/0047-discovery-base-class.md)
 - [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)
+- [50. dbt: read `catalog.json`](done/0050-dbt-catalog-json.md)
 - [55. Run `sqlassert-dbt suggest` on dbt model files](done/0055-dbt-suggest-model-files.md)

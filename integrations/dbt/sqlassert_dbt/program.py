@@ -32,7 +32,7 @@ from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert_dbt.expectations import Expectation, PropertyKind
 from sqlassert_dbt.jinja import Rendered, Unrenderable, has_incremental_branch, render
-from sqlassert_dbt.manifest import Relation
+from sqlassert_dbt.manifest import Column, Relation
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.improvements import Improvement, Level
 from sqlassert.ir.convert import IrConversionResult, IrParser
@@ -371,6 +371,9 @@ class Builder:
     trust_upstream_tests: bool = False
     # The upstream tests that would have been facts had they been trusted.
     untrusted: set[str] = field(default_factory=set)
+    # Every column of a relation, in order, from catalog.json (`--catalog`):
+    # used for a table no enforced contract types completely.
+    catalog_columns: Mapping[str, tuple[Column, ...]] = field(default_factory=dict)
     _usable: dict[str, bool] = field(default_factory=dict)
 
     def facts(self, node: str) -> list[Expectation]:
@@ -541,8 +544,26 @@ class Builder:
         return f"create table {relation.relation_name} ({', '.join(columns)});"
 
     def _complete_columns(self, relation: Relation) -> list[str] | None:
-        """Column definitions known to be all of a table's columns, with their
-        types: an enforced contract's. Otherwise the columns stay unknown."""
+        """Column definitions known to be all of a table's columns: an enforced
+        contract's, typed, else the catalog's, typed where SQLGlot reads the
+        warehouse's type. Otherwise the columns stay unknown."""
+        contract = self._contract_columns(relation)
+        if contract is not None:
+            return contract
+        columns = self.catalog_columns.get(relation.unique_id)
+        if columns is None:
+            return None
+        definitions = []
+        for column in columns:
+            name = _identifier(column.name, self.dialect)
+            try:
+                kind = exp.DataType.build(column.data_type or "", dialect=self.dialect) if column.data_type else None
+            except (SqlglotError, ValueError):
+                kind = None  # Untyped: nothing is assumed of its comparisons.
+            definitions.append(f"{name} {kind.sql(dialect=self.dialect)}" if kind is not None else name)
+        return definitions
+
+    def _contract_columns(self, relation: Relation) -> list[str] | None:
         if not relation.contract_enforced or not relation.columns:
             return None
         if any(column.data_type is None for column in relation.columns):
