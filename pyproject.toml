@@ -31,7 +31,7 @@ Homepage = "https://github.com/polvoazul/sqlassert"
 Issues = "https://github.com/polvoazul/sqlassert/issues"
 
 [project.scripts]
-sqlassert = "sqlassert.__main__:main"
+sqlassert = "sqlassert_cli:main"
 
 [project.optional-dependencies]
 test = [
@@ -43,6 +43,9 @@ test = [
 dev = [
   "ty",
 ]
+
+[tool.setuptools]
+py-modules = ["sqlassert_cli"]
 
 [tool.setuptools.packages.find]
 include = ["sqlassert", "sqlassert.*"]
