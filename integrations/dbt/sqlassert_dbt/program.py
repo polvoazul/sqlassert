@@ -311,6 +311,47 @@ class _Program:
     undeclared: frozenset[str]
 
 
+@dataclass(frozen=True)
+class _Stated:
+    """What a model's tests and constraints state of its rows, by lowercase column names."""
+
+    non_null: frozenset[str]
+    unique: frozenset[frozenset[str]]
+    enums: frozenset[tuple[str, frozenset[LiteralValue]]]
+
+    @staticmethod
+    def of(own: Iterable[Expectation]) -> _Stated:
+        stating = [e for e in own if e.asserted is not None and e.unprovable is None]
+        return _Stated(
+            frozenset(c.lower() for e in stating if e.asserted in {"not_null", "key"} for c in e.columns),
+            frozenset(frozenset(c.lower() for c in e.columns) for e in stating if e.asserted in {"unique", "key"}),
+            frozenset((e.columns[0].lower(), frozenset(e.values)) for e in stating if e.asserted == "enum"),
+        )
+
+    def untested(
+        self, property: Property, marker: str, order: Iterable[ir.OutputColumn], dialect: str,
+    ) -> str | None:
+        """`marker`, or the part of it no test states (None: they state it all)."""
+        match property:
+            case NonNullColumns(columns=columns) | NonNullUniqueSet(columns=columns):
+                if isinstance(property, NonNullUniqueSet) and _names(columns) not in self.unique:
+                    return marker
+                rest = [column for column in order if column in columns and column.name.lower() not in self.non_null]
+                if isinstance(property, NonNullColumns) and len(rest) == len(columns):
+                    return marker
+                return f"/**ASSERT NOT NULL({', '.join(_identifier(c.name, dialect) for c in rest)})**/" if rest else None
+            case UniqueSet(columns=columns):
+                return None if _names(columns) in self.unique else marker
+            case EnumeratedDomain(column=column, values=values):
+                return None if (column.name.lower(), frozenset(values)) in self.enums else marker
+            case _:
+                return marker
+
+
+def _names(columns: Iterable[ir.OutputColumn]) -> frozenset[str]:
+    return frozenset(column.name.lower() for column in columns)
+
+
 # The generated Root Select reads the model's body as a FROM subquery,
 # starting on the Program's first line.
 _PREFIX = "select * from ("
@@ -418,14 +459,27 @@ class Builder:
             undeclared=built.undeclared,
         )
 
-    def suggest(self, model: Relation, body: Body) -> SuggestResult:
-        """What `sqlassert suggest` finds in the model's own SQL, with what it reads declared."""
+    def suggest(self, model: Relation, body: Body, own: Iterable[Expectation] = ()) -> SuggestResult:
+        """What `sqlassert suggest` finds in the model's own SQL, with what it
+        reads declared. A marker of its Root Select that `own` (the model's
+        tests and constraints) already states is left out, or cut to the part
+        none states."""
         built = self._program(model, body, ())
         report = suggest_parsed(built.sql, built.ast, built.conversion, dialect=self.dialect)
         root = f"subquery {model.name}".lower()
+        stated = _Stated.of(own)
+        relations = dict(built.conversion.program.attachment_sites)
         found = []
         for item in (*report.improvements, *report.suggestions, *report.smells):
             site = item.site
+            cut = False
+            if isinstance(item, Suggestion) and site.label.lower() == root:
+                relation = relations[site]
+                order = () if isinstance(relation, ir.SimpleCase) else relation.output_columns
+                marker = stated.untested(item.property, item.marker, order, self.dialect)
+                if marker is None:
+                    continue
+                item, cut = replace(item, marker=marker), marker != item.marker
             offset = site.offset - len(_PREFIX)
             if site.line > built.body_lines or not 0 <= offset <= len(body.text):
                 continue  # The generated Root Select, or a relation the model reads.
@@ -440,7 +494,7 @@ class Builder:
                 case Improvement():
                     kind, text = item.rewrite.value, item.message
                 case Suggestion():
-                    kind, text = item.kind, item.marker
+                    kind, text = "Not Null" if cut else item.kind, item.marker
                 case Smell():
                     kind, text = item.concern.value, item.message
             found.append(Suggested(

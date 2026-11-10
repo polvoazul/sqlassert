@@ -149,7 +149,8 @@ class _Analysis:
                     UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its smells are listed",
                     "warning", Location(relation.original_file_path), relation.name,
                 ))
-            results = [builder.suggest(relation, body) for body in bodies.bodies]
+            own = [e for e in self.expectations if e.node == relation.unique_id]
+            results = [builder.suggest(relation, body, own) for body in bodies.bodies]
             for body, result in zip(bodies.bodies, results):
                 undeclared |= result.undeclared
                 problems.extend(self._problems(relation, [(body, result)]))

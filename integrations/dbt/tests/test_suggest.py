@@ -23,9 +23,10 @@ def rows(report: SuggestReport, model: str) -> list[tuple[str, str, str]]:
 
 def test_suggestions_use_the_facts_of_what_the_model_reads(compiled):
     report = suggest_models(compiled, ["models/stg_orders.sql"], trust_upstream_tests=True)
-    # raw.orders has unknown columns; its passing unique and not_null tests are facts.
+    # raw.orders has unknown columns; its passing unique and not_null tests are
+    # facts. order_id's own unique test leaves only NOT NULL to suggest.
     assert rows(report, "stg_orders") == [
-        ("models/stg_orders.sql:2", "Root Select", "/**ASSERT NOT NULL UNIQUE(order_id)**/"),
+        ("models/stg_orders.sql:2", "Root Select", "/**ASSERT NOT NULL(order_id)**/"),
         ("models/stg_orders.sql:2", "Root Select", "/**ASSERT NOT NULL(status)**/"),
     ]
     assert report.models == ("stg_orders",)
@@ -52,6 +53,18 @@ def test_an_inlined_ephemeral_model_is_not_suggested_on_in_its_reader(compiled):
     assert ("models/customers.sql:7", "CTE orders", "/**ASSERT UNIQUE(customer_id)**/") in rows(report, "customers")
 
 
+def test_a_marker_the_models_own_tests_state_is_not_suggested(compiled):
+    report = suggest_models(
+        compiled, ["models/customer_signups.sql", "models/stg_customers.sql", "models/customers.sql"], trust_upstream_tests=True,
+    )
+    # unique and not_null tests on every key column of both.
+    assert rows(report, "customer_signups") == rows(report, "stg_customers") == []
+    # customers tests unique(customer_id) and not_null(n_orders) only.
+    assert ("models/customers.sql:11", "Root Select", "/**ASSERT NOT NULL(customer_id)**/") in rows(report, "customers")
+    # A CTE's marker is about the CTE, not the model, so its tests do not state it.
+    assert ("models/customers.sql:7", "CTE orders", "/**ASSERT NOT NULL(n_orders)**/") in rows(report, "customers")
+
+
 def test_a_line_is_found_from_the_lines_around_it_when_the_raw_code_does_not_render(compiled):
     # var() is outside the rendered subset, and the suggestion's own line holds it.
     report = suggest_models(compiled, ["models/active_customers.sql"], trust_upstream_tests=True)
@@ -70,7 +83,6 @@ def test_a_rewrite_or_marker_needs_every_incremental_branch(compiled, tmp_path):
     # The Root Select ends on line 4 in one branch and 6 in the other: the
     # marker goes after both, past the {% endif %} on line 7.
     assert rows(complete, "orders_incremental") == [
-        ("models/orders_incremental.sql:7", "Root Select", "/**ASSERT NOT NULL UNIQUE(order_id)**/"),
         ("models/orders_incremental.sql:7", "Root Select", "/**ASSERT NOT NULL(status)**/"),
     ]
 
@@ -112,7 +124,7 @@ def test_command_compiles_what_the_models_read_and_lists_by_model(compiled, monk
         "--project-dir", str(compiled.resolve()),
     ]]
     out = capsys.readouterr().out.splitlines()
-    assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  mid  Root Select  Non-Null Unique Set  /**ASSERT NOT NULL UNIQUE(order_id)**/"]
+    assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  mid  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/"]
     assert "customer_orders:" in out
     assert out[-1].startswith("0 improvements, 3 markers, 0 smells in 2 models")
 
@@ -166,5 +178,5 @@ def test_every_suggested_marker_pasted_at_its_line_is_proved(tmp_path):
 
     checked = analyze_project(project, trust_upstream_tests=True)
     outcomes = {(str(marker.location), marker.marker): marker.outcome for marker in checked.markers}
-    assert len(pasted) > 10
+    assert len(pasted) >= 8
     assert all(outcomes[str(item.location), item.text] is Outcome.PROVED for item in pasted)
