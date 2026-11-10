@@ -29,5 +29,25 @@ connection may only add proofs, never change what the SQL alone proves.
 - Rule style: `sqlassert/rules/STYLEGUIDE.md`.
 - Test style: SQL cases in `tests/*.sqltest` (format in `tests/sqltest.py`;
   see "Tests" in `docs/implementation-conventions.md`).
-- Open work: `docs/issues/` (index in `docs/issues/README.md`).
+- Open work: `docs/issues/` (index in `docs/issues/README.md`). Marketing
+  work is in `docs/issues/mkt/`, client work in `docs/issues/pvt/`; both are
+  gitignored and never committed.
 - Architecture decisions: `docs/adr/`.
+
+## Before pushing
+
+The repository is public. Before every push, check that nothing private
+leaves:
+
+- Client work (paths, project and model names, env vars, commands run on a
+  client project) goes only in gitignored places: `docs/issues/pvt/`,
+  `docs/issues/mkt/`, `tmp/`. A public issue that comes from client work is
+  phrased without client details.
+- No outgoing file is under those directories:
+  `git diff --name-only @{upstream}..HEAD`.
+- No added line or commit message matches a term in
+  `docs/issues/pvt/denylist.txt`:
+  `git log -p @{upstream}..HEAD | grep -iEf <(grep -v '^#' docs/issues/pvt/denylist.txt)`
+  must print nothing. Add a term there whenever a new client name shows up.
+
+On any hit, stop and ask; do not push.
