@@ -75,6 +75,8 @@ Three lists come out:
 | `--dialect NAME` | Analyze under this dialect instead of the adapter's. |
 | `--manifest PATH` | Read another manifest (default `PROJECT/target/manifest.json`). |
 | `--catalog PATH` | Read column lists and types from this `catalog.json` instead of `PROJECT/target/catalog.json`, which is read when present (also on `build`, `test` and `suggest`). See below. |
+| `--no-catalog` | Read no `catalog.json`: the manifest's columns only. |
+| `--warning-limit N` | Print at most N warnings of each code, then say the rest are suppressed (default 10; 0 prints all). |
 
 Exit codes: `0` every marker proved; `1` a marker is `UNKNOWN` or an error was
 reported (unproved tests fail it only with `--require-proved`); `2` the
@@ -121,7 +123,11 @@ tests or contract already state is left out, or cut to the part none states
 (a `unique` test leaves `NOT NULL` to suggest). A line inside SQL that dbt inlined or that a tag
 wrote is given in the compiled file instead. In an incremental model, a
 rewrite or marker is listed only when both `is_incremental()` branches prove
-it. dbt's own output goes to stderr.
+it. dbt's own output goes to stderr, and its `target/` and `logs/` go to a
+temporary directory, leaving the project's alone (`--dbt-compile-inplace`
+compiles there instead, keeping dbt's partial-parse cache; a `--target-path`
+or `--log-path` after `--` is kept). Each model's suggestions print as soon as
+it is analyzed.
 
 ## Markers in models
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -87,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
     suggest.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
     _catalog(suggest)
     _warning_limit(suggest)
+    suggest.add_argument(
+        "--dbt-compile-inplace", action="store_true",
+        help="let dbt compile into the project's own target/ and logs/ (keeping its partial-parse cache) "
+        "instead of a temporary directory",
+    )
     suggest.add_argument("--explain", action="store_true", help="print each suggestion's evidence")
     suggest.add_argument(
         "--trust-upstream-tests", action="store_true",
@@ -146,13 +152,28 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
     # Only the models and what they read need compiled code; the whole project, for its own directory.
     selection = [] if selecting or "." in relative else ["--select", *(f"+path:{path}" for path in relative)]
     located = [*passed, *selection, "--project-dir", str(project), *_profiles(project, passed)]
-    compiled = run_dbt(["compile", *located], to_stderr=True)
-    if compiled != 0:
-        return compiled
+    # dbt writes target/ and logs/ as it compiles; suggest leaves the project's
+    # own alone, unless the caller names where.
+    with tempfile.TemporaryDirectory(prefix="sqlassert-dbt-") as scratch:
+        given = _option(passed, "--target-path")
+        inplace = arguments.dbt_compile_inplace
+        target = project / given if given is not None else project / "target" if inplace else Path(scratch) / "target"
+        if given is None and not inplace:
+            located += ["--target-path", str(target)]
+        if _option(passed, "--log-path") is None and not inplace:
+            located += ["--log-path", str(Path(scratch) / "logs")]
+        compiled = run_dbt(["compile", *located], to_stderr=True)
+        if compiled != 0:
+            return compiled
+        return _report_suggestions(arguments, project, relative, target / "manifest.json")
+
+
+def _report_suggestions(arguments: argparse.Namespace, project: Path, relative: list[str], manifest: Path) -> int:
     limit = WarningLimit(arguments.warning_limit)
     try:
         report = suggest_models(
-            project, relative, dialect=arguments.dialect, trust_upstream_tests=arguments.trust_upstream_tests,
+            project, relative, manifest_path=manifest, dialect=arguments.dialect,
+            trust_upstream_tests=arguments.trust_upstream_tests,
             catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
             on_model=lambda part: print(format_suggestion_blocks(part, explain=arguments.explain, limit=limit), end="", flush=True),
         )
@@ -223,6 +244,16 @@ def _profiles(project: Path, passed: list[str]) -> list[str]:
     if not (project / "profiles.yml").is_file() or (Path.cwd() / "profiles.yml").is_file():
         return []
     return ["--profiles-dir", str(project)]
+
+
+def _option(passed: list[str], name: str) -> str | None:
+    """The value the caller gave dbt for `name` (`--name V` or `--name=V`)."""
+    for index, argument in enumerate(passed):
+        if argument == name and index + 1 < len(passed):
+            return passed[index + 1]
+        if argument.startswith(name + "="):
+            return argument.split("=", 1)[1]
+    return None
 
 
 def _path(value: str | None) -> Path | None:

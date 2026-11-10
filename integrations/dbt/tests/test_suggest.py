@@ -105,6 +105,13 @@ def fake_dbt(monkeypatch) -> list[list[str]]:
     def run(arguments: list[str], *, to_stderr: bool = False) -> int:
         assert to_stderr  # stdout is the report's.
         calls.append(arguments)
+        # As dbt would: the compiled manifest lands in --target-path.
+        project = Path(arguments[arguments.index("--project-dir") + 1])
+        if "--target-path" in arguments:
+            target = Path(arguments[arguments.index("--target-path") + 1])
+            target = target if target.is_absolute() else project / target
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copy(project / "target" / "manifest.json", target / "manifest.json")
         return 0
 
     monkeypatch.setattr(dbt_command, "run_dbt", run)
@@ -120,10 +127,15 @@ def test_command_compiles_what_the_models_read_and_lists_by_model(compiled, monk
     ])
 
     assert code == 0
-    assert calls == [[
+    (call,) = calls
+    assert call[:call.index("--target-path")] == [
         "compile", "--target", "dev", "--select", "+path:models/stg_orders.sql", "+path:models/customer_orders.sql",
         "--project-dir", str(compiled.resolve()), "--profiles-dir", str(compiled.resolve()),
-    ]]
+    ]
+    # dbt's target/ and logs/ go to a scratch directory, not the project.
+    target, logs = call[call.index("--target-path") + 1], call[call.index("--log-path") + 1]
+    assert not Path(target).is_relative_to(compiled.resolve()) and not Path(logs).is_relative_to(compiled.resolve())
+    assert not Path(target).exists()  # Removed afterwards.
     out = capsys.readouterr().out.splitlines()
     assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  mid  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/"]
     assert "customer_orders:" in out
@@ -166,6 +178,21 @@ def test_a_profiles_dir_of_the_callers_is_kept(compiled, monkeypatch, given):
     assert calls[0].count(str(compiled.resolve())) == 1  # --project-dir only
 
 
+def test_a_target_path_of_the_callers_is_kept(compiled, monkeypatch, capsys):
+    calls = fake_dbt(monkeypatch)
+    main(["suggest", str(compiled / "models/stg_orders.sql"), "--trust-upstream-tests", "--", "--target-path", "kept"])
+    assert calls[0].count("--target-path") == 1 and "stg_orders:" in capsys.readouterr().out
+    assert (compiled / "kept" / "manifest.json").is_file()
+    shutil.rmtree(compiled / "kept")
+
+
+def test_dbt_can_compile_in_place(compiled, monkeypatch, capsys):
+    calls = fake_dbt(monkeypatch)
+    main(["suggest", str(compiled / "models/stg_orders.sql"), "--trust-upstream-tests", "--dbt-compile-inplace"])
+    assert "--target-path" not in calls[0] and "--log-path" not in calls[0]
+    assert "stg_orders:" in capsys.readouterr().out
+
+
 def test_dbt_profiles_dir_is_kept(compiled, monkeypatch):
     calls = fake_dbt(monkeypatch)
     monkeypatch.setenv("DBT_PROFILES_DIR", "elsewhere")
@@ -182,10 +209,9 @@ def test_command_needs_a_project_around_the_files(tmp_path, monkeypatch, capsys)
 
 def test_command_runs_dbt_selecting_by_path_from_another_directory(tmp_path, monkeypatch, capsys):
     project = copy_source(tmp_path)
-    log = str(project / "logs")
 
     def run(arguments: list[str], *, to_stderr: bool = False) -> int:
-        invoked = dbtRunner().invoke(["--quiet", "--no-send-anonymous-usage-stats", "--log-path", log, *arguments])
+        invoked = dbtRunner().invoke(["--quiet", "--no-send-anonymous-usage-stats", *arguments])
         return 0 if invoked.success else 1
 
     monkeypatch.setattr(dbt_command, "run_dbt", run)
@@ -195,6 +221,8 @@ def test_command_runs_dbt_selecting_by_path_from_another_directory(tmp_path, mon
 
     assert code == 0
     assert "models/customer_orders.sql:5  mid  Root Select  Not Null  /**ASSERT NOT NULL(n_orders)**/" in capsys.readouterr().out
+    # Real dbt wrote its target/ and logs/ elsewhere.
+    assert not (project / "target").exists() and not (project / "logs").exists()
 
 
 def test_every_suggested_marker_pasted_at_its_line_is_proved(tmp_path):
