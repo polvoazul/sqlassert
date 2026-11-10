@@ -75,5 +75,27 @@ CREATE TABLE orders (user_id INTEGER);
 SELECT user_id, count(*) FROM sessions GROUP BY user_id /**ASSERT UNIQUE(user_id)**/
 --~ PROVED
 UNION ALL
-SELECT user_id, count(*) FROM orders GROUP BY user_id /**ASSERT UNIQUE(user_id)**/
+-- In parentheses: after the query's last token, a marker marks the whole query.
+(SELECT user_id, count(*) FROM orders GROUP BY user_id /**ASSERT UNIQUE(user_id)**/)
 --~ PROVED
+
+-- case: a_marker_after_a_union_marks_the_whole_query
+CREATE TABLE a (id INTEGER PRIMARY KEY);
+CREATE TABLE b (id INTEGER PRIMARY KEY);
+SELECT id FROM a UNION SELECT id FROM b /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_marker_after_a_union_all_marks_the_whole_query
+CREATE TABLE a (id INTEGER PRIMARY KEY);
+CREATE TABLE b (id INTEGER PRIMARY KEY);
+SELECT id FROM a UNION ALL SELECT id FROM b /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_marker_between_operands_marks_the_one_before_it
+CREATE TABLE a (id INTEGER PRIMARY KEY);
+CREATE TABLE b (id INTEGER);
+SELECT id FROM a /**ASSERT UNIQUE(id)**/  --~ PROVED
+UNION ALL SELECT id FROM b
+
+-- case: a_marker_after_a_union_s_order_by_and_limit_marks_the_whole_query
+CREATE TABLE a (id INTEGER PRIMARY KEY);
+CREATE TABLE b (id INTEGER PRIMARY KEY);
+SELECT id FROM a INTERSECT SELECT id FROM b ORDER BY id LIMIT 3 /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED

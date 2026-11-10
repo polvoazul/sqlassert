@@ -257,6 +257,10 @@ _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 # CASE. `suggest` pastes markers there.
 _MARKER_POSITION = "sqlassert.marker_position"
 
+# Tokens that end a set operation's operand but not the query: another
+# operator, or the parenthesis around the operand.
+_OPERAND_END_TOKENS = {TokenType.UNION, TokenType.INTERSECT, TokenType.EXCEPT, TokenType.R_PAREN}
+
 _COLUMN_MARKER_OPEN_TOKENS = {
     MARKERS[open_]: kind for open_, kind in _COLUMN_MARKER_OPENS.items()
 }
@@ -552,10 +556,38 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             result = super()._parse_select_query(*args, **kwargs)
             if not isinstance(result, exp.Select):
                 return result
-            if not kwargs.get("parse_set_operation", True):
+            right_operand = not kwargs.get("parse_set_operation", True)
+            if right_operand:
                 # A set operation's right operand: no set operation is tried after it.
                 self._record_marker_position(result)
+                # A marker after it marks it when another operator, or the
+                # parenthesis closing it, follows; after the last token of the
+                # query, it marks the whole query.
+                index = self._index
+                found = self._parse_column_markers()
+                if found and not (self._curr is not None and self._curr.token_type in _OPERAND_END_TOKENS):
+                    self._retreat(index)
+                    found = []
+                if found:
+                    result.meta[_COLUMN_MARKERS_AT] = found
+                return result
 
+            found = self._parse_column_markers()
+            if found:
+                result.meta[_COLUMN_MARKERS_AT] = found
+
+            # `super()._parse_select_query` already tried, and gave up, on
+            # attaching a following UNION/INTERSECT/EXCEPT to this same
+            # Select before returning -- its own last step runs before a
+            # trailing marker exists to get in the way, so the marker token
+            # sitting where it looked for a set-operation keyword reads as
+            # "no set operation here". Now that the marker is consumed, retry:
+            # a no-op if nothing follows, since `_parse_set_operations` only
+            # advances the cursor on an actual match.
+            return self._parse_set_operations(result) or result
+
+        def _parse_column_markers(self) -> list[ColumnMarker]:
+            """Every column marker at the cursor, consumed."""
             found: list[ColumnMarker] = []
             while self._curr is not None and self._curr.token_type in _COLUMN_MARKER_OPEN_TOKENS:
                 kind = _COLUMN_MARKER_OPEN_TOKENS[self._curr.token_type]
@@ -581,25 +613,9 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
 
                 whole = Span.of(self.sql, open_.start, self._prev.end + 1)
                 found.append(ColumnMarker(kind, names, whole, referenced_relation, referenced_columns, dependent, values))
-
-            if found:
-                result.meta[_COLUMN_MARKERS_AT] = found
             if self._curr is not None and self._curr.token_type is SqlassertToken.SQLASSERT_EXHAUSTIVE:
                 raise self._misplaced_case_marker(self._curr)
-
-            # `super()._parse_select_query` already tried, and gave up, on
-            # attaching a following UNION/INTERSECT/EXCEPT to this same
-            # Select before returning -- its own last step runs before a
-            # trailing marker exists to get in the way, so the marker token
-            # sitting where it looked for a set-operation keyword reads as
-            # "no set operation here". Now that the marker is consumed, retry:
-            # a no-op if nothing follows, since `_parse_set_operations` only
-            # advances the cursor on an actual match. Not for the right operand
-            # of a set operation, which the left-associative loop that parses
-            # it attaches the next operator to instead.
-            if not kwargs.get("parse_set_operation", True):
-                return result
-            return self._parse_set_operations(result) or result
+            return found
 
         def _parse_set_operations(self, this, *args, **kwargs):
             """Record where a Select ends: the first time set operations are
@@ -610,7 +626,15 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             """
             self._record_marker_position(this)
             result = super()._parse_set_operations(this, *args, **kwargs)
-            return result if base in _FLAT_SET_OPERATION_DIALECTS else _intersect_first(result)
+            result = result if base in _FLAT_SET_OPERATION_DIALECTS else _intersect_first(result)
+            if isinstance(result, exp.SetOperation) and result is not this:
+                # After the last token of the query: the whole query's markers.
+                if self._prev is not None:
+                    result.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
+                found = self._parse_column_markers()
+                if found:
+                    result.meta[_COLUMN_MARKERS_AT] = found
+            return result
 
         def _record_marker_position(self, this) -> None:
             if isinstance(this, exp.Select) and _MARKER_POSITION not in this.meta and self._prev is not None:
@@ -897,7 +921,7 @@ def _unresolved_markers(sql: str, statements: list[Expr]) -> list[Diagnostic]:
     ) + sum(
         len(select.meta.get(_COLUMN_MARKERS_AT, ()))
         for statement in statements
-        for select in statement.find_all(exp.Select)
+        for select in statement.find_all(exp.Select, exp.SetOperation)
     ) + sum(
         1
         for statement in statements
@@ -945,10 +969,11 @@ def _is_alter_table(statement: Expr) -> bool:
     return isinstance(statement, exp.Alter) and (statement.args.get("kind") or "").upper() == "TABLE"
 
 
-def column_markers(select: exp.Select) -> tuple[ColumnMarker, ...]:
-    """Every column marker written on `select` -- those whose kind is in
+def column_markers(query: exp.Query) -> tuple[ColumnMarker, ...]:
+    """Every column marker written on `query` -- a Select, or a set operation
+    when written after its last token. Those whose kind is in
     `DECLARED_KINDS` are Property Declarations, the rest Assertions."""
-    return tuple(select.meta.get(_COLUMN_MARKERS_AT, ()))
+    return tuple(query.meta.get(_COLUMN_MARKERS_AT, ()))
 
 
 def grouping(select: exp.Select) -> list[Expr] | None:
@@ -971,7 +996,7 @@ def grouping(select: exp.Select) -> list[Expr] | None:
     return None
 
 
-def marker_position(node: exp.Join | exp.Select | exp.Case) -> tuple[int, int] | None:
+def marker_position(node: exp.Join | exp.Query | exp.Case) -> tuple[int, int] | None:
     """The source `(offset, line)` where a marker for this Join, Select, or
     simple CASE would be written, or None for a join no marker can precede,
     such as a comma join, and for a searched CASE."""

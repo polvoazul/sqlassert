@@ -321,6 +321,15 @@ class IrParser:
             self._origin(statement),
         ))
 
+    def _discover_marker_targets(self, query: exp.Query, scope: dict[str, _Symbol]) -> None:
+        """The relation each Foreign Key marker on `query` references."""
+        for marker in column_markers(query):
+            if marker.referenced_relation is not None:
+                origin = Origin.marked(marker.referenced_relation, marker.span)
+                target = self._symbol_for_name(marker.referenced_relation, scope, origin)
+                self._marker_targets[id(marker)] = target
+                self._require_undeclared(target, marker.referenced_columns)
+
     def _discover_query(self, query: exp.Query, inherited_scope: dict[str, _Symbol]) -> None:
         if id(query) in self._query_scopes:
             return
@@ -346,6 +355,7 @@ class IrParser:
                 inner = _unwrap_query(side)
                 if inner is not None:
                     self._discover_query(inner, scope)
+            self._discover_marker_targets(query, scope)
             return
         if not isinstance(query, exp.Select):
             return
@@ -385,12 +395,7 @@ class IrParser:
                 for column in (*marker.columns, *marker.dependent):
                     self._require(sources[0], column)
 
-        for marker in column_markers(query):
-            if marker.referenced_relation is not None:
-                origin = Origin.marked(marker.referenced_relation, marker.span)
-                target = self._symbol_for_name(marker.referenced_relation, scope, origin)
-                self._marker_targets[id(marker)] = target
-                self._require_undeclared(target, marker.referenced_columns)
+        self._discover_marker_targets(query, scope)
 
         where = query.args.get("where")
         for conjunct in _conjuncts(where.this) if where is not None else ():
@@ -498,7 +503,17 @@ class IrParser:
             position = marker_position(last) if last is not None else None
             if relation.operator != "union" and position is not None:
                 self._set_operations.append((AttachmentSite(relation.operator.upper(), position[1], position[0], True), relation))
-            return self._lower_limit(relation, query)
+            limited = self._lower_limit(relation, query)
+            # A marker after the last token of the query marks the whole of it,
+            # so the last operand, which ends there too, has no site of its own.
+            self._register_column_markers(limited, query)
+            end = marker_position(query)
+            if end is not None:
+                self._attachment_sites = [
+                    (site, other) for site, other in self._attachment_sites if not (site.trailing and site.offset == end[0])
+                ]
+            self._add_attachment_site(query, _select_label(query), limited, trailing=True)
+            return limited
         if not isinstance(query, exp.Select):
             return None
         return self._lower_select(query)
@@ -1536,7 +1551,7 @@ class IrParser:
 
     # Assertions and diagnostics --------------------------------------------
 
-    def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Select) -> None:
+    def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Query) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
         for marker in column_markers(select):
             kind, columns, line = marker.kind, marker.columns, marker.span.line
@@ -1609,7 +1624,7 @@ class IrParser:
                     assert_never(kind)
 
     def _add_attachment_site(
-        self, node: exp.Join | exp.Select | exp.Case, label: str, relation: ir.RelationExpr | ir.SimpleCase, *, trailing: bool
+        self, node: exp.Join | exp.Query | exp.Case, label: str, relation: ir.RelationExpr | ir.SimpleCase, *, trailing: bool
     ) -> None:
         position = marker_position(node)
         if position is not None:
@@ -2032,11 +2047,11 @@ def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
     ]
 
 
-def _asserted_selects(ast: ParsedProgram) -> list[exp.Select]:
+def _asserted_selects(ast: ParsedProgram) -> list[exp.Query]:
     statements = (*ast.create_statements, ast.root_select)
     return [
         select for statement in statements if statement is not None
-        for select in statement.find_all(exp.Select) if column_markers(select)
+        for select in statement.find_all(exp.Select, exp.SetOperation) if column_markers(select)
     ]
 
 
@@ -2372,7 +2387,7 @@ def _join_label(join: exp.Join, dialect: str) -> str:
     return f"{keywords} {source.sql(dialect=dialect)}"
 
 
-def _select_label(select: exp.Select) -> str:
+def _select_label(select: exp.Query) -> str:
     node = select.parent
     while node is not None:
         match node:

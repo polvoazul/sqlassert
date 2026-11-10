@@ -107,12 +107,17 @@ def test_every_select_expression_is_an_attachment_site():
     ]
 
 
-def test_each_member_of_a_set_operation_is_its_own_site():
-    sql = SCHEMA + "SELECT id FROM users UNION ALL SELECT DISTINCT user_id FROM sessions"
+def test_a_set_operation_is_a_site_after_its_last_token():
+    # The first member has a site of its own; the last one ends where the
+    # whole query does, so a marker there is the whole query's.
+    sql = SCHEMA + "SELECT id FROM users UNION SELECT user_id FROM sessions"
     assert markers(sql) == [
         ("Root Select", "/**ASSERT NOT NULL UNIQUE(id)**/"),
-        ("Root Select", "/**ASSERT UNIQUE(user_id)**/"),
+        ("Root Select", "/**ASSERT UNIQUE(id)**/"),
     ]
+    annotated = suggest(sql).annotated()
+    assert annotated.endswith("FROM sessions /**ASSERT UNIQUE(id)**/")
+    assert all(a.outcome.value == "proved" for a in analyze(annotated).assertions)
 
 
 def test_columns_a_marker_cannot_name_unambiguously_are_left_out():

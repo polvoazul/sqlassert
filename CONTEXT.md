@@ -232,8 +232,9 @@ _Avoid_: Select-like expression, query, statement
 
 **Attachment Site**:
 A place in the SQL text where a Property Marker can be written: right before a
-JOIN, right after the last token of a Select Expression, or right before a
-simple `CASE`. Every marker attaches at one; `suggest` names each site by its
+JOIN, right after the last token of a Select Expression (of the whole query,
+for a set operation: its last operand ends there too, so it has none), or
+right before a simple `CASE`. Every marker attaches at one; `suggest` names each site by its
 line and what it marks.
 _Avoid_: Marker position, anchor
 
