@@ -1,0 +1,61 @@
+-- A set-returning function in a select list (`unnest(arr)`, Postgres's
+-- `generate_series(1, 3)` and `jsonb_array_elements(doc)`, Spark's
+-- `explode(arr)`) repeats each input row once per value it returns: none when
+-- it returns none, and several functions in one list are zipped, padded with
+-- NULL. So the rows are a subset of the input rows, each repeated, and the
+-- other selected columns copied unchanged: their dependencies and NOT NULL
+-- hold, no key does (not even at most one row, for a select with no FROM),
+-- and the function's own column is no function of its argument.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR, arr INTEGER[]);
+
+-- case: a_select_with_no_from_may_return_many_rows
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE VIEW months AS SELECT unnest([1, 2, 3]) AS m;
+SELECT u.id, m.m FROM users AS u CROSS JOIN months AS m /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated
+SELECT id, unnest(arr) AS x FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: the_other_columns_keep_their_dependencies
+SELECT id, name, unnest(arr) AS x FROM t /**ASSERT DETERMINES(id -> name)**/  --~ PROVED
+
+-- case: the_other_columns_keep_not_null
+SELECT id, unnest(arr) AS x FROM t /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: the_function_column_is_no_function_of_its_argument
+SELECT arr, unnest(arr) AS x FROM t /**ASSERT DETERMINES(arr -> x)**/  --~ UNKNOWN
+
+-- case: a_function_column_inside_an_expression_is_no_function_of_its_argument
+SELECT arr, unnest(arr) + 1 AS x FROM t /**ASSERT DETERMINES(arr -> x)**/  --~ UNKNOWN
+
+-- case: a_distinct_over_the_repeated_rows_is_a_key
+SELECT DISTINCT id, unnest(arr) AS x FROM t /**ASSERT UNIQUE(id, x)**/  --~ PROVED
+
+-- case: a_grouped_select_repeats_its_groups
+SELECT id, unnest(arr) AS x FROM t GROUP BY id, arr /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_limit_after_the_function_still_bounds_the_rows
+SELECT unnest(arr) AS x FROM t LIMIT 1 /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: a_function_in_a_scalar_subquery_does_not_repeat_the_outer_rows
+SELECT id, (SELECT count(*) FROM (SELECT unnest([1, 2]) AS x)) AS n FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: duckdb_generate_series_in_a_select_list_is_one_list
+-- In DuckDB it returns a list; only in FROM does it return rows.
+SELECT id, generate_series(1, 3) AS s FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: postgres_generate_series_in_a_select_list_returns_rows
+-- dialect: postgres
+CREATE TABLE p (id INTEGER PRIMARY KEY);
+SELECT id, generate_series(1, 3) AS s FROM p /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: postgres_jsonb_array_elements_returns_rows
+-- dialect: postgres
+CREATE TABLE p (id INTEGER PRIMARY KEY, doc JSONB);
+SELECT id, jsonb_array_elements(doc) AS e FROM p /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: spark_explode_returns_rows
+-- dialect: spark
+CREATE TABLE s (id INT, arr ARRAY<INT>, PRIMARY KEY (id));
+SELECT id, explode(arr) AS x FROM s /**ASSERT UNIQUE(id)**/  --~ UNKNOWN

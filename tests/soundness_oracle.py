@@ -242,7 +242,7 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
     select, marker = next(
         (select, marker)
         for statement in statements
-        for select in statement.find_all(exp.Select)
+        for select in statement.find_all(exp.Select, exp.SetOperation)
         for marker in column_markers(select)
         if marker.kind == kind and {name.lower() for name in marker.columns} == columns
         and (values is None or frozenset(marker.values) == values)
@@ -251,13 +251,13 @@ def _check(parsed: ParsedProgram, property: Property, origin: Origin, dialect: s
     return _violation_query(select, marker, _checked(marker.kind))
 
 
-def _declared(parsed: ParsedProgram) -> list[tuple[exp.Select, ColumnMarker]]:
-    """Every Property Declaration, as the Select it is written on."""
+def _declared(parsed: ParsedProgram) -> list[tuple[exp.Query, ColumnMarker]]:
+    """Every Property Declaration, as the Select or set operation it is written on."""
     statements = [statement for statement in (*parsed.create_statements, parsed.root_select) if statement is not None]
     return [
         (select, marker)
         for statement in statements
-        for select in statement.find_all(exp.Select)
+        for select in statement.find_all(exp.Select, exp.SetOperation)
         for marker in column_markers(select)
         if marker.kind in DECLARED_KINDS
     ]
@@ -291,7 +291,7 @@ def _checked(kind: ColumnMarkerKind) -> _Check:
             assert_never(kind)
 
 
-def _violation_query(select: exp.Select, marker: ColumnMarker, kind: _Check) -> str:
+def _violation_query(select: exp.Query, marker: ColumnMarker, kind: _Check) -> str:
     columns = [_quoted(name) for name in marker.columns]
     any_null = " OR ".join(f"{column} IS NULL" for column in columns)
     all_present = " AND ".join(f"{column} IS NOT NULL" for column in columns)
@@ -720,8 +720,14 @@ def _edge_rows(table: _Table) -> list[list[tuple]]:
     return unique
 
 
+def _hashable(value: object) -> object:
+    return tuple(_hashable(element) for element in value) if isinstance(value, list) else value
+
+
 def _blank(value: object) -> object:
     """The type's empty value: 0, '', or FALSE (a date column keeps its value)."""
+    if isinstance(value, list):
+        return []
     if isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
@@ -767,7 +773,7 @@ def _respecting_keys(rows: list[tuple], keys: tuple[tuple[int, ...], ...]) -> li
     seen: set[tuple] = set()
     kept = []
     for row in rows:
-        values = [(key, tuple(row[index] for index in key)) for key in keys]
+        values = [(key, tuple(_hashable(row[index]) for index in key)) for key in keys]
         complete = [value for value in values if None not in value[1]]
         if any(value in seen for value in complete):
             continue
@@ -784,7 +790,7 @@ def _literals(parsed: ParsedProgram) -> tuple[list[object], list[str]]:
     for statement in (*parsed.create_statements, parsed.root_select):
         if statement is None:
             continue
-        marked = [value for select in statement.find_all(exp.Select) for marker in column_markers(select) for value in marker.values]
+        marked = [value for select in statement.find_all(exp.Select, exp.SetOperation) for marker in column_markers(select) for value in marker.values]
         written = [value for literal in statement.find_all(exp.Literal, exp.Neg) if (value := literal_value(literal)) is not None]
         for value in (*written, *marked):
             match value.type:
@@ -803,6 +809,10 @@ def _literals(parsed: ParsedProgram) -> tuple[list[object], list[str]]:
 def _domain(data_type: str, numbers: list[object], strings: list[str]) -> tuple[object, ...]:
     """A tiny value domain for one column, so collisions are frequent."""
     family = sqlglot.exp.DataType.build(data_type, dialect="duckdb")
+    if family.is_type(exp.DataType.Type.ARRAY, exp.DataType.Type.LIST) and family.expressions:
+        # Two elements first, so one row already unnests to two; empty, so it unnests to none.
+        a, b, *_ = (*_domain(family.expressions[0].sql(dialect="duckdb"), numbers, strings), None)
+        return ([a, b], [a], [], [a, a])
     if family.is_type(*exp.DataType.NUMERIC_TYPES):
         values: list[object] = [1, 2, *numbers]
     elif family.is_type(*exp.DataType.TEXT_TYPES):

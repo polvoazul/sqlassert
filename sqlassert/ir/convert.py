@@ -123,6 +123,9 @@ class IrParser:
     # Each scalar subquery lowered as a join, by id, and the qualifier of the
     # binding that holds its value.
     _scalar_values: dict[int, str] = field(default_factory=dict)
+    # Each set-returning call of a select list, by id, and the qualifier of the
+    # binding that holds the values it returns.
+    _set_returning_values: dict[int, str] = field(default_factory=dict)
     _scalar_subqueries: list[tuple[AttachmentSite, ir.Join]] = field(default_factory=list)
     _sort_keys: dict[int, tuple[ir.OutputColumn, ...] | None] = field(default_factory=dict)
     _site_sort_keys: list[tuple[AttachmentSite, tuple[ir.OutputColumn, ...] | None]] = field(default_factory=list)
@@ -834,6 +837,14 @@ class IrParser:
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
         keys = grouping(select)
+        calls = [call for item in select.expressions for call in _set_returning_calls(item, self.dialect)]
+        if calls:
+            if keys is not None or isinstance(select.args.get("qualify"), exp.Qualify) or (
+                select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None
+            ):
+                # Evaluated after grouping or a window: not modelled.
+                return self._opaque_relation(select, _selected_output_names(select))
+            lowered = self._fan_out(lowered, calls, self._origin(select))
         if keys is not None:
             relation = self._lower_aggregate(lowered, select, keys)
         elif select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None:
@@ -895,6 +906,31 @@ class IrParser:
                 return None
             keys.append(key)
         return tuple(keys)
+
+    def _fan_out(self, lowered: _Lowered, calls: list[Expr], origin: Origin) -> _Lowered:
+        """A select list's set-returning calls repeat each input row once per
+        value they return (none for none; several are zipped, padded with
+        NULL): a cross join with an opaque relation of their values. The rows
+        keep no key, the input's other columns keep their facts, and each
+        call's value is that relation's column, no function of its arguments."""
+        names = tuple(f"value{index}" for index in range(len(calls)))
+        values = ir.OpaqueRelation(
+            origin=origin, output_columns=self._opaque_output_columns(names, origin), is_schema_complete=True,
+            description="rows of " + ", ".join(call.sql(dialect=self.dialect) for call in calls),
+        )
+        input_columns = lowered.relation.output_columns + values.output_columns
+        output_columns = _pass_output_columns(input_columns, origin)
+        remapped = dict(zip(input_columns, output_columns))
+        join = ir.Join(
+            origin=origin, output_columns=output_columns, is_schema_complete=lowered.relation.is_schema_complete,
+            kind="cross", left=lowered.relation, right=values, predicate=None,
+        )
+        bindings = [replace(binding, column=remapped[binding.column]) for binding in lowered.bindings]
+        for call, column in zip(calls, values.output_columns):
+            qualifier = f"{_SET_RETURNING_QUALIFIER}{len(self._set_returning_values)}"
+            self._set_returning_values[id(call)] = qualifier
+            bindings.append(_Binding(qualifier, _SET_RETURNING_QUALIFIER, remapped[column]))
+        return _Lowered(join, tuple(bindings))
 
     def _filter(self, lowered: _Lowered, where: exp.Where) -> _Lowered:
         """WHERE: each `EXISTS`, `NOT EXISTS`, or `IN (subquery)` conjunct as a
@@ -1290,6 +1326,11 @@ class IrParser:
 
         if isinstance(expression, exp.Subquery) and id(expression) in self._scalar_values:
             qualifier = self._scalar_values[id(expression)]
+            value = next((binding.column for binding in bindings if binding.qualifier == qualifier), None)
+            if value is not None:
+                return ir.ColumnRef(origin=origin, column=value)
+        if id(expression) in self._set_returning_values:
+            qualifier = self._set_returning_values[id(expression)]
             value = next((binding.column for binding in bindings if binding.qualifier == qualifier), None)
             if value is not None:
                 return ir.ColumnRef(origin=origin, column=value)
@@ -2183,6 +2224,43 @@ def _from_source(select: exp.Query) -> Expr | None:
 
 # A scalar subquery's value binding: no SQL name can match it.
 _SCALAR_QUALIFIER = "\0scalar"
+
+
+# A set-returning call's value binding: no SQL name can match it.
+_SET_RETURNING_QUALIFIER = "\0rows"
+
+# Calls that return rows, not a value, in a select list: `unnest(arr)`,
+# Spark's `explode(arr)`, Postgres's `generate_series(1, 3)`. Not DuckDB's
+# `generate_series`, which there returns a list.
+_SET_RETURNING = (exp.Explode, exp.Inline, exp.Stack, exp.ExplodingGenerateSeries, exp.Unnest)
+
+# Set-returning functions SQLGlot parses as anonymous calls, by dialect.
+_SET_RETURNING_NAMES: dict[str, frozenset[str]] = {
+    "postgres": frozenset({
+        "generate_subscripts", "json_array_elements", "json_array_elements_text", "json_each", "json_each_text",
+        "json_object_keys", "json_populate_recordset", "json_to_recordset", "jsonb_array_elements", "jsonb_array_elements_text",
+        "jsonb_each", "jsonb_each_text", "jsonb_object_keys", "jsonb_path_query", "jsonb_populate_recordset", "jsonb_to_recordset",
+        "regexp_matches", "regexp_split_to_table", "string_to_table",
+    }),
+    "spark": frozenset({"json_tuple", "inline_outer"}),
+    "databricks": frozenset({"json_tuple", "inline_outer"}),
+    "hive": frozenset({"json_tuple", "inline_outer"}),
+}
+
+
+def _set_returning_calls(item: Expr, dialect: str) -> list[Expr]:
+    """The outermost set-returning calls a select list item evaluates itself:
+    not one inside a subquery, which returns rows of its own."""
+    names = _SET_RETURNING_NAMES.get(dialect, frozenset())
+    calls: list[Expr] = []
+
+    def returns_rows(node: Expr) -> bool:
+        return isinstance(node, _SET_RETURNING) or (isinstance(node, exp.Anonymous) and node.name.lower() in names)
+
+    for node in item.walk(prune=lambda node: isinstance(node, exp.Query | exp.Subquery) or returns_rows(node)):
+        if returns_rows(node):
+            calls.append(node)
+    return calls
 
 
 def _scalar_subqueries(expression: Expr) -> list[exp.Subquery]:
