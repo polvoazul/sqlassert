@@ -791,8 +791,8 @@ class IrParser:
             return _and(tuple(
                 ir.Equality(
                     origin=self._origin(identifier, _source_line(identifier)),
-                    left=self._lower_expression(exp.column(identifier.name), left.bindings),
-                    right=self._lower_expression(exp.column(identifier.name), right.bindings),
+                    left=self._lower_expression(exp.column(identifier.name), left.bindings, line=_source_line(identifier)),
+                    right=self._lower_expression(exp.column(identifier.name), right.bindings, line=_source_line(identifier)),
                 )
                 for identifier in using
             ), self._origin(join))

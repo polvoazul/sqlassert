@@ -126,7 +126,7 @@ CREATE TABLE c (id INTEGER PRIMARY KEY);
 
 SELECT * FROM a JOIN b USING (id) /**ASSERT MANY TO ONE**/ JOIN c USING (id)
 --~ UNKNOWN
---~! ambiguous-column
+--~ ambiguous-column
 
 -- case: a_table_level_unique_constraint_does_not_imply_non_null
 CREATE TABLE users (id INTEGER, region INTEGER, UNIQUE (id, region));
