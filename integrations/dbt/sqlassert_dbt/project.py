@@ -66,7 +66,7 @@ class ProjectError(Exception):
 
 def analyze_project(
     project_dir: Path, *, manifest_path: Path | None = None, dialect: str | None = None, trust_upstream_tests: bool = False,
-    catalog_path: Path | None = None,
+    catalog_path: Path | None = None, read_catalog: bool = True,
 ) -> DbtReport:
     """Every test and marker of the dbt project at `project_dir`.
 
@@ -76,14 +76,14 @@ def analyze_project(
     about it, which holds when they run before it, as under `dbt build`.
     `catalog_path` names a `catalog.json` whose columns and types complete
     the tables the manifest leaves unknown; without it, the project's
-    `target/catalog.json` is read when present.
+    `target/catalog.json` is read when present, unless `read_catalog` is False.
     """
-    return _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path).run(dialect)
+    return _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path, read_catalog).run(dialect)
 
 
 def suggest_models(
     project_dir: Path, files: list[str], *, manifest_path: Path | None = None, dialect: str | None = None,
-    trust_upstream_tests: bool = False, catalog_path: Path | None = None,
+    trust_upstream_tests: bool = False, catalog_path: Path | None = None, read_catalog: bool = True,
     on_model: Callable[[SuggestReport], None] | None = None,
 ) -> SuggestReport:
     """What `sqlassert suggest` finds in each model whose file is one of
@@ -92,7 +92,7 @@ def suggest_models(
     reads declared as `analyze_project` declares them. `on_model` is called
     with each model's part of the report as soon as it is analyzed, and last
     with the warnings about what they read."""
-    analysis = _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path)
+    analysis = _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path, read_catalog)
     manifest = analysis.manifest
     by_path = {
         relation.original_file_path: relation for relation in manifest.relations.values() if relation.resource_type == "model"
@@ -125,7 +125,9 @@ def suggest_models(
     )
 
 
-def _analysis(project_dir: Path, manifest_path: Path | None, trust_upstream_tests: bool, catalog_path: Path | None) -> _Analysis:
+def _analysis(
+    project_dir: Path, manifest_path: Path | None, trust_upstream_tests: bool, catalog_path: Path | None, read_catalog: bool = True,
+) -> _Analysis:
     path = manifest_path or project_dir / "target" / "manifest.json"
     try:
         manifest = load_manifest(path)
@@ -134,11 +136,13 @@ def _analysis(project_dir: Path, manifest_path: Path | None, trust_upstream_test
     # The catalog `dbt docs generate` writes is read whenever it is there.
     default = project_dir / "target" / "catalog.json"
     catalog_path = catalog_path or (default if default.is_file() else None)
+    if not read_catalog:
+        catalog_path = None
     try:
         catalog = load_catalog(catalog_path) if catalog_path is not None else None
     except ManifestError as error:
         raise ProjectError(f"{error}; `dbt docs generate` writes target/catalog.json") from error
-    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests, catalog, project_dir)
+    return _Analysis(manifest, tuple(expectations(manifest)), trust_upstream_tests, catalog, project_dir, read_catalog)
 
 
 @dataclass
@@ -148,6 +152,7 @@ class _Analysis:
     trust_upstream_tests: bool = False
     catalog: Catalog | None = None
     project_dir: Path = Path(".")
+    read_catalog: bool = True
 
     def _builder(self, dialect: str, problems: list[Problem]) -> Builder:
         columns, found = _catalog_columns(self.manifest, self.catalog, self.project_dir, dialect)
@@ -223,10 +228,12 @@ class _Analysis:
             ))
         for node in sorted(undeclared):
             relation = self.manifest.relations[node]
-            catalog = (
-                "catalog.json lists none it could use (see any dbt-catalog warning)" if self.catalog is not None
-                else "run `dbt docs generate`, whose target/catalog.json is read when present (or pass --catalog PATH)"
-            )
+            if self.catalog is not None:
+                catalog = "catalog.json lists none it could use (see any dbt-catalog warning)"
+            elif not self.read_catalog:
+                catalog = "catalog.json lists them, but --no-catalog was given"
+            else:
+                catalog = "run `dbt docs generate`, whose target/catalog.json is read when present (or pass --catalog PATH)"
             supply = (
                 f"an enforced model contract listing every column's data_type declares them, or {catalog}"
                 if relation.resource_type == "model" else catalog

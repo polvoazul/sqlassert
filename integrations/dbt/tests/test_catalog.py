@@ -135,3 +135,12 @@ def test_check_takes_a_catalog(built, capsys):
     main(["check", str(built), "--trust-upstream-tests", "--catalog", str(built / "target" / "catalog.json")])
     assert "models/customers.sql:11: PROVED /**ASSERT MANY TO ONE**/" in capsys.readouterr().out
     assert main(["check", str(built), "--catalog", str(built / "missing.json")]) == 2
+
+
+def test_no_catalog_reads_none(built, capsys):
+    report = analyze_project(built, trust_upstream_tests=True, read_catalog=False)
+    assert outcome(report, MARKER) is Outcome.UNKNOWN
+    unknown = next(problem for problem in report.problems if problem.code == "dbt-unknown-columns")
+    assert "--no-catalog" in unknown.message
+    main(["check", str(built), "--trust-upstream-tests", "--no-catalog"])
+    assert "models/customers.sql:11: UNKNOWN /**ASSERT MANY TO ONE**/" in capsys.readouterr().out

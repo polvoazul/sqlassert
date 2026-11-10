@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         "--project-dir", help="dbt project directory (default: the nearest one holding the first PATH)",
     )
     suggest.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
-    suggest.add_argument("--catalog", help=_CATALOG_HELP)
+    _catalog(suggest)
     suggest.add_argument("--explain", action="store_true", help="print each suggestion's evidence")
     suggest.add_argument(
         "--trust-upstream-tests", action="store_true",
@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     project = Path(arguments.project)
 
     if arguments.command == "check":
-        report = _analyze(project, arguments.manifest, arguments.dialect, arguments.trust_upstream_tests, arguments.catalog)
+        report = _analyze(project, arguments.manifest, arguments.dialect, arguments.trust_upstream_tests, arguments)
         if report is None:
             return EXIT_USAGE
         sys.stdout.write(format_text(report, explain=arguments.explain))
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     if compiled != 0:
         return compiled
     selecting = any(argument.split("=")[0] in SELECTION_FLAGS for argument in passed)
-    report = _analyze(project, None, arguments.dialect, not selecting, arguments.catalog)
+    report = _analyze(project, None, arguments.dialect, not selecting, arguments)
     if report is None:
         return EXIT_USAGE
     sys.stdout.write(format_text(report, explain=arguments.explain))
@@ -149,7 +149,7 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
     try:
         report = suggest_models(
             project, relative, dialect=arguments.dialect, trust_upstream_tests=arguments.trust_upstream_tests,
-            catalog_path=_path(arguments.catalog),
+            catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
             on_model=lambda part: print(format_suggestion_blocks(part, explain=arguments.explain), end="", flush=True),
         )
     except ProjectError as error:
@@ -165,10 +165,18 @@ _CATALOG_HELP = (
 )
 
 
+def _catalog(command: argparse.ArgumentParser) -> None:
+    reading = command.add_mutually_exclusive_group()
+    reading.add_argument("--catalog", help=_CATALOG_HELP)
+    reading.add_argument(
+        "--no-catalog", action="store_true", help="read no catalog.json: the manifest's columns only",
+    )
+
+
 def _common(command: argparse.ArgumentParser) -> None:
     command.add_argument("project", nargs="?", default=".", help="dbt project directory (default: .)")
     command.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
-    command.add_argument("--catalog", help=_CATALOG_HELP)
+    _catalog(command)
     command.add_argument("--explain", action="store_true", help="print each proof and failed proof")
     command.add_argument(
         "--require-proved", action="store_true",
@@ -181,10 +189,13 @@ def proved_tests(report: DbtReport) -> list[str]:
     return sorted({test.name for test in report.tests if test.skippable})
 
 
-def _analyze(project: Path, manifest: str | None, dialect: str | None, trust: bool, catalog: str | None) -> DbtReport | None:
+def _analyze(
+    project: Path, manifest: str | None, dialect: str | None, trust: bool, arguments: argparse.Namespace,
+) -> DbtReport | None:
     try:
         return analyze_project(
-            project, manifest_path=_path(manifest), dialect=dialect, trust_upstream_tests=trust, catalog_path=_path(catalog),
+            project, manifest_path=_path(manifest), dialect=dialect, trust_upstream_tests=trust,
+            catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
         )
     except ProjectError as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)
