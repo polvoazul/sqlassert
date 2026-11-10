@@ -1,5 +1,6 @@
-"""`--catalog`: the columns and types `dbt docs generate` found complete the
-tables the manifest leaves unknown, unless the project shows them stale.
+"""target/catalog.json (or `--catalog PATH`): the columns and types `dbt docs
+generate` found complete the tables the manifest leaves unknown, unless the
+project shows them stale.
 `built` (conftest.py) is the project built into a real warehouse."""
 
 from __future__ import annotations
@@ -46,15 +47,20 @@ def edit_catalog(project: Path, edit) -> None:
 MARKER = "models/customers.sql:11 /**ASSERT MANY TO ONE**/"
 
 
-def test_the_catalog_completes_the_columns_of_sources(built):
-    without = analyze_project(built, trust_upstream_tests=True)
-    report = analyze_project(built, trust_upstream_tests=True, catalog_path=built / "target" / "catalog.json")
+def test_the_catalog_completes_the_columns_of_sources(built, copy_built):
+    project = copy_built()
+    (project / "target" / "catalog.json").unlink()
+    without = analyze_project(project, trust_upstream_tests=True)
+    # target/catalog.json is read when present, with no flag.
+    report = analyze_project(built, trust_upstream_tests=True)
     # SELECT * of stg_customers over raw.customers now has known columns, so
     # the join's key is no longer ambiguous.
     assert outcome(without, MARKER) is Outcome.UNKNOWN
     assert outcome(report, MARKER) is Outcome.PROVED
     assert statuses(report)["unique_customers_customer_id"] is Status.PROVED
     assert "dbt-unknown-columns" in codes(without) and "dbt-unknown-columns" not in codes(report)
+    unknown = next(problem for problem in without.problems if problem.code == "dbt-unknown-columns")
+    assert "dbt docs generate" in unknown.message
 
 
 def test_the_catalog_types_a_column_so_a_test_declares_its_domain(built):
@@ -70,6 +76,13 @@ def test_suggest_reads_the_catalog(built):
         built, ["models/customers.sql"], trust_upstream_tests=True, catalog_path=built / "target" / "catalog.json",
     )
     assert "dbt-unknown-columns" not in codes(report)
+
+
+def test_a_catalog_elsewhere_is_named_with_a_flag(copy_built, tmp_path):
+    project = copy_built()
+    (project / "target" / "catalog.json").rename(tmp_path / "catalog.json")
+    report = analyze_project(project, trust_upstream_tests=True, catalog_path=tmp_path / "catalog.json")
+    assert outcome(report, MARKER) is Outcome.PROVED
 
 
 def test_a_catalog_of_another_target_is_not_used(copy_built):

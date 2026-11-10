@@ -5,7 +5,7 @@ are Assertions, the passing tests of what it reads are Property Declarations.
 An incremental model is analyzed once per `is_incremental()` branch, and a
 claim about it holds only when it holds in both.
 
-Opted into, `catalog.json` lists the columns of the tables a model reads
+`target/catalog.json`, when present (or `--catalog PATH`), lists the columns of the tables a model reads
 (sources, seeds, snapshots, incremental models) that the manifest leaves
 unknown. It describes the warehouse when `dbt docs generate` ran, so it is
 trusted like a connection: it may add proofs, never change what the SQL and
@@ -75,7 +75,8 @@ def analyze_project(
     `trust_upstream_tests` makes the passing tests of what a model reads facts
     about it, which holds when they run before it, as under `dbt build`.
     `catalog_path` names a `catalog.json` whose columns and types complete
-    the tables the manifest leaves unknown.
+    the tables the manifest leaves unknown; without it, the project's
+    `target/catalog.json` is read when present.
     """
     return _analysis(project_dir, manifest_path, trust_upstream_tests, catalog_path).run(dialect)
 
@@ -130,6 +131,9 @@ def _analysis(project_dir: Path, manifest_path: Path | None, trust_upstream_test
         manifest = load_manifest(path)
     except ManifestError as error:
         raise ProjectError(f"{error}; run `dbt compile` (or `dbt build`) first") from error
+    # The catalog `dbt docs generate` writes is read whenever it is there.
+    default = project_dir / "target" / "catalog.json"
+    catalog_path = catalog_path or (default if default.is_file() else None)
     try:
         catalog = load_catalog(catalog_path) if catalog_path is not None else None
     except ManifestError as error:
@@ -221,7 +225,7 @@ class _Analysis:
             relation = self.manifest.relations[node]
             catalog = (
                 "catalog.json lists none it could use (see any dbt-catalog warning)" if self.catalog is not None
-                else "--catalog target/catalog.json, after `dbt docs generate`, lists them"
+                else "run `dbt docs generate`, whose target/catalog.json is read when present (or pass --catalog PATH)"
             )
             supply = (
                 f"an enforced model contract listing every column's data_type declares them, or {catalog}"

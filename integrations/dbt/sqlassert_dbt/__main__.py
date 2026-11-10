@@ -160,8 +160,8 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
 
 
 _CATALOG_HELP = (
-    "read the columns and types of sources, seeds and other tables from this catalog.json (`dbt docs generate` "
-    "writes target/catalog.json); trusted like a connection"
+    "read the columns and types of sources, seeds and other tables from this catalog.json instead of "
+    "PROJECT/target/catalog.json, which is read when present (`dbt docs generate` writes it)"
 )
 
 

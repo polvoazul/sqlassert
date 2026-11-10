@@ -74,7 +74,7 @@ Three lists come out:
 | `--explain` | Print each proof, and each failed proof. |
 | `--dialect NAME` | Analyze under this dialect instead of the adapter's. |
 | `--manifest PATH` | Read another manifest (default `PROJECT/target/manifest.json`). |
-| `--catalog PATH` | Read column lists and types from a `catalog.json` (also on `build`, `test` and `suggest`). See below. |
+| `--catalog PATH` | Read column lists and types from this `catalog.json` instead of `PROJECT/target/catalog.json`, which is read when present (also on `build`, `test` and `suggest`). See below. |
 
 Exit codes: `0` every marker proved; `1` a marker is `UNKNOWN` or an error was
 reported (unproved tests fail it only with `--require-proved`); `2` the
@@ -152,10 +152,10 @@ relation's columns and types, as the warehouse had them:
 
 ```bash
 $ dbt docs generate
-$ sqlassert-dbt check . --catalog target/catalog.json
+$ sqlassert-dbt check .    # reads target/catalog.json
 ```
 
-It is opt-in and trusted like a connection: it can prove more, never less.
+It is read whenever it is there (`--catalog PATH` names another) and trusted like a connection: it can prove more, never less. Without one, a `dbt-unknown-columns` warning says how to get it.
 It has no keys and no nullability, so those still come from tests and
 contracts. A catalog is a snapshot, so an entry is not used where the project
 shows it stale:

@@ -53,3 +53,7 @@ rewrites the manifest, so it would always warn.
 
 Tests build the test project into a DuckDB file (`built` in conftest.py) and
 run a real `dbt docs generate`.
+
+Later (2026-11-10): no longer opt-in. `PROJECT/target/catalog.json` is read
+whenever it exists; `--catalog PATH` names another. Without one, the
+`dbt-unknown-columns` warning says to run `dbt docs generate`.
