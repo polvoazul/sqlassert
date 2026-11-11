@@ -248,7 +248,8 @@ _Avoid_: Improvement, optimization, lint, hint
 
 **Hazard**:
 A place whose result the SQL leaves unspecified or likely wrong, with the
-failed Proof that would have pinned it: a Fan Trap or Chasm Trap, a `LIMIT`
+failed Proof that would have pinned it: a Fan Trap or Chasm Trap, an unmarked
+join that may be many to many, a `LIMIT`
 that picks arbitrary rows among ties, a scalar subquery that may return more
 than one row, a join equality that casts, a query that never returns a row.
 The SQL may be what its author meant. `suggest` lists Hazards last; the

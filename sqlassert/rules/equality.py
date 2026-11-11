@@ -18,6 +18,7 @@ never does.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import assert_never
 
 from sqlassert import ir
@@ -107,6 +108,11 @@ def _same_type(first: ir.OutputColumn, second: ir.OutputColumn) -> bool:
 @analysis(Stratum.EQUALITY_GROUP)
 def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
     relation = column.get_relation(current_arena().program)
+    if isinstance(relation, ir.SetOperation) and (arms := relation.arms(column)) is not None:
+        # Both inputs of one type: the output is that type.
+        left, right = (_comparison_type(arm) for arm in arms)
+        if left.value is not None and left.value == right.value:
+            return Result(left.value, "Both inputs of the set operation share the comparison type", (column,), [left, right])
     match column.scalar_expr:
         case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
             return _comparison_type(source)
@@ -118,11 +124,27 @@ def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
 def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
     """Whether equal values of `column` are identical, from its declared type."""
     relation = column.get_relation(current_arena().program)
+    if (both := _both_inputs(column, relation, _identity_comparison)) is not None:
+        return both
     match column.scalar_expr:
         case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
             return _identity_comparison(source)
         case _:
             return Result(column.identity_comparison, "Declared type compares by identity", (column,))
+
+
+def _both_inputs(
+    column: ir.OutputColumn, relation: ir.RelationExpr | None, fact: Callable[[ir.OutputColumn], Result[bool]]
+) -> Result[bool] | None:
+    """A set operation's column has a type fact when both its input columns
+    have one comparison type and the fact: its type is theirs, not widened.
+    None when that is not shown, and the column's own declaration decides."""
+    if not isinstance(relation, ir.SetOperation) or (arms := relation.arms(column)) is None or not _same_type(*arms):
+        return None
+    left, right = (fact(arm) for arm in arms)
+    if not (left.value and right.value):
+        return None
+    return Result(True, "Both inputs of the set operation have it", (column,), [left, right])
 
 
 def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
@@ -165,6 +187,8 @@ def _exact_arithmetic(column: ir.OutputColumn) -> bool:
 def _binary_text(column: ir.OutputColumn) -> Result[bool]:
     """Whether `column` is text compared by identity, from its declared type."""
     relation = column.get_relation(current_arena().program)
+    if (both := _both_inputs(column, relation, _binary_text)) is not None:
+        return both
     match column.scalar_expr:
         case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
             return _binary_text(source)
@@ -176,6 +200,8 @@ def _binary_text(column: ir.OutputColumn) -> Result[bool]:
 def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
     """Whether `column` is an integer or decimal, from its declared type."""
     relation = column.get_relation(current_arena().program)
+    if (both := _both_inputs(column, relation, exact_numeric)) is not None:
+        return both
     match column.scalar_expr:
         case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
             return exact_numeric(source)

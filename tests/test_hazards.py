@@ -87,7 +87,8 @@ CHASM = "SELECT c.id, sum(c.credit) AS s FROM customers c JOIN orders o ON o.cus
 
 
 def concerns(sql: str) -> list[Concern]:
-    return [hazard.concern for hazard in suggest(TRAPS + sql).hazards]
+    """The hazards of `sql` but its many-to-many joins, tested on their own below."""
+    return [hazard.concern for hazard in suggest(TRAPS + sql).hazards if hazard.concern is not Concern.MANY_TO_MANY]
 
 
 @pytest.mark.parametrize(
@@ -95,8 +96,10 @@ def concerns(sql: str) -> list[Concern]:
     [(FAN, 7, Concern.FAN_TRAP), (CHASM, 100, Concern.CHASM_TRAP)],
     ids=["fan", "chasm"],
 )
-def test_a_trap_is_a_smell_and_multiplies_the_total_on_data(sql: str, true_total: int, concern: Concern):
+def test_a_trap_is_a_hazard_and_multiplies_the_total_on_data(sql: str, true_total: int, concern: Concern):
     assert concerns(sql) == [concern]
+    # The trap reports the join under the aggregate; it is not a hazard twice.
+    assert joins(sql) == []
     connection = duckdb.connect()
     connection.execute(TRAPS + ROWS)
     (_, total), = connection.execute(sql).fetchall()
@@ -145,6 +148,56 @@ def test_an_aggregate_over_rows_no_join_repeats_is_not_a_trap(sql: str):
     assert concerns(sql) == []
 
 
+# Many-to-many join --------------------------------------------------------------
+
+JOIN = "SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.customer_id = o.customer_id"
+
+
+def joins(sql: str) -> list[Concern]:
+    return [hazard.concern for hazard in suggest(TRAPS + sql).hazards if hazard.concern is Concern.MANY_TO_MANY]
+
+
+def test_an_unmarked_join_that_may_be_many_to_many_is_a_hazard_and_repeats_both_inputs_on_data():
+    hazards = [hazard for hazard in suggest(TRAPS + JOIN).hazards if hazard.concern is Concern.MANY_TO_MANY]
+    assert [hazard.site.label for hazard in hazards] == ["JOIN payments AS p"]
+    assert "many to many" in hazards[0].message
+    connection = duckdb.connect()
+    connection.execute(TRAPS + ROWS)
+    rows = connection.execute(JOIN).fetchall()
+    # Each order appears twice, and so does each payment.
+    assert sorted(row[0] for row in rows) == [10, 10, 11, 11] and sorted(row[1] for row in rows) == [20, 20, 21, 21]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Many to one: each order matches one customer.
+        "SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id",
+        # A marker states the cardinality: check proves it or reports it, not suggest.
+        "SELECT o.id FROM orders o /**ASSERT NOT MANY TO MANY**/ JOIN payments p ON p.customer_id = o.customer_id",
+        # An explicit CROSS JOIN pairs every row with every row on purpose.
+        "SELECT o.id, p.id AS pid FROM orders o CROSS JOIN payments p",
+        # A semi join never repeats a row.
+        "SELECT o.id FROM orders o SEMI JOIN payments p ON p.customer_id = o.customer_id",
+        # No known Unique Set on an input: its rows have no identity to repeat.
+        "SELECT o.id FROM orders o JOIN logs l ON l.customer_id = o.customer_id",
+        # DISTINCT merges the rows the join repeats.
+        "SELECT DISTINCT o.customer_id FROM orders o JOIN payments p ON p.customer_id = o.customer_id",
+        # On a text key equated with a column of unknown type: the proof cannot
+        # bind it ('01' = 1), but the join is on a key, so a fact is missing,
+        # not the join's cardinality.
+        "CREATE TABLE regions (code VARCHAR PRIMARY KEY, name VARCHAR); "
+        "WITH r AS (SELECT DISTINCT code, tag FROM raw) SELECT r.tag, g.name FROM r JOIN regions g ON g.code = r.code",
+    ],
+)
+def test_a_join_that_cannot_repeat_both_inputs_or_is_marked_is_not_a_many_to_many_hazard(sql: str):
+    assert joins(sql) == []
+
+
+def test_a_left_join_that_may_be_many_to_many_is_a_hazard():
+    assert joins("SELECT o.id FROM orders o LEFT JOIN payments p ON p.customer_id = o.customer_id") == [Concern.MANY_TO_MANY]
+
+
 # Implicit cast -------------------------------------------------------------------
 
 CASTS = """
@@ -153,7 +206,7 @@ CREATE TABLE nums (v INTEGER);
 """
 
 
-def test_a_join_equality_that_casts_is_a_smell_and_repeats_rows_on_data():
+def test_a_join_equality_that_casts_is_a_hazard_and_repeats_rows_on_data():
     sql = "SELECT * FROM nums JOIN codes ON codes.code = nums.v"
     assert [hazard.concern for hazard in suggest(CASTS + sql).hazards] == [Concern.IMPLICIT_CAST]
     connection = duckdb.connect()

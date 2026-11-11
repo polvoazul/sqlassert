@@ -48,7 +48,7 @@ from sqlassert.rules.join_cardinality import _at_most_one_match, many_to_one_joi
 from sqlassert.properties import NonNullColumn, NonNullColumns, ReferentialCoverage
 from sqlassert.rules.exactly_one import _cross_equalities
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity, minimal_keys
-from sqlassert.sql_parse import ParsedProgram
+from sqlassert.sql_parse import ParsedProgram, assertion_span
 
 
 class Concern(Enum):
@@ -58,6 +58,7 @@ class Concern(Enum):
     SCALAR_SUBQUERY = "Scalar subquery"
     IMPLICIT_CAST = "Implicit cast"
     ALWAYS_EMPTY = "Always empty"
+    MANY_TO_MANY = "Many-to-many join"
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ def hazards(
     reachable = set(program.nodes())
     found: list[Hazard] = []
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
+    deduplicated = _deduplicated_joins(program)
     sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
         if not wanted(site):
@@ -88,6 +90,8 @@ def hazards(
             found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
         if isinstance(relation, ir.Join) and relation in reachable and not site.trailing:
             found.extend(_implicit_casts(site, relation))
+            if isinstance(node, exp.Join) and assertion_span(node) is None and relation not in deduplicated:
+                found.extend(_many_to_many(site, relation))
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
         if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
             found.extend(_traps(site, aggregate, join_labels))
@@ -157,6 +161,66 @@ def _empty_except(site: AttachmentSite, operation: ir.SetOperation, arena: Arena
         return []
     message = "every row of the left input appears in the right one, so this EXCEPT never returns a row"
     return [Hazard(site, Concern.ALWAYS_EMPTY, message, proof)]
+
+
+def _many_to_many(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
+    """A join with no marker that is not proved to repeat rows of at most one
+    input, both of whose inputs have a known Unique Set: it may repeat rows of
+    both. A many-to-many join is rare on purpose; an explicit CROSS JOIN is
+    one, so it is left alone, and a marker leaves the cardinality to `check`."""
+    if join.kind in ("semi", "anti", "cross"):
+        return []
+    proof = unique_join(join)
+    if proof.value or not (_has_unique_set(join.left) and _has_unique_set(join.right)):
+        return []
+    if _equates_a_key(join, join.left, join.right) or _equates_a_key(join, join.right, join.left):
+        return []  # A join on a key whose column types are unknown: a missing fact, not a hazard.
+    message = (
+        "this join is not proved to repeat rows of only one input: it may be many to many, repeating rows of both. "
+        "Join on a key of one input, or write the join marker you expect (/**ASSERT MANY TO ONE**/, ...) for check to prove"
+    )
+    return [Hazard(site, Concern.MANY_TO_MANY, message, proof)]
+
+
+def _deduplicated_joins(program: ir.Program) -> set[ir.Join]:
+    """The joins in the FROM of a Select whose DISTINCT or GROUP BY merges
+    the rows they repeat: repeats never reach its result, and what they do to
+    an aggregate is a trap of its own."""
+    found: set[ir.Join] = set()
+    for site, relation in program.attachment_sites:
+        stage = relation.input if isinstance(relation, ir.Limit) else relation
+        if not site.trailing or not isinstance(stage, ir.Distinct | ir.Aggregate):
+            continue
+        pending = [stage.input]
+        while pending:
+            match pending.pop():
+                case ir.Join(left=left, right=right) as join:
+                    found.add(join)
+                    pending += [left, right]
+                case ir.Filter(input=source):
+                    pending.append(source)
+                case _:
+                    pass
+    return found
+
+
+def _equates_a_key(join: ir.Join, side: ir.RelationExpr, other: ir.RelationExpr) -> bool:
+    """Whether ON equates every column of a known key of `side` with a value
+    of the other input's row (a column, an expression of its columns such as
+    a FULL JOIN chain's `coalesce(a.k, b.k)`, or a constant), whatever their
+    types: the join is on that key, and only an unknown type or an
+    expression kept the proof from binding it."""
+    equated: set[ir.OutputColumn] = set()
+    for conjunct in join.conjuncts:
+        if not isinstance(conjunct, ir.Equality):
+            continue
+        for mine, theirs in ((conjunct.left, conjunct.right), (conjunct.right, conjunct.left)):
+            inputs = ir.determinants(theirs)
+            if isinstance(mine, ir.ColumnRef) and mine.column in side.output_columns and inputs is not None and (
+                set(inputs) <= set(other.output_columns)
+            ):
+                equated.add(mine.column)
+    return any(set(key) <= equated for key in minimal_keys(side))
 
 
 def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
