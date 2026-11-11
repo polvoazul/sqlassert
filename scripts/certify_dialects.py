@@ -289,6 +289,8 @@ _DATA_ERROR = (
     _OVERFLOW_ERROR + r"|division by (zero|0)|divide by zero|divided by zero|cannot be cast|cannot cast|could not convert"
     r"|conversion error|invalid input syntax|invalid (numeric|value|number|literal)|cannot parse|cannot convert|incorrect .* value|truncated"
     r"|explicit type casts|no function matches|best candidate|operator does not exist|cannot be applied|no matching signature|illegal_type_of_argument"
+    # Trino's type errors: a known operator or function given an argument of the wrong type.
+    r"|cannot apply operator|unexpected parameters \(.*\) for function|must evaluate to a|cannot check if"
 )
 _LEAST, _GREATEST = -(2**63), 2**63 - 1
 _EXACT = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b, "unary -": lambda a: -a}
