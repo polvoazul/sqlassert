@@ -158,7 +158,8 @@ returns counterexample tables. It covers all databases at once, but the
 encoding is a second model of SQL semantics to write and trust, and aggregates
 and outer joins make it grow quickly. Prior art worth reading first: VeriEQL
 (bounded SMT with NULL semantics), Cosette, SQLSolver, Qex, XData. Revisit
-after the DuckDB oracle exists.
+after the DuckDB oracle exists. Now [issue 61](0061-symbolic-oracle-with-verieql.md):
+run VeriEQL instead of writing our own encoding.
 
 ## Related
 

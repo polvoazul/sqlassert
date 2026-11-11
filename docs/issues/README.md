@@ -12,6 +12,13 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: Properties under a collation; today any COLLATE is not identity)
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
 - [60. Audit inference against CockroachDB's FD library](0060-audit-inference-against-cockroachdb.md) — open (like 40; same lax FD definition as ours, `fd:` test corpus; TiDB optional)
+- [61. Symbolic soundness oracle with VeriEQL](0061-symbolic-oracle-with-verieql.md) — open (needs design; every Property as a bounded equivalence; replaces 27's z3 alternative)
+- [62. Cross-check `suggest` rewrites with SQL equivalence checkers](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md) — open (SQLSolver, VeriEQL, QED, Cosette on every High Improvement)
+- [63. Generate random programs for the soundness oracle](0063-generate-random-programs-for-the-oracle.md) — open (needs design; SQLancer-style generator, ParSEval instances; feeds 27 Part 2)
+- [64. Triage WeTune's discovered rewrite rules](0064-triage-wetune-rewrite-rules.md) — open (research; like 15's Kossmann triage)
+- [65. Triage SQLCheck's anti-pattern catalog](0065-triage-sqlcheck-anti-patterns.md) — open (research; smells for 15)
+- [66. Check our SQL semantics against Guagliardo & Libkin](0066-check-semantics-against-guagliardo-libkin.md) — open (research; NULL/bag rules, certifier probes for 46)
+- [67. Recheck the Calcite audit against `FuncDepSet` (CALCITE-7205)](0067-recheck-calcite-funcdepset.md) — waiting on upstream
 - [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44, 51-54; backlog of CLI, editor, framework, data quality and agent integrations)
 - [51. Validate Snowflake against a real engine](0051-validate-snowflake-against-a-real-engine.md) — not planned (P4, child of 43)
 - [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)

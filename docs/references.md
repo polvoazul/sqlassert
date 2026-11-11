@@ -86,7 +86,8 @@ Key insights for sqlassert:
   Same strict/lax model; upgrades lax FDs to strict from predicates. Apache
   license, so code is reusable.
 - **Calcite `FuncDepSet`** — being added under CALCITE-7205; recheck our
-  [Calcite audit](calcite-audit.md) against it when it lands.
+  [Calcite audit](calcite-audit.md) against it when it lands
+  ([issue 67](issues/0067-recheck-calcite-funcdepset.md)).
 
 ### Testing database logic (paper 1: soundness of derived properties)
 
@@ -99,8 +100,11 @@ Key insights for sqlassert:
   Differential Query Plans, CODDTest. Our angle: an oracle on the derived
   *property* (key, FD, max-one-row), which names the faulty rule, and is
   complete for SPJ queries on 2-row instances (Paulley Thm 11/12).
+  Use: [issue 63](issues/0063-generate-random-programs-for-the-oracle.md).
 - **ParSEval** (PVLDB 18, 2025) — plan-aware test-database generation to
-  refute query equivalence. Prior art for our tiny-instance generator.
+  refute query equivalence ([sfu-db/ParSEval](https://github.com/sfu-db/ParSEval),
+  Python, Apache-2.0). Prior art for our tiny-instance generator; use:
+  [issue 63](issues/0063-generate-random-programs-for-the-oracle.md).
 
 ### SQL semantics across engines (paper 3: dialect certification)
 
@@ -110,7 +114,8 @@ Key insights for sqlassert:
   Semantics for SELECT-FROM-WHERE with subqueries, bags and NULLs, validated
   on random queries against PostgreSQL and Oracle. Proves basic SQL ≡
   relational algebra with bags and NULLs; shows 3-valued logic is not needed.
-  One model; we certify facts per dialect and version.
+  One model; we certify facts per dialect and version. Check:
+  [issue 66](issues/0066-check-semantics-against-guagliardo-libkin.md).
 - **Guagliardo & Libkin — *How "Standard" is the SQL Standard?*** (AMW 2018,
   [pdf](https://www.ceur-ws.org/Vol-2100/paper16.pdf)). Engines claiming the
   standard diverge even on simple statements; no reference implementation or
@@ -133,12 +138,14 @@ Key insights for sqlassert:
 - **Wang et al. — WeTune** (SIGMOD 2022). Enumerates plan templates to
   discover rewrite rules, verifies them with SMT; 1106 rules. Rule
   constraints include keys and not-null: a list of assertions worth proving.
+  Triage: [issue 64](issues/0064-triage-wetune-rewrite-rules.md).
 - **He, Zhao, Wang & Wang — VeriEQL** (OOPSLA 2024, distinguished paper,
   [arXiv](https://arxiv.org/abs/2403.03193)). Bounded equivalence over
   symbolic tuples (integers + uninterpreted functions), NULLs and rich
   integrity constraints; >95% of its benchmarks need constraints. Its
   counterexamples found bugs in MySQL and Calcite. Candidate for the deferred
-  symbolic oracle in issue 11.
+  symbolic oracle: [issue 61](issues/0061-symbolic-oracle-with-verieql.md).
+  Running these tools on our rewrites: [issue 62](issues/0062-cross-check-suggest-rewrites-with-equivalence-checkers.md).
 
 ### SQL lint (suggest smells)
 
@@ -146,3 +153,4 @@ Key insights for sqlassert:
   [arXiv](https://arxiv.org/abs/2004.10232)). Detects anti-patterns by query
   plus data analysis, ranks them by impact, suggests rule-based fixes;
   studied 1406 open-source applications. Heuristic; our smells are proved.
+  Triage: [issue 65](issues/0065-triage-sqlcheck-anti-patterns.md).
