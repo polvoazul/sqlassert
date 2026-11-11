@@ -117,7 +117,7 @@ def test_a_where_clause_before_group_by_does_not_block_the_proof(orders_and_cust
     assert report.proved
 
 
-def test_a_grouping_key_absent_from_the_select_list_is_unsupported_and_unknown(orders_and_customers):
+def test_joining_on_a_count_grouped_by_an_unselected_key_is_unknown(orders_and_customers):
     report = analyze(
         orders_and_customers
         + """
