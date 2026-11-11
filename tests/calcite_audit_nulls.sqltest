@@ -306,9 +306,9 @@ SELECT deptno, sal, count(*) AS n FROM emp WHERE deptno = 10 GROUP BY ROLLUP (sa
 
 -- case: pullup_aggregate_having_on_group_key
 -- inspired by RelMdPredicates.getPredicates(Filter) over getPredicates(Aggregate)
--- Missing proof: HAVING is not lowered.
+-- HAVING filters the groups (issue 45).
 SELECT deptno, count(*) AS n FROM emp GROUP BY deptno HAVING deptno = 10
-/**ASSERT ENUM(deptno IN (10))**/  --~ UNKNOWN
+/**ASSERT ENUM(deptno IN (10))**/  --~ PROVED
 
 -- case: pullup_union_common_and_disjunctive
 -- inspired by RelMetadataTest.testPullUpPredicatesFromUnion2
@@ -365,11 +365,11 @@ SELECT empno, deptno, comm FROM u
 
 -- case: pullup_values
 -- inspired by RelMetadataTest.testPullUpPredicatesFromValues4
--- Missing proofs: VALUES is not lowered.
+-- VALUES states its literals' domains and nullability (issue 45).
 SELECT w, x, y, z FROM (VALUES (1, 2, 3, NULL), (1, 2, NULL, NULL), (5, 2, 3, NULL)) AS v (w, x, y, z)
-/**ASSERT ENUM(w IN (1, 5))**/  --~ UNKNOWN
-/**ASSERT NOT NULL(w, x)**/  --~ UNKNOWN
-/**ASSERT ENUM(y IN (3))**/  --~ UNKNOWN
+/**ASSERT ENUM(w IN (1, 5))**/  --~ PROVED
+/**ASSERT NOT NULL(w, x)**/  --~ PROVED
+/**ASSERT ENUM(y IN (3))**/  --~ PROVED
 
 -- case: pullup_equivalence_under_a_collation
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.EquivalenceFinder (any `=` of two columns)

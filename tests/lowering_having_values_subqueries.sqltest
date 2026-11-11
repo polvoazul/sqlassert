@@ -1,0 +1,57 @@
+-- Issue 45: HAVING, VALUES in FROM, and correlated aggregate subqueries.
+
+CREATE TABLE emp (empno INTEGER PRIMARY KEY, deptno INTEGER, sal INTEGER, job VARCHAR);
+CREATE TABLE dept (deptno INTEGER PRIMARY KEY);
+
+-- HAVING removes groups: the grouping key survives, and a condition on a
+-- selected item narrows that item's column.
+-- case: having_keeps_the_key_and_narrows_selected_items
+SELECT deptno, count(*) AS c, max(sal) AS m FROM emp GROUP BY deptno
+HAVING count(*) > 1 AND max(sal) IS NOT NULL AND deptno IN (10, 20)
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT NOT NULL(m)**/  --~ PROVED
+/**ASSERT ENUM(deptno IN (10, 20))**/  --~ PROVED
+
+-- A condition on an aggregate not selected states nothing of its own.
+-- case: having_on_an_unselected_aggregate_keeps_the_key_only
+SELECT deptno, count(*) AS c FROM emp GROUP BY deptno HAVING sum(sal) > 10
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
+
+-- case: values_states_its_literals
+SELECT * FROM (VALUES (1, 'X'), (2, 'Y'), (3, NULL)) AS t (a, b)
+/**ASSERT NOT NULL UNIQUE(a)**/  --~ PROVED
+/**ASSERT UNIQUE(b)**/  --~ PROVED
+/**ASSERT NOT NULL(b)**/  --~ UNKNOWN
+/**ASSERT ENUM(a IN (1, 2, 3))**/  --~ PROVED
+
+-- 1 and 1.0 are equal; NULLs never repeat in a (lax) Unique Set.
+-- case: values_uniqueness_compares_by_value
+SELECT * FROM (VALUES (1, NULL), (1.0, NULL)) AS t (a, b)
+/**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(b)**/  --~ PROVED
+
+-- An expression among the values states nothing for its column.
+-- case: values_with_an_expression
+SELECT * FROM (VALUES (1 + 1), (3)) AS t (a)
+/**ASSERT NOT NULL(a)**/  --~ UNKNOWN
+
+-- count over no matching rows is 0, not NULL (the count bug).
+-- case: a_correlated_count_is_never_null
+SELECT deptno, (SELECT count(*) FROM emp WHERE emp.deptno = dept.deptno) AS n FROM dept
+/**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- case: a_correlated_max_is_null_without_a_match
+SELECT deptno, (SELECT max(sal) FROM emp WHERE emp.deptno = dept.deptno) AS m FROM dept
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+
+-- One value per deptno: equal to a key it pins one row per deptno; equal to
+-- sal it does not (two may tie).
+-- case: a_correlated_aggregate_is_a_function_of_its_key__key
+SELECT empno, deptno FROM emp AS a WHERE empno = (SELECT max(empno) FROM emp AS b WHERE b.deptno = a.deptno AND b.sal > 0)
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
+
+-- case: a_correlated_aggregate_is_a_function_of_its_key__not_a_key
+SELECT empno, deptno FROM emp AS a WHERE sal = (SELECT max(sal) FROM emp AS b WHERE b.deptno = a.deptno)
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN

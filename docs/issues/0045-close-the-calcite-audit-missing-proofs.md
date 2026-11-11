@@ -21,7 +21,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 
 ### Lowering
 
-1. **GROUP BY with HAVING** is not lowered, so the grouped query loses its key
+1. ~~**GROUP BY with HAVING** is not lowered,~~ Done: HAVING is a Filter of the groups; a part written as a select item reads its column, any other conjunct is opaque (`convert._lower_having`). Was: so the grouped query loses its key
    and its domains. Lower HAVING as a Filter above the Aggregate.
    `iq: having_keeps_the_grouping_key`, `nulls: pullup_aggregate_having_on_group_key`.
 2. ~~**`GROUP BY ()`** is one row, like a scalar aggregate.~~ Done: the
@@ -30,14 +30,14 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 3. **An unqualified USING column** is not resolved: in a RIGHT or FULL join
    it is `coalesce(left, right)`, and even an INNER join loses its domain.
    `iq: right_join_using_column_is_the_preserved_side_s`.
-4. **VALUES in FROM** lowers opaque, silently. Its literals give domains,
+4. ~~**VALUES in FROM** lowers opaque, silently.~~ Done: its literals are Knowledge of its columns (non-null, Enumerated Domain up to 100 rows, lax Unique Sets by `_may_coincide`; `convert._lower_values`). Was: Its literals give domains,
    nullability and (null-equal) uniqueness.
    `keys: uk_values`, `nulls: pullup_values`.
 5. **QUALIFY over GROUP BY** is not recognized as QualifyByPartition.
    `iq: qualify_over_group_by_keeps_one_row_per_partition`.
 6. **A parenthesized join as a join's right input** gives
    `unanalyzed-assertion`: `dept d LEFT JOIN (emp e /**ASSERT MANY TO ONE**/ LEFT JOIN emp c USING (empno)) ON ...`.
-7. **A correlated scalar subquery whose body aggregates** stays opaque:
+7. ~~**A correlated scalar subquery whose body aggregates** stays opaque:~~ Done for one aggregate call correlated by same-typed equalities: grouped by the key and left joined, count as `coalesce(count, 0)` (`convert._aggregate_subquery_join`). Was:
    `count(*)` of it is never NULL, and `x = (SELECT max(...) ... WHERE corr)`
    pins one row per correlation key.
    `iq: correlated_scalar_count_is_never_null`, `keys: uk_correlated_scalar_subquery`.

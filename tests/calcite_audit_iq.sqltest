@@ -137,7 +137,7 @@ FROM emp AS e
 SELECT deptno, (SELECT count(*) FROM emp WHERE emp.deptno = dept.deptno) AS x
 FROM dept
 /**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
-/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(x)**/  --~ PROVED
 
 -- Grouping ------------------------------------------------------------------
 
@@ -176,7 +176,7 @@ GROUP BY e.deptno, d.deptno
 -- case: having_keeps_the_grouping_key
 -- inspired by agg.iq, "select deptno + 1 as d1, count(*) as c from emp group by rollup(deptno) having count(*) > 3"
 SELECT deptno, count(*) AS c FROM emp GROUP BY deptno HAVING count(*) > 1
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 
 -- A grouping key left out of the select list leaves the rest unproved.
 -- case: distinct_needed_when_a_grouping_key_is_not_selected

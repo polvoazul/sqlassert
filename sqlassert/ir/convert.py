@@ -583,8 +583,64 @@ class IrParser:
                 # a column by its name, so a placeholder serves.
                 return self._alias(relation, source.alias or "subquery", self._origin(source))
 
+        if isinstance(source, exp.Values):
+            values = self._lower_values(source)
+            if values is not None:
+                return self._alias(values, source.alias_or_name, self._origin(source))
+
         opaque = self._opaque_relation(source, self._source_required.get(id(source), set()))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
+
+    def _lower_values(self, values: exp.Values) -> ir.OpaqueRelation | None:
+        """`(VALUES (...), ...) AS t (a, ...)`: rows of literals, stated as
+        Knowledge of its columns. A column is non-null when no row holds NULL
+        there; its Enumerated Domain is its values, up to `_VALUES_DOMAIN_ROWS`
+        rows (past that, a closed set is more noise than fact); it is a Unique
+        Set when no two of its values may compare equal (`1` and `1.0` may,
+        and `'a'` and `'A'` unless text compares by identity), and so are all
+        columns together when no two rows may. A column with any other
+        expression states nothing. Without column names it stays opaque."""
+        from sqlassert.rules.domain import _may_coincide
+
+        alias = values.args.get("alias")
+        names = [column.name for column in alias.columns] if isinstance(alias, exp.TableAlias) else []
+        rows = [row.expressions if isinstance(row, exp.Tuple) else [row] for row in values.expressions]
+        if not names or not rows or any(len(row) != len(names) for row in rows):
+            return None
+        origin = self._origin(values)
+        columns = tuple(
+            ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.OpaqueExpression(origin=origin, description=f"VALUES column {name}"))
+            for name in names
+        )
+        binary = self.semantics.text_is_binary
+
+        def distinct(items: list[ir.LiteralValue | None]) -> bool:
+            # NULL equals nothing, so it never repeats (a lax Unique Set).
+            known = [item for item in items if item is not None]
+            return all(not _may_coincide(first, second, binary) for index, first in enumerate(known) for second in known[index + 1:])
+
+        literal_rows: list[list[ir.LiteralValue | None]] = []
+        for row in rows:
+            literal_rows.append([None if isinstance(item, exp.Null) else literal_value(item) for item in row])
+        for index, column in enumerate(columns):
+            written = [row[index] for row in rows]
+            if not all(isinstance(item, exp.Null) or literal_value(item) is not None for item in written):
+                continue  # Some value is an expression: nothing is stated.
+            items = [row[index] for row in literal_rows]
+            if not any(isinstance(item, exp.Null) for item in written):
+                self._knowledge.append(NonNullColumn(column=column))
+            present = frozenset(item for item in items if item is not None)
+            if present and len(rows) <= _VALUES_DOMAIN_ROWS:
+                self._knowledge.append(EnumeratedDomain(column=column, values=present))
+            if distinct(items):
+                self._knowledge.append(UniqueSet(columns=frozenset({column})))
+        literal = all(all(isinstance(item, exp.Null) or literal_value(item) is not None for item in row) for row in rows)
+        if literal and len(columns) > 1 and all(
+            any(first[index] is None or second[index] is None or not _may_coincide(first[index], second[index], binary) for index in range(len(columns)))
+            for position, first in enumerate(literal_rows) for second in literal_rows[position + 1:]
+        ):
+            self._knowledge.append(UniqueSet(columns=frozenset(columns)))
+        return ir.OpaqueRelation(origin=origin, output_columns=columns, is_schema_complete=True, description=values.sql(dialect=self.dialect))
 
     def _resolve_symbol(self, symbol: _Symbol) -> ir.NamedRelation:
         existing = self._named_relations.get(symbol)
@@ -1090,6 +1146,8 @@ class IrParser:
             value = right_relation.output_columns[0]
             predicate = None
         else:
+            if grouping(select) == [] and not any(select.args.get(key) for key in ("having", "qualify", "distinct", "limit", "offset", "windows")):
+                return self._aggregate_subquery_join(lowered, subquery, select, right)
             if grouping(select) is not None or any(select.args.get(key) for key in ("having", "qualify", "distinct", "limit", "offset", "windows")):
                 return None
             item = select.expressions[0]
@@ -1122,6 +1180,88 @@ class IrParser:
             _Binding(qualifier, _SCALAR_QUALIFIER, remapped[value]),
         )
         return _Lowered(join, bindings), remapped
+
+    def _aggregate_subquery_join(
+        self, lowered: _Lowered, subquery: exp.Subquery, select: exp.Select, right: _Lowered,
+    ) -> tuple[_Lowered, dict[ir.OutputColumn, ir.OutputColumn]] | None:
+        """A correlated scalar subquery whose value is one aggregate call,
+        `(SELECT agg(...) FROM r WHERE r.k = outer.k AND p)`, decorrelated:
+        r filtered by p, grouped by k, left joined on `k = outer.k`. Each
+        outer row meets at most its one group, and its value is a function of
+        the key. A row with no group gets the aggregate over no rows: NULL,
+        the join's padding, except for count, which is 0 (the count bug), so
+        a count's value is `coalesce(count, 0)`. Only equalities to outer
+        columns of the same declared type correlate it: grouping by `k`
+        then merges exactly the rows one outer value matches."""
+        where = select.args.get("where")
+        item = select.expressions[0]
+        value_expression = item.this if isinstance(item, exp.Alias) else item
+        if where is None or not isinstance(value_expression, exp.AggFunc):
+            return None
+        keys: list[tuple[Expr, ir.OutputColumn, ir.OutputColumn]] = []  # (inner column, inner, outer)
+        inner_only: list[Expr] = []
+        for conjunct in _conjuncts(where.this):
+            scoped = [self._scope_of(column, right, lowered) for column in conjunct.find_all(exp.Column)]
+            if any(found is None for found in scoped):
+                return None
+            scopes = {found[0] for found in scoped if found is not None}
+            if scopes <= {"inner"}:
+                inner_only.append(conjunct)
+                continue
+            if not isinstance(conjunct, exp.EQ) or not isinstance(conjunct.this, exp.Column) or not isinstance(conjunct.expression, exp.Column):
+                return None
+            sides = [(node, self._scope_of(node, right, lowered)) for node in (conjunct.this, conjunct.expression)]
+            inner = [(node, found[1].column) for node, found in sides if found is not None and found[0] == "inner"]
+            outer = [found[1].column for _, found in sides if found is not None and found[0] == "outer"]
+            if len(inner) != 1 or len(outer) != 1:
+                return None
+            if _traced_comparison_type(inner[0][1]) is None or _traced_comparison_type(inner[0][1]) != _traced_comparison_type(outer[0]):
+                return None
+            keys.append((inner[0][0], inner[0][1], outer[0]))
+        if not keys:
+            return None
+        grouped = select.copy()
+        grouped.set("expressions", [
+            *(exp.alias_(node.copy(), f"k{index}") for index, (node, _, _) in enumerate(keys)), exp.alias_(value_expression.copy(), "value"),
+        ])
+        grouped.set("where", exp.Where(this=exp.and_(*(conjunct.copy() for conjunct in inner_only))) if inner_only else None)
+        grouped.set("group", exp.Group(expressions=[node.copy() for node, _, _ in keys]))
+        body = self._lower_select_tail(right, grouped)
+        if not isinstance(body, ir.Aggregate):
+            return None
+        origin = self._origin(subquery)
+        predicate = _and(tuple(
+            ir.Equality(origin=origin, left=ir.ColumnRef(origin=origin, column=outer), right=ir.ColumnRef(origin=origin, column=body.output_columns[index]))
+            for index, (_, _, outer) in enumerate(keys)
+        ), origin)
+        input_columns = lowered.relation.output_columns + body.output_columns
+        output_columns = _pass_output_columns(input_columns, origin)
+        remapped = dict(zip(input_columns, output_columns))
+        join = ir.Join(
+            origin=origin, output_columns=output_columns, is_schema_complete=lowered.relation.is_schema_complete,
+            kind="left", left=lowered.relation, right=body, predicate=predicate, scalar_subquery=True,
+        )
+        position = marker_position(select)
+        if position is not None:
+            self._scalar_subqueries.append((AttachmentSite("scalar subquery", position[1], position[0], True), join))
+        relation: ir.RelationExpr = join
+        value = remapped[body.output_columns[-1]]
+        if isinstance(value_expression, exp.Count):
+            passed = _pass_output_columns(output_columns, origin)
+            zero = ir.Constant(origin=origin, value=ir.LiteralValue(type="numeric", text="0"))
+            counted = ir.OutputColumn(origin=origin, name="value", scalar_expr=ir.Coalesce(
+                origin=origin, arguments=(ir.ColumnRef(origin=origin, column=value), zero),
+            ))
+            relation = ir.Project(origin=origin, output_columns=(*passed, counted), is_schema_complete=join.is_schema_complete, input=join)
+            remapped = {source: passed[output_columns.index(output)] for source, output in remapped.items()}
+            value = counted
+        qualifier = f"{_SCALAR_QUALIFIER}{len(self._scalar_values)}"
+        self._scalar_values[id(subquery)] = qualifier
+        bindings = (
+            *(replace(binding, column=remapped[binding.column]) for binding in lowered.bindings),
+            _Binding(qualifier, _SCALAR_QUALIFIER, value),
+        )
+        return _Lowered(relation, bindings), remapped
 
     def _subquery_join(self, lowered: _Lowered, conjunct: Expr) -> _Lowered | None:
         """`EXISTS (SELECT ... FROM r WHERE p)` as a semi join of r on p, and
@@ -1187,12 +1327,11 @@ class IrParser:
         )
         return ir.Project(origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation)
 
-    def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.Aggregate | None:
-        """`select` grouped by `keys`; [] is one group, one row however many rows its input has."""
+    def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.RelationExpr | None:
+        """`select` grouped by `keys`; [] is one group, one row however many
+        rows its input has. HAVING filters the groups (`_lower_having`)."""
         group = select.args.get("group")
-        if select.args.get("having") is not None or (
-            group is not None and any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals"))
-        ):
+        if group is not None and any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
             return None
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
@@ -1220,9 +1359,47 @@ class IrParser:
             for item in select.expressions for call in item.find_all(exp.AggFunc)
             if call.find_ancestor(exp.Window, exp.Select) is select
         )
-        return ir.Aggregate(
+        aggregate = ir.Aggregate(
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             grouping_outputs=tuple(grouping_outputs), calls=calls,
+        )
+        having = select.args.get("having")
+        return aggregate if having is None else self._lower_having(aggregate, select, having)
+
+    def _lower_having(self, aggregate: ir.Aggregate, select: exp.Select, having: exp.Having) -> ir.Filter:
+        """HAVING as a Filter of the grouped rows. A condition reads the
+        aggregate's output columns, so each part of it written as a select
+        item is that item's column (`count(*) > 1` beside `count(*) AS c` is
+        `c > 1`). A conjunct still reading anything else (an aggregate or
+        column not selected, a subquery) is opaque: it removes groups for a
+        reason not known, which keeps every fact that holds of the groups,
+        and states nothing of its own: no selected column can show it."""
+        qualifier = "__having"
+        bindings = tuple(_Binding(qualifier, f"c{index}", column) for index, column in enumerate(aggregate.output_columns))
+        written: dict[str, int] = {}
+        for index, item in enumerate(select.expressions):
+            expression = item.this if isinstance(item, exp.Alias) else item
+            if not isinstance(expression, exp.Literal):
+                written.setdefault(expression.sql(dialect=self.dialect), index)
+
+        def selected(node: Expr) -> Expr:
+            index = written.get(node.sql(dialect=self.dialect))
+            return node if index is None or isinstance(node, exp.Literal) else exp.column(f"c{index}", table=qualifier)
+
+        origin = self._origin(having)
+        parts: list[ir.ScalarExpr] = []
+        for conjunct in _conjuncts(having.this):
+            rewritten = conjunct.copy().transform(selected)
+            unknown = any(
+                column.table != qualifier for column in rewritten.find_all(exp.Column)
+            ) or rewritten.find(exp.AggFunc, exp.Subquery, exp.Window) is not None
+            if unknown:
+                parts.append(ir.OpaqueExpression(origin=self._origin(conjunct), description=conjunct.sql(dialect=self.dialect)))
+            else:
+                parts.append(self._lower_expression(rewritten, bindings, schema_complete=True, line=_source_line(conjunct)))
+        return ir.Filter(
+            origin=origin, output_columns=_pass_output_columns(aggregate.output_columns, origin), is_schema_complete=True,
+            input=aggregate, predicate=_and(tuple(parts), origin),
         )
 
     def _lower_distinct(self, lowered: _Lowered, select: exp.Select) -> ir.Distinct | None:
@@ -2221,6 +2398,16 @@ def _from_source(select: exp.Query) -> Expr | None:
     source = _arg(select, "from")
     return source.this if isinstance(source, exp.From) else None
 
+
+def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
+    """The declared comparison type of the column `column` passes on."""
+    while column.comparison_type is None and isinstance(column.scalar_expr, ir.ColumnRef):
+        column = column.scalar_expr.column
+    return column.comparison_type
+
+
+# Rows of a VALUES list past which its columns get no Enumerated Domain.
+_VALUES_DOMAIN_ROWS = 100
 
 # A scalar subquery's value binding: no SQL name can match it.
 _SCALAR_QUALIFIER = "\0scalar"

@@ -365,12 +365,12 @@ SELECT * FROM emp WHERE empno = (SELECT max(empno) FROM emp)
 -- case: uk_correlated_scalar_subquery
 -- inspired by RelMetadataTest.testColumnUniquenessForSubqueryWithCorrelatingVars
 -- deptno is unique (one max empno per deptno; Calcite's check is commented
--- out upstream). A correlated aggregate body stays opaque: missing proof.
+-- out upstream): the subquery is one value per deptno, and empno equals it.
 SELECT empno, deptno, slacker
 FROM emp AS a
 WHERE empno = (SELECT max(empno) FROM emp AS b WHERE a.deptno = b.deptno)
 /**ASSERT UNIQUE(empno)**/  --~ PROVED
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 /**ASSERT UNIQUE(slacker)**/  --~ UNKNOWN
 
 -- case: uk_limit_1
@@ -436,9 +436,9 @@ SELECT empno, empno AS empno2 FROM emp
 
 -- case: uk_values
 -- inspired by RelMetadataTest.testColumnUniquenessForValues
--- a is unique, but a VALUES source is opaque: missing proof.
+-- a is unique; 'X' repeats in b.
 SELECT * FROM (VALUES (1, 'X'), (2, 'Y'), (3, 'X'), (4, 'X')) AS t (a, b)
-/**ASSERT UNIQUE(a)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(a)**/  --~ PROVED
 /**ASSERT UNIQUE(b)**/  --~ UNKNOWN
 
 -- case: uk_nullable_unique_column
