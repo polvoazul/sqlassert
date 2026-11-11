@@ -63,6 +63,9 @@ class _Binding:
     column: ir.OutputColumn
     # The schema (and catalog) of an unaliased table, as `s1` in `s1.t.k`.
     schema: str = ""
+    # Hidden from unqualified names: a USING column's input sides, which an
+    # unqualified name reads merged (`_merge_using`).
+    shadowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -822,7 +825,51 @@ class IrParser:
         )
         self._join_marker(join, relation)
         self._add_attachment_site(join, _join_label(join, self.dialect), relation, trailing=False)
-        return _Lowered(relation, bindings)
+        lowered = _Lowered(relation, bindings)
+        return self._merge_using(lowered, join, kind, len(left.bindings), origin) if join.args.get("using") else lowered
+
+    def _merge_using(self, lowered: _Lowered, join: exp.Join, kind: ir.JoinKind, left_count: int, origin: Origin) -> _Lowered:
+        """`JOIN ... USING (k)` outputs one `k`: the left input's for an INNER
+        or LEFT JOIN (equal to the right's wherever both exist), the right's
+        for a RIGHT JOIN, and `coalesce(left.k, right.k)` for a FULL JOIN,
+        where either side may be padded. An unqualified `k` reads it, so a
+        later `USING (k)` or `WHERE k = ...` sees one column; `a.k` and `b.k`
+        still read their own side."""
+        bindings = list(lowered.bindings)
+        merged: list[_Binding] = []
+        coalesced: list[tuple[str, ir.OutputColumn, ir.OutputColumn]] = []
+        for identifier in join.args.get("using") or ():
+            name = identifier.name.lower()
+            sides = [
+                [index for index in (range(left_count) if left else range(left_count, len(bindings)))
+                 if bindings[index].name == name and not bindings[index].shadowed and not bindings[index].qualifier.startswith(_SCALAR_QUALIFIER)]
+                for left in (True, False)
+            ]
+            if any(len(side) != 1 for side in sides):
+                continue  # Not one column on each side: leave the names as they are.
+            (mine,), (theirs,) = sides
+            for index in (mine, theirs):
+                bindings[index] = replace(bindings[index], shadowed=True)
+            if kind == "full":
+                coalesced.append((name, bindings[mine].column, bindings[theirs].column))
+            else:
+                column = bindings[theirs if kind == "right" else mine].column
+                merged.append(_Binding(_USING_QUALIFIER, name, column))
+        relation = lowered.relation
+        if coalesced:
+            passed = _pass_output_columns(relation.output_columns, origin)
+            remapped = dict(zip(relation.output_columns, passed))
+            values = tuple(
+                ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.Coalesce(origin=origin, arguments=(
+                    ir.ColumnRef(origin=origin, column=remapped[first]), ir.ColumnRef(origin=origin, column=remapped[second]),
+                )))
+                for name, first, second in coalesced
+            )
+            relation = ir.Project(origin=origin, output_columns=(*passed, *values), is_schema_complete=relation.is_schema_complete, input=relation)
+            bindings = [replace(binding, column=remapped[binding.column]) for binding in bindings]
+            merged = [replace(binding, column=remapped[binding.column]) for binding in merged]
+            merged += [_Binding(_USING_QUALIFIER, name, value) for (name, _, _), value in zip(coalesced, values)]
+        return _Lowered(relation, (*bindings, *merged))
 
     def _opaque_join(self, left: _Lowered, right: _Lowered, join: exp.Join, origin: Origin) -> _Lowered:
         """A join whose kind is not modelled: every column it outputs is opaque,
@@ -871,8 +918,12 @@ class IrParser:
             return _and(tuple(
                 ir.Equality(
                     origin=self._origin(identifier, _source_line(identifier)),
-                    left=self._lower_expression(exp.column(identifier.name), left.bindings, line=_source_line(identifier)),
-                    right=self._lower_expression(exp.column(identifier.name), right.bindings, line=_source_line(identifier)),
+                    left=self._lower_expression(
+                        exp.column(identifier.name), left.bindings, schema_complete=left.relation.is_schema_complete, line=_source_line(identifier),
+                    ),
+                    right=self._lower_expression(
+                        exp.column(identifier.name), right.bindings, schema_complete=right.relation.is_schema_complete, line=_source_line(identifier),
+                    ),
                 )
                 for identifier in using
             ), self._origin(join))
@@ -963,7 +1014,7 @@ class IrParser:
                     schema, name = _schema_path(expression), expression.name.lower()
                     bound = [
                         binding for binding in bindings
-                        if binding.name == name and (not expression.table or binding.qualifier == expression.table.lower())
+                        if binding.name == name and (binding.qualifier == expression.table.lower() if expression.table else not binding.shadowed)
                         and (not schema or binding.schema == schema)
                     ]
                     if len(bound) == 1:
@@ -1076,8 +1127,8 @@ class IrParser:
                         if binding.qualifier == qualifier and (not schema or binding.schema == schema) and binding.name == name
                     ])
             return None
-        inner_named = [binding for binding in inner.bindings if binding.name == name and self._owns(binding) != "no"]
-        outer_named = [binding for binding in outer.bindings if binding.name == name and self._owns(binding) != "no"]
+        inner_named = [binding for binding in inner.bindings if binding.name == name and not binding.shadowed and self._owns(binding) != "no"]
+        outer_named = [binding for binding in outer.bindings if binding.name == name and not binding.shadowed and self._owns(binding) != "no"]
         owners = {self._owns(binding) for binding in inner_named}
         if "yes" in owners:
             return one("inner", inner_named)
@@ -1534,8 +1585,10 @@ class IrParser:
                     binding for binding in bindings
                     if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower() and (not schema or binding.schema == schema)
                 ]
-            elif schema_complete or len({binding.qualifier for binding in bindings if not binding.qualifier.startswith(_SCALAR_QUALIFIER)}) == 1:
-                matches = [binding for binding in bindings if binding.name == expression.name.lower()]
+            elif schema_complete or len({
+                binding.qualifier for binding in bindings if not binding.qualifier.startswith((_SCALAR_QUALIFIER, _USING_QUALIFIER))
+            }) == 1:
+                matches = [binding for binding in bindings if binding.name == expression.name.lower() and not binding.shadowed]
             else:
                 matches = []
                 sources = ", ".join(dict.fromkeys(binding.qualifier for binding in bindings))
@@ -2465,6 +2518,9 @@ def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
 
 # Rows of a VALUES list past which its columns get no Enumerated Domain.
 _VALUES_DOMAIN_ROWS = 100
+
+# A USING column's merged binding (`_merge_using`): no qualifier can name it.
+_USING_QUALIFIER = "\0using"
 
 # A scalar subquery's value binding: no SQL name can match it.
 _SCALAR_QUALIFIER = "\0scalar"

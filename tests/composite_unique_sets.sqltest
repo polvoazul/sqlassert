@@ -119,14 +119,32 @@ FROM sessions
 /**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
     ON sessions.user_id = users.id OR sessions.user_id = users.other_id
 
--- case: using_against_an_ambiguous_left_side_stays_unknown_rather_than_guessing
+-- A USING column is one column after its join, so a second USING on it is
+-- not ambiguous: it reads the merged id.
+-- case: a_chained_using_reads_the_merged_column
 CREATE TABLE a (id INTEGER);
 CREATE TABLE b (id INTEGER);
 CREATE TABLE c (id INTEGER PRIMARY KEY);
 
 SELECT * FROM a JOIN b USING (id) /**ASSERT MANY TO ONE**/ JOIN c USING (id)
---~ UNKNOWN
---~ ambiguous-column
+--~ PROVED
+
+-- The merged column of a FULL JOIN is coalesce(a.id, c.id): NULL only when
+-- both sides are.
+-- case: a_full_join_using_column_is_null_only_when_both_sides_are
+CREATE TABLE a (id INTEGER NOT NULL);
+CREATE TABLE c (id INTEGER PRIMARY KEY);
+
+SELECT id FROM a FULL JOIN c USING (id)
+/**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- a.id still reads its own side, which the LEFT JOIN of c does not pad.
+-- case: a_qualified_using_column_reads_its_own_side
+CREATE TABLE a (id INTEGER);
+CREATE TABLE c (id INTEGER PRIMARY KEY);
+
+SELECT c.id FROM a LEFT JOIN c USING (id)
+/**ASSERT NOT NULL(id)**/  --~ UNKNOWN
 
 -- case: a_table_level_unique_constraint_does_not_imply_non_null
 CREATE TABLE users (id INTEGER, region INTEGER, UNIQUE (id, region));

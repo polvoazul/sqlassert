@@ -249,7 +249,7 @@ SELECT ename FROM q
 -- case: right_join_using_column_is_the_preserved_side_s
 -- inspired by join.iq, "select distinct deptno, dept.deptno, emp.deptno from emp right join dept using (deptno)"
 SELECT deptno FROM emp RIGHT JOIN dept USING (deptno)
-/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(deptno)**/  --~ PROVED
 
 -- case: exactly_one_join_through_a_non_null_foreign_key_using
 -- inspired by agg.iq, "select sum(sal) from emp join dept using (deptno)" (join planned as a semi join)

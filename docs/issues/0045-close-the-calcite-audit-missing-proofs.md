@@ -27,7 +27,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 2. ~~**`GROUP BY ()`** is one row, like a scalar aggregate.~~ Done: the
    empty grouping set is dropped before lowering (`sql_parse.grouping`).
    `iq: group_by_empty_set_is_one_row`.
-3. **An unqualified USING column** is not resolved: in a RIGHT or FULL join
+3. ~~**An unqualified USING column** is not resolved:~~ Done: after its join a USING column is one column, the left input's (INNER, LEFT), the right's (RIGHT) or their coalesce (FULL), which an unqualified name and a later USING read (`convert._merge_using`). Was: in a RIGHT or FULL join
    it is `coalesce(left, right)`, and even an INNER join loses its domain.
    `iq: right_join_using_column_is_the_preserved_side_s`.
 4. ~~**VALUES in FROM** lowers opaque, silently.~~ Done: its literals are Knowledge of its columns (non-null, Enumerated Domain up to 100 rows, lax Unique Sets by `_may_coincide`; `convert._lower_values`). Was: Its literals give domains,

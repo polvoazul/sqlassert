@@ -122,6 +122,21 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             for sources, premises in arguments_sources:
                 if not sources:
                     return {}, [Result(True, "Coalesce is non-null when any argument is", (expression,), premises)]
+            # A FULL JOIN pads its two sides on different rows: an argument NULL
+            # only on its left padding and one NULL only on its right padding
+            # are never NULL together (a FULL JOIN ... USING column).
+            # Seen through the same Aliases: one row of that join, not two copies of it.
+            sides = [
+                next(iter(sources)) for sources, _ in arguments_sources
+                if len(sources) == 1 and isinstance(next(iter(sources)), Padding) and next(iter(sources)).join.kind == "full"
+            ]
+            for first in sides:
+                for second in sides:
+                    if isinstance(first, Padding) and isinstance(second, Padding) and first.join is second.join and (
+                        first.aliases == second.aliases and first.left != second.left
+                    ):
+                        reason = "Coalesce of the two sides a FULL JOIN pads on different rows is never NULL"
+                        return {}, [Result(True, reason, (expression, first.join))]
             # NULL on a join's padded rows only if every argument is.
             common = set.intersection(*({s for s in sources if isinstance(s, Padding)} for sources, _ in arguments_sources))
             first, _ = arguments_sources[0]
