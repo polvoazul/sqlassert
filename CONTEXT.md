@@ -246,6 +246,17 @@ a redundant `DISTINCT` or grouping column, an unused CTE. `suggest` ranks
 Rewrites before markers to paste, and those before Hazards.
 _Avoid_: Improvement, optimization, lint, hint
 
+**Implied Condition**:
+A conjunct of a WHERE or ON that the other conjuncts and the input's facts
+make TRUE on every row whose columns it reads are non-null: an equality two
+others chain, two sides pinned to one value, a self-join's copies of one
+column, a list holding the column's whole Enumerated Domain. Its Rewrite
+deletes it, or, where a column may be NULL, weakens it to `IS NOT NULL`.
+Calcite's term (`RexSimplify`: terms "implied by predicates" are removed or
+weakened); Paulley's subsumed predicate.
+_Avoid_: Redundant condition (the literature's redundant predicates are the
+ones an optimizer adds), subsumed predicate, tautology
+
 **Hazard**:
 A place whose result the SQL leaves unspecified or likely wrong, with the
 failed Proof that would have pinned it: a Fan Trap or Chasm Trap, an unmarked
