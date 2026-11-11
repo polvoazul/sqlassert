@@ -294,7 +294,7 @@ class Engine:
                 ))
                 if unsupported is not None:
                     warnings = (*warnings, Diagnostic(
-                        UNSUPPORTED_CONSTRUCT, f"{unsupported} is not supported by sqlassert yet, so this assertion is UNKNOWN",
+                        UNSUPPORTED_CONSTRUCT, f"{unsupported} is not supported by sqlassert yet, which may be why this assertion is UNKNOWN",
                         assertion.origin,
                     ))
             facts = {}

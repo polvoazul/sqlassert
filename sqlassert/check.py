@@ -101,7 +101,7 @@ def findings(path: str, sql: str, report: Report, *, ignore: Iterable[str] = ())
         Finding(
             path, Severity.ERROR, unproved(assertion.kind),
             f"{_written(sql, assertion.origin)} is not proved (UNKNOWN)"
-            + (f": {assertion.unsupported} is not supported by sqlassert yet" if assertion.unsupported else ""),
+            + (f": {assertion.unsupported} is not supported by sqlassert yet, which may be why" if assertion.unsupported else ""),
             assertion.origin, assertion.evidence.explain() if assertion.evidence is not None else None,
         )
         for assertion in report.assertions
