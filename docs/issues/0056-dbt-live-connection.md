@@ -1,6 +1,6 @@
 # 56. dbt: read the live warehouse catalog in the plugin's commands
 
-- **State:** open
+- **State:** open (built; close once its tests run)
 - **Labels:** dbt, integrations
 - **Created:** 2026-11-10
 - **Related:** [50. dbt: read `catalog.json`](done/0050-dbt-catalog-json.md),
@@ -26,7 +26,30 @@ add proofs, never change what the SQL and the manifest alone prove; keys the
 warehouse does not enforce follow `trust_unenforced_keys` and its warnings.
 `check` stays connectionless (it must run where dbt is not installed).
 
-## Open questions
+## Decision (2026-11-11): both ways in
+
+- **Connection:** (c), both. `--connect` on `build`, `test` and `suggest`
+  opens dbt's adapter connection from the profile and target dbt ran with
+  (`sqlassert_dbt/connect.py`; `--target`, `--profile`, `--profiles-dir` and
+  `--vars` after `--` are honoured) and closes it before dbt runs again (a
+  DuckDB file takes one writer). `analyze_project(..., fetcher=...)` and
+  `suggest_models(..., fetcher=...)` take any core fetcher.
+- **Adapter to fetcher:** DuckDB (dbt-duckdb's cursor), Postgres, Redshift,
+  Snowflake, MySQL and Trino (the driver's DB-API connection). BigQuery and
+  Databricks are not mapped: their handles are not what the fetchers take, so
+  `--connect` says to pass a fetcher from Python.
+- **Declaring the facts:** reuse core: `hydrate` then `bind` on the Program
+  the plugin assembles (`Builder._hydrated`), so enforcement and
+  `trust_unenforced_keys` behave as in `analyze_database`.
+- **Precedence:** under a connection the plugin writes no `CREATE TABLE` from
+  contracts or the catalog, and reads no catalog: every table comes from the
+  warehouse. A warehouse view is declared by its stored query.
+- **Previous runs:** an incremental model's `{{ this }}` stays unknown; its
+  not-found Diagnostic is dropped.
+- **Tests:** `integrations/dbt/tests/test_connect.py`, DuckDB end to end.
+  Written, not yet run.
+
+## Open questions (answered above)
 
 - **Getting the connection.** (a) Through dbt's adapter, from the profile and
   target dbt just ran with (`adapter.connections....handle`, the driver's own

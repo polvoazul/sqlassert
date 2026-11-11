@@ -34,6 +34,7 @@ from sqlassert_dbt.expectations import Expectation, PropertyKind
 from sqlassert_dbt.jinja import Rendered, Unrenderable, align, has_incremental_branch, render
 from sqlassert_dbt.manifest import Column, Relation
 from sqlassert.diagnostics import Diagnostic
+from sqlassert.discovery import DatabaseKnowledgeFetcher
 from sqlassert.rewrites import Rewrite, SuggestType
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.ir.model import LiteralValue
@@ -441,6 +442,10 @@ class Builder:
     # Every column of a relation, in order, from catalog.json: used for a
     # table no enforced contract types completely.
     catalog_columns: Mapping[str, tuple[Column, ...]] = field(default_factory=dict)
+    # The warehouse, under `--connect` or `analyze_project(fetcher=...)`: it
+    # declares every table the Program reads (sources, seeds, tables), ahead
+    # of contracts and the catalog, as `analyze_database` does.
+    fetcher: DatabaseKnowledgeFetcher | None = None
     # The upstream tests that would have been facts had they been trusted.
     untrusted: set[str] = field(default_factory=set)
     # Relations the Program reads as tables with unknown columns.
@@ -607,7 +612,7 @@ class Builder:
                 offset += len(text.text) + 1
         self._sql = "\n".join(parts) + "\n"
         self._ast = SqlParser(self.dialect).parse(self._sql)
-        conversion = IrParser(self.dialect).parse(self._ast)
+        conversion = IrParser(self.dialect).parse(self._ast) if self.fetcher is None else self._hydrated(self._ast)
         program = conversion.program
         placed = {line for statement in self._all() for line in statement.placed}
         assertions = tuple(
@@ -616,6 +621,38 @@ class Builder:
         )
         declarations = (*program.declarations, *self._declarations(program, conversion.knowledge, reached))
         self._conversion = replace(conversion, program=replace(program, assertions=assertions, declarations=declarations))
+
+    def _hydrated(self, ast: ParsedProgram) -> IrConversionResult:
+        """The Program with every table it reads declared from the warehouse
+        (`DatabaseKnowledgeFetcher.hydrate`) and its keys, NOT NULLs and
+        foreign keys bound (`bind`), as `analyze_database` does."""
+        assert self.fetcher is not None
+        hydration = self.fetcher.hydrate(ast, dialect=self.dialect)
+        conversion = hydration.conversion
+        facts = self.fetcher.bind(conversion.program, hydration)
+        # A table by its columns, a view by its stored query.
+        declared = set(hydration.tables) | {
+            relation.name.lower() for relation in conversion.program.named_relations if relation.role is ir.RelationRole.VIEW
+        }
+        self.undeclared = {
+            node for node in self.undeclared if _canonical(self.relations[node].relation_name, self.dialect) not in declared
+        }
+        # An incremental model's previous run is a name of sqlassert's own, unknown by nature.
+        previous = tuple(
+            f"relation {_canonical(_previous(relation.relation_name, self.dialect), self.dialect)} "
+            for relation in self.relations.values() if relation.relation_name and relation.materialized == "incremental"
+        )
+        found = tuple(
+            d for d in hydration.diagnostics
+            if not (d.code == diag.CATALOG_RELATION_NOT_FOUND and d.message.lower().startswith(previous))
+        )
+        return replace(
+            conversion,
+            program=replace(conversion.program, declarations=conversion.program.declarations + facts.declarations),
+            knowledge=conversion.knowledge + facts.knowledge,
+            diagnostics=found + conversion.diagnostics,
+            warnings=(*facts.warnings, *conversion.warnings),
+        )
 
     def _attribute(self) -> None:
         """Diagnostics of no statement, kept once for the project. A table
@@ -644,7 +681,7 @@ class Builder:
         }
 
     def _table(self, relation: Relation) -> str | None:
-        if relation.relation_name is None:
+        if relation.relation_name is None or self.fetcher is not None:
             return None
         columns = self._complete_columns(relation)
         if columns is None:

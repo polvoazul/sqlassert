@@ -76,6 +76,7 @@ Three lists come out:
 | `--manifest PATH` | Read another manifest (default `PROJECT/target/manifest.json`). |
 | `--catalog PATH` | Read column lists and types from this `catalog.json` instead of `PROJECT/target/catalog.json`, which is read when present (also on `build`, `test` and `suggest`). See below. |
 | `--no-catalog` | Read no `catalog.json`: the manifest's columns only. |
+| `--connect` | `build`, `test` and `suggest`: read the tables models read from the warehouse, through dbt's own connection. See below. |
 | `--warning-limit N` | Print at most N warnings of each code, then say the rest are suppressed (default 10; 0 prints all). |
 
 Exit codes: `0` every marker proved; `1` a marker is `UNKNOWN` or an error was
@@ -174,7 +175,39 @@ shows it stale:
   columns wins.
 
 A source whose warehouse table changed after `docs generate` cannot be told
-apart; regenerate the catalog when sources change.
+apart; regenerate the catalog when sources change, or connect.
+
+## Columns, keys and NOT NULLs from the warehouse
+
+`--connect` on `build`, `test` and `suggest` reads every table the models read
+(sources, seeds, snapshots, tables) from the warehouse, current: columns,
+types, nullability, primary and unique keys, foreign keys. It opens the
+connection dbt opens, from the same profile and target (`-- --target prod`
+picks another), and closes it before dbt runs again. No `catalog.json` is
+read then; a contract's or the catalog's columns give way to the warehouse's.
+As with `analyze_database`, a connection only adds proofs. A key the
+warehouse does not enforce is trusted as a Property Declaration, as the SQL's
+own are.
+
+```bash
+$ sqlassert-dbt build --connect .
+```
+
+Adapters: DuckDB (tested end to end), Postgres, Redshift, Snowflake, MySQL
+and Trino. It uses dbt's adapter API, which is internal and changes across dbt
+versions; when it fails, or for BigQuery and Databricks, pass a fetcher over
+your own connection from Python:
+
+```python
+import duckdb
+from sqlassert.discovery.duckdb import DuckDBKnowledgeFetcher
+from sqlassert_dbt import analyze_project
+
+report = analyze_project(project, fetcher=DuckDBKnowledgeFetcher(duckdb.connect("warehouse.duckdb")))
+```
+
+`suggest_models(..., fetcher=...)` takes one too. `check` stays
+connectionless: it runs where dbt is not installed.
 
 ## Details
 

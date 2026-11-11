@@ -12,6 +12,10 @@ reads in the same invocation, so they are facts, unless DBT_ARGS select nodes
 `sqlassert-dbt suggest PATH... [-- DBT_ARGS]` runs `dbt compile` on the
 models in those files or directories and what they read, then lists what `sqlassert suggest` finds in
 each: rewrites, markers to paste, hazards, at the model file's lines.
+
+`--connect` (build, test, suggest) reads the tables models read from the
+warehouse, through the connection dbt opens for the same profile and target
+(`connect.py`). `check` stays connectionless.
 """
 
 from __future__ import annotations
@@ -23,10 +27,12 @@ import shutil
 import tempfile
 import subprocess
 import sys
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
 from sqlassert.check import EXIT_FINDINGS, EXIT_OK, EXIT_USAGE
+from sqlassert_dbt.connect import ConnectError, dbt_fetcher
 from sqlassert_dbt.project import ProjectError, analyze_project, suggest_models
 from sqlassert_dbt.report import (
     DEFAULT_WARNING_LIMIT, DbtReport, Location, SuggestReport, WarningLimit, exit_code, format_suggestion_blocks, format_suggestion_summary,
@@ -73,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             f"UNKNOWN or a diagnostic is reported, else {EXIT_OK}.",
         )
         _common(command)
+        _connect(command)
         command.add_argument("dbt_arguments", nargs=argparse.REMAINDER, help="-- then arguments for dbt")
     suggest = commands.add_parser(
         "suggest",
@@ -91,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     suggest.add_argument("--dialect", help="analyze under this dialect instead of the adapter's")
     _catalog(suggest)
+    _connect(suggest)
     _warning_limit(suggest)
     suggest.add_argument(
         "--dbt-compile-inplace", action="store_true",
@@ -126,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     if compiled != 0:
         return compiled
     selecting = any(argument.split("=")[0] in SELECTION_FLAGS for argument in passed)
-    report = _analyze(project, None, arguments.dialect, not selecting, arguments)
+    report = _analyze(project, None, arguments.dialect, not selecting, arguments, passed)
     if report is None:
         return EXIT_USAGE
     sys.stdout.write(format_text(report, explain=arguments.explain, warning_limit=arguments.warning_limit))
@@ -172,7 +180,7 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
         compiled = run_dbt(["compile", *located], to_stderr=True)
         if compiled != 0:
             return compiled
-        return _report_suggestions(arguments, project, relative, target / "manifest.json", shortcut)
+        return _report_suggestions(arguments, project, relative, target / "manifest.json", shortcut, passed)
     finally:
         if shortcut is not None and shortcut.link is not None:
             print(f"sqlassert-dbt: compiled code kept for the locations above: {shortcut.link} -> {shortcut.compiled}", file=sys.stderr)
@@ -222,6 +230,7 @@ class _Shortcut:
 
 def _report_suggestions(
     arguments: argparse.Namespace, project: Path, relative: list[str], manifest: Path, shortcut: _Shortcut | None = None,
+    dbt_arguments: list[str] | None = None,
 ) -> int:
     limit = WarningLimit(arguments.warning_limit)
 
@@ -230,13 +239,14 @@ def _report_suggestions(
         print(format_suggestion_blocks(part, explain=arguments.explain, limit=limit), end="", flush=True)
 
     try:
-        report = suggest_models(
-            project, relative, manifest_path=manifest, dialect=arguments.dialect,
-            trust_upstream_tests=arguments.trust_upstream_tests,
-            catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
-            on_model=shown,
-        )
-    except ProjectError as error:
+        with _fetcher(arguments, project, dbt_arguments or []) as fetcher:
+            report = suggest_models(
+                project, relative, manifest_path=manifest, dialect=arguments.dialect,
+                trust_upstream_tests=arguments.trust_upstream_tests,
+                catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
+                on_model=shown, fetcher=fetcher,
+            )
+    except (ProjectError, ConnectError) as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)
         return EXIT_USAGE
     sys.stdout.write(format_suggestion_summary(report, limit))
@@ -255,6 +265,20 @@ def _catalog(command: argparse.ArgumentParser) -> None:
     reading.add_argument(
         "--no-catalog", action="store_true", help="read no catalog.json: the manifest's columns only",
     )
+
+
+def _connect(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--connect", action="store_true",
+        help="read the columns, types, keys and NOT NULLs of the tables models read from the warehouse, through the "
+        "connection dbt opens for the same profile and target (instead of catalog.json); DuckDB, Postgres, Redshift, "
+        "Snowflake, MySQL and Trino adapters",
+    )
+
+
+def _fetcher(arguments: argparse.Namespace, project: Path, dbt_arguments: list[str]):
+    """dbt's connection under --connect, closed before dbt runs again; else none."""
+    return dbt_fetcher(project, dbt_arguments) if getattr(arguments, "connect", False) else nullcontext(None)
 
 
 def _warning_limit(command: argparse.ArgumentParser) -> None:
@@ -283,13 +307,15 @@ def proved_tests(report: DbtReport) -> list[str]:
 
 def _analyze(
     project: Path, manifest: str | None, dialect: str | None, trust: bool, arguments: argparse.Namespace,
+    dbt_arguments: list[str] | None = None,
 ) -> DbtReport | None:
     try:
-        return analyze_project(
-            project, manifest_path=_path(manifest), dialect=dialect, trust_upstream_tests=trust,
-            catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
-        )
-    except ProjectError as error:
+        with _fetcher(arguments, project, dbt_arguments or []) as fetcher:
+            return analyze_project(
+                project, manifest_path=_path(manifest), dialect=dialect, trust_upstream_tests=trust,
+                catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog, fetcher=fetcher,
+            )
+    except (ProjectError, ConnectError) as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)
         return None
 
