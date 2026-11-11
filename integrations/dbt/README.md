@@ -184,7 +184,9 @@ apart; regenerate the catalog when sources change, or connect.
 types, nullability, primary and unique keys, foreign keys. It opens the
 connection dbt opens, from the same profile and target (`-- --target prod`
 picks another), and closes it before dbt runs again. No `catalog.json` is
-read then; a contract's or the catalog's columns give way to the warehouse's.
+read then. An enforced contract's table is still declared from the contract,
+since the build may not have made it yet; every other table comes from the
+warehouse.
 As with `analyze_database`, a connection only adds proofs. A key the
 warehouse does not enforce is trusted as a Property Declaration, as the SQL's
 own are.

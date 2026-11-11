@@ -624,12 +624,10 @@ class Builder:
 
     def _hydrated(self, ast: ParsedProgram) -> IrConversionResult:
         """The Program with every table it reads declared from the warehouse
-        (`DatabaseKnowledgeFetcher.hydrate`) and its keys, NOT NULLs and
-        foreign keys bound (`bind`), as `analyze_database` does."""
+        and its keys, NOT NULLs and foreign keys bound, as `analyze_database`
+        does (`DatabaseKnowledgeFetcher.convert`)."""
         assert self.fetcher is not None
-        hydration = self.fetcher.hydrate(ast, dialect=self.dialect)
-        conversion = hydration.conversion
-        facts = self.fetcher.bind(conversion.program, hydration)
+        conversion, hydration = self.fetcher.convert(ast, dialect=self.dialect)
         # A table by its columns, a view by its stored query.
         declared = set(hydration.tables) | {
             relation.name.lower() for relation in conversion.program.named_relations if relation.role is ir.RelationRole.VIEW
@@ -638,21 +636,14 @@ class Builder:
             node for node in self.undeclared if _canonical(self.relations[node].relation_name, self.dialect) not in declared
         }
         # An incremental model's previous run is a name of sqlassert's own, unknown by nature.
-        previous = tuple(
+        previous_runs = tuple(
             f"relation {_canonical(_previous(relation.relation_name, self.dialect), self.dialect)} "
             for relation in self.relations.values() if relation.relation_name and relation.materialized == "incremental"
         )
-        found = tuple(
-            d for d in hydration.diagnostics
-            if not (d.code == diag.CATALOG_RELATION_NOT_FOUND and d.message.lower().startswith(previous))
-        )
-        return replace(
-            conversion,
-            program=replace(conversion.program, declarations=conversion.program.declarations + facts.declarations),
-            knowledge=conversion.knowledge + facts.knowledge,
-            diagnostics=found + conversion.diagnostics,
-            warnings=(*facts.warnings, *conversion.warnings),
-        )
+        return replace(conversion, diagnostics=tuple(
+            d for d in conversion.diagnostics
+            if not (d.code == diag.CATALOG_RELATION_NOT_FOUND and d.message.lower().startswith(previous_runs))
+        ))
 
     def _attribute(self) -> None:
         """Diagnostics of no statement, kept once for the project. A table
@@ -681,7 +672,10 @@ class Builder:
         }
 
     def _table(self, relation: Relation) -> str | None:
-        if relation.relation_name is None or self.fetcher is not None:
+        """A table's CREATE, when all its columns are known. Under a fetcher
+        too: a contract's table is declared, never fetched, so one the build
+        has not made yet keeps its columns (a connection only adds proofs)."""
+        if relation.relation_name is None:
             return None
         columns = self._complete_columns(relation)
         if columns is None:

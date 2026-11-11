@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from sqlglot import Expr, exp
@@ -132,6 +132,26 @@ class DatabaseKnowledgeFetcher(ABC):
 
     def hydrate(self, ast: ParsedProgram, *, dialect: str, trust_unenforced_keys: bool = True) -> DatabaseHydration:
         return _Hydration(self, ast, dialect, trust_unenforced_keys).run()
+
+    def convert(
+        self, ast: ParsedProgram, *, dialect: str, trust_unenforced_keys: bool = True,
+    ) -> tuple[IrConversionResult, DatabaseHydration]:
+        """`hydrate` and `bind` together: the conversion with the catalog's
+        declarations, Knowledge and diagnostics merged in, and the hydration.
+        Its warnings are the catalog facts' and the SQL's own
+        (`diagnostics.SQL_WARNINGS`): a connection warning asks for what the
+        catalog has just answered."""
+        hydration = self.hydrate(ast, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
+        conversion = hydration.conversion
+        facts = self.bind(conversion.program, hydration)
+        merged = replace(
+            conversion,
+            program=replace(conversion.program, declarations=conversion.program.declarations + facts.declarations),
+            knowledge=conversion.knowledge + facts.knowledge,
+            diagnostics=hydration.diagnostics + conversion.diagnostics,
+            warnings=(*facts.warnings, *(warning for warning in conversion.warnings if warning.code in diag.SQL_WARNINGS)),
+        )
+        return merged, hydration
 
     def bind(self, program: ir.Program, hydration: DatabaseHydration) -> CatalogFacts:
         """Catalog facts as Properties over ``program``'s Output Columns.

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from sqlassert import diagnostics as diag
 from sqlassert.ir.convert import IrParser
 from sqlassert.python_engine import Engine
 from sqlassert.reporting import Report
@@ -48,10 +46,6 @@ def analyze_database(
     the SQL's own warnings (`diagnostics.SQL_WARNINGS`).
     """
     ast = SqlParser(dialect).parse(sql)
-    hydration = fetcher.hydrate(ast, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
-    conversion = hydration.conversion
-    facts = fetcher.bind(conversion.program, hydration)
-    program = replace(conversion.program, declarations=conversion.program.declarations + facts.declarations)
-    diagnostics = ast.diagnostics + hydration.diagnostics + conversion.diagnostics
-    warnings = (*facts.warnings, *(warning for warning in conversion.warnings if warning.code in diag.SQL_WARNINGS))
-    return Engine().run(program, conversion.knowledge + facts.knowledge, diagnostics, warnings)
+    conversion, _ = fetcher.convert(ast, dialect=dialect, trust_unenforced_keys=trust_unenforced_keys)
+    diagnostics = ast.diagnostics + conversion.diagnostics
+    return Engine().run(conversion.program, conversion.knowledge, diagnostics, conversion.warnings)

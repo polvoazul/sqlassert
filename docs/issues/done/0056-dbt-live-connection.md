@@ -1,10 +1,10 @@
 # 56. dbt: read the live warehouse catalog in the plugin's commands
 
-- **State:** open (built; close once its tests run)
+- **State:** done
 - **Labels:** dbt, integrations
 - **Created:** 2026-11-10
-- **Related:** [50. dbt: read `catalog.json`](done/0050-dbt-catalog-json.md),
-  [55. `sqlassert-dbt suggest`](done/0055-dbt-suggest-model-files.md)
+- **Related:** [50. dbt: read `catalog.json`](0050-dbt-catalog-json.md),
+  [55. `sqlassert-dbt suggest`](0055-dbt-suggest-model-files.md)
 
 `--catalog` (50) reads `catalog.json`: a snapshot with columns and types only.
 A source table changed after `dbt docs generate` cannot be told apart, and the
@@ -39,15 +39,19 @@ warehouse does not enforce follow `trust_unenforced_keys` and its warnings.
   Databricks are not mapped: their handles are not what the fetchers take, so
   `--connect` says to pass a fetcher from Python.
 - **Declaring the facts:** reuse core: `hydrate` then `bind` on the Program
-  the plugin assembles (`Builder._hydrated`), so enforcement and
+  the plugin assembles (`DatabaseKnowledgeFetcher.convert`, shared with
+  `analyze_database`), so enforcement and
   `trust_unenforced_keys` behave as in `analyze_database`.
-- **Precedence:** under a connection the plugin writes no `CREATE TABLE` from
-  contracts or the catalog, and reads no catalog: every table comes from the
-  warehouse. A warehouse view is declared by its stored query.
+- **Precedence:** under a connection the plugin reads no catalog. An
+  enforced contract's table is still declared from the contract, since the
+  build may not have made it yet (a connection only adds proofs); every other
+  table comes from the warehouse. A warehouse view is declared by its stored query.
 - **Previous runs:** an incremental model's `{{ this }}` stays unknown; its
   not-found Diagnostic is dropped.
 - **Tests:** `integrations/dbt/tests/test_connect.py`, DuckDB end to end.
-  Written, not yet run.
+  dbt-duckdb keeps its file open past dbt's cleanup (`keep_open`), so
+  `--connect` closes it, and it replaces an adapter dbt registered earlier
+  in the process.
 
 ## Open questions (answered above)
 

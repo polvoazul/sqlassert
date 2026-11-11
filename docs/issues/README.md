@@ -22,7 +22,6 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)
 - [53. Validate Databricks against a real engine](0053-validate-databricks-against-a-real-engine.md) — not planned (P4, child of 43)
 - [54. Validate Redshift against a real engine](0054-validate-redshift-against-a-real-engine.md) — not planned (P4, child of 43)
-- [56. dbt: read the live warehouse catalog in the plugin's commands](0056-dbt-live-connection.md) — open (built: `--connect` through dbt's adapter, and `fetcher=` from Python; tests not yet run)
 - [57. dbt: incremental models](0057-dbt-incremental-models.md) — open (bare minimum today; ideas deferred)
 - [58. dbt: test and decide how findings map back to model files](0058-dbt-source-mapping.md) — open (deferred)
 - [59. User-defined functions and table functions (Postgres, Spark, Hive)](0059-postgres-user-defined-functions.md) — not planned (P4: a SETOF UDF or a UDTF in a select list repeats rows; read CREATE FUNCTION and the catalog)
@@ -32,7 +31,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 15, 23. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -100,3 +99,4 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)
 - [50. dbt: read `catalog.json`](done/0050-dbt-catalog-json.md)
 - [55. Run `sqlassert-dbt suggest` on dbt model files](done/0055-dbt-suggest-model-files.md)
+- [56. dbt: read the live warehouse catalog in the plugin's commands](done/0056-dbt-live-connection.md)

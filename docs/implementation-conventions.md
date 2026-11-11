@@ -158,17 +158,23 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   driver; one subclass per dialect (`duckdb.py`, `postgres.py`, `mysql.py`,
   `redshift.py`, `snowflake.py`, `bigquery.py`, `databricks.py`, `trino.py`)
   overrides only the hooks whose standard view is missing or incomplete there
-  (DuckDB and PostgreSQL override all of them, with their own catalogs). `analyze_database(sql, fetcher,
-  *, dialect=...)` in `main.py` composes it; `analyze` stays pure.
+  (DuckDB and PostgreSQL override all of them, with their own catalogs).
+  `DatabaseKnowledgeFetcher.convert` runs `hydrate` and `bind` and merges
+  their results, keeping only the SQL's own warnings; `analyze_database(sql,
+  fetcher, *, dialect=...)` in `main.py` and the dbt plugin's `fetcher=` both
+  go through it; `analyze` stays pure.
 - `dialects.py` is what each SQL dialect means by the constructs the rules
   depend on (`DialectSemantics`): which Builtins raise rather than return
   NULL, which text compares by identity, `||` and `concat()`, and which keys
-  are enforced. Only `ir/convert.py` reads it, and `discovery/` for catalog
+  are enforced, keys and CHECK constraints alike. Only `ir/convert.py` reads it, and `discovery/` for catalog
   keys; the rules see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
   dialect not listed gets cautious defaults. An unenforced key is never
   Knowledge: `RELY` (where the dialect has it) or `trust_unenforced_keys`
   (on by default) makes it a Property Declaration, otherwise an `unenforced-constraint`
-  warning reports it. The argument for each entry is in `docs/dialects.md`.
+  warning reports it. A CHECK constraint is trusted the same way; only an AND
+  of `col IN (...)` and `col = v` over non-null literals is read, as the
+  column's Enumerated Domain (`convert._check_domains`), and any other shape
+  warns `ignored-check-constraint`. The argument for each entry is in `docs/dialects.md`.
 - `suggest.py` composes the same stages as `main.py` to list provable
   Properties as markers. `sql_parse.py` records on every Join, Select, and
   simple CASE the source position where its marker would be written;
@@ -213,7 +219,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   run, parsed and lowered once (no root SELECT): each model whose rows are its
   query is a `CREATE VIEW` under its relation name, the compiled SQL as a FROM
   subquery starting on a line of its own and its tests as markers after it;
-  other relations are tables; an incremental model's branches (reading
+  other relations are tables, or, under a warehouse fetcher (`fetcher=`,
+  `--connect` through dbt's own adapter in `connect.py`), hydrated from the
+  warehouse as `analyze_database` does, in place of `catalog.json` (an
+  enforced contract's table is still declared from the contract); an incremental model's branches (reading
   `{{ this }}` as a separate table of unknown columns, never its own facts)
   and an ephemeral model's body are views under generated names. Results map
   back by each statement's line range. A model whose SQL alone does not parse,

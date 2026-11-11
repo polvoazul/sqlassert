@@ -3,7 +3,7 @@
 - **State:** open
 - **Labels:** dbt, integrations
 - **Created:** 2026-11-10
-- **Related:** [56. Live warehouse catalog](0056-dbt-live-connection.md), [50. catalog.json](done/0050-dbt-catalog-json.md)
+- **Related:** [56. Live warehouse catalog](done/0056-dbt-live-connection.md), [50. catalog.json](done/0050-dbt-catalog-json.md)
 
 An incremental model is two things: a table that keeps rows across runs (what
 its readers see), and a query that inserts one batch per run, in one of two

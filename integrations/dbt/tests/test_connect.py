@@ -63,6 +63,16 @@ def test_the_warehouse_keys_prove_the_tests_a_snapshot_cannot(keyed: Path):
     assert all(connected[name] is Status.PROVED for name, status in without.items() if status is Status.PROVED)
 
 
+def test_an_empty_warehouse_takes_no_proof_away(keyed: Path, tmp_path: Path):
+    # Nothing built yet: every relation is missing, and what the SQL and the
+    # contracts prove without a connection still holds.
+    without = statuses(analyze_project(keyed, read_catalog=False))
+    with duckdb.connect(str(tmp_path / "empty.duckdb")) as connection:
+        connected = statuses(analyze_project(keyed, fetcher=DuckDBKnowledgeFetcher(connection)))
+
+    assert [name for name, status in without.items() if status is Status.PROVED and connected[name] is not Status.PROVED] == []
+
+
 def test_a_fetcher_from_python_reads_the_same_warehouse(keyed: Path):
     database = keyed.parent / "warehouse.duckdb"
     with duckdb.connect(str(database)) as connection:
