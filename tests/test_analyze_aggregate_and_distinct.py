@@ -168,7 +168,7 @@ def test_grouping_sets_is_unsupported_and_unknown(orders_and_customers):
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_having_is_unsupported_and_unknown(orders_and_customers):
+def test_having_keeps_the_grouping_key(orders_and_customers):
     report = analyze(
         orders_and_customers
         + """
@@ -185,7 +185,8 @@ def test_having_is_unsupported_and_unknown(orders_and_customers):
         """
     )
 
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+    # HAVING only removes groups, so customer_id stays a key of per_customer.
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
 
 
 # Distinct ---------------------------------------------------------------
