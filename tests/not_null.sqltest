@@ -150,7 +150,7 @@ SELECT nickname FROM users /**ASSERT NOT NULL(nickname)**/  --~ UNKNOWN
 SELECT NULL AS nothing FROM users /**ASSERT NOT NULL(nothing)**/  --~ UNKNOWN
 
 -- case: not_null_is_not_guessed__opaque_expression
-SELECT upper(email) AS name FROM users /**ASSERT NOT NULL(name)**/  --~ UNKNOWN
+SELECT md5(email) AS name FROM users /**ASSERT NOT NULL(name)**/  --~ UNKNOWN
 
 -- case: not_null_is_not_guessed__coalesce_of_nullables
 SELECT coalesce(nickname, NULL) AS name FROM users /**ASSERT NOT NULL(name)**/

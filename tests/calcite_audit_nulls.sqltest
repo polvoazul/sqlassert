@@ -87,16 +87,16 @@ SELECT empno, sal FROM emp_nullables WHERE sal IS NOT DISTINCT FROM 1
 
 -- case: strong_nullif_first_argument
 -- inspired by RexProgramTest.testStrong, NULLIF(null, X) is null
--- Missing proof: nullif is strict in its first argument.
+-- nullif is strict in its first argument (issue 45, item 13).
 SELECT empno, sal FROM emp_nullables WHERE nullif(sal, 0) > 1
-/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
 
 -- case: strong_trim_and_floor
 -- inspired by Strong.createPolicyMap (TRIM, FLOOR are Policy.ANY)
--- Missing proof: both are strict in DuckDB, but not modelled Builtins.
+-- Both are strict Builtins (issue 45, item 13).
 SELECT empno, ename, sal FROM emp_nullables WHERE trim(ename) = 'a' AND floor(sal) = 1
-/**ASSERT NOT NULL(ename)**/  --~ UNKNOWN
-/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(ename)**/  --~ PROVED
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
 
 -- case: strong_item_of_a_list
 -- inspired by RexProgramTest.testItemStrong
@@ -301,8 +301,8 @@ FULL JOIN (SELECT * FROM emp WHERE sal = 3) AS e ON e.deptno = d.deptno
 -- inspired by RelMdPredicates.allGroupSetsOverlap ("deptno may be NULL as well")
 -- NOT NULL is false (subtotal rows); ENUM holds, NULL being outside it: a missing proof.
 SELECT deptno, sal, count(*) AS n FROM emp WHERE deptno = 10 GROUP BY ROLLUP (sal, deptno)
-/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
-/**ASSERT ENUM(deptno IN (10))**/  --~ UNKNOWN
+/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN, unsupported-construct "ROLLUP"
+/**ASSERT ENUM(deptno IN (10))**/  --~ UNKNOWN, unsupported-construct "ROLLUP"
 
 -- case: pullup_aggregate_having_on_group_key
 -- inspired by RelMdPredicates.getPredicates(Filter) over getPredicates(Aggregate)

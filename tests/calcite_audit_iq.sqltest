@@ -190,13 +190,13 @@ SELECT job, sum(sal) AS s FROM emp GROUP BY job, deptno
 SELECT deptno, job, sal, sum(comm) AS s
 FROM emp
 GROUP BY GROUPING SETS ((deptno, job), (deptno, sal), (deptno, job))
-/**ASSERT UNIQUE(deptno, job, sal)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno, job, sal)**/  --~ UNKNOWN, unsupported-construct "GROUPING SETS"
 
 -- ROLLUP adds a total row whose deptno is NULL (CALCITE-5296).
 -- case: rollup_key_is_nullable
 -- inspired by agg.iq, "select deptno, deptno + 1 as d1 from emp group by rollup(deptno)"
 SELECT deptno FROM emp WHERE deptno IS NOT NULL GROUP BY ROLLUP (deptno)
-/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN, unsupported-construct "ROLLUP"
 
 -- SUM over a non-null column is non-null in every (non-empty) group; Calcite
 -- types it NOT NULL. Missing proof.

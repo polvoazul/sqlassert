@@ -73,7 +73,7 @@ SELECT a, coalesce(my_udf(a), 0) AS k FROM f /**ASSERT DETERMINES(a -> k)**/
 -- case: a_deterministic_function_is_determined_by_its_arguments__window_inside_case
 SELECT a, CASE a WHEN 1 THEN count(*) OVER () END AS k
 FROM f
-/**ASSERT DETERMINES(a -> k)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(a -> k)**/  --~ UNKNOWN, unsupported-construct "a window function"
 
 -- case: a_deterministic_function_is_determined_by_its_arguments__user_defined_function
 SELECT a, my_udf(a) AS k, count(*) AS c
