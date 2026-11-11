@@ -29,7 +29,7 @@ from urllib.parse import quote
 from sqlglot.dialects.dialect import Dialect
 
 from sqlassert import diagnostics as diag
-from sqlassert.diagnostics import Diagnostic
+from sqlassert.diagnostics import UNSUPPORTED_CONSTRUCT, Diagnostic
 from sqlassert.main import DEFAULT_DIALECT, analyze
 from sqlassert.provenance import Origin, Span
 from sqlassert.reporting import ASSERTED_KINDS, Outcome, Report
@@ -99,14 +99,17 @@ def findings(path: str, sql: str, report: Report, *, ignore: Iterable[str] = ())
     ignored = frozenset(ignore)
     unknown = [
         Finding(
-            path, Severity.ERROR, unproved(assertion.kind), f"{_written(sql, assertion.origin)} is not proved (UNKNOWN)",
+            path, Severity.ERROR, unproved(assertion.kind),
+            f"{_written(sql, assertion.origin)} is not proved (UNKNOWN)"
+            + (f": {assertion.unsupported} is not supported by sqlassert yet" if assertion.unsupported else ""),
             assertion.origin, assertion.evidence.explain() if assertion.evidence is not None else None,
         )
         for assertion in report.assertions
         if assertion.outcome is Outcome.UNKNOWN
     ]
     reported = [_diagnostic(path, diagnostic, Severity.ERROR) for diagnostic in report.diagnostics]
-    warned = [_diagnostic(path, warning, Severity.WARNING) for warning in report.warnings]
+    # An unsupported construct is already named on the assertion it left UNKNOWN.
+    warned = [_diagnostic(path, warning, Severity.WARNING) for warning in report.warnings if warning.code != UNSUPPORTED_CONSTRUCT]
     return tuple(
         finding for finding in sorted((*unknown, *reported, *warned), key=_source_order)
         if finding.code not in ignored

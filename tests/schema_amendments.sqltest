@@ -115,9 +115,15 @@ CREATE UNIQUE INDEX users_email ON users ((CASE org WHEN 1 THEN email END));
 SELECT org, email FROM users /**ASSERT UNIQUE(org, email)**/  --~ UNKNOWN
 --~! unsupported-create-statement "may be NULL where its columns are not"
 
--- lower() is not yet a modelled Builtin, so it is not known to be total.
--- case: a_unique_expression_index_that_may_be_null_states_nothing__unmodelled_function
+-- lower() is total and pure, and email compares by identity: equal emails
+-- would give equal keys. No injectivity needed.
+-- case: a_unique_expression_index_makes_its_columns_unique__lower
 CREATE UNIQUE INDEX users_email ON users (lower(email));
+SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ PROVED
+
+-- An unmodelled function is not known to be total.
+-- case: a_unique_expression_index_that_may_be_null_states_nothing__unmodelled_function
+CREATE UNIQUE INDEX users_email ON users (md5(email));
 SELECT email FROM users /**ASSERT UNIQUE(email)**/  --~ UNKNOWN
 --~! unsupported-create-statement
 

@@ -13,7 +13,7 @@ from inspect import signature
 from case_conversion import snake
 
 from sqlassert import ir
-from sqlassert.diagnostics import DUPLICATE_DECLARATION, Diagnostic
+from sqlassert.diagnostics import DUPLICATE_DECLARATION, UNSUPPORTED_CONSTRUCT, Diagnostic
 from sqlassert.properties import Property
 from sqlassert.reporting import ASSERTED_KINDS, AssertionReport, Outcome, RelationFacts, Report
 
@@ -287,13 +287,55 @@ class Engine:
                 evidence = arena.prove(assertion.property)
                 if any(diagnostic.code == DUPLICATE_DECLARATION for diagnostic in diagnostics):
                     evidence = evidence & unknown("Duplicate declarations prevent accepting a proof", assertion)
+                unsupported = None if evidence.value else _unsupported_reached(program, assertion.property)
                 assertions.append(AssertionReport(
                     f"assert_{index}", Outcome.PROVED if evidence.value else Outcome.UNKNOWN, assertion.origin,
-                    ASSERTED_KINDS[type(assertion.property)], evidence,
+                    ASSERTED_KINDS[type(assertion.property)], evidence, unsupported,
                 ))
+                if unsupported is not None:
+                    warnings = (*warnings, Diagnostic(
+                        UNSUPPORTED_CONSTRUCT, f"{unsupported} is not supported by sqlassert yet, so this assertion is UNKNOWN",
+                        assertion.origin,
+                    ))
             facts = {}
             for relation in program.named_relations:
                 facts[relation.report_name.lower()] = tuple(
                     tuple(column.name for column in key) for key in minimal_keys(relation)
                 )
             return Report(tuple(assertions), tuple(diagnostics), RelationFacts(facts), tuple(warnings))
+
+
+def _unsupported_reached(program: ir.Program, property: Property) -> str | None:
+    """The first construct sqlassert does not support yet that `property`'s
+    proof depends on: reached from its columns through the expressions that
+    compute them, and from their relations through those relations' inputs.
+    Sibling columns are not followed, so a window function beside an
+    asserted column is not blamed for it."""
+    unsupported = {id(node): construct for node, construct in program.unsupported}
+    if not unsupported:
+        return None
+    seen: set[int] = set()
+    pending: list[ir.Node] = []
+    for item in fields(property):
+        value = getattr(property, item.name)
+        pending.extend(value if isinstance(value, frozenset | tuple) else (value,))
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, ir.Node) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if id(node) in unsupported:
+            return unsupported[id(node)]
+        match node:
+            case ir.OutputColumn():
+                pending.append(node.scalar_expr)
+                pending.append(node.get_relation(program))
+            case ir.ColumnRef(column=column):
+                pending.append(column)
+            case ir.ScalarExpr():
+                pending.extend(ir.children(node))
+            case ir.RelationExpr():
+                pending.extend(child for child in ir.children(node) if isinstance(child, ir.RelationExpr | ir.ScalarExpr))
+            case _:
+                pass
+    return None

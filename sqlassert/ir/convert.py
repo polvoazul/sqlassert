@@ -130,6 +130,7 @@ class IrParser:
     _sort_keys: dict[int, tuple[ir.OutputColumn, ...] | None] = field(default_factory=dict)
     _site_sort_keys: list[tuple[AttachmentSite, tuple[ir.OutputColumn, ...] | None]] = field(default_factory=list)
     _set_operations: list[tuple[AttachmentSite, ir.SetOperation]] = field(default_factory=list)
+    _unsupported: list[tuple[ir.Node, str]] = field(default_factory=list)
     # Columns made up for names a query uses: of a table with no CREATE, or an
     # opaque relation (`_guessed`), and those a declared table does not have (`_absent`).
     _guessed: set[ir.OutputColumn] = field(default_factory=set)
@@ -193,7 +194,7 @@ class IrParser:
         return IrConversionResult(
             ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
                 scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys),
-                set_operations=tuple(self._set_operations)),
+                set_operations=tuple(self._set_operations), unsupported=tuple(self._unsupported)),
             tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
         )
 
@@ -589,6 +590,9 @@ class IrParser:
                 return self._alias(values, source.alias_or_name, self._origin(source))
 
         opaque = self._opaque_relation(source, self._source_required.get(id(source), set()))
+        construct = _unsupported_source(source)
+        if construct is not None:
+            self._unsupported.append((opaque, construct))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
 
     def _lower_values(self, values: exp.Values) -> ir.OpaqueRelation | None:
@@ -766,13 +770,15 @@ class IrParser:
 
     def _recursive_relation(self, symbol: _Symbol, source: Expr) -> ir.RecursiveRelation:
         origin = self._origin(source)
-        return ir.RecursiveRelation(
+        relation = ir.RecursiveRelation(
             origin=origin,
             output_columns=self._opaque_output_columns(symbol.required_columns, origin),
             is_schema_complete=False,
             description=source.sql(dialect=self.dialect),
             relation_name=symbol.name,
         )
+        self._unsupported.append((relation, "a recursive CTE or view"))
+        return relation
 
     def _alias(self, source: ir.RelationExpr, name: str, origin: Origin, schema: str = "") -> _Lowered:
         output_columns = _pass_output_columns(source.output_columns, origin)
@@ -899,7 +905,9 @@ class IrParser:
                 select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None
             ):
                 # Evaluated after grouping or a window: not modelled.
-                return self._opaque_relation(select, _selected_output_names(select))
+                opaque = self._opaque_relation(select, _selected_output_names(select))
+                self._unsupported.append((opaque, "a set-returning function beside GROUP BY, QUALIFY or DISTINCT ON"))
+                return opaque
             lowered = self._fan_out(lowered, calls, self._origin(select))
         if keys is not None:
             relation = self._lower_aggregate(lowered, select, keys)
@@ -918,7 +926,11 @@ class IrParser:
                 lowered, _ = self._join_scalar_subqueries(lowered, select.expressions)
                 relation = self._project(lowered, select.expressions, self._origin(select))
         if relation is None:
-            return self._opaque_relation(select, _selected_output_names(select))
+            opaque = self._opaque_relation(select, _selected_output_names(select))
+            construct = _unsupported_grouping(select)
+            if construct is not None:
+                self._unsupported.append((opaque, construct))
+            return opaque
         self._sort_keys[id(select)] = self._resolve_order(select, lowered.bindings, relation)
         return relation
 
@@ -1592,7 +1604,11 @@ class IrParser:
                 # `CAST(JSON 'null' AS BIGINT)` is NULL.
                 function = replace(function, total=None)
             values = [value for key in keys for value in _as_list(expression.args[key])]
-            if function.accepts(len(values)):
+            # `trim(x, chars)` and `floor(x, 2)` read more than their Builtin's arguments.
+            extra = type(expression) in _ONE_ARGUMENT_BUILTINS and any(
+                value for key, value in expression.args.items() if key not in keys
+            )
+            if function.accepts(len(values)) and not extra:
                 arguments = tuple(lower(value) for value in values)
                 composites = [
                     (value, argument) for value, argument in zip(values, arguments)
@@ -1602,7 +1618,10 @@ class IrParser:
                     function, arguments = self._composite_comparison(expression, function, arguments, composites, self._origin(expression, line or _source_line(expression)))
                 return ir.Call(origin=origin, function=function, arguments=arguments, description=description)
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
-            return ir.OpaqueExpression(origin=origin, description=description)
+            opaque = ir.OpaqueExpression(origin=origin, description=description)
+            if isinstance(expression, exp.Window):
+                self._unsupported.append((opaque, "a window function (other than QUALIFY row_number() ... = 1)"))
+            return opaque
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
 
     def _check_zoned_text(self, comparison: Expr, lower: Callable[[Expr], ir.ScalarExpr], origin: Origin) -> None:
@@ -2176,6 +2195,19 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
         exp.Cast: (builtin("CAST", 1, total=checked), ("this",)),
         # `1 BETWEEN NULL AND 0` is FALSE.
         exp.Between: (ir.Builtin(name="BETWEEN", strict=(True, False, False), total=(True, True, True) if casts else None, injective=False), ("this", "low", "high")),
+        # Text functions take any value as text, so no cast fails. `trim(' ')`
+        # is '', which is NULL where '' is.
+        exp.Lower: (builtin("lower", 1), ("this",)),
+        exp.Upper: (builtin("upper", 1), ("this",)),
+        exp.Length: (builtin("length", 1), ("this",)),
+        exp.Trim: (builtin("trim", 1, total=not meaning.empty_string_is_null), ("this",)),
+        # A number read from bad text is an error only where a bad CAST is
+        # (SQLite's `floor('x')` is NULL though its comparisons raise).
+        exp.Abs: (builtin("abs", 1, total=checked), ("this",)),
+        exp.Floor: (builtin("floor", 1, total=checked), ("this",)),
+        exp.Ceil: (builtin("ceil", 1, total=checked), ("this",)),
+        # NULL when its arguments are equal; NULL only through the first otherwise.
+        exp.Nullif: (ir.Builtin(name="nullif", strict=(True, False), total=None, injective=False), ("this", "expression")),
     }
     match meaning.pipes:
         case "strict":
@@ -2399,6 +2431,31 @@ def _from_source(select: exp.Query) -> Expr | None:
     return source.this if isinstance(source, exp.From) else None
 
 
+def _unsupported_grouping(select: exp.Select) -> str | None:
+    """The grouping construct that makes `select` opaque, if any."""
+    group = select.args.get("group")
+    if group is None:
+        return None
+    for key, name in (("grouping_sets", "GROUPING SETS"), ("rollup", "ROLLUP"), ("cube", "CUBE"), ("totals", "WITH TOTALS")):
+        if group.args.get(key):
+            return name
+    for node, name in ((exp.GroupingSets, "GROUPING SETS"), (exp.Rollup, "ROLLUP"), (exp.Cube, "CUBE")):
+        if any(isinstance(expression, node) for expression in group.expressions):
+            return name
+    return None
+
+
+def _unsupported_source(source: Expr) -> str | None:
+    """The FROM source construct that lowers opaque, if sqlassert does not support it yet."""
+    if isinstance(source, exp.Lateral) or source.find(exp.Lateral) is not None:
+        return "LATERAL"
+    if isinstance(source, exp.Unnest) or source.find(exp.Unnest) is not None:
+        return "UNNEST"
+    if isinstance(source, exp.Table) and isinstance(source.this, exp.Func):
+        return "a table function"
+    return None
+
+
 def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
     """The declared comparison type of the column `column` passes on."""
     while column.comparison_type is None and isinstance(column.scalar_expr, ir.ColumnRef):
@@ -2574,6 +2631,9 @@ _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NullSafeE
 _EXACT_NUMERIC_TYPES = {*exp.DataType.INTEGER_TYPES, exp.DataType.Type.DECIMAL}
 
 # Nodes whose value is not a function of the columns an expression reads.
+# Builtins modelled only when the call sets no argument but their own.
+_ONE_ARGUMENT_BUILTINS = (exp.Lower, exp.Upper, exp.Length, exp.Trim, exp.Abs, exp.Floor, exp.Ceil)
+
 _NOT_A_FUNCTION_OF_ITS_COLUMNS = (
     exp.Anonymous, exp.Rand, exp.Randn, exp.Uuid, exp.AggFunc, exp.Window, exp.Query, exp.Subquery,
     exp.CurrentDate, exp.CurrentDatetime, exp.CurrentTime, exp.CurrentTimestamp, exp.Placeholder, exp.Parameter, exp.Star,

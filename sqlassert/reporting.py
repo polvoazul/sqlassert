@@ -35,6 +35,9 @@ class AssertionReport:
     origin: Origin
     kind: str
     evidence: Result[bool] | None = field(default=None, compare=False)
+    # For an UNKNOWN assertion whose proof reaches a construct sqlassert does
+    # not support yet: what that construct is.
+    unsupported: str | None = None
 
 
 # The marker each assertable Property is written as, in the words of its `/**ASSERT ...**/`.

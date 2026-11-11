@@ -620,6 +620,10 @@ class Program:
     # Each INTERSECT and EXCEPT, sited where its keyword follows its left
     # input's last Select (no marker attaches there).
     set_operations: tuple[tuple[AttachmentSite, SetOperation], ...] = ()
+    # Each node standing for a construct sqlassert does not support yet (an
+    # opaque relation or value), with what it is: an assertion whose proof
+    # reaches one says so when it stays UNKNOWN.
+    unsupported: tuple[tuple[Node, str], ...] = ()
     column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

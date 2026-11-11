@@ -44,6 +44,13 @@ not, and SQLGlot reads `INT` and `INTEGER` alike, so none is taken to be
 non-null). A ClickHouse primary key never rejects a duplicate, and its
 `concat_ws` is NULL for a NULL value, as Snowflake's. Hive has neither checked
 arithmetic nor enforced keys, and its `concat_ws` is not modelled.
+`lower`, `upper` and `length` are strict and never NULL for a non-null
+argument in every dialect; so is `trim`, except where `''` is NULL (Oracle:
+`trim(' ')` is NULL). `abs`, `floor` and `ceil` are strict, and never NULL
+for a non-null argument only where `checked_arithmetic` holds: they read text
+as a number, which SQLite turns into NULL (`floor('x')`) although its
+comparisons raise. `nullif(a, b)` is strict in `a` only. A call with more
+arguments (`trim(x, chars)`, `floor(x, 2)`) is not modelled.
 `set_operations_all` only gates suggesting `EXCEPT ALL` and `INTERSECT ALL`
 (`suggest`): a wrong value suggests SQL the engine rejects, never a wrong
 proof, so it is no fact and is not certified. It is off for SQLite, Oracle

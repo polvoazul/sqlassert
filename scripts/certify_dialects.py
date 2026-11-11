@@ -194,12 +194,24 @@ _SHAPES: dict[str, _Shape] = {
     "||": _Shape("VARCHAR", (exp.Literal.string("a"), exp.Literal.string("b"))),
     "concat": _Shape("VARCHAR", (exp.Literal.string("a"),)),
     "concat_ws": _Shape("VARCHAR", (exp.Literal.string(","), exp.Literal.string("a"))),
+    "lower": _Shape("VARCHAR", (exp.Literal.string("A"),)),
+    "upper": _Shape("VARCHAR", (exp.Literal.string("a"),)),
+    "length": _Shape("VARCHAR", (exp.Literal.string("abc"),)),
+    "trim": _Shape("VARCHAR", (exp.Literal.string(" a "),), bad=((exp.Literal.string(" "),),)),
+    "abs": _Shape("BIGINT", (_n(-1),), overflow=((_BIGINT_MIN,),), bad=((_X,),)),
+    "floor": _Shape("DOUBLE", (exp.Literal.number("1.5"),), bad=((_X,),)),
+    "ceil": _Shape("DOUBLE", (exp.Literal.number("1.5"),), bad=((_X,),)),
+    "nullif": _Shape("INT", (_n(1), _n(2))),
 }
 
 # The flag each Builtin's totality and injectivity rest on (`dialect_builtins`).
-_ARITHMETIC = {"+", "-", "*", "unary -", "CAST"}
+_ARITHMETIC = {"+", "-", "*", "unary -", "CAST", "abs", "floor", "ceil"}
 _DIVISION = {"/", "//", "%"}
-_TEXT = {"||": "pipes=None", "concat": "concat=None", "concat_ws": "concat_ws=None"}
+_TEXT = {
+    "||": "pipes=None", "concat": "concat=None", "concat_ws": "concat_ws=None",
+    "trim": "empty_string_is_null=True",
+    **{name: f"make {name} non-total in ir/convert.dialect_builtins" for name in ("lower", "upper", "length")},
+}
 
 
 def _total_flag(name: str) -> str:

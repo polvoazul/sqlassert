@@ -110,8 +110,8 @@ lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
   columns they read a (lax) Unique Set when every expression is pure, total
   in its columns (a NULL key part exempts the row: `nullif(email, '')`), and
   reads only identity-compared columns; no injectivity is needed
-  (`convert._expression_key`, `ir.total`). `lower`/`upper` are not Builtins
-  yet, so `lower(email)` still states nothing (issue 45 #13).
+  (`convert._expression_key`, `ir.total`), so `lower(email)` makes `email`
+  unique.
 - [x] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Today this is silently UNKNOWN. Per

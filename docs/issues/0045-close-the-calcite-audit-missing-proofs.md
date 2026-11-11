@@ -41,7 +41,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
    `count(*)` of it is never NULL, and `x = (SELECT max(...) ... WHERE corr)`
    pins one row per correlation key.
    `iq: correlated_scalar_count_is_never_null`, `keys: uk_correlated_scalar_subquery`.
-8. ROLLUP and GROUPING SETS lower opaque (low priority): their grouping
+8. ~~ROLLUP and GROUPING SETS lower opaque (low priority):~~ Moved to issue 42 (P4). Was: their grouping
    columns keep their domains (NULL is outside a domain).
    `keys: uk_grouping_sets`, `nulls: pullup_aggregate_rollup`.
 
@@ -65,7 +65,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 12. **Never TRUE on NULL, without being strict**: `x > ANY (subquery)` and
     `(x > 0) IS TRUE` reject x. This is Calcite's `Strong.isNotTrue`, weaker
     than strictness. `nulls: strong_any_subquery_is_never_true_on_null`, `strong_is_true_rejects`.
-13. **More strict Builtins**: NULLIF (first argument), trim, floor/ceil,
+13. Partly done: `lower`, `upper`, `length`, `trim` (not total where '' is NULL), `abs`, `floor`, `ceil` (total where CAST is checked) and `nullif` (strict in its first argument) are Builtins, certified per dialect; a call with more arguments (`trim(x, chars)`, `floor(x, 2)`) stays opaque. Still open: list indexing, `||` and greatest/least per dialect. Was: **More strict Builtins**: NULLIF (first argument), trim, floor/ceil,
     upper/lower, abs, length, list indexing. Per dialect: `||` is non-null
     when its operands are in DuckDB and Postgres (not Oracle, not MySQL), and
     greatest/least are non-null when any argument is in DuckDB and Postgres.

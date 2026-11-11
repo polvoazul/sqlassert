@@ -33,6 +33,12 @@ is proved through it, and a marker inside it is reported
 - [ ] **Scalar subqueries in a join's `ON`** stay `OpaqueExpression`: the
   conjunct only filters and binds no column. Lowering one would join the
   subquery's body before the join it sits in.
+- [ ] **`GROUPING SETS`, `ROLLUP` and `CUBE`** are opaque (from issue 45,
+  item 8). Their subtotal rows hold NULL in the rolled-up columns, so the
+  grouping columns keep their Enumerated Domains (NULL is outside one), and
+  nested sets such as `((ename), (ename, job))` keep `(ename, job)` a Unique
+  Set: a subtotal row's `job` is NULL and a data row's never is. Mostly
+  reporting SQL; an assertion that needs one says it is not supported yet.
 - [ ] **Collated text** compares by identity only without a `COLLATE`, in a
   dialect whose default is binary: Properties under a collation are
   [49](0049-collation-aware-properties.md).
