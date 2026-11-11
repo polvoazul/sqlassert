@@ -20,6 +20,11 @@ the proof that would have pinned it, which failed:
 - A scalar subquery not proved to return at most one row (issue 38): more
   than one is a runtime error. Uncorrelated, its body must have at most one
   row; correlated, the columns its WHERE binds must reach its Row Identity.
+- A query that can never return a row: a `NOT EXISTS` every row has a match
+  for (a foreign key's orphan check), a `WHERE x IS NULL` on a column proved
+  non-null (the `LEFT JOIN ... IS NULL` form of it), an `EXCEPT` whose left
+  rows all appear on the right. Whether the key is enforced is not asked:
+  sqlassert trusts every key the SQL states.
 
 A smell is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
@@ -40,6 +45,8 @@ from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
 from sqlassert.rules.equality import _binary_text, _comparison_type, _exact_arithmetic, _identity_comparison
 from sqlassert.rules.join_cardinality import _at_most_one_match, many_to_one_join, one_to_many_join, unique_join
+from sqlassert.properties import NonNullColumn, NonNullColumns, ReferentialCoverage
+from sqlassert.rules.exactly_one import _cross_equalities
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity, minimal_keys
 from sqlassert.sql_parse import ParsedProgram
 
@@ -50,6 +57,7 @@ class Concern(Enum):
     CHASM_TRAP = "Chasm trap"
     SCALAR_SUBQUERY = "Scalar subquery"
     IMPLICIT_CAST = "Implicit cast"
+    ALWAYS_EMPTY = "Always empty"
 
 
 @dataclass(frozen=True)
@@ -83,10 +91,72 @@ def smells(
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
         if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
             found.extend(_traps(site, aggregate, join_labels))
+        if site.trailing and aggregate in reachable:
+            found.extend(_always_empty(site, aggregate, arena))
+    for site, operation in program.set_operations:
+        if operation in reachable and wanted(site) and operation.operator == "except":
+            found.extend(_empty_except(site, operation, arena))
     for site, join in program.scalar_subqueries:
         if join in reachable and wanted(site):
             found.extend(_scalar_subquery(site, join))
     return sorted(found, key=lambda item: item.site.offset)
+
+
+def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena) -> list[Smell]:
+    """A filter of this Select that keeps no row: an anti join every row
+    matches, or `x IS NULL` on a non-null x. A scalar aggregate still returns
+    its one row, so the walk stops there."""
+    while True:
+        match relation:
+            case ir.Aggregate(grouping_outputs=()):
+                return []
+            case ir.Project(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source) | ir.Join(kind="semi", left=source):
+                relation = source
+            case ir.Join(kind="anti", left=source):
+                proof = _every_row_matches(relation, arena)
+                if proof.value:
+                    message = (
+                        "every row has a match in its NOT EXISTS subquery, which therefore removes every row: this "
+                        "query never returns one (an orphan check a foreign key already guarantees)"
+                    )
+                    return [Smell(site, Concern.ALWAYS_EMPTY, message, proof)]
+                relation = source
+            case ir.Filter(input=source):
+                for conjunct in relation.conjuncts:
+                    match conjunct:
+                        case ir.IsNull(operand=ir.ColumnRef(column=column)):
+                            proof = arena.prove(NonNullColumn(column=column))
+                            if proof.value:
+                                message = f"{conjunct.origin.detail} is never TRUE ({column.name} is never NULL), so this query never returns a row"
+                                return [Smell(site, Concern.ALWAYS_EMPTY, message, proof)]
+                        case _:
+                            pass
+                relation = source
+            case _:
+                return []
+
+
+def _every_row_matches(join: ir.Join, arena: Arena) -> Result[bool]:
+    """Every left row of `join` has a right row its ON holds on: ON is only
+    equalities between the inputs, the left columns are non-null and covered
+    by the right ones (the at-least-one half of an Exactly One Join)."""
+    pairs, others = _cross_equalities(join)
+    if not pairs or others:
+        return Result(False, "Only an ON of equalities between the inputs is known to match", (join,), kind="unknown")
+    lefts, rights = tuple(left for left, _ in pairs), tuple(right for _, right in pairs)
+    return arena.prove(ReferentialCoverage(columns=lefts, referenced_columns=rights)) & arena.prove(NonNullColumns(columns=frozenset(lefts)))
+
+
+def _empty_except(site: AttachmentSite, operation: ir.SetOperation, arena: Arena) -> list[Smell]:
+    """`A EXCEPT B` where every row of A, non-null, appears in B."""
+    left, right = operation.left.output_columns, operation.right.output_columns
+    if operation.by_name or len(left) != len(right):
+        return []
+    proof = arena.prove(ReferentialCoverage(columns=left, referenced_columns=right)) & arena.prove(NonNullColumns(columns=frozenset(left)))
+    if not proof.value:
+        return []
+    message = "every row of the left input appears in the right one, so this EXCEPT never returns a row"
+    return [Smell(site, Concern.ALWAYS_EMPTY, message, proof)]
 
 
 def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Smell]:

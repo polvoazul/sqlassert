@@ -183,11 +183,11 @@ Still open:
   First smell done: Arbitrary LIMIT (`sqlassert/smells.py`, `report.smells`,
   `Level.LOW`, printed last by the CLI). Issue 38 added the scalar subquery
   smell and the redundant ORDER BY key (a High rewrite, `Redundant ORDER BY
-  key`); issue 41 the Fan Trap and Chasm Trap. Still open: an ON conjunct the
-  others imply, and EXCEPT always empty under coverage. Also High-level rewrites
-  (self-join, UNION and INTERSECT simplification, redundant `LIMIT` on one
-  row). Done since: redundant `EXISTS`, `EXCEPT ALL` / `INTERSECT ALL`, whole
-  `GROUP BY` as a projection.
+  key`); issue 41 the Fan Trap and Chasm Trap. Done since: redundant `EXISTS`,
+  `EXCEPT ALL` / `INTERSECT ALL`, whole `GROUP BY` as a projection, redundant
+  `LIMIT`/`ORDER BY` on one row, self-join on a key, implied conditions, and
+  the always-empty smell. UNION and INTERSECT simplification under coverage
+  are not planned (rare).
 - [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
   Done: `sqlassert suggest --annotate FILE` rewrites FILE with every
   suggested marker; for `-` it prints the annotated SQL instead of the list.
@@ -208,7 +208,7 @@ reasons about the query, not its plan, cost or cardinality.
 | Semijoin transformation [89] | Join | ∗ | covered: High "filter-only join" (`WHERE EXISTS`) |
 | Pipeline with grouping [30, 126] | Join | † | n/a: physical pipelining |
 | Invisible join [2] | Join | † | n/a: column-store execution |
-| Early abort (5.6) | Selection | ∗ | add, High: `LIMIT`/`ORDER BY` on a Select proved to return at most one row is redundant (precondition: the empty set is a Unique Set) |
+| Early abort (5.6) | Selection | ∗ | done, High `LIMIT or ORDER BY on one row`: on a Select proved to return at most one row (the empty set is a strict key); not with OFFSET or a LIMIT of 0 or unknown count |
 | Accurate cardinalities (5.6) | Selection | ‡ | n/a: estimation |
 | Grouping is redundant [23] | Grouping | ∗ | done, High `GROUP BY of one row per group`: grouping columns whose strict closure reaches the input's Row Identity make the query a projection; each aggregate becomes its one-row value (`count(*)` → 1, `count(x)` → CASE, `sum`/`avg`/`min`/`max`/`any_value`/`bool_and`/`bool_or` → x); result types may change. Silent for FILTER, an aggregate in ORDER BY, QUALIFY or a window, and other aggregates |
 | Accurate cardinalities (5.6) | Grouping | ‡ | n/a: estimation |
@@ -227,8 +227,8 @@ reasons about the query, not its plan, cost or cardinality.
 | Entry | Area | Mark | Triage |
 |---|---|---|---|
 | Simplification / avoidance [65] | Join | ∗ | covered: High "redundant join" |
-| Complexity reduction (6.2) | Join | ∗ | add, Low: an ON conjunct the other equated columns already imply (precondition: FD from the other conjuncts' columns on both inputs) |
-| Self-join avoidance [6] | Join | ∗ | add, High: an Exactly One self-join onto a Unique Set of the same relation reads one row twice; one scan suffices |
+| Complexity reduction (6.2) | Join | ∗ | done, High `Implied condition`, in ON and WHERE: an equality the other equalities chain, or whose sides are pinned to one value, or that equates a self-join's copies of one column; `x = v` / `x IN (...)` covering x's Enumerated Domain. Deleted when its columns are non-null, else replaced by `x IS NOT NULL` |
+| Self-join avoidance [6] | Join | ∗ | done, High `Self-join on a key`: a self-join on a non-null key reads each row twice; read the first copy instead (other ON conjuncts to WHERE, or `CASE WHEN` per column for a LEFT JOIN). Views and CTEs when reading them twice gives the same rows and the columns read are pure |
 | Plan generation [38] | Join | † | n/a: join ordering |
 | Early abort (6.3) | Selection | ∗ | n/a: execution-time abort |
 | Substitute attributes [24, 68] | Selection | † | n/a: index choice |
@@ -262,9 +262,9 @@ sparse over dense indexes) are physical or estimation.
 | Substitute relations [33] | Join | † | n/a: cost-based |
 | Avoid semijoin reductions (8.1) | Join | † | n/a: distributed execution |
 | Accurate cardinalities [56] | Join | ‡ | n/a: estimation |
-| Simplify UNION (8.2) | Set ops | ∗ | add, High: `A UNION B` is `B` (distinct) when A's columns are covered by B's (precondition: Referential Coverage of the whole row, and NULL-free A: MATCH SIMPLE exempts NULLs that UNION keeps) |
-| Simplify INTERSECT (8.2) | Set ops | ∗ | add, High: `A INTERSECT B` is `SELECT DISTINCT` A under the same precondition |
-| Eliminate EXCEPT (8.2) | Set ops | ∗ | add, Low: `A EXCEPT B` is always empty under the same precondition |
+| Simplify UNION (8.2) | Set ops | ∗ | not planned (rare), was add, High: `A UNION B` is `B` (distinct) when A's columns are covered by B's (precondition: Referential Coverage of the whole row, and NULL-free A: MATCH SIMPLE exempts NULLs that UNION keeps) |
+| Simplify INTERSECT (8.2) | Set ops | ∗ | not planned (rare), was add, High: `A INTERSECT B` is `SELECT DISTINCT` A under the same precondition |
+| Eliminate EXCEPT (8.2) | Set ops | ∗ | done, Low `Always empty`: `A EXCEPT B` under that coverage, and the orphan checks `NOT EXISTS` and `LEFT JOIN ... IS NULL` (any key the SQL states counts; enforcement is not asked) |
 | Accurate cardinalities (8.2) | Set ops | ‡ | n/a: estimation |
 | Query folding [33, 51, 57] | Other | ∗ | n/a: reuses other queries' results |
 | Eliminate correlated subqueries in EXISTS [85] (8.2) | Other | ∗ | covered (Redundant EXISTS, via Exactly One); was add, High: an `EXISTS`/`IN` filter every row passes (the semi join's at-least-one half: coverage onto the ON columns, non-null, only cross-input equalities) is redundant |

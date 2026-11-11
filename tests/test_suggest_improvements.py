@@ -300,6 +300,84 @@ def test_except_all_is_not_suggested_where_the_dialect_lacks_it(dialect: str):
     assert Rewrite.SET_OPERATION_ALL not in [improvement.rewrite for improvement in report.improvements]
 
 
+# LIMIT and ORDER BY on one row --------------------------------------------------
+
+
+def test_limit_and_order_by_on_at_most_one_row_change_nothing():
+    improvement, = suggest(SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1").improvements
+    assert improvement.rewrite is Rewrite.ONE_ROW
+    assert improvement.message.endswith("ORDER BY and LIMIT change nothing: drop them")
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT id FROM users WHERE id = 3 LIMIT 1 OFFSET 1",
+    "SELECT id FROM users WHERE id = 3 LIMIT 0",
+    "SELECT id FROM users WHERE name = 'a' ORDER BY id LIMIT 1",
+])
+def test_limit_that_may_change_the_rows_is_kept(query: str):
+    assert Rewrite.ONE_ROW not in rewrites(SCHEMA + query)
+
+
+# Self-joins on a key -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("query", "rewritten"), [
+    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id", "SELECT u.id, u.name FROM users AS u"),
+    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id AND v.nick = 'x'", "SELECT u.id, u.name FROM users AS u WHERE u.nick = 'x'"),
+    (
+        "SELECT u.id, v.name FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
+        "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name FROM users AS u",
+    ),
+    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users AS u WHERE NOT u.nick IS NULL"),
+    (
+        "WITH c AS (SELECT id, name, random() AS r FROM users) SELECT a.id, b.name FROM c a JOIN c b ON a.id = b.id",
+        "SELECT a.id, a.name FROM c AS a",
+    ),
+])
+def test_a_self_join_on_a_key_reads_the_same_row(query: str, rewritten: str):
+    improvement = next(i for i in suggest(SCHEMA + query).improvements if i.rewrite is Rewrite.SELF_JOIN)
+    assert improvement.message.endswith(rewritten)
+
+
+@pytest.mark.parametrize("query", [
+    # Another row: the manager.
+    "SELECT o.id, p.total FROM orders o JOIN orders p ON o.user_id = p.id",
+    # A nullable unique key: a NULL email matches nothing.
+    "SELECT u.id, v.name FROM users u JOIN users v ON u.email = v.email",
+    # A volatile column read through the second copy.
+    "WITH c AS (SELECT id, random() AS r FROM users) SELECT a.id, b.r FROM c a JOIN c b ON a.id = b.id",
+    # A body read twice may give different rows.
+    "WITH c AS (SELECT id, name FROM users LIMIT 3) SELECT a.id, b.name FROM c a JOIN c b ON a.id = b.id",
+])
+def test_a_join_that_may_read_another_row_is_not_a_self_join(query: str):
+    assert Rewrite.SELF_JOIN not in rewrites(SCHEMA + query)
+
+
+# Conditions the others imply -----------------------------------------------------
+
+
+@pytest.mark.parametrize(("query", "message"), [
+    ("SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND o.user_id = o.id AND u.id = o.id", "delete it from ON"),
+    ("SELECT id FROM orders WHERE id = 5 AND user_id = 5 AND id = user_id", "id = user_id is always TRUE here (both sides are 5): delete it from WHERE"),
+    ("SELECT id FROM (SELECT * FROM users WHERE name = 'x') t WHERE name = 'x'", "delete it from WHERE"),
+    ("SELECT id FROM (SELECT * FROM users WHERE nick = 'x') t WHERE nick IN ('x', 'y')", "delete it from WHERE"),
+    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "write u.nick IS NOT NULL in ON"),
+])
+def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
+    improvements = [i for i in suggest(SCHEMA + query).improvements if i.rewrite is Rewrite.IMPLIED_CONDITION]
+    assert len(improvements) == 1
+    assert improvements[0].message.endswith(message)
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT id FROM users WHERE name = 'x'",
+    "SELECT id FROM (SELECT * FROM users WHERE nick IN ('x', 'y')) t WHERE nick = 'x'",
+    "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND u.name = 'x'",
+])
+def test_a_condition_that_may_remove_a_row_is_kept(query: str):
+    assert Rewrite.IMPLIED_CONDITION not in rewrites(SCHEMA + query)
+
+
 # Unused CTEs ------------------------------------------------------------------
 
 
@@ -501,6 +579,21 @@ EQUIVALENT = [
         SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
         SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT ALL SELECT ts FROM sessions",
         Rewrite.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
+        SCHEMA + "SELECT id, name FROM users WHERE id = 3",
+        Rewrite.ONE_ROW,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
+        SCHEMA + "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email FROM users AS u",
+        Rewrite.SELF_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick AND v.name <> 'a'",
+        SCHEMA + "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL AND u.name <> 'a'",
+        Rewrite.SELF_JOIN,
     ),
 ]
 

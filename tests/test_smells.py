@@ -168,3 +168,36 @@ def test_a_join_equality_that_casts_is_a_smell_and_repeats_rows_on_data():
 )
 def test_a_join_equality_without_an_implicit_cast_is_not_a_smell(on: str):
     assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").smells == ()
+
+
+# Always empty -----------------------------------------------------------------
+
+EMPTY_SCHEMA = """
+CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers (id), note INTEGER REFERENCES customers (id));
+"""
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = o.customer_id)",
+    "SELECT o.id FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE c.id IS NULL",
+    "SELECT customer_id FROM orders EXCEPT SELECT id FROM customers",
+])
+def test_an_orphan_check_a_foreign_key_guarantees_is_always_empty(sql: str):
+    smells = suggest(EMPTY_SCHEMA + sql).smells
+    assert [smell.concern for smell in smells] == [Concern.ALWAYS_EMPTY]
+    assert duckdb.connect().execute(EMPTY_SCHEMA + "INSERT INTO customers VALUES (1, 'a'); INSERT INTO orders VALUES (1, 1, NULL);" + sql).fetchall() == []
+
+
+@pytest.mark.parametrize("sql", [
+    # A nullable reference: a NULL note has no match.
+    "SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = o.note)",
+    "SELECT o.id FROM orders o LEFT JOIN customers c ON c.id = o.note WHERE c.id IS NULL",
+    "SELECT note FROM orders EXCEPT SELECT id FROM customers",
+    # Covered the other way round.
+    "SELECT c.id FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)",
+    # A scalar aggregate returns its row over no input.
+    "SELECT count(*) AS n FROM orders o WHERE NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = o.customer_id)",
+])
+def test_a_query_that_may_return_a_row_is_not_always_empty(sql: str):
+    assert Concern.ALWAYS_EMPTY not in [smell.concern for smell in suggest(EMPTY_SCHEMA + sql).smells]
