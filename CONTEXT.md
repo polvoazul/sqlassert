@@ -30,7 +30,7 @@ A SEMI or ANTI join has no Join Cardinality: it outputs no right rows.
 _Avoid_: Unique join marker, duplicate check, 1:N
 
 **Fan Trap**, **Chasm Trap**:
-An aggregate whose argument's rows a join may repeat (a Smell). A Fan Trap
+An aggregate whose argument's rows a join may repeat (a Hazard). A Fan Trap
 is through a join that is not proved to be a Unique Join; a Chasm Trap through
 a One To Many (or Many To One) Join whose argument is on the side with one row
 per key.
@@ -238,13 +238,22 @@ right before a simple `CASE`. Every marker attaches at one; `suggest` names each
 line and what it marks.
 _Avoid_: Marker position, anchor
 
-**Improvement**:
+**Rewrite**:
 A rewrite of the SQL itself, at one Attachment Site, that a Proof shows leaves
 the program's result unchanged as a multiset: an outer join that cannot keep a
 padded row written as an inner join, a join that is redundant or only filters,
 a redundant `DISTINCT` or grouping column, an unused CTE. `suggest` ranks
-Improvements (High level) before markers to paste (Mid level).
-_Avoid_: Optimization, lint, hint
+Rewrites before markers to paste, and those before Hazards.
+_Avoid_: Improvement, optimization, lint, hint
+
+**Hazard**:
+A place whose result the SQL leaves unspecified or likely wrong, with the
+failed Proof that would have pinned it: a Fan Trap or Chasm Trap, a `LIMIT`
+that picks arbitrary rows among ties, a scalar subquery that may return more
+than one row, a join equality that casts, a query that never returns a row.
+The SQL may be what its author meant. `suggest` lists Hazards last; the
+suggestion's type (`SuggestType`) is rewrite, marker or hazard.
+_Avoid_: Smell, code smell, lint, warning; "level" for the suggestion's type
 
 **Create Statement**:
 A top-level SQL declaration that introduces a Named Relation or related schema Knowledge into the analyzed program.

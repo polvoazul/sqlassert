@@ -600,8 +600,8 @@ about one relation's rows at a time.
   `DISTINCT`, redundant `GROUP BY` columns, join elimination, single-valued
   scalar subquery. Each is one closure query.
 - **Optimization hints** from proved dependencies (Lindner et al.,
-  [`references.md`](references.md)) are `suggest`'s Improvements
-  (`sqlassert/improvements.py`, issue 15): a redundant `GROUP BY` column
+  [`references.md`](references.md)) are `suggest`'s Rewrites
+  (`sqlassert/rewrites.py`, issue 15): a redundant `GROUP BY` column
   another grouping column determines, a redundant `DISTINCT`, a join whose
   right side is unique and contributes no used column (removable, or "join
   only filters"), and a LEFT JOIN that padding promotion makes inner.

@@ -1,6 +1,6 @@
-"""Low-level suggestions: code smells, from the Kossmann et al. 2022 triage (issue 15).
+"""Hazard suggestions: results the SQL leaves unspecified, from the Kossmann et al. 2022 triage (issue 15).
 
-A Smell is not a rewrite: the SQL may be what its author meant. It names a
+A Hazard is not a rewrite: the SQL may be what its author meant. It names a
 place where the result depends on something the SQL does not pin down, and
 the proof that would have pinned it, which failed:
 
@@ -26,7 +26,7 @@ the proof that would have pinned it, which failed:
   rows all appear on the right. Whether the key is enforced is not asked:
   sqlassert trusts every key the SQL states.
 
-A smell is reported only when sqlassert sees the whole Select Expression; an
+A hazard is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
 """
 
@@ -40,7 +40,7 @@ from typing import ClassVar
 from sqlglot import exp
 
 from sqlassert import ir
-from sqlassert.improvements import Level, _syntax_at_sites
+from sqlassert.rewrites import SuggestType, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
 from sqlassert.rules.equality import _binary_text, _comparison_type, _exact_arithmetic, _identity_comparison
@@ -61,23 +61,23 @@ class Concern(Enum):
 
 
 @dataclass(frozen=True)
-class Smell:
+class Hazard:
     """A place whose result the SQL leaves unspecified, with the failed proof."""
 
     site: AttachmentSite
     concern: Concern
     message: str
     evidence: Result
-    level: ClassVar[Level] = Level.LOW
+    suggest_type: ClassVar[SuggestType] = SuggestType.HAZARD
 
 
-def smells(
+def hazards(
     ast: ParsedProgram, program: ir.Program, arena: Arena, wanted: Callable[[AttachmentSite], bool] = lambda site: True,
-) -> list[Smell]:
-    """Every Smell in `program` at a site `wanted` accepts, in source order. `arena` must be active."""
+) -> list[Hazard]:
+    """Every Hazard in `program` at a site `wanted` accepts, in source order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
     reachable = set(program.nodes())
-    found: list[Smell] = []
+    found: list[Hazard] = []
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
     sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
@@ -102,7 +102,7 @@ def smells(
     return sorted(found, key=lambda item: item.site.offset)
 
 
-def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena) -> list[Smell]:
+def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena) -> list[Hazard]:
     """A filter of this Select that keeps no row: an anti join every row
     matches, or `x IS NULL` on a non-null x. A scalar aggregate still returns
     its one row, so the walk stops there."""
@@ -119,7 +119,7 @@ def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena)
                         "every row has a match in its NOT EXISTS subquery, which therefore removes every row: this "
                         "query never returns one (an orphan check a foreign key already guarantees)"
                     )
-                    return [Smell(site, Concern.ALWAYS_EMPTY, message, proof)]
+                    return [Hazard(site, Concern.ALWAYS_EMPTY, message, proof)]
                 relation = source
             case ir.Filter(input=source):
                 for conjunct in relation.conjuncts:
@@ -128,7 +128,7 @@ def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena)
                             proof = arena.prove(NonNullColumn(column=column))
                             if proof.value:
                                 message = f"{conjunct.origin.detail} is never TRUE ({column.name} is never NULL), so this query never returns a row"
-                                return [Smell(site, Concern.ALWAYS_EMPTY, message, proof)]
+                                return [Hazard(site, Concern.ALWAYS_EMPTY, message, proof)]
                         case _:
                             pass
                 relation = source
@@ -147,7 +147,7 @@ def _every_row_matches(join: ir.Join, arena: Arena) -> Result[bool]:
     return arena.prove(ReferentialCoverage(columns=lefts, referenced_columns=rights)) & arena.prove(NonNullColumns(columns=frozenset(lefts)))
 
 
-def _empty_except(site: AttachmentSite, operation: ir.SetOperation, arena: Arena) -> list[Smell]:
+def _empty_except(site: AttachmentSite, operation: ir.SetOperation, arena: Arena) -> list[Hazard]:
     """`A EXCEPT B` where every row of A, non-null, appears in B."""
     left, right = operation.left.output_columns, operation.right.output_columns
     if operation.by_name or len(left) != len(right):
@@ -156,10 +156,10 @@ def _empty_except(site: AttachmentSite, operation: ir.SetOperation, arena: Arena
     if not proof.value:
         return []
     message = "every row of the left input appears in the right one, so this EXCEPT never returns a row"
-    return [Smell(site, Concern.ALWAYS_EMPTY, message, proof)]
+    return [Hazard(site, Concern.ALWAYS_EMPTY, message, proof)]
 
 
-def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Smell]:
+def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
     """Each ON equality between a text column and a column of another known type."""
     found = []
     for conjunct in join.conjuncts:
@@ -173,13 +173,13 @@ def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Smell]:
                     "so different strings may match one value ('01' and '1' both equal 1): cast explicitly"
                 )
                 evidence = Result(False, "The comparison casts text", (conjunct,))
-                found.append(Smell(site, Concern.IMPLICIT_CAST, message, evidence))
+                found.append(Hazard(site, Concern.IMPLICIT_CAST, message, evidence))
             case _:
                 pass
     return found
 
 
-def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Smell]:
+def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
     """A scalar subquery that may return more than one row.
 
     Its join is many to one by construction (more rows fail the query), so
@@ -196,15 +196,15 @@ def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Smell]:
     if proof.value:
         return []
     message = f"this scalar subquery may return more than one row, a runtime error: {reason}"
-    return [Smell(site, Concern.SCALAR_SUBQUERY, message, proof)]
+    return [Hazard(site, Concern.SCALAR_SUBQUERY, message, proof)]
 
 
 # Join traps ------------------------------------------------------------------
 
 
-def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.Join, str]) -> list[Smell]:
+def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.Join, str]) -> list[Hazard]:
     """Each aggregate call whose input rows a join may repeat."""
-    found: list[Smell] = []
+    found: list[Hazard] = []
     for call in aggregate.calls:
         inputs = [ir.determinants(argument) for argument in call.arguments]
         if any(columns is None for columns in inputs):
@@ -219,7 +219,7 @@ def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.J
                     f"{call.description} counts the rows of {_label(join, join_labels)}, which is not proved "
                     "to repeat rows of only one input (a fan trap): rows may be counted more than once"
                 )
-                found.append(Smell(site, Concern.FAN_TRAP, message, proof))
+                found.append(Hazard(site, Concern.FAN_TRAP, message, proof))
             continue
         repeated = _repeating_join(aggregate.input, columns)
         if repeated is None:
@@ -235,7 +235,7 @@ def _traps(site: AttachmentSite, aggregate: ir.Aggregate, join_labels: dict[ir.J
             f"{call.description} reads rows that {_label(join, join_labels)} may repeat: the join {why} "
             f"({concern.value.lower()}), so a value may be counted more than once"
         )
-        found.append(Smell(site, concern, message, proof))
+        found.append(Hazard(site, concern, message, proof))
     return found
 
 
@@ -342,7 +342,7 @@ def _label(join: ir.Join, join_labels: dict[ir.Join, str]) -> str:
 # Arbitrary LIMIT -------------------------------------------------------------
 
 
-def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, keys: tuple[ir.OutputColumn, ...] | None) -> list[Smell]:
+def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, keys: tuple[ir.OutputColumn, ...] | None) -> list[Hazard]:
     """A LIMIT whose sort keys leave two different rows tied.
 
     Rows that agree on every selected column are interchangeable, so the keys
@@ -367,7 +367,7 @@ def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, keys: tuple[ir.Outpu
     names = ", ".join(column.name for column in loose)
     reason = f"the ORDER BY does not determine ({names}), so rows tied on it" if keys else "with no ORDER BY, rows"
     message = f"{reason} come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well"
-    return [Smell(site, Concern.ARBITRARY_LIMIT, message, closure)]
+    return [Hazard(site, Concern.ARBITRARY_LIMIT, message, closure)]
 
 
 def _ties_identical(column: ir.OutputColumn) -> bool:

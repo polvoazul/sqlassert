@@ -24,9 +24,9 @@ report for the rule set.
 1. Get the rule list; keep rules whose constraints include a key, NOT NULL
    or FK.
 2. Group them by rewrite shape; for each group record *covered* (the
-   sqlassert Improvement or smell), *add* (High rewrite, Low smell or
+   sqlassert Rewrite or hazard), *add* (rewrite, hazard or
    assertion, with its precondition as a Property), or *n/a* (why).
-3. File the *add* rows as items under issue 15's Low level, or new issues.
+3. File the *add* rows as items under issue 15's hazards, or new issues.
 
 ## Acceptance criteria
 

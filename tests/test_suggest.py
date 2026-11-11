@@ -295,7 +295,7 @@ def test_the_cli_prints_one_line_per_suggestion(tmp_path, capsys):
     assert main(["suggest", str(path)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["mid", "line", "5", "JOIN", "users", "Many", "To", "One", "Join", "/**ASSERT", "MANY", "TO", "ONE**/"]
+    assert lines[0].split() == ["marker", "line", "5", "JOIN", "users", "Many", "To", "One", "Join", "/**ASSERT", "MANY", "TO", "ONE**/"]
     assert len(lines) == len(suggest(path.read_text()).suggestions)
 
 

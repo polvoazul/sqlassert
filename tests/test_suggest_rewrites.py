@@ -1,6 +1,6 @@
-"""`suggest`, High level: native SQL improvements justified by a proof.
+"""`suggest`, rewrites: native SQL rewrites justified by a proof.
 
-Every rewrite an improvement proposes must preserve the program's result. The
+Every rewrite an rewrite proposes must preserve the program's result. The
 equivalence tests below run the original and the rewritten SQL on random tiny
 instances in DuckDB and compare the results as multisets.
 """
@@ -15,7 +15,7 @@ from soundness_oracle import SearchResult, _Database
 from sqlassert import suggest
 from sqlassert.__main__ import main
 from sqlassert.sql_parse import SqlParser
-from sqlassert.suggest import Level, Rewrite
+from sqlassert.suggest import SuggestType, RewriteKind
 
 SCHEMA = """
 CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE, name VARCHAR NOT NULL, nick VARCHAR);
@@ -24,12 +24,12 @@ CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES
 """
 
 
-def improvements(sql: str) -> list[tuple[Rewrite, str, int]]:
-    return [(i.rewrite, i.site.label, i.site.line) for i in suggest(sql).improvements]
+def rewrite_sites(sql: str) -> list[tuple[RewriteKind, str, int]]:
+    return [(i.kind, i.site.label, i.site.line) for i in suggest(sql).rewrites]
 
 
-def rewrites(sql: str) -> list[Rewrite]:
-    return [i.rewrite for i in suggest(sql).improvements]
+def rewrites(sql: str) -> list[RewriteKind]:
+    return [i.kind for i in suggest(sql).rewrites]
 
 
 # LEFT JOIN that cannot pad ----------------------------------------------------
@@ -38,12 +38,12 @@ def rewrites(sql: str) -> list[Rewrite]:
 def test_a_left_join_whose_padding_the_where_clause_rejects_is_an_inner_join():
     sql = SCHEMA + "SELECT s.ts, u.name FROM sessions s\nLEFT JOIN users u ON u.id = s.user_id\nWHERE u.nick = 'x'"
 
-    improvement, = suggest(sql).improvements
-    assert (improvement.rewrite, improvement.site.label, improvement.site.line) == (Rewrite.INNER_JOIN, "LEFT JOIN users AS u", 6)
-    assert improvement.level is Level.HIGH
-    assert "WHERE" in improvement.message
-    assert improvement.evidence.value
-    assert "padded by the LEFT JOIN" in improvement.evidence.explain()
+    rewrite, = suggest(sql).rewrites
+    assert (rewrite.kind, rewrite.site.label, rewrite.site.line) == (RewriteKind.INNER_JOIN, "LEFT JOIN users AS u", 6)
+    assert rewrite.suggest_type is SuggestType.REWRITE
+    assert "WHERE" in rewrite.message
+    assert rewrite.evidence.value
+    assert "padded by the LEFT JOIN" in rewrite.evidence.explain()
 
 
 def test_a_later_inner_join_on_a_padded_column_also_removes_the_padding():
@@ -52,19 +52,19 @@ def test_a_later_inner_join_on_a_padded_column_also_removes_the_padding():
     LEFT JOIN users u ON u.id = s.user_id
     JOIN orders o ON o.user_id = u.id
     """
-    assert rewrites(sql) == [Rewrite.INNER_JOIN]
+    assert rewrites(sql) == [RewriteKind.INNER_JOIN]
 
 
 def test_a_right_join_whose_padding_is_rejected_is_an_inner_join():
     sql = SCHEMA + "SELECT s.ts, u.name FROM users u RIGHT JOIN sessions s ON u.id = s.user_id WHERE u.name = 'x'"
-    assert rewrites(sql) == [Rewrite.INNER_JOIN]
+    assert rewrites(sql) == [RewriteKind.INNER_JOIN]
 
 
 def test_a_left_join_that_matches_exactly_one_row_pads_nothing():
     sql = SCHEMA + "SELECT o.total, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id"
-    improvement, = suggest(sql).improvements
-    assert improvement.rewrite is Rewrite.INNER_JOIN
-    assert "exactly one" in improvement.message
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.INNER_JOIN
+    assert "exactly one" in rewrite.message
 
 
 @pytest.mark.parametrize("where", [
@@ -75,7 +75,7 @@ def test_a_left_join_that_matches_exactly_one_row_pads_nothing():
 ])
 def test_a_left_join_whose_padding_may_survive_is_left_alone(where: str):
     sql = SCHEMA + f"SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id {where}"
-    assert Rewrite.INNER_JOIN not in rewrites(sql)
+    assert RewriteKind.INNER_JOIN not in rewrites(sql)
 
 
 def test_a_filter_in_an_enclosing_query_is_not_taken_as_removing_padding():
@@ -85,7 +85,7 @@ def test_a_filter_in_an_enclosing_query_is_not_taken_as_removing_padding():
     SELECT * FROM (SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id LIMIT 1) AS x
     WHERE x.name = 'a'
     """
-    assert Rewrite.INNER_JOIN not in rewrites(sql)
+    assert RewriteKind.INNER_JOIN not in rewrites(sql)
 
 
 # Redundant joins --------------------------------------------------------------
@@ -93,28 +93,28 @@ def test_a_filter_in_an_enclosing_query_is_not_taken_as_removing_padding():
 
 def test_a_unique_left_join_none_of_whose_columns_is_used_is_redundant():
     sql = SCHEMA + "SELECT s.ts FROM sessions s\nLEFT JOIN users u ON u.id = s.user_id"
-    improvement, = suggest(sql).improvements
-    assert (improvement.rewrite, improvement.site.line) == (Rewrite.REDUNDANT_JOIN, 6)
-    assert improvement.evidence.value
+    rewrite, = suggest(sql).rewrites
+    assert (rewrite.kind, rewrite.site.line) == (RewriteKind.REDUNDANT_JOIN, 6)
+    assert rewrite.evidence.value
 
 
 def test_an_exactly_one_inner_join_none_of_whose_columns_is_used_is_redundant():
     sql = SCHEMA + "SELECT o.total FROM orders o JOIN users u ON u.id = o.user_id"
-    assert rewrites(sql) == [Rewrite.REDUNDANT_JOIN]
+    assert rewrites(sql) == [RewriteKind.REDUNDANT_JOIN]
 
 
 def test_a_unique_inner_join_none_of_whose_columns_is_used_only_filters():
     sql = SCHEMA + "SELECT s.ts FROM sessions s JOIN users u ON u.id = s.user_id"
-    improvement, = suggest(sql).improvements
-    assert improvement.rewrite is Rewrite.FILTER_JOIN
-    assert "EXISTS" in improvement.message
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.FILTER_JOIN
+    assert "EXISTS" in rewrite.message
 
 
 def test_a_filter_only_join_followed_by_a_full_join_is_left_alone():
     # The filter would then apply after the FULL JOIN, which can no longer pad
     # the rows the join used to drop first.
     sql = SCHEMA + "SELECT s.ts FROM sessions s JOIN users u ON u.id = s.user_id FULL JOIN orders o ON o.id = s.ts"
-    assert Rewrite.FILTER_JOIN not in rewrites(sql)
+    assert RewriteKind.FILTER_JOIN not in rewrites(sql)
 
 
 def test_a_where_on_the_other_side_of_a_chained_full_join_keeps_the_left_join():
@@ -124,7 +124,7 @@ def test_a_where_on_the_other_side_of_a_chained_full_join_keeps_the_left_join():
         "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "FULL JOIN orders o ON o.total = u.id WHERE s.ts = 1"
     )
-    assert Rewrite.INNER_JOIN not in rewrites(sql)
+    assert RewriteKind.INNER_JOIN not in rewrites(sql)
 
 
 @pytest.mark.parametrize("query", [
@@ -140,7 +140,7 @@ def test_a_where_on_the_other_side_of_a_chained_full_join_keeps_the_left_join():
     "SELECT s.user_id FROM sessions s LEFT JOIN users u ON u.id = s.user_id GROUP BY s.user_id HAVING max(u.name) = 'a'",
 ])
 def test_a_join_whose_columns_are_used_is_not_redundant(query: str):
-    assert not {Rewrite.REDUNDANT_JOIN, Rewrite.FILTER_JOIN} & set(rewrites(SCHEMA + query))
+    assert not {RewriteKind.REDUNDANT_JOIN, RewriteKind.FILTER_JOIN} & set(rewrites(SCHEMA + query))
 
 
 def test_a_join_that_may_multiply_rows_is_not_redundant():
@@ -153,9 +153,9 @@ def test_a_join_that_may_multiply_rows_is_not_redundant():
 
 def test_distinct_over_rows_that_already_differ_is_redundant():
     sql = SCHEMA + "SELECT DISTINCT id, nick FROM users"
-    improvement, = suggest(sql).improvements
-    assert (improvement.rewrite, improvement.site.label) == (Rewrite.REDUNDANT_DISTINCT, "Root Select")
-    assert "id" in improvement.message
+    rewrite, = suggest(sql).rewrites
+    assert (rewrite.kind, rewrite.site.label) == (RewriteKind.REDUNDANT_DISTINCT, "Root Select")
+    assert "id" in rewrite.message
 
 
 @pytest.mark.parametrize("query", [
@@ -165,7 +165,7 @@ def test_distinct_over_rows_that_already_differ_is_redundant():
     "SELECT DISTINCT u.id FROM users u JOIN sessions s ON s.user_id = u.id",
 ])
 def test_distinct_that_may_remove_a_row_is_kept(query: str):
-    assert Rewrite.REDUNDANT_DISTINCT not in rewrites(SCHEMA + query)
+    assert RewriteKind.REDUNDANT_DISTINCT not in rewrites(SCHEMA + query)
 
 
 def test_a_grouping_column_another_one_determines_is_redundant():
@@ -173,21 +173,21 @@ def test_a_grouping_column_another_one_determines_is_redundant():
     SELECT u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id
     GROUP BY u.id, u.name
     """
-    improvement, = suggest(sql).improvements
-    assert improvement.rewrite is Rewrite.REDUNDANT_GROUPING
-    assert "name" in improvement.message and "any_value" in improvement.message
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.REDUNDANT_GROUPING
+    assert "name" in rewrite.message and "any_value" in rewrite.message
 
 
 @pytest.mark.parametrize("grouping", ["1, 2", "id, name", "(), id, name"])
 def test_a_grouping_reference_uses_the_resolved_select_expression(grouping: str):
     sql = SCHEMA + f"SELECT id, name AS label, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY {grouping}"
-    improvement, = suggest(sql).improvements
-    assert "any_value(name) AS label" in improvement.message
+    rewrite, = suggest(sql).rewrites
+    assert "any_value(name) AS label" in rewrite.message
 
 
-def test_a_grouping_improvement_remains_available_before_a_limit():
+def test_a_grouping_rewrite_remains_available_before_a_limit():
     sql = SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY id, name LIMIT 5"
-    assert rewrites(sql) == [Rewrite.REDUNDANT_GROUPING]
+    assert rewrites(sql) == [RewriteKind.REDUNDANT_GROUPING]
 
 
 def test_a_natural_join_warns_and_prevents_rewrites(tmp_path, capsys):
@@ -198,7 +198,7 @@ def test_a_natural_join_warns_and_prevents_rewrites(tmp_path, capsys):
         SELECT s.id FROM s LEFT JOIN u ON s.id = u.uid NATURAL JOIN o
     """
     report = suggest(sql)
-    assert report.suggestions == report.improvements == ()
+    assert report.suggestions == report.rewrites == ()
     assert any(diagnostic.code == "unsupported-natural-join" for diagnostic in report.diagnostics)
     path = tmp_path / "natural.sql"
     path.write_text(sql)
@@ -227,7 +227,7 @@ def test_mutually_determined_grouping_columns_drop_only_one():
         "SELECT o.id, o.user_id, count(*) AS n FROM orders o JOIN sessions s ON s.user_id = o.id "
         "WHERE o.id = o.user_id GROUP BY o.id, o.user_id"
     )
-    assert rewrites(sql) == [Rewrite.REDUNDANT_GROUPING]
+    assert rewrites(sql) == [RewriteKind.REDUNDANT_GROUPING]
 
 
 # A GROUP BY whose groups are single rows ----------------------------------------
@@ -238,18 +238,18 @@ def test_a_group_by_over_a_key_of_its_input_is_a_projection():
         "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, any_value(nick) AS a "
         "FROM users GROUP BY id"
     )
-    improvement, = suggest(sql).improvements
-    assert improvement.rewrite is Rewrite.GROUPING_PROJECTION
-    assert improvement.message.endswith(
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.message.endswith(
         "drop GROUP BY and write SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id + 1 AS s, nick AS a"
     )
 
 
 def test_a_group_by_kept_unique_through_a_many_to_one_join_is_a_projection():
     sql = SCHEMA + "SELECT o.id, max(u.name) AS name FROM orders o JOIN users u ON u.id = o.user_id GROUP BY o.id"
-    improvement, = suggest(sql).improvements
-    assert improvement.rewrite is Rewrite.GROUPING_PROJECTION
-    assert improvement.message.endswith("write SELECT o.id, u.name AS name")
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.message.endswith("write SELECT o.id, u.name AS name")
 
 
 @pytest.mark.parametrize("query", [
@@ -264,7 +264,7 @@ def test_a_group_by_kept_unique_through_a_many_to_one_join_is_a_projection():
     "SELECT id, sum(count(*)) OVER () AS s FROM users GROUP BY id",
 ])
 def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projection(query: str):
-    assert Rewrite.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
+    assert RewriteKind.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
 
 
 # EXCEPT and INTERSECT over a duplicate-free input -----------------------------------
@@ -277,9 +277,9 @@ def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projecti
     ("SELECT user_id FROM sessions EXCEPT SELECT id FROM users EXCEPT SELECT 3", "write EXCEPT ALL"),
 ])
 def test_except_or_intersect_over_an_input_without_duplicates_can_keep_all(query: str, message: str):
-    improvement, = suggest(SCHEMA + query).improvements
-    assert improvement.rewrite is Rewrite.SET_OPERATION_ALL
-    assert improvement.message.endswith(message)
+    rewrite, = suggest(SCHEMA + query).rewrites
+    assert rewrite.kind is RewriteKind.SET_OPERATION_ALL
+    assert rewrite.message.endswith(message)
 
 
 @pytest.mark.parametrize("query", [
@@ -291,22 +291,22 @@ def test_except_or_intersect_over_an_input_without_duplicates_can_keep_all(query
     "SELECT id FROM users UNION SELECT user_id FROM sessions",
 ])
 def test_except_or_intersect_that_may_remove_a_duplicate_is_kept(query: str):
-    assert Rewrite.SET_OPERATION_ALL not in rewrites(SCHEMA + query)
+    assert RewriteKind.SET_OPERATION_ALL not in rewrites(SCHEMA + query)
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "bigquery", "snowflake", "oracle"])
 def test_except_all_is_not_suggested_where_the_dialect_lacks_it(dialect: str):
     report = suggest(SCHEMA + "SELECT id FROM users EXCEPT SELECT user_id FROM sessions", dialect=dialect)
-    assert Rewrite.SET_OPERATION_ALL not in [improvement.rewrite for improvement in report.improvements]
+    assert RewriteKind.SET_OPERATION_ALL not in [rewrite.kind for rewrite in report.rewrites]
 
 
 # LIMIT and ORDER BY on one row --------------------------------------------------
 
 
 def test_limit_and_order_by_on_at_most_one_row_change_nothing():
-    improvement, = suggest(SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1").improvements
-    assert improvement.rewrite is Rewrite.ONE_ROW
-    assert improvement.message.endswith("ORDER BY and LIMIT change nothing: drop them")
+    rewrite, = suggest(SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1").rewrites
+    assert rewrite.kind is RewriteKind.ONE_ROW
+    assert rewrite.message.endswith("ORDER BY and LIMIT change nothing: drop them")
 
 
 @pytest.mark.parametrize("query", [
@@ -315,7 +315,7 @@ def test_limit_and_order_by_on_at_most_one_row_change_nothing():
     "SELECT id FROM users WHERE name = 'a' ORDER BY id LIMIT 1",
 ])
 def test_limit_that_may_change_the_rows_is_kept(query: str):
-    assert Rewrite.ONE_ROW not in rewrites(SCHEMA + query)
+    assert RewriteKind.ONE_ROW not in rewrites(SCHEMA + query)
 
 
 # Self-joins on a key -------------------------------------------------------------
@@ -335,8 +335,8 @@ def test_limit_that_may_change_the_rows_is_kept(query: str):
     ),
 ])
 def test_a_self_join_on_a_key_reads_the_same_row(query: str, rewritten: str):
-    improvement = next(i for i in suggest(SCHEMA + query).improvements if i.rewrite is Rewrite.SELF_JOIN)
-    assert improvement.message.endswith(rewritten)
+    rewrite = next(i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.SELF_JOIN)
+    assert rewrite.message.endswith(rewritten)
 
 
 @pytest.mark.parametrize("query", [
@@ -350,7 +350,7 @@ def test_a_self_join_on_a_key_reads_the_same_row(query: str, rewritten: str):
     "WITH c AS (SELECT id, name FROM users LIMIT 3) SELECT a.id, b.name FROM c a JOIN c b ON a.id = b.id",
 ])
 def test_a_join_that_may_read_another_row_is_not_a_self_join(query: str):
-    assert Rewrite.SELF_JOIN not in rewrites(SCHEMA + query)
+    assert RewriteKind.SELF_JOIN not in rewrites(SCHEMA + query)
 
 
 # Conditions the others imply -----------------------------------------------------
@@ -364,9 +364,9 @@ def test_a_join_that_may_read_another_row_is_not_a_self_join(query: str):
     ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "write u.nick IS NOT NULL in ON"),
 ])
 def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
-    improvements = [i for i in suggest(SCHEMA + query).improvements if i.rewrite is Rewrite.IMPLIED_CONDITION]
-    assert len(improvements) == 1
-    assert improvements[0].message.endswith(message)
+    rewrites = [i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.IMPLIED_CONDITION]
+    assert len(rewrites) == 1
+    assert rewrites[0].message.endswith(message)
 
 
 @pytest.mark.parametrize("query", [
@@ -375,7 +375,7 @@ def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
     "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND u.name = 'x'",
 ])
 def test_a_condition_that_may_remove_a_row_is_kept(query: str):
-    assert Rewrite.IMPLIED_CONDITION not in rewrites(SCHEMA + query)
+    assert RewriteKind.IMPLIED_CONDITION not in rewrites(SCHEMA + query)
 
 
 # Unused CTEs ------------------------------------------------------------------
@@ -387,8 +387,8 @@ def test_a_cte_nothing_references_is_dead_code():
     used AS (SELECT user_id FROM sessions)
     SELECT user_id FROM used
     """
-    improvement, = suggest(sql).improvements
-    assert (improvement.rewrite, improvement.site.label, improvement.site.line) == (Rewrite.UNUSED_CTE, "CTE unused", 6)
+    rewrite, = suggest(sql).rewrites
+    assert (rewrite.kind, rewrite.site.label, rewrite.site.line) == (RewriteKind.UNUSED_CTE, "CTE unused", 6)
 
 
 def test_a_cte_referenced_only_by_an_unused_cte_is_dead_too():
@@ -396,7 +396,7 @@ def test_a_cte_referenced_only_by_an_unused_cte_is_dead_too():
     WITH a AS (SELECT id FROM users), b AS (SELECT id FROM a)
     SELECT user_id FROM sessions
     """
-    assert sorted(label for _, label, _ in improvements(sql)) == ["CTE a", "CTE b"]
+    assert sorted(label for _, label, _ in rewrite_sites(sql)) == ["CTE a", "CTE b"]
 
 
 def test_a_cte_used_in_a_nested_query_is_alive():
@@ -410,33 +410,33 @@ def test_a_cte_used_in_a_nested_query_is_alive():
 # Output -----------------------------------------------------------------------
 
 
-def test_the_cli_lists_improvements_before_markers(tmp_path, capsys):
+def test_the_cli_lists_rewrites_before_markers(tmp_path, capsys):
     path = tmp_path / "query.sql"
     path.write_text(SCHEMA + "SELECT u.id, s.ts FROM sessions s\nLEFT JOIN users u ON u.id = s.user_id\nWHERE u.name = 'a'")
 
     assert main(["suggest", str(path)]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split()[:6] == ["high", "line", "6", "LEFT", "JOIN", "users"]
+    assert lines[0].split()[:6] == ["rewrite", "line", "6", "LEFT", "JOIN", "users"]
     assert "INNER JOIN" in lines[0]
-    assert all(line.startswith("mid") for line in lines[1:])
+    assert all(line.startswith("marker") for line in lines[1:])
     assert len(lines) == 1 + len(suggest(path.read_text()).suggestions)
 
 
 # Rewrites preserve the result ---------------------------------------------------
 
-# (original, rewritten, the improvement that justifies the rewrite)
+# (original, rewritten, the rewrite that justifies the rewrite)
 EQUIVALENT = [
     # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
     (
         SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
         SCHEMA + "SELECT o.id FROM orders o",
-        Rewrite.REDUNDANT_FILTER,
+        RewriteKind.REDUNDANT_FILTER,
     ),
     (
         SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
         SCHEMA + "SELECT o.id FROM orders o WHERE o.total = 1",
-        Rewrite.REDUNDANT_FILTER,
+        RewriteKind.REDUNDANT_FILTER,
     ),
     # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
     (
@@ -444,14 +444,14 @@ EQUIVALENT = [
         "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     # A WHERE EXISTS is a semi join, whose ON rejects NULL like a later inner join's.
     (
@@ -459,141 +459,141 @@ EQUIVALENT = [
         "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
         SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
         "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
         SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
         "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
         SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1",
-        Rewrite.REDUNDANT_GROUPING,
+        RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
         SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT o.total, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
         SCHEMA + "SELECT o.total, u.name FROM orders o JOIN users u ON u.id = o.user_id",
-        Rewrite.INNER_JOIN,
+        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "AND u.nick = '1' GROUP BY s.ts",
         SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s GROUP BY s.ts",
-        Rewrite.REDUNDANT_JOIN,
+        RewriteKind.REDUNDANT_JOIN,
     ),
     (
         SCHEMA + "SELECT o.total FROM orders o JOIN users u ON u.id = o.user_id",
         SCHEMA + "SELECT o.total FROM orders o",
-        Rewrite.REDUNDANT_JOIN,
+        RewriteKind.REDUNDANT_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
         "LEFT JOIN orders o ON o.total = s.ts",
         SCHEMA + "SELECT s.ts, o.total FROM sessions s LEFT JOIN orders o ON o.total = s.ts "
         "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')",
-        Rewrite.FILTER_JOIN,
+        RewriteKind.FILTER_JOIN,
     ),
     (
         SCHEMA + "SELECT DISTINCT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
         SCHEMA + "SELECT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
-        Rewrite.REDUNDANT_DISTINCT,
+        RewriteKind.REDUNDANT_DISTINCT,
     ),
     (
         SCHEMA + "SELECT DISTINCT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
         "LEFT JOIN users u ON u.id = s.user_id",
         SCHEMA + "SELECT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
         "LEFT JOIN users u ON u.id = s.user_id",
-        Rewrite.REDUNDANT_DISTINCT,
+        RewriteKind.REDUNDANT_DISTINCT,
     ),
     (
         SCHEMA + "SELECT DISTINCT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
         SCHEMA + "SELECT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
-        Rewrite.REDUNDANT_DISTINCT,
+        RewriteKind.REDUNDANT_DISTINCT,
     ),
     (
         SCHEMA + "SELECT u.id, u.name, count(s.ts) AS n FROM users u LEFT JOIN sessions s ON s.user_id = u.id "
         "GROUP BY u.id, u.name",
         SCHEMA + "SELECT u.id, any_value(u.name) AS name, count(s.ts) AS n FROM users u "
         "LEFT JOIN sessions s ON s.user_id = u.id GROUP BY u.id",
-        Rewrite.REDUNDANT_GROUPING,
+        RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "SELECT s.user_id, u.nick, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "GROUP BY s.user_id, u.nick",
         SCHEMA + "SELECT s.user_id, any_value(u.nick) AS nick, count(*) AS n FROM sessions s "
         "LEFT JOIN users u ON u.id = s.user_id GROUP BY s.user_id",
-        Rewrite.REDUNDANT_GROUPING,
+        RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "WITH dead AS (SELECT id FROM users) SELECT user_id FROM sessions",
         SCHEMA + "SELECT user_id FROM sessions",
-        Rewrite.UNUSED_CTE,
+        RewriteKind.UNUSED_CTE,
     ),
     (
         SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, "
         "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
         SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id + 1 AS s, "
         "nick AS a, id AS v FROM users WHERE nick IS NULL OR id > 1",
-        Rewrite.GROUPING_PROJECTION,
+        RewriteKind.GROUPING_PROJECTION,
     ),
     (
         SCHEMA + "SELECT o.id, max(u.nick) AS nick, count(u.nick) AS c FROM orders o LEFT JOIN users u ON u.id = o.user_id "
         "GROUP BY o.id",
         SCHEMA + "SELECT o.id, u.nick AS nick, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END AS c FROM orders o "
         "LEFT JOIN users u ON u.id = o.user_id",
-        Rewrite.GROUPING_PROJECTION,
+        RewriteKind.GROUPING_PROJECTION,
     ),
     (
         SCHEMA + "SELECT id, nick FROM users EXCEPT SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
         SCHEMA + "SELECT id, nick FROM users EXCEPT ALL SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
-        Rewrite.SET_OPERATION_ALL,
+        RewriteKind.SET_OPERATION_ALL,
     ),
     (
         SCHEMA + "SELECT user_id FROM sessions INTERSECT SELECT id FROM users",
         SCHEMA + "SELECT user_id FROM sessions INTERSECT ALL SELECT id FROM users",
-        Rewrite.SET_OPERATION_ALL,
+        RewriteKind.SET_OPERATION_ALL,
     ),
     (
         SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
         SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT ALL SELECT ts FROM sessions",
-        Rewrite.SET_OPERATION_ALL,
+        RewriteKind.SET_OPERATION_ALL,
     ),
     (
         SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
         SCHEMA + "SELECT id, name FROM users WHERE id = 3",
-        Rewrite.ONE_ROW,
+        RewriteKind.ONE_ROW,
     ),
     (
         SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
         SCHEMA + "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email FROM users AS u",
-        Rewrite.SELF_JOIN,
+        RewriteKind.SELF_JOIN,
     ),
     (
         SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick AND v.name <> 'a'",
         SCHEMA + "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL AND u.name <> 'a'",
-        Rewrite.SELF_JOIN,
+        RewriteKind.SELF_JOIN,
     ),
 ]
 
@@ -615,7 +615,7 @@ def differing_instance(original: str, rewritten: str) -> SearchResult:
 
 
 @pytest.mark.parametrize(("original", "rewritten", "rewrite"), EQUIVALENT)
-def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: Rewrite):
+def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: RewriteKind):
     assert rewrite in rewrites(original)
 
     search = differing_instance(original, rewritten)
@@ -646,7 +646,7 @@ def test_a_later_left_join_on_a_column_that_is_not_padded_does_not_chain():
         "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.total = s.ts WHERE o.total = 1"
     )
-    assert [label for rewrite, label, _ in improvements(sql) if rewrite is Rewrite.INNER_JOIN] == ["LEFT JOIN orders AS o"]
+    assert [label for rewrite, label, _ in rewrite_sites(sql) if rewrite is RewriteKind.INNER_JOIN] == ["LEFT JOIN orders AS o"]
 
 
 @pytest.mark.parametrize(
@@ -661,7 +661,7 @@ def test_a_later_left_join_on_a_column_that_is_not_padded_does_not_chain():
     ],
 )
 def test_a_subquery_filter_that_may_reject_a_row_is_kept(sql: str):
-    assert Rewrite.REDUNDANT_FILTER not in rewrites(SCHEMA + sql)
+    assert RewriteKind.REDUNDANT_FILTER not in rewrites(SCHEMA + sql)
 
 
 @pytest.mark.parametrize(
@@ -674,7 +674,7 @@ def test_a_subquery_filter_that_may_reject_a_row_is_kept(sql: str):
 )
 def test_an_order_by_key_the_earlier_keys_determine_is_redundant(sql: str, message: str):
     schema = "CREATE TABLE t_sorted (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);\n"
-    found = [item for item in suggest(schema + sql).improvements if item.rewrite is Rewrite.REDUNDANT_SORT_KEY]
+    found = [item for item in suggest(schema + sql).rewrites if item.kind is RewriteKind.REDUNDANT_SORT_KEY]
     assert len(found) == 1
     assert message in found[0].message
 
@@ -685,7 +685,7 @@ def test_an_order_by_key_the_earlier_keys_determine_is_redundant(sql: str, messa
 )
 def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
     schema = "CREATE TABLE t_sorted (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);\n"
-    assert not any(item.rewrite is Rewrite.REDUNDANT_SORT_KEY for item in suggest(schema + sql).improvements)
+    assert not any(item.kind is RewriteKind.REDUNDANT_SORT_KEY for item in suggest(schema + sql).rewrites)
 
 
 @pytest.mark.parametrize(
@@ -701,4 +701,4 @@ def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
     ids=["qualified key", "distinct on", "collated key"],
 )
 def test_an_order_by_key_whose_earlier_keys_may_tie_different_rows_is_kept(sql: str):
-    assert not any(item.rewrite is Rewrite.REDUNDANT_SORT_KEY for item in suggest(sql).improvements)
+    assert not any(item.kind is RewriteKind.REDUNDANT_SORT_KEY for item in suggest(sql).rewrites)

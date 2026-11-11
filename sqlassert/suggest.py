@@ -1,9 +1,9 @@
 """Suggest the Property Markers sqlassert can prove for a SQL Program.
 
-Three levels of suggestion. High: Improvements, rewrites of the SQL itself
-that a proof shows leave its result unchanged (`improvements.py`). Mid:
-markers that lock in what is provable but not asserted. Low: Smells, places
-whose result the SQL leaves unspecified (`smells.py`).
+Three types of suggestion (`SuggestType`). Rewrites: changes to the SQL
+itself that a proof shows leave its result unchanged (`rewrites.py`).
+Markers: what is provable but not asserted, to lock in. Hazards: places
+whose result the SQL leaves unspecified (`hazards.py`).
 
 Marker candidates are generated mechanically from the Program IR, one
 Attachment Site at a time: every markable JOIN may be a Unique Join (or
@@ -28,9 +28,9 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.improvements import Improvement, Level, Rewrite, improvements
+from sqlassert.rewrites import Rewrite, SuggestType, RewriteKind, rewrites
 from sqlassert.ir.convert import IrConversionResult, IrParser
-from sqlassert.smells import Concern, Smell, smells
+from sqlassert.hazards import Concern, Hazard, hazards
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import (
     EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet,
@@ -49,7 +49,7 @@ DEFAULT_MAX_SIZE = 3
 MAX_ENUM_VALUES = 10
 
 __all__ = [
-    "Candidate", "Concern", "Improvement", "Level", "Rewrite", "Smell", "Suggester", "Suggestion", "SuggestionReport",
+    "Candidate", "Concern", "Rewrite", "SuggestType", "RewriteKind", "Hazard", "Suggester", "Suggestion", "SuggestionReport",
     "annotate", "candidates", "suggest", "suggest_parsed",
 ]
 
@@ -71,7 +71,7 @@ class Suggestion:
     property: Property
     marker: str
     evidence: Result[bool]
-    level: ClassVar[Level] = Level.MID
+    suggest_type: ClassVar[SuggestType] = SuggestType.MARKER
 
     @property
     def kind(self) -> str:
@@ -81,15 +81,15 @@ class Suggestion:
 
 @dataclass(frozen=True)
 class SuggestionReport:
-    """`improvements` (High) rewrite the SQL; `suggestions` (Mid) are markers
-    to paste; `smells` (Low) point at results the SQL leaves unspecified."""
+    """`rewrites` (High) rewrite the SQL; `suggestions` (Mid) are markers
+    to paste; `hazards` (Low) point at results the SQL leaves unspecified."""
 
     sql: str
     suggestions: tuple[Suggestion, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
-    improvements: tuple[Improvement, ...] = ()
+    rewrites: tuple[Rewrite, ...] = ()
     warnings: tuple[Diagnostic, ...] = ()
-    smells: tuple[Smell, ...] = ()
+    hazards: tuple[Hazard, ...] = ()
 
     def annotated(self, chosen: Iterable[Suggestion] | None = None) -> str:
         """The SQL with the chosen suggestions' markers pasted in (all by default)."""
@@ -114,7 +114,7 @@ def suggest(
     sql: str, *, dialect: str = DEFAULT_DIALECT, max_size: int = DEFAULT_MAX_SIZE, trust_unenforced_keys: bool = True,
 ) -> SuggestionReport:
     """Every Property sqlassert can prove about `sql`, as markers to paste,
-    and every Improvement a proof justifies.
+    and every Rewrite a proof justifies.
 
     Per Select Expression: each minimal Unique Set up to `max_size` columns,
     as a Non-Null Unique Set when that also holds, plus one minimal set found
@@ -142,7 +142,7 @@ def suggest_parsed(
 class Suggester:
     """`suggest` over one lowered Program, one part at a time, for a caller
     that wants each part as soon as it is found: proofs are memoized across
-    parts, and Improvements and Smells are found once, for every site
+    parts, and Rewrites and Hazards are found once, for every site
     `sites` accepts (all by default). Use it as a context manager: it holds
     the Program's analysis session."""
 
@@ -169,15 +169,15 @@ class Suggester:
         self.reachable = set(self.program.nodes())
         self._session: AbstractContextManager[Arena] | None = None
         self._arena: Arena | None = None
-        self._improvements: list[Improvement] = []
-        self._smells: list[Smell] = []
+        self._rewrites: list[Rewrite] = []
+        self._hazards: list[Hazard] = []
 
     def __enter__(self) -> Suggester:
         self._session = Engine().session(self.program, self.conversion.knowledge)
         self._arena = self._session.__enter__()
         if not self.blocked:
-            self._improvements = improvements(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
-            self._smells = smells(self.ast, self.program, self._arena, wanted=self.sites)
+            self._rewrites = rewrites(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
+            self._hazards = hazards(self.ast, self.program, self._arena, wanted=self.sites)
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -222,8 +222,8 @@ class Suggester:
             )
         )
         return SuggestionReport(
-            self.sql, kept, self.diagnostics, tuple(item for item in self._improvements if wanted(item.site)),
-            self.conversion.warnings, tuple(item for item in self._smells if wanted(item.site)),
+            self.sql, kept, self.diagnostics, tuple(item for item in self._rewrites if wanted(item.site)),
+            self.conversion.warnings, tuple(item for item in self._hazards if wanted(item.site)),
         )
 
 

@@ -116,8 +116,8 @@ what they read (arguments after `--` go to dbt; a `--select` of your own
 replaces that selection), then lists
 what [`sqlassert suggest`](https://github.com/polvoazul/sqlassert#readme)
 finds in each model, with the relations it reads declared as `check` declares
-them: `high` rewrites that keep the result, `mid` markers that will be
-`PROVED` when pasted at the end of their line, `low` smells. `--explain`
+them by type: `rewrite`s that keep the result, `marker`s that will be
+`PROVED` when pasted at the end of their line, `hazard`s. `--explain`
 prints each one's evidence. A marker on the model's own output that its
 tests or contract already state is left out, or cut to the part none states
 (a `unique` test leaves `NOT NULL` to suggest). A line inside SQL that dbt inlined or that a tag

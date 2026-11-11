@@ -1,6 +1,6 @@
-"""High-level suggestions: native SQL improvements justified by a proof.
+"""Rewrite suggestions: changes to the SQL justified by a proof.
 
-Each Improvement names a rewrite that leaves the program's result unchanged,
+Each Rewrite names a change that leaves the program's result unchanged,
 as a multiset, and the evidence that it does:
 
 - An outer join that never keeps a padded row is an inner join: it matches
@@ -53,15 +53,16 @@ from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 from sqlassert.sql_parse import ParsedProgram, grouping, marker_position
 
 
-class Level(Enum):
-    """How directly a suggestion improves the SQL; HIGH ranks first."""
+class SuggestType(Enum):
+    """What a suggestion is: a rewrite of the SQL, a marker to paste, or a
+    hazard in its result; listed in that order."""
 
-    HIGH = "high"
-    MID = "mid"
-    LOW = "low"
+    REWRITE = "rewrite"
+    MARKER = "marker"
+    HAZARD = "hazard"
 
 
-class Rewrite(Enum):
+class RewriteKind(Enum):
     INNER_JOIN = "INNER JOIN"
     REDUNDANT_JOIN = "Redundant Join"
     FILTER_JOIN = "Filter-Only Join"
@@ -78,21 +79,21 @@ class Rewrite(Enum):
 
 
 @dataclass(frozen=True)
-class Improvement:
+class Rewrite:
     """A result-preserving rewrite of the SQL at one site, with its proof."""
 
     site: AttachmentSite
-    rewrite: Rewrite
+    kind: RewriteKind
     message: str
     evidence: Result[bool]
-    level: ClassVar[Level] = Level.HIGH
+    suggest_type: ClassVar[SuggestType] = SuggestType.REWRITE
 
 
-def improvements(
+def rewrites(
     ast: ParsedProgram, program: ir.Program, arena: Arena, dialect: str,
     wanted: Callable[[AttachmentSite], bool] = lambda site: True,
-) -> list[Improvement]:
-    """Every Improvement for `program` at a site `wanted` accepts, in source
+) -> list[Rewrite]:
+    """Every Rewrite for `program` at a site `wanted` accepts, in source
     order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
     parents: dict[ir.RelationExpr, list[ir.RelationExpr]] = {}
@@ -100,7 +101,7 @@ def improvements(
         for child in ir.children(relation):
             if isinstance(child, ir.RelationExpr):
                 parents.setdefault(child, []).append(relation)
-    found: list[Improvement] = []
+    found: list[Rewrite] = []
     sort_keys = dict(program.sort_keys)
     for site, relation in program.attachment_sites:
         if isinstance(relation, ir.SimpleCase) or not wanted(site):
@@ -142,10 +143,10 @@ def improvements(
     return sorted(found, key=lambda item: item.site.offset)
 
 
-def _redundant_subquery_filters(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr) -> list[Improvement]:
+def _redundant_subquery_filters(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr) -> list[Rewrite]:
     """The semi joins of this Select (its WHERE subqueries, issue 23, or an
     explicit SEMI JOIN) that match every row exactly once, so filter nothing."""
-    found: list[Improvement] = []
+    found: list[Rewrite] = []
     while True:
         match relation:
             case ir.Project(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source) | ir.Filter(input=source):
@@ -155,7 +156,7 @@ def _redundant_subquery_filters(arena: Arena, site: AttachmentSite, relation: ir
                     proof = arena.prove(ExactlyOneJoin(join=relation))
                     if proof.value:
                         message = f"every row matches exactly one row, so {relation.origin.detail} filters nothing: delete it"
-                        found.append(Improvement(site, Rewrite.REDUNDANT_FILTER, message, proof))
+                        found.append(Rewrite(site, RewriteKind.REDUNDANT_FILTER, message, proof))
                 relation = source
             case _:
                 return found
@@ -182,7 +183,7 @@ def _nodes(ast: ParsedProgram, *types: type[Expr]) -> Iterator:
 
 def _inner_join(
     arena: Arena, site: AttachmentSite, join: ir.Join, parents: dict[ir.RelationExpr, list[ir.RelationExpr]]
-) -> Improvement | None:
+) -> Rewrite | None:
     """An outer join none of whose padded rows reaches the result.
 
     Only the joins above it in the same FROM and its own WHERE are searched:
@@ -196,7 +197,7 @@ def _inner_join(
         exactly_one = arena.prove(ExactlyOneJoin(join=join))
         if exactly_one.value:
             message = f"every left row matches exactly one right row, so the {keyword} pads nothing: write JOIN"
-            return Improvement(site, Rewrite.INNER_JOIN, message, exactly_one)
+            return Rewrite(site, RewriteKind.INNER_JOIN, message, exactly_one)
     # Joins that pad every row this one pads, each with why (issue 33): a
     # later LEFT or FULL JOIN whose ON rejects NULL in a column one of them
     # pads finds no match for those rows, so it pads them too.
@@ -233,7 +234,7 @@ def _inner_join(
                     (conjunct, column), [padded],
                 )
                 message = f"{clause} rejects NULL in {column.name}, so no padded row survives: write JOIN"
-                return Improvement(site, Rewrite.INNER_JOIN, message, evidence)
+                return Rewrite(site, RewriteKind.INNER_JOIN, message, evidence)
         if isinstance(parent, ir.Join) and parent.kind in {"left", "full"}:
             for column, conjunct in _null_rejected(parent.conjuncts).items():
                 via = padded_by(column)
@@ -252,14 +253,14 @@ def _inner_join(
 
 def _redundant_sort_keys(
     site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select, keys: tuple[ir.OutputColumn, ...] | None, dialect: str
-) -> list[Improvement]:
+) -> list[Rewrite]:
     """Each ORDER BY key the keys before it determine, NULL equal to NULL
     (Paulley §3, reducing the sort list): rows tied on the earlier keys agree
     on it, so it never breaks a tie. Only while the earlier keys compare by
     identity: a collation or a float ties values its equality tells apart.
     Silent when a key is an expression or a name that does not resolve to one
     column, and for DISTINCT ON, whose ORDER BY picks the rows it keeps."""
-    from sqlassert.smells import _ties_identical
+    from sqlassert.hazards import _ties_identical
 
     if not keys:
         return []
@@ -276,14 +277,14 @@ def _redundant_sort_keys(
         written = [(item.this if isinstance(item, exp.Ordered) else item).sql(dialect=dialect) for item in items]
         message = f"({', '.join(written[:position])}) determine {written[position]}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
         evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
-        found.append(Improvement(site, Rewrite.REDUNDANT_SORT_KEY, message, evidence))
+        found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, evidence))
     return found
 
 
 # Redundant joins ------------------------------------------------------------------
 
 
-def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, dialect: str) -> Improvement | None:
+def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, dialect: str) -> Rewrite | None:
     if join.kind not in {"inner", "left"} or _right_side_used(join, node):
         return None
     source = node.this.sql(dialect=dialect)
@@ -292,12 +293,12 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
         unique = arena.prove(ManyToOneJoin(join=join))
         if unique.value:
             message = f"at most one match per row and {unused}: delete the join"
-            return Improvement(site, Rewrite.REDUNDANT_JOIN, message, unique)
+            return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, unique)
         return None
     exactly_one = arena.prove(ExactlyOneJoin(join=join))
     if exactly_one.value:
         message = f"exactly one match per row and {unused}: delete the join"
-        return Improvement(site, Rewrite.REDUNDANT_JOIN, message, exactly_one)
+        return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, exactly_one)
     unique = arena.prove(ManyToOneJoin(join=join))
     if not unique.value or _right_or_full_join_follows(node):
         # A filter moved to WHERE would act after a later RIGHT or FULL JOIN,
@@ -309,7 +310,7 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
         f"at most one match per row and {unused}, so it only filters: "
         f"write WHERE EXISTS (SELECT 1 FROM {source}{condition})"
     )
-    return Improvement(site, Rewrite.FILTER_JOIN, message, unique)
+    return Rewrite(site, RewriteKind.FILTER_JOIN, message, unique)
 
 
 def _right_side_used(join: ir.Join, node: exp.Join) -> bool:
@@ -355,7 +356,7 @@ def _within(node: Expr, ancestor: Expr) -> bool:
 # DISTINCT and GROUP BY ------------------------------------------------------------
 
 
-def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Improvement]:
+def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Rewrite]:
     """DISTINCT over input rows no two of which agree on the selected
     columns, NULL equal to NULL: a strict key of the input."""
     selected = {
@@ -368,7 +369,7 @@ def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Imp
     evidence = _reaches_row_identity(_closure(distinct.input, frozenset(key), frozenset()))
     names = ", ".join(selected[column] for column in key)
     message = f"no two rows agree on ({names}), NULL equal to NULL, so DISTINCT removes nothing: delete DISTINCT"
-    return [Improvement(site, Rewrite.REDUNDANT_DISTINCT, message, evidence)]
+    return [Rewrite(site, RewriteKind.REDUNDANT_DISTINCT, message, evidence)]
 
 
 def _strict_key(relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]) -> tuple[ir.OutputColumn, ...] | None:
@@ -386,7 +387,7 @@ def _strict_key(relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...])
     return columns
 
 
-def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> Improvement | None:
+def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> Rewrite | None:
     """A GROUP BY whose grouping columns no two input rows agree on, NULL
     equal to NULL (GROUP BY puts NULLs in one group): every group is one row,
     so the query is a projection, each aggregate its value over that row.
@@ -418,7 +419,7 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
         f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
         f"drop GROUP BY and write SELECT {', '.join(items)}"
     )
-    return Improvement(site, Rewrite.GROUPING_PROJECTION, message, evidence)
+    return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence)
 
 
 def _one_row(item: Expr, dialect: str) -> str | None:
@@ -454,7 +455,7 @@ def _one_row(item: Expr, dialect: str) -> str | None:
     return item.sql(dialect=dialect)
 
 
-def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> list[Improvement]:
+def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> list[Rewrite]:
     """Each grouping column the grouping columns kept so far strictly determine.
 
     One column always stays: grouping by nothing turns an empty input into one row.
@@ -484,14 +485,14 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
             f"({names}) determine {written[grouped]}, NULL equal to NULL: drop {written[grouped]} from GROUP BY "
             f"and select any_value({expression.sql(dialect=dialect)}) AS {alias}"
         )
-        found.append(Improvement(site, Rewrite.REDUNDANT_GROUPING, message, closure.members[source]))
+        found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, closure.members[source]))
     return found
 
 
 # LIMIT and ORDER BY on at most one row ----------------------------------------------
 
 
-def _one_row_tail(site: AttachmentSite, relation: ir.RelationExpr, limit: ir.Limit | None, select: exp.Select) -> list[Improvement]:
+def _one_row_tail(site: AttachmentSite, relation: ir.RelationExpr, limit: ir.Limit | None, select: exp.Select) -> list[Rewrite]:
     """A Select proved to return at most one row (the empty set is a strict
     key of it, Kossmann's early abort) needs no ORDER BY, and no LIMIT of at
     least one row. Not with OFFSET, which may skip that row, nor a LIMIT whose
@@ -505,7 +506,7 @@ def _one_row_tail(site: AttachmentSite, relation: ir.RelationExpr, limit: ir.Lim
         return []
     dropped = " and ".join(clause for clause, present in (("ORDER BY", sorted_), ("LIMIT", limited)) if present)
     message = f"this Select returns at most one row, so {dropped} {'change' if sorted_ and limited else 'changes'} nothing: drop {'them' if sorted_ and limited else 'it'}"
-    return [Improvement(site, Rewrite.ONE_ROW, message, evidence)]
+    return [Rewrite(site, RewriteKind.ONE_ROW, message, evidence)]
 
 
 # Self-joins on a key -----------------------------------------------------------------
@@ -533,7 +534,7 @@ def _copy(column: ir.OutputColumn, program: ir.Program) -> _Copy | None:
                 return None
 
 
-def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, program: ir.Program, dialect: str) -> Improvement | None:
+def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, program: ir.Program, dialect: str) -> Rewrite | None:
     """`a JOIN t b ON a.k = b.k`, where `a` reads the same relation `t` and
     `k` is a non-null key of it: each row of `a` matches itself, so every
     `b.x` is `a.x` and the join goes. Other ON conjuncts move to WHERE (an
@@ -612,7 +613,7 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
         f"each {mine} row matches itself on the key ({', '.join(sorted(column.name for column in keys.values()))}), "
         f"so {theirs} is {mine}: delete the join and read {mine}'s columns: {rewritten.sql(dialect=dialect)}"
     )
-    return Improvement(site, Rewrite.SELF_JOIN, message, key)
+    return Rewrite(site, RewriteKind.SELF_JOIN, message, key)
 
 
 def _syntax_conjuncts(condition: exp.Expression) -> list[exp.Expression]:
@@ -691,7 +692,7 @@ def _pure_expression(expression: ir.ScalarExpr, program: ir.Program) -> bool:
 # Conditions the others imply ---------------------------------------------------------
 
 
-def _implied_where(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr, program: ir.Program) -> list[Improvement]:
+def _implied_where(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr, program: ir.Program) -> list[Rewrite]:
     """The WHERE of the Select whose relation is `relation`."""
     while True:
         match relation:
@@ -705,7 +706,7 @@ def _implied_where(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr
 
 def _implied_conjuncts(
     arena: Arena, site: AttachmentSite, relation: ir.Filter | ir.Join, conjuncts: tuple[ir.ScalarExpr, ...], program: ir.Program, clause: str,
-) -> list[Improvement]:
+) -> list[Rewrite]:
     """Each conjunct TRUE on every row whose columns it reads are non-null,
     given the other conjuncts and what is known of the input: an equality
     two other equalities chain (`a = b AND b = c` give `a = c`), or both of
@@ -735,7 +736,7 @@ def _implied_conjuncts(
             message = f"{written} is TRUE whenever its columns are non-null ({reason}), so it only removes NULLs: write {check} in {clause}"
         else:
             message = f"{written} is always TRUE here ({reason}): delete it from {clause}"
-        found.append(Improvement(site, Rewrite.IMPLIED_CONDITION, message, Result(True, reason, (conjunct,))))
+        found.append(Rewrite(site, RewriteKind.IMPLIED_CONDITION, message, Result(True, reason, (conjunct,))))
     return found
 
 
@@ -840,7 +841,7 @@ def _same_row_column(
 # EXCEPT and INTERSECT over inputs without duplicates --------------------------------
 
 
-def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Improvement | None:
+def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Rewrite | None:
     """`A EXCEPT B` keeps each distinct row of A that B lacks; `EXCEPT ALL`
     keeps it as often as A has it more than B. When A has no two rows alike,
     NULL equal to NULL as a set operation compares them, both keep each such
@@ -854,14 +855,14 @@ def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Impr
         evidence = _reaches_row_identity(_closure(relation, frozenset(relation.output_columns), frozenset()))
         if evidence.value:
             message = f"no two rows of the {side} input are alike, NULL equal to NULL, so {keyword} removes no duplicates: write {keyword} ALL"
-            return Improvement(site, Rewrite.SET_OPERATION_ALL, message, evidence)
+            return Rewrite(site, RewriteKind.SET_OPERATION_ALL, message, evidence)
     return None
 
 
 # Unused CTEs ----------------------------------------------------------------------
 
 
-def _unused_ctes(ast: ParsedProgram) -> list[Improvement]:
+def _unused_ctes(ast: ParsedProgram) -> list[Rewrite]:
     """CTEs no query of their WITH reaches, directly or through a used CTE.
 
     A name is matched wherever it appears as a table, shadowed or not, so a
@@ -887,7 +888,7 @@ def _unused_ctes(ast: ParsedProgram) -> list[Improvement]:
             site = AttachmentSite(f"CTE {cte.alias_or_name}", line, offset, True)
             evidence = Result(True, f"No query of its WITH clause references CTE {cte.alias_or_name}")
             message = f"CTE {cte.alias_or_name} is never referenced, so it never runs and its markers go unchecked: delete it"
-            found.append(Improvement(site, Rewrite.UNUSED_CTE, message, evidence))
+            found.append(Rewrite(site, RewriteKind.UNUSED_CTE, message, evidence))
     return found
 
 

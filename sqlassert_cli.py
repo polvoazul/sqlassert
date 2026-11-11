@@ -1,5 +1,5 @@
 """Command line: `sqlassert check PATH...` checks the assertions in SQL Programs for CI (`check.py`);
-`sqlassert suggest FILE` prints the improvements and markers sqlassert can prove.
+`sqlassert suggest FILE` prints the rewrites and markers sqlassert can prove.
 dbt projects are checked by the separate `sqlassert-dbt` package (`integrations/dbt/`)."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sqlassert")
     commands = parser.add_subparsers(dest="command", required=True)
     suggest_command = commands.add_parser(
-        "suggest", help="list the improvements and markers sqlassert can prove for a SQL Program"
+        "suggest", help="list the rewrites and markers sqlassert can prove for a SQL Program"
     )
     suggest_command.add_argument("file", help="SQL Program to read, or - for stdin")
     suggest_command.add_argument("--dialect", default=argparse.SUPPRESS)
@@ -77,15 +77,15 @@ def _suggest(arguments: argparse.Namespace) -> int:
         return 1 if report.diagnostics else 0
     if arguments.annotate and report.suggestions:
         Path(arguments.file).write_text(report.annotated())
-    # Improvements (High) first, then markers (Mid), then smells (Low).
-    items = (*report.improvements, *report.suggestions, *report.smells)
+    # Rewrites first, then markers, then hazards.
+    items = (*report.rewrites, *report.suggestions, *report.hazards)
     rows = [
-        (i.level.value, f"line {i.site.line}", i.site.label, i.rewrite.value, i.message) for i in report.improvements
+        (i.suggest_type.value, f"line {i.site.line}", i.site.label, i.kind.value, i.message) for i in report.rewrites
     ] + [
-        (s.level.value, f"line {s.site.line}", s.site.label, s.kind, s.marker)
+        (s.suggest_type.value, f"line {s.site.line}", s.site.label, s.kind, s.marker)
         for s in report.suggestions
     ] + [
-        (s.level.value, f"line {s.site.line}", s.site.label, s.concern.value, s.message) for s in report.smells
+        (s.suggest_type.value, f"line {s.site.line}", s.site.label, s.concern.value, s.message) for s in report.hazards
     ]
     widths = [max((len(row[i]) for row in rows), default=0) for i in range(4)]
     for row, item in zip(rows, items):

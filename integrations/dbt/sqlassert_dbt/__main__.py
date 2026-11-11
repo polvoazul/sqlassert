@@ -11,7 +11,7 @@ reads in the same invocation, so they are facts, unless DBT_ARGS select nodes
 
 `sqlassert-dbt suggest PATH... [-- DBT_ARGS]` runs `dbt compile` on the
 models in those files or directories and what they read, then lists what `sqlassert suggest` finds in
-each: rewrites, markers to paste, smells, at the model file's lines.
+each: rewrites, markers to paste, hazards, at the model file's lines.
 """
 
 from __future__ import annotations
@@ -76,9 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("dbt_arguments", nargs=argparse.REMAINDER, help="-- then arguments for dbt")
     suggest = commands.add_parser(
         "suggest",
-        help="`dbt compile`, then list the rewrites, markers and smells sqlassert finds in model files",
+        help="`dbt compile`, then list the rewrites, markers and hazards sqlassert finds in model files",
         description="Run `dbt compile` on the models and what they read, then list what sqlassert can prove about each "
-        "model file: rewrites that keep its result, markers to paste, smells. Arguments after -- go to dbt. "
+        "model file: rewrites that keep its result, markers to paste, hazards. Arguments after -- go to dbt. "
         f"Exit status: {EXIT_OK}, or {EXIT_FINDINGS} when an error is reported, {EXIT_USAGE} on bad arguments.",
         usage="sqlassert-dbt suggest [options] PATH... [-- DBT_ARGS]",
     )

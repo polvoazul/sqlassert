@@ -76,7 +76,7 @@ mid   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
 low   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine (id), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
 ```
 
-Every `high` rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
+Every rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
 
 ### A CASE that forgets the new status
 
@@ -131,7 +131,7 @@ Every marker is a SQL comment (`/**ASSERT ...**/`), so annotated SQL still runs 
 | [`analyze(sql)`](#usage) | Python API: prove a SQL Program's markers from its `CREATE` statements, in your test suite. |
 | [`analyze_database`](#usage) | The same, with tables, keys and views read from a live catalog (metadata only, never rows). |
 | [`sqlassert check`](#checking-in-ci) | CLI for CI: text, JSON, SARIF and GitHub annotation output, `pyproject.toml` config. |
-| [`sqlassert suggest`](#suggesting-markers) | Lists provable markers, proved rewrites, and smells (fan traps, chasm traps, arbitrary LIMIT, ...). |
+| [`sqlassert suggest`](#suggesting-markers) | Lists provable markers, proved rewrites, and hazards (fan traps, chasm traps, arbitrary LIMIT, ...). |
 | [`sqlassert-dbt`](https://github.com/polvoazul/sqlassert/tree/main/integrations/dbt#readme) | Checks a dbt project from its manifest and skips the tests the SQL proves. |
 
 | Dialect | Key constraints | Catalog fetcher | Dialect facts certified on a real engine |
@@ -533,9 +533,9 @@ A column marker goes at the end of the Select Expression on that line; a join ma
 
 From Python, `suggest(sql)` returns the same suggestions, each with its `site`, `property`, `marker`, and `evidence`; `report.annotated()` returns the SQL with every marker pasted in. Only proved properties are suggested, each Unique Set in its strongest form (`NOT NULL UNIQUE` over `UNIQUE`) and minimal (no superset of another suggestion), and each join in its most specific proved form: `EXACTLY ONE`, then `ONE TO ONE`, then `MANY TO ONE` or `ONE TO MANY`. Unique Sets are searched exhaustively up to `max_size` columns (default 3); a wider one is still found when no smaller one exists. Properties the SQL already asserts or declares are not suggested again.
 
-#### Improvements
+#### Rewrites
 
-Before any marker, `suggest` lists improvements to the SQL itself (level `high`; markers are `mid`). Each is a rewrite a proof shows leaves the result unchanged, row for row:
+Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row:
 
 ```bash
 $ sqlassert suggest orders.sql
@@ -547,7 +547,7 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 ...
 ```
 
-| Improvement | When |
+| Rewrite | When |
 |---|---|
 | `INNER JOIN` | A LEFT (or RIGHT) JOIN that never keeps a padded row: it matches exactly one row, or a later inner join's ON, a `WHERE EXISTS`/`IN` subquery, or the WHERE clause of the same Select rejects NULL in a column it pads, directly or through a later LEFT JOIN whose ON rejects that column (so it pads the same rows). |
 | Redundant Join | No column of the joined relation is used outside its own ON, and the join keeps every left row once: a LEFT JOIN with at most one match, or an Exactly One inner JOIN. |
@@ -558,11 +558,11 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 | Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 
-`report.improvements` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
+`report.rewrites` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
 
-Low-level smells come last: places whose result the SQL leaves unspecified. `report.smells` holds them, each with its `site`, `concern`, `message`, and the failed proof as `evidence`.
+Hazards come last: places whose result the SQL leaves unspecified. `report.hazards` holds them, each with its `site`, `concern`, `message`, and the failed proof as `evidence`.
 
-| Smell | When |
+| Hazard | When |
 |---|---|
 | Arbitrary LIMIT | A `LIMIT` or `OFFSET` whose `ORDER BY` (if any) does not determine every selected column, NULL equal to NULL: rows tied on the sort keys may come in any order, so which rows are kept can change between runs. Silent when an `ORDER BY` key is an expression or a name sqlassert cannot map to one column. |
 | Scalar subquery | A scalar subquery not proved to return at most one row, a runtime error when it returns more: uncorrelated, its body is not proved to have at most one row; correlated, the columns its WHERE binds to the outer row are not proved a Unique Set. |
@@ -609,7 +609,7 @@ To see what sqlassert can prove about the models you are editing, as `sqlassert 
 $ sqlassert-dbt suggest models/customers.sql models/stg_orders.sql --explain -- --target dev
 ```
 
-It compiles those models and what they read, then lists the rewrites, markers and smells for each model at its file's lines, with what the model reads declared as `check` declares it. In an incremental model, a rewrite or marker is listed only when both `is_incremental()` branches prove it.
+It compiles those models and what they read, then lists the rewrites, markers and hazards for each model at its file's lines, with what the model reads declared as `check` declares it. In an incremental model, a rewrite or marker is listed only when both `is_incremental()` branches prove it.
 
 ## Details
 

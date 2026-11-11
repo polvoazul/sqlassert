@@ -1,4 +1,4 @@
-"""Low-level suggestions: Smells (issue 15, from the Kossmann Table 1 triage)."""
+"""Low-level suggestions: Hazards (issue 15, from the Kossmann Table 1 triage)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import pytest
 
 from sqlassert import suggest
 from sqlassert.__main__ import main
-from sqlassert.smells import Concern
+from sqlassert.hazards import Concern
 
 SCHEMA = """
 CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);
@@ -25,11 +25,11 @@ CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER);
         ("WITH top AS (SELECT id FROM t ORDER BY score LIMIT 3) SELECT id FROM top", "(id)"),
     ],
 )
-def test_a_limit_whose_order_leaves_different_rows_tied_is_a_smell(sql: str, loose: str | None):
-    smells = suggest(SCHEMA + sql).smells
+def test_a_limit_whose_order_leaves_different_rows_tied_is_a_hazard(sql: str, loose: str | None):
+    hazards = suggest(SCHEMA + sql).hazards
 
-    assert [smell.concern for smell in smells] == [Concern.ARBITRARY_LIMIT]
-    assert (loose or "with no ORDER BY") in smells[0].message
+    assert [hazard.concern for hazard in hazards] == [Concern.ARBITRARY_LIMIT]
+    assert (loose or "with no ORDER BY") in hazards[0].message
 
 
 @pytest.mark.parametrize(
@@ -51,18 +51,18 @@ def test_a_limit_whose_order_leaves_different_rows_tied_is_a_smell(sql: str, loo
         "SELECT id, name FROM t ORDER BY lower(name) LIMIT 3",
     ],
 )
-def test_a_determined_or_unreadable_limit_is_not_a_smell(sql: str):
-    assert suggest(SCHEMA + sql).smells == ()
+def test_a_determined_or_unreadable_limit_is_not_a_hazard(sql: str):
+    assert suggest(SCHEMA + sql).hazards == ()
 
 
-def test_the_cli_lists_smells_last_at_the_low_level(tmp_path, capsys):
+def test_the_cli_lists_hazards_last(tmp_path, capsys):
     path = tmp_path / "query.sql"
     path.write_text(SCHEMA + "SELECT id, name FROM t ORDER BY score LIMIT 3")
 
     assert main(["suggest", str(path)]) == 0
 
     last = capsys.readouterr().out.splitlines()[-1]
-    assert last.split()[:2] == ["low", "line"]
+    assert last.split()[:2] == ["hazard", "line"]
     assert "Arbitrary LIMIT" in last
 
 
@@ -87,7 +87,7 @@ CHASM = "SELECT c.id, sum(c.credit) AS s FROM customers c JOIN orders o ON o.cus
 
 
 def concerns(sql: str) -> list[Concern]:
-    return [smell.concern for smell in suggest(TRAPS + sql).smells]
+    return [hazard.concern for hazard in suggest(TRAPS + sql).hazards]
 
 
 @pytest.mark.parametrize(
@@ -155,7 +155,7 @@ CREATE TABLE nums (v INTEGER);
 
 def test_a_join_equality_that_casts_is_a_smell_and_repeats_rows_on_data():
     sql = "SELECT * FROM nums JOIN codes ON codes.code = nums.v"
-    assert [smell.concern for smell in suggest(CASTS + sql).smells] == [Concern.IMPLICIT_CAST]
+    assert [hazard.concern for hazard in suggest(CASTS + sql).hazards] == [Concern.IMPLICIT_CAST]
     connection = duckdb.connect()
     connection.execute(CASTS + "INSERT INTO codes VALUES ('01', 0), ('1', 0); INSERT INTO nums VALUES (1);")
     assert connection.execute("SELECT count(*) FROM nums JOIN codes ON codes.code = nums.v").fetchone() == (2,)
@@ -166,8 +166,8 @@ def test_a_join_equality_that_casts_is_a_smell_and_repeats_rows_on_data():
     ["codes.n = nums.v", "codes.code = CAST(nums.v AS VARCHAR)"],
     ids=["same type", "explicit cast"],
 )
-def test_a_join_equality_without_an_implicit_cast_is_not_a_smell(on: str):
-    assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").smells == ()
+def test_a_join_equality_without_an_implicit_cast_is_not_a_hazard(on: str):
+    assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").hazards == ()
 
 
 # Always empty -----------------------------------------------------------------
@@ -184,8 +184,8 @@ CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERE
     "SELECT customer_id FROM orders EXCEPT SELECT id FROM customers",
 ])
 def test_an_orphan_check_a_foreign_key_guarantees_is_always_empty(sql: str):
-    smells = suggest(EMPTY_SCHEMA + sql).smells
-    assert [smell.concern for smell in smells] == [Concern.ALWAYS_EMPTY]
+    hazards = suggest(EMPTY_SCHEMA + sql).hazards
+    assert [hazard.concern for hazard in hazards] == [Concern.ALWAYS_EMPTY]
     assert duckdb.connect().execute(EMPTY_SCHEMA + "INSERT INTO customers VALUES (1, 'a'); INSERT INTO orders VALUES (1, 1, NULL);" + sql).fetchall() == []
 
 
@@ -200,4 +200,4 @@ def test_an_orphan_check_a_foreign_key_guarantees_is_always_empty(sql: str):
     "SELECT count(*) AS n FROM orders o WHERE NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = o.customer_id)",
 ])
 def test_a_query_that_may_return_a_row_is_not_always_empty(sql: str):
-    assert Concern.ALWAYS_EMPTY not in [smell.concern for smell in suggest(EMPTY_SCHEMA + sql).smells]
+    assert Concern.ALWAYS_EMPTY not in [hazard.concern for hazard in suggest(EMPTY_SCHEMA + sql).hazards]

@@ -43,7 +43,7 @@ precise spans moved to 44)
 **Editor**
 - [ ] LSP server: diagnostics, hover showing proved facts of a relation or
   column, inlay hints with each CTE's grain, code actions that insert markers
-  or apply Improvements.
+  or apply Rewrites.
 - [ ] VS Code extension; syntax highlighting for `/**ASSERT` and
   `/**DECLARE` markers.
 

@@ -185,8 +185,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `[tool.sqlassert]` loading and formatters are shared by every command that
   checks SQL; `__main__.py` only parses arguments. A path that matches no file
   is a usage error, since a check of nothing would pass.
-- `improvements.py` holds `suggest`'s High level: result-preserving rewrites
-  (Improvements). None of their facts is a Property, so it reads rule
+- `rewrites.py` holds `suggest`'s Rewrites: result-preserving changes to
+  the SQL. None of their facts is a Property, so it reads rule
   internals in the same arena -- null sources and null-rejected conjuncts
   for an outer join that cannot pad, the strict (`definite = ∅`) closure for
   `DISTINCT` and grouping columns -- besides `Arena.prove` for Unique and

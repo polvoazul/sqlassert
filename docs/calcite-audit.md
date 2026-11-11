@@ -130,7 +130,7 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 
 Each was PROVED with a DuckDB counterexample before issue 40; each has a
 regression in `tests/calcite_audit.sqltest` (and the suggest one in
-`tests/test_suggest_improvements.py`).
+`tests/test_suggest_rewrites.py`).
 
 1. **Padding through CASE and non-strict operators.** A `Padding` null
    source promises NULL on *every* padded row, so rejecting the column proves

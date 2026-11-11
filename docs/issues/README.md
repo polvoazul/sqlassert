@@ -13,10 +13,10 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
 - [60. Audit inference against CockroachDB's FD library](0060-audit-inference-against-cockroachdb.md) — open (like 40; same lax FD definition as ours, `fd:` test corpus; TiDB optional)
 - [61. Symbolic soundness oracle with VeriEQL](0061-symbolic-oracle-with-verieql.md) — open (needs design; every Property as a bounded equivalence; replaces 27's z3 alternative)
-- [62. Cross-check `suggest` rewrites with SQL equivalence checkers](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md) — open (SQLSolver, VeriEQL, QED, Cosette on every High Improvement)
+- [62. Cross-check `suggest` rewrites with SQL equivalence checkers](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md) — open (SQLSolver, VeriEQL, QED, Cosette on every Rewrite)
 - [63. Generate random programs for the soundness oracle](0063-generate-random-programs-for-the-oracle.md) — open (needs design; SQLancer-style generator, ParSEval instances; feeds 27 Part 2)
 - [64. Triage WeTune's discovered rewrite rules](0064-triage-wetune-rewrite-rules.md) — open (research; like 15's Kossmann triage)
-- [65. Triage SQLCheck's anti-pattern catalog](0065-triage-sqlcheck-anti-patterns.md) — open (research; smells for 15)
+- [65. Triage SQLCheck's anti-pattern catalog](0065-triage-sqlcheck-anti-patterns.md) — open (research; hazards for 15)
 - [66. Check our SQL semantics against Guagliardo & Libkin](0066-check-semantics-against-guagliardo-libkin.md) — open (research; NULL/bag rules, certifier probes for 46)
 - [67. Recheck the Calcite audit against `FuncDepSet` (CALCITE-7205)](0067-recheck-calcite-funcdepset.md) — waiting on upstream
 - [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44, 51-54; backlog of CLI, editor, framework, data quality and agent integrations)
@@ -32,7 +32,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 15 Mid and High levels. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 15's markers and rewrites. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -40,7 +40,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P1:** none open. #41 and #38 are done.
 - **P2:** #37 (Paulley audit's missing rules); #45 (Calcite audit's missing
   proofs; its lowering items, HAVING and USING first, lose proofs on common
-  SQL); #15's remaining Low smells and High rewrites.
+  SQL); #15's remaining hazards and rewrites.
 - **P3, needs downloaded corpora:** #11, #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
 - **Integrations:** #44 (v1: `check` CLI, dialects, dbt) is done; the rest of
@@ -88,7 +88,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [34. Close the soundness oracle's blind spots](done/0034-close-soundness-oracle-blind-spots.md)
 - [35. Audit FD propagation against Paulley](done/0035-audit-fd-propagation-against-paulley.md)
 - [38. Lower ORDER BY and scalar subqueries](done/0038-lower-order-by-and-select-list-subqueries.md)
-- [41. Join cardinality markers and the fan-trap smell](done/0041-join-cardinality-markers-and-fan-trap-smell.md)
+- [41. Join cardinality markers and the fan-trap hazard](done/0041-join-cardinality-markers-and-fan-trap-smell.md)
 - [44. v1 external integrations](done/0044-v1-external-integrations.md)
 - [47. Discovery: one base fetcher, a subclass per dialect](done/0047-discovery-base-class.md)
 - [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)

@@ -1,4 +1,4 @@
-# 65. Triage SQLCheck's anti-pattern catalog for `suggest` smells
+# 65. Triage SQLCheck's anti-pattern catalog for `suggest` hazards
 
 - **State:** open
 - **Labels:** research
@@ -12,18 +12,18 @@ SQLCheck (Dintyala, Narechania & Arulraj, SIGMOD 2020,
 anti-patterns (from Karwin's *SQL Antipatterns* catalog) by query and data
 analysis, ranks them by impact and suggests fixes; it studied 1406
 open-source applications. Its detections are heuristic and partly
-data-derived; sqlassert's smells are proved from structure. It is the
-closest related work for `suggest`, and its catalog lists smells we may lack.
+data-derived; sqlassert's hazards are proved from structure. It is the
+closest related work for `suggest`, and its catalog lists hazards we may lack.
 
 ## What to do
 
 1. List SQLCheck's anti-patterns (paper and tool).
-2. For each, record *covered* (our smell or Improvement), *add* (provable
+2. For each, record *covered* (our hazard or Rewrite), *add* (provable
    from SQL and schema: name the Property), *data-only* (needs data, so out
    of scope per ADR 0005), or *n/a* (schema design, physical, style).
 3. For *covered* ones, note whether ours is a proof where theirs is a
    heuristic (fewer false positives): material for the related-work section.
-4. File *add* rows under issue 15's Low level.
+4. File *add* rows under issue 15's hazards.
 
 ## Acceptance criteria
 

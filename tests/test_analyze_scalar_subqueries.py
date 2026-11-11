@@ -14,7 +14,7 @@ import pytest
 
 from sqlassert import suggest
 from sqlassert.ir.convert import IrParser
-from sqlassert.smells import Concern
+from sqlassert.hazards import Concern
 from sqlassert.sql_parse import SqlParser
 
 SCHEMA = """
@@ -30,7 +30,7 @@ def test_a_where_subquery_adds_no_output_column():
 
 
 @pytest.mark.parametrize(
-    ("sql", "smelly"),
+    ("sql", "hazardous"),
     [
         ("SELECT a FROM t WHERE a = (SELECT max(x) FROM r)", False),
         ("SELECT a FROM t WHERE a = (SELECT x FROM r WHERE k = 1)", False),
@@ -39,9 +39,9 @@ def test_a_where_subquery_adds_no_output_column():
         ("SELECT a, (SELECT r.x FROM r WHERE r.g = t.c) AS m FROM t", True),
     ],
 )
-def test_a_scalar_subquery_not_proved_to_return_one_row_is_a_smell(sql: str, smelly: bool):
-    smells = [smell for smell in suggest(SCHEMA + sql).smells if smell.concern is Concern.SCALAR_SUBQUERY]
-    assert bool(smells) is smelly
-    if smelly:
-        assert smells[0].site.label == "scalar subquery"
-        assert "more than one row" in smells[0].message
+def test_a_scalar_subquery_not_proved_to_return_one_row_is_a_hazard(sql: str, hazardous: bool):
+    hazards = [hazard for hazard in suggest(SCHEMA + sql).hazards if hazard.concern is Concern.SCALAR_SUBQUERY]
+    assert bool(hazards) is hazardous
+    if hazardous:
+        assert hazards[0].site.label == "scalar subquery"
+        assert "more than one row" in hazards[0].message

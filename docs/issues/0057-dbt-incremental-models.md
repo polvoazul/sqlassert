@@ -27,7 +27,7 @@ else here is deferred.
 - The other branch is rendered only when the model uses `ref`, `source`,
   `this`, `config` and `is_incremental()` alone; otherwise the model is
   reported with one branch, its tests not proved, its markers `UNKNOWN`, and
-  `suggest` lists only its smells.
+  `suggest` lists only its hazards.
 
 ## Ideas (deferred)
 

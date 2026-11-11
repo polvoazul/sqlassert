@@ -34,7 +34,7 @@ from sqlassert_dbt.expectations import Expectation, PropertyKind
 from sqlassert_dbt.jinja import Rendered, Unrenderable, align, has_incremental_branch, render
 from sqlassert_dbt.manifest import Column, Relation
 from sqlassert.diagnostics import Diagnostic
-from sqlassert.improvements import Improvement, Level
+from sqlassert.rewrites import Rewrite, SuggestType
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.ir.model import LiteralValue
 from sqlassert.provenance import AttachmentSite
@@ -47,7 +47,7 @@ from sqlassert.reporting import Outcome, Report
 from sqlassert.rules.domain import _domain
 from sqlassert.rules.equality import _binary_text, _comparison_type, _identity_comparison
 from sqlassert.rules.uniqueness import minimal_keys
-from sqlassert.smells import Smell
+from sqlassert.hazards import Hazard
 from sqlassert.sql_parse import ParsedProgram, SqlParser, _marker_shapes
 from sqlassert.suggest import MAX_ENUM_VALUES, Suggester, Suggestion
 
@@ -293,11 +293,11 @@ class BranchResult:
 
 @dataclass(frozen=True)
 class Suggested:
-    """An Improvement, marker or Smell `sqlassert suggest` finds in a model's
+    """An Rewrite, marker or Hazard `sqlassert suggest` finds in a model's
     SQL: `line` in its body, `raw_line` in its file when known; `kind` the
     rewrite, Property or concern; `text` the marker to paste or the message."""
 
-    level: Level
+    suggest_type: SuggestType
     line: int
     raw_line: int | None
     label: str
@@ -701,7 +701,7 @@ class Builder:
             report = suggester.suggest(statement.has_site)
             root = f"subquery {model.name}".lower()
             found = []
-            for item in (*report.improvements, *report.suggestions, *report.smells):
+            for item in (*report.rewrites, *report.suggestions, *report.hazards):
                 site = item.site
                 cut = False
                 if isinstance(item, Suggestion) and site.label.lower() == root:
@@ -722,14 +722,14 @@ class Builder:
                 if body.in_injected(anchor):
                     continue
                 match item:
-                    case Improvement():
-                        kind, text = item.rewrite.value, item.message
+                    case Rewrite():
+                        kind, text = item.kind.value, item.message
                     case Suggestion():
                         kind, text = "Not Null" if cut else item.kind, item.marker
-                    case Smell():
+                    case Hazard():
                         kind, text = item.concern.value, item.message
                 found.append(Suggested(
-                    item.level, line, _site_line(body, line, anchor, site.trailing),
+                    item.suggest_type, line, _site_line(body, line, anchor, site.trailing),
                     "Root Select" if site.label.lower() == root else site.label, kind, text, item.evidence.explain(), site.trailing,
                 ))
             results.append(SuggestResult(

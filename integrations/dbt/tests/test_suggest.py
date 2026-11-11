@@ -137,9 +137,9 @@ def test_command_compiles_what_the_models_read_and_lists_by_model(compiled, monk
     assert not Path(target).is_relative_to(compiled.resolve()) and not Path(logs).is_relative_to(compiled.resolve())
     assert not Path(target).exists()  # Removed afterwards.
     out = capsys.readouterr().out.splitlines()
-    assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  mid  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/"]
+    assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  marker  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/"]
     assert "customer_orders:" in out
-    assert out[-1].startswith("0 improvements, 3 markers, 0 smells in 2 models")
+    assert out[-1].startswith("0 rewrites, 3 markers, 0 hazards in 2 models")
 
 
 def test_command_explains_and_keeps_the_callers_selection(compiled, monkeypatch, capsys):
@@ -220,7 +220,7 @@ def test_command_runs_dbt_selecting_by_path_from_another_directory(tmp_path, mon
     code = main(["suggest", "project/models/customer_orders.sql", "--trust-upstream-tests", "--", "--profiles-dir", str(project)])
 
     assert code == 0
-    assert "models/customer_orders.sql:5  mid  Root Select  Not Null  /**ASSERT NOT NULL(n_orders)**/" in capsys.readouterr().out
+    assert "models/customer_orders.sql:5  marker  Root Select  Not Null  /**ASSERT NOT NULL(n_orders)**/" in capsys.readouterr().out
     # Real dbt wrote its target/ and logs/ elsewhere.
     assert not (project / "target").exists() and not (project / "logs").exists()
 
@@ -230,7 +230,7 @@ def test_every_suggested_marker_pasted_at_its_line_is_proved(tmp_path):
     assert dbt(project, "compile")
     files = sorted(path.relative_to(project).as_posix() for path in (project / "models").glob("*.sql"))
     report = suggest_models(project, files, trust_upstream_tests=True)
-    pasted = [item for item in report.suggestions if item.level == "mid" and item.location.path.startswith("models/")]
+    pasted = [item for item in report.suggestions if item.suggest_type == "marker" and item.location.path.startswith("models/")]
     for path in {item.location.path for item in pasted}:
         lines = (project / path).read_text().split("\n")
         for item in pasted:

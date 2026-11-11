@@ -31,7 +31,7 @@ from sqlassert_dbt.report import (
     DbtReport, Location, MarkerOutcome, ModelSuggestion, Problem, Status, SuggestReport, TestOutcome, Untested,
 )
 from sqlassert.dialects import MODELLED_DIALECTS
-from sqlassert.improvements import Level
+from sqlassert.rewrites import SuggestType
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
 from sqlassert.sql_parse import _marker_shapes
@@ -207,7 +207,7 @@ class _Analysis:
                     found.append(Problem(EPHEMERAL_NOT_LOCATED, warning, "warning", Location(relation.original_file_path), relation.name))
                 if bodies.unrendered is not None:
                     found.append(Problem(
-                        UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its smells are listed",
+                        UNANALYZED_BRANCH, f"model {relation.name}: {bodies.unrendered}; only its hazards are listed",
                         "warning", Location(relation.original_file_path), relation.name,
                     ))
                 own = [e for e in self.expectations if e.node == relation.unique_id]
@@ -494,10 +494,10 @@ def _csv_header(path: Path) -> list[str] | None:
 def _combined(relation: Relation, results: list[SuggestResult], *, complete: bool) -> list[ModelSuggestion]:
     """What every branch suggests: a rewrite or marker must hold in each run
     dbt may do, so it is kept only when every branch was analyzed and proves
-    it; a smell in any branch is one. The Root Select may end on another line
+    it; a hazard in any branch is one. The Root Select may end on another line
     in each branch, so a marker after it is matched by its text alone, and
     placed after the latest end."""
-    order = {Level.HIGH: 0, Level.MID: 1, Level.LOW: 2}
+    order = {SuggestType.REWRITE: 0, SuggestType.MARKER: 1, SuggestType.HAZARD: 2}
     keyed: list[dict[tuple, list[Suggested]]] = []
     for index, result in enumerate(results):
         found: dict[tuple, list[Suggested]] = {}
@@ -511,7 +511,7 @@ def _combined(relation: Relation, results: list[SuggestResult], *, complete: boo
     kept: dict[tuple, list[Suggested]] = {}
     for found in keyed:
         for key, items in found.items():
-            proved = items[0].level is not Level.LOW
+            proved = items[0].suggest_type is not SuggestType.HAZARD
             if proved and not (complete and all(key in other for other in keyed)):
                 continue
             kept.setdefault(key, []).extend(items)
@@ -524,13 +524,13 @@ def _combined(relation: Relation, results: list[SuggestResult], *, complete: boo
         else:
             raw_line = item.raw_line
         placed.append((item, raw_line))
-    placed.sort(key=lambda pair: (order[pair[0].level], pair[1] or pair[0].line, pair[0].line))
+    placed.sort(key=lambda pair: (order[pair[0].suggest_type], pair[1] or pair[0].line, pair[0].line))
     return [
         ModelSuggestion(
             relation.name,
             Location(relation.original_file_path, raw_line) if raw_line is not None
             else Location(relation.compiled_path or relation.original_file_path, item.line),
-            item.level.value, item.label, item.kind, item.text, item.explanation,
+            item.suggest_type.value, item.label, item.kind, item.text, item.explanation,
         )
         for item, raw_line in placed
     ]

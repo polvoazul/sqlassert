@@ -534,7 +534,7 @@ class Limit(RelationExpr):
 class AggregateCall(Node):
     """One aggregate function call in a grouped Select's list: its SQL, and its
     arguments lowered against the Aggregate's input (none for `count(*)`).
-    Only smells read it; an aggregate's value is opaque to every proof."""
+    Only hazards read it; an aggregate's value is opaque to every proof."""
 
     description: str
     arguments: tuple[ScalarExpr, ...]

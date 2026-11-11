@@ -108,15 +108,15 @@ class DbtReport:
 
 @dataclass(frozen=True)
 class ModelSuggestion:
-    """What `sqlassert suggest` finds in a model's SQL: a rewrite a proof
-    justifies (`level` high), a marker that will be PROVED (mid), or a result
-    the SQL leaves unspecified (low). `location` is the model file's line when
+    """What `sqlassert suggest` finds in a model's SQL, by `suggest_type`: a
+    rewrite a proof justifies, a marker that will be PROVED, or a hazard: a
+    result the SQL leaves unspecified. `location` is the model file's line when
     known, else the compiled file's; `kind` names the rewrite, Property or
     concern; `text` is the marker to paste or the message."""
 
     model: str
     location: Location
-    level: str
+    suggest_type: str
     label: str
     kind: str
     text: str
@@ -183,7 +183,7 @@ def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False, li
         if not items:
             lines.append(f"{model}: nothing to suggest")
             continue
-        rows = [(str(item.location), item.level, item.label, item.kind, item.text) for item in items]
+        rows = [(str(item.location), item.suggest_type, item.label, item.kind, item.text) for item in items]
         widths = [max(len(row[i]) for row in rows) for i in range(4)]
         lines.append(f"{model}:")
         for row, item in zip(rows, items):
@@ -197,9 +197,9 @@ def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False, li
 
 
 def format_suggestion_summary(report: SuggestReport, limit: WarningLimit | None = None) -> str:
-    counts = {level: sum(item.level == level for item in report.suggestions) for level in ("high", "mid", "low")}
+    counts = {kind: sum(item.suggest_type == kind for item in report.suggestions) for kind in ("rewrite", "marker", "hazard")}
     return (
-        f"{counts['high']} improvements, {counts['mid']} markers, {counts['low']} smells in {len(report.models)} models, "
+        f"{counts['rewrite']} rewrites, {counts['marker']} markers, {counts['hazard']} hazards in {len(report.models)} models, "
         f"{sum(p.severity == 'error' for p in report.problems)} errors, "
         f"{sum(p.severity == 'warning' for p in report.problems)} warnings{_suppressed(limit)}\n"
     )
