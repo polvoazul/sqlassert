@@ -27,6 +27,7 @@ from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
     JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_span, column_markers,
     exhaustive_span, grouping, is_ambiguous_pipes, join_marker_kind, join_origin, literal_value, marker_position,
+    written_sql,
 )
 
 
@@ -2184,7 +2185,7 @@ class IrParser:
         return None
 
     def _origin(self, node: Expr, line: int | None = None) -> Origin:
-        return Origin(SQL, node.sql(dialect=self.dialect), line)
+        return Origin(SQL, written_sql(node, self.dialect), line)
 
 
 def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) -> tuple[ir.OutputColumn, ...]:

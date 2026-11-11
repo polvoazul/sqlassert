@@ -43,14 +43,14 @@ from sqlassert import ir
 from sqlassert.dialects import semantics
 from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet
 from sqlassert.rules.domain import _domain
-from sqlassert.rules.equality import _identity_comparison, _same_type
+from sqlassert.rules.equality import _comparison_type, _identity_comparison, _same_type
 from sqlassert.rules.exactly_one import _cross_equalities
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
 from sqlassert.rules.column_set import RowIdentity
 from sqlassert.rules.nullability import Padding, _null_rejected, _null_sources, _on_rejected
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
-from sqlassert.sql_parse import ParsedProgram, grouping, marker_position
+from sqlassert.sql_parse import ParsedProgram, grouping, marker_position, written_sql
 
 
 class SuggestType(Enum):
@@ -122,8 +122,8 @@ def rewrites(
             found.extend(one_row or _redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
-                removed = _redundant_join(arena, site, relation, node, dialect)
-                same = None if removed else _self_join(arena, site, relation, node, program, dialect)
+                same = _self_join(arena, site, relation, node, program, dialect)
+                removed = None if same else _redundant_join(arena, site, relation, node, dialect)
                 inner = None if removed or same else _inner_join(arena, site, relation, parents)
                 found.extend(item for item in (removed, same, inner) if item is not None)
                 found.extend(_implied_conjuncts(arena, site, relation, relation.conjuncts, program, "ON"))
@@ -274,7 +274,7 @@ def _redundant_sort_keys(
         key = keys[position]
         if key not in closure.value.columns:
             continue
-        written = [(item.this if isinstance(item, exp.Ordered) else item).sql(dialect=dialect) for item in items]
+        written = [written_sql(item.this if isinstance(item, exp.Ordered) else item, dialect) for item in items]
         message = f"({', '.join(written[:position])}) determine {written[position]}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
         evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
         found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, evidence))
@@ -287,7 +287,7 @@ def _redundant_sort_keys(
 def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, dialect: str) -> Rewrite | None:
     if join.kind not in {"inner", "left"} or _right_side_used(join, node):
         return None
-    source = node.this.sql(dialect=dialect)
+    source = written_sql(node.this, dialect)
     unused = f"no column of {source} is used outside its ON"
     if join.kind == "left":
         unique = arena.prove(ManyToOneJoin(join=join))
@@ -305,7 +305,7 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
         # which then no longer pads the rows this join used to drop first.
         return None
     on = node.args.get("on")
-    condition = f" WHERE {on.sql(dialect=dialect)}" if on is not None else ""
+    condition = f" WHERE {written_sql(on, dialect)}" if on is not None else ""
     message = (
         f"at most one match per row and {unused}, so it only filters: "
         f"write WHERE EXISTS (SELECT 1 FROM {source}{condition})"
@@ -414,12 +414,32 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
         if rewritten is None:
             return None
         items.append(rewritten)
-    names = ", ".join(expression.sql(dialect=dialect) for expression in expressions)
+    names = ", ".join(written_sql(expression, dialect) for expression in expressions)
     message = (
         f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
         f"drop GROUP BY and write SELECT {', '.join(items)}"
     )
+    converted = [call.description for call in aggregate.calls if _converts(call)]
+    if converted:
+        message += (
+            f"; {', '.join(converted)} over one row is its argument converted to avg's result type "
+            "(DOUBLE or DECIMAL), not an integer: cast it where that matters, as in a division"
+        )
     return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence)
+
+
+def _converts(call: ir.AggregateCall) -> bool:
+    """Whether an avg's one-row value may differ from its argument's: an
+    integer argument averages to a DOUBLE or DECIMAL (`avg(i) / 2` is 0.5,
+    `i / 2` may be 0). Not when the argument is declared a float or decimal."""
+    if not call.description.lower().startswith("avg("):
+        return False
+    match call.arguments:
+        case (ir.ColumnRef(column=column),):
+            declared = _comparison_type(column).value
+            return declared is None or exp.DataType.build(declared).this not in exp.DataType.REAL_TYPES
+        case _:
+            return True
 
 
 def _one_row(item: Expr, dialect: str) -> str | None:
@@ -456,7 +476,7 @@ def _one_row(item: Expr, dialect: str) -> str | None:
             item = value
         else:
             target.replace(value)
-    return item.sql(dialect=dialect)
+    return written_sql(item, dialect)
 
 
 def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> list[Rewrite]:
@@ -468,7 +488,7 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
     if len(expressions) != len(aggregate.grouping_outputs):
         return []
     # Grouping outputs are lowered in GROUP BY order.
-    written = {column: expression.sql(dialect=dialect) for column, expression in zip(aggregate.grouping_outputs, expressions)}
+    written = {column: written_sql(expression, dialect) for column, expression in zip(aggregate.grouping_outputs, expressions)}
     kept = list(aggregate.grouping_outputs)
     found = []
     for grouped in aggregate.grouping_outputs:
@@ -487,7 +507,7 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
         expression = selected.this if isinstance(selected, exp.Alias) else selected
         message = (
             f"({names}) determine {written[grouped]}, NULL equal to NULL: drop {written[grouped]} from GROUP BY "
-            f"and select any_value({expression.sql(dialect=dialect)}) AS {alias}"
+            f"and select any_value({written_sql(expression, dialect)}) AS {alias}"
         )
         found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, closure.members[source]))
     return found
@@ -579,6 +599,7 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
     names = {column.name.lower() for column in keys.values()}
     on = node.args.get("on")
     conjuncts = _syntax_conjuncts(on) if on is not None else []
+    columns = {column.name.lower(): column for column in relation.output_columns}
     extra = [conjunct for conjunct in conjuncts if not _key_equality(conjunct, mine, theirs, names)]
     if extra and join.kind == "inner" and _right_or_full_join_follows(node):
         return None
@@ -586,7 +607,6 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
         return None  # A volatile condition repeated per column would draw again.
     rewritten = select.copy()
     copied = next(other for other, original in zip(rewritten.args.get("joins") or (), select.args.get("joins") or ()) if original is node)
-    columns = {column.name.lower(): column for column in relation.output_columns}
     guard = exp.and_(*(_requalified(conjunct, theirs, mine, names) for conjunct in extra)) if extra else None
     for column in list(rewritten.find_all(exp.Column)):
         if _within(column, copied):
@@ -615,7 +635,7 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
         rewritten.where(guard, copy=False)
     message = (
         f"each {mine} row matches itself on the key ({', '.join(sorted(column.name for column in keys.values()))}), "
-        f"so {theirs} is {mine}: delete the join and read {mine}'s columns: {rewritten.sql(dialect=dialect)}"
+        f"so {theirs} is {mine}: delete the join and read {mine}'s columns: {written_sql(rewritten, dialect)}"
     )
     return Rewrite(site, RewriteKind.SELF_JOIN, message, key)
 
@@ -641,7 +661,7 @@ def _requalified(expression: exp.Expression, old: str, new: str, names: set[str]
     """`expression` reading `new` where it read `old`; `new.x = old.x` becomes
     `new.x IS NOT NULL`, all it still checks once both are one row."""
     if isinstance(expression, exp.EQ) and _key_equality(expression, new, old, {expression.this.name.lower()}):
-        return exp.Not(this=exp.Is(this=exp.column(expression.this.name, table=new), expression=exp.null()))
+        return exp.Is(this=exp.column(expression.this.name, table=new), expression=exp.null(), negate=True)
     copied = expression.copy()
     for column in copied.find_all(exp.Column):
         if column.table.lower() == old.lower():
@@ -712,7 +732,8 @@ def _implied_conjuncts(
     two other equalities chain (`a = b AND b = c` give `a = c`), or both of
     whose sides are pinned to one value; a self-join's copies of one column
     (`_self_join`'s rows are the same row); `x = v` or `x IN (...)` whose
-    listed values hold every value x can take (its Enumerated Domain). It is
+    listed values hold every value x can take (its Enumerated Domain);
+    `x IS NOT NULL` where x is never NULL. It is
     deleted when those columns are non-null, else it only removes rows where
     one is NULL: write `x IS NOT NULL` instead."""
     if isinstance(relation, ir.Join) and relation.kind not in {"inner", "left", "semi"}:
@@ -759,6 +780,8 @@ def _implication(
     """Why `conjunct` holds wherever its columns are non-null, and whether
     its columns are NULL together (one IS NOT NULL then checks both)."""
     match conjunct:
+        case ir.IsNotNull(operand=ir.ColumnRef(column=column)):
+            return (f"{column.name} is never NULL", False) if arena.prove(NonNullColumn(column=column)).value else None
         case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)):
             if _chained(first, second, others):
                 return "the other equalities chain its sides", False

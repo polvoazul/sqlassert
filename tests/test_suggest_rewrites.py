@@ -269,6 +269,14 @@ def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projecti
     assert RewriteKind.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
 
 
+def test_an_average_of_an_integer_notes_the_conversion():
+    schema = "CREATE TABLE t (id INTEGER PRIMARY KEY, i INTEGER, f DOUBLE);"
+    [rewrite] = suggest(schema + "SELECT id, avg(i) / 2 AS a FROM t GROUP BY id").rewrites
+    assert "write SELECT id, i / 2 AS a; AVG(i) over one row is its argument converted to avg's result type" in rewrite.message
+    [rewrite] = suggest(schema + "SELECT id, avg(f) AS a FROM t GROUP BY id").rewrites
+    assert rewrite.message.endswith("write SELECT id, f AS a")
+
+
 # EXCEPT and INTERSECT over a duplicate-free input -----------------------------------
 
 
@@ -330,7 +338,7 @@ def test_limit_that_may_change_the_rows_is_kept(query: str):
         "SELECT u.id, v.name FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
         "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name FROM users AS u",
     ),
-    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users AS u WHERE NOT u.nick IS NULL"),
+    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL"),
     (
         "WITH c AS (SELECT id, name, random() AS r FROM users) SELECT a.id, b.name FROM c a JOIN c b ON a.id = b.id",
         "SELECT a.id, a.name FROM c AS a",
@@ -339,6 +347,12 @@ def test_limit_that_may_change_the_rows_is_kept(query: str):
 def test_a_self_join_on_a_key_reads_the_same_row(query: str, rewritten: str):
     rewrite = next(i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.SELF_JOIN)
     assert rewrite.message.endswith(rewritten)
+
+
+def test_a_self_join_that_only_filters_reads_the_same_row_instead_of_exists():
+    query = "SELECT u.id FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick"
+    kinds = rewrites(SCHEMA + query)
+    assert RewriteKind.SELF_JOIN in kinds and RewriteKind.FILTER_JOIN not in kinds and RewriteKind.REDUNDANT_JOIN not in kinds
 
 
 @pytest.mark.parametrize("query", [
@@ -364,6 +378,7 @@ def test_a_join_that_may_read_another_row_is_not_a_self_join(query: str):
     ("SELECT id FROM (SELECT * FROM users WHERE name = 'x') t WHERE name = 'x'", "delete it from WHERE"),
     ("SELECT id FROM (SELECT * FROM users WHERE nick = 'x') t WHERE nick IN ('x', 'y')", "delete it from WHERE"),
     ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "write u.nick IS NOT NULL in ON"),
+    ("SELECT id FROM users WHERE name IS NOT NULL", "name IS NOT NULL is always TRUE here (name is never NULL): delete it from WHERE"),
 ])
 def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
     rewrites = [i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.IMPLIED_CONDITION]
@@ -375,6 +390,7 @@ def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
     "SELECT id FROM users WHERE name = 'x'",
     "SELECT id FROM (SELECT * FROM users WHERE nick IN ('x', 'y')) t WHERE nick = 'x'",
     "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND u.name = 'x'",
+    "SELECT id FROM users WHERE nick IS NOT NULL",
     # Both pinned to 5, but text '05' = 5 may hold while '05' = '5' does not.
     "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id WHERE o.total = 5 AND u.nick = 5 AND o.total = u.nick",
 ])

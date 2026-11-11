@@ -271,6 +271,20 @@ _DECIMAL = re.compile(r"\d+\.\d*|\.\d+")
 _EXPONENT = re.compile(r"(\d+\.?\d*|\.\d+)[eE][+-]?\d+")
 
 
+def written_sql(node: Expr, dialect: str) -> str:
+    """`node` as SQL, `x IS NOT NULL` spelled so: SQLGlot parses it as
+    `NOT x IS NULL` and most dialects write it back that way."""
+    if node.find(exp.Not) is None:
+        return node.sql(dialect=dialect)
+    return node.transform(_is_not_null).sql(dialect=dialect)
+
+
+def _is_not_null(node: Expr) -> Expr:
+    if isinstance(node, exp.Not) and isinstance(node.this, exp.Is) and not node.this.args.get("negate"):
+        return exp.Is(this=node.this.this.copy(), expression=node.this.expression.copy(), negate=True)
+    return node
+
+
 def literal_value(expression: Expr) -> LiteralValue | None:
     """The typed value of a string, numeric, or boolean literal, or None for
     any other expression. A numeric literal may be negated."""
