@@ -67,6 +67,9 @@ class DialectSemantics:
     concat_ws: ConcatMeaning = None
     unique_keys: KeyTrust = "enforced"
     foreign_keys: KeyTrust = "enforced"
+    # CHECK constraints. Where the dialect has none (Snowflake, BigQuery,
+    # Redshift, Trino), one in the SQL describes a table another engine holds.
+    check_constraints: KeyTrust = "enforced"
     # A PRIMARY KEY column is NOT NULL.
     primary_key_not_null: bool = True
     # A column-level `REFERENCES` is enforced (MySQL before 9.0 parses and ignores it).
@@ -100,6 +103,8 @@ _SPARK = DialectSemantics(
     concat_ws="skips-null",
     unique_keys="rely",
     foreign_keys="rely",
+    # Delta tables check them, other tables cannot declare them.
+    check_constraints="unenforced",
     set_operations_all=True,
 )
 
@@ -148,6 +153,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat_ws="strict",  # `concat_ws(',', 'a', NULL)` is NULL.
         unique_keys="rely",
         foreign_keys="rely",
+        check_constraints="unenforced",
     ),
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
@@ -157,6 +163,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat="strict",
         unique_keys="unenforced",
         foreign_keys="unenforced",
+        check_constraints="unenforced",
     ),
     "redshift": DialectSemantics(
         checked_arithmetic=True,
@@ -165,11 +172,14 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         pipes="strict",
         unique_keys="unenforced",
         foreign_keys="unenforced",
+        check_constraints="unenforced",
     ),
     "databricks": _SPARK,
     "spark": _SPARK,
     "spark2": _SPARK,
-    "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced"),
+    "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced",
+        check_constraints="unenforced",
+    ),
     "sqlite": DialectSemantics(
         pipes="strict",
         concat_ws="skips-null",
@@ -197,6 +207,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # overload is NULL for a NULL array, and SQLGlot parses both alike.
         unique_keys="unenforced",
         foreign_keys="unenforced",
+        check_constraints="unenforced",
         set_operations_all=True,
     ),
 }

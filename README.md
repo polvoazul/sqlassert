@@ -447,6 +447,13 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   declared `NOT ENFORCED` or `DEFERRABLE`, a MySQL column-level `REFERENCES`
   (ignored before MySQL 9.0), a foreign key of a MySQL table whose `ENGINE`
   does not enforce them, and SQLite foreign keys.
+- **CHECK constraints.** `CHECK (col IN ('a', 'b'))` and `CHECK (col = v)`,
+  over literals and joined by AND, state col's Enumerated Domain, as ENUM
+  does (NULL passes a CHECK, and is outside every domain). They are trusted
+  like keys: Knowledge where the database checks them, a Property
+  Declaration under `trust_unenforced_keys` in Snowflake, BigQuery,
+  Redshift, Trino, Hive and Databricks / Spark. Any other CHECK is ignored
+  with an `ignored-check-constraint` warning.
 - **Text.** `VARCHAR` and `TEXT` with no `COLLATE` are taken to compare by
   identity in DuckDB, PostgreSQL and Trino, whose shipped default collation is
   binary (Trino has no collations); a setting that changes it (DuckDB's

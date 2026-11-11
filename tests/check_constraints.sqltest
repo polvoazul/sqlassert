@@ -1,0 +1,51 @@
+-- CHECK constraints as Enumerated Domains (issue 37, S5).
+--
+-- A CHECK passes a row unless its condition is FALSE, so NULL passes. An
+-- AND-ed `col IN (v, ...)` or `col = v` over non-null literals states every
+-- non-null value of col, exactly what ENUM states. Trusted like keys:
+-- Knowledge where the dialect checks them, a Property Declaration under
+-- `trust_unenforced_keys` elsewhere. Any other shape is ignored, with a warning.
+
+-- case: a_column_check_in_list_is_an_enumerated_domain
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR CHECK (status IN ('new', 'paid')));
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: a_check_does_not_cover_a_value_it_does_not_list
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR CHECK (status IN ('new', 'paid')));
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
+
+-- case: a_table_check_of_and_ed_equalities_bounds_each_column
+CREATE TABLE orders (id INTEGER PRIMARY KEY, kind VARCHAR, qty INTEGER, CONSTRAINT k CHECK (kind = 'a' AND qty IN (1, 2)));
+SELECT kind, qty FROM orders /**ASSERT ENUM(kind IN ('a'))**/ /**ASSERT ENUM(qty IN (1, 2))**/  --~ PROVED PROVED
+
+-- case: a_check_added_by_alter_table_is_read
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR);
+ALTER TABLE orders ADD CONSTRAINT s CHECK (status = 'x');
+SELECT status FROM orders /**ASSERT ENUM(status IN ('x'))**/  --~ PROVED
+
+-- case: a_null_in_the_list_passes_every_row
+CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR CHECK (status IN ('new', NULL)));
+--~ ignored-check-constraint "CHECK (status IN ('new', NULL)) of orders is ignored"
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
+
+-- case: an_or_of_two_columns_is_ignored
+CREATE TABLE orders (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, CHECK (a = 1 OR b = 2));
+--~ ignored-check-constraint "is ignored"
+SELECT a FROM orders /**ASSERT ENUM(a IN (1))**/  --~ UNKNOWN
+
+-- case: a_range_check_is_ignored_with_a_warning
+CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER CHECK (qty > 0));
+--~ ignored-check-constraint "CHECK (qty > 0) of orders is ignored"
+SELECT qty FROM orders /**ASSERT ENUM(qty IN (1))**/  --~ UNKNOWN
+
+-- case: an_unenforced_check_is_a_declaration_by_default
+-- dialect: snowflake
+CREATE TABLE orders (id INTEGER PRIMARY KEY RELY, status VARCHAR CHECK (status IN ('new', 'paid')));
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ PROVED
+
+-- case: an_unenforced_check_is_ignored_when_not_trusted
+-- trust_unenforced_keys: false
+-- dialect: bigquery
+CREATE TABLE orders (id INTEGER, status STRING CHECK (status IN ('new', 'paid')));
+--~ unenforced-constraint "the check constraint ('status') of orders is not Knowledge, since bigquery does not enforce it"
+SELECT status FROM orders /**ASSERT ENUM(status IN ('new', 'paid'))**/  --~ UNKNOWN

@@ -274,8 +274,8 @@ class IrParser:
         symbol.constraints.append(exp.UniqueColumnConstraint(this=schema))
 
     def _alter(self, statement: exp.Alter) -> None:
-        """ALTER TABLE adding PRIMARY KEY, UNIQUE, or FOREIGN KEY constraints, or
-        setting columns NOT NULL. Any other action could invalidate what is
+        """ALTER TABLE adding PRIMARY KEY, UNIQUE, FOREIGN KEY or CHECK
+        constraints, or setting columns NOT NULL. Any other action could invalidate what is
         known of the table, so a statement with one states nothing."""
         actions = statement.args.get("actions") or ()
         added: list[Expr] = []
@@ -293,7 +293,7 @@ class IrParser:
         if not actions or not all(_is_added_constraint(constraint) for constraint in added):
             self._diagnostics.append(Diagnostic(
                 diag.UNSUPPORTED_STATEMENT,
-                f"only ALTER TABLE adding PRIMARY KEY, UNIQUE, or FOREIGN KEY constraints, or setting NOT NULL, "
+                f"only ALTER TABLE adding PRIMARY KEY, UNIQUE, FOREIGN KEY or CHECK constraints, or setting NOT NULL, "
                 f"is analyzed: {statement.sql(dialect=self.dialect)}",
                 self._origin(statement),
             ))
@@ -2072,9 +2072,9 @@ class IrParser:
                 )
 
     def _table_knowledge(self, relation: ir.NamedRelation, symbol: _Symbol) -> None:
-        """A declared table's ENUM types, NOT NULL columns and keys: Knowledge
-        where the dialect enforces them, Property Declarations where they are
-        trusted (`_key_trust`)."""
+        """A declared table's ENUM types, NOT NULL columns, keys and CHECK
+        domains: Knowledge where the dialect enforces them, Property
+        Declarations where they are trusted (`_key_trust`)."""
         statement = symbol.statement
         if statement is None:
             return
@@ -2082,6 +2082,7 @@ class IrParser:
         non_null = {column.lower() for column in symbol.not_null}
         # Each key's columns, its constraint, and whether it is a primary key.
         keys: list[tuple[tuple[str, ...], Expr, bool]] = []
+        checks: list[exp.CheckColumnConstraint] = []
         for definition in statement.this.find_all(exp.ColumnDef):
             domain = _enum_type_values(definition, self.semantics)
             if domain is not None and definition.name.lower() in columns:
@@ -2094,9 +2095,14 @@ class IrParser:
                         keys.append(((definition.name,), key, True))
                     case exp.UniqueColumnConstraint() as key:
                         keys.append(((definition.name,), key, False))
+                    case exp.CheckColumnConstraint() as check:
+                        checks.append(check)
                     case _:
                         pass  # Other column constraints state nothing about keys or NULL.
         for constraint in _table_constraints(symbol):
+            if isinstance(constraint, exp.CheckColumnConstraint):
+                checks.append(constraint)
+                continue
             constrained = _table_level_unique_columns(constraint)
             if constrained is not None:
                 keys.append((constrained, constraint, isinstance(constraint, exp.PrimaryKey)))
@@ -2120,6 +2126,27 @@ class IrParser:
             trust = self._key_trust(exp.UniqueColumnConstraint(), symbol, names)
             if trust is not None:
                 (self._knowledge if trust == "enforced" else self._declarations).append(UniqueSet(columns=frozenset(members)))
+        for check in checks:
+            self._check_knowledge(check, symbol, columns)
+
+    def _check_knowledge(self, check: exp.CheckColumnConstraint, symbol: _Symbol, columns: dict[str, ir.OutputColumn]) -> None:
+        """A CHECK constraint's Enumerated Domains (`_check_domains`), or a
+        warning that its shape states none sqlassert reads."""
+        domains = _check_domains(check.this, self.semantics)
+        if domains is None or not all(name in columns for name, _ in domains):
+            assert symbol.statement is not None
+            self._warnings.append(Diagnostic(
+                diag.IGNORED_CHECK_CONSTRAINT,
+                f"CHECK ({check.this.sql(dialect=self.dialect)}) of {symbol.name} is ignored: only col IN (...) and col = v, "
+                "with literal values, joined by AND, give a column's values",
+                self._origin(check, _source_line(check) or _source_line(symbol.statement)),
+            ))
+            return
+        trust = self._key_trust(check, symbol, tuple(dict.fromkeys(name for name, _ in domains)))
+        if trust is None:
+            return
+        facts = [EnumeratedDomain(column=columns[name], values=values) for name, values in domains]
+        (self._knowledge if trust == "enforced" else self._declarations).extend(facts)
 
     def _expression_key(
         self, relation: ir.NamedRelation, parts: list[Expr], index: exp.Create
@@ -2161,6 +2188,7 @@ class IrParser:
         Knowledge, so never proves anything by itself (ADR 0005)."""
         assert symbol.statement is not None
         foreign = isinstance(constraint, exp.ForeignKey | exp.Reference)
+        check = isinstance(constraint, exp.CheckColumnConstraint)
         reference = constraint.args.get("reference") if isinstance(constraint, exp.ForeignKey) else constraint
         options = {str(option).upper() for option in (reference.args.get("options") or ())} if isinstance(reference, Expr) else set()
         meaning = self.semantics
@@ -2171,7 +2199,7 @@ class IrParser:
             reason = "ALTER TABLE ... NOT VALID added it, so rows already in the table were never checked"
         elif "DEFERRABLE" in options or "INITIALLY DEFERRED" in options:
             reason = "it is DEFERRABLE, so a transaction may see it violated"
-        elif (meaning.foreign_keys if foreign else meaning.unique_keys) != "enforced":
+        elif (meaning.check_constraints if check else meaning.foreign_keys if foreign else meaning.unique_keys) != "enforced":
             reason = f"{self.dialect} does not enforce it"
         elif isinstance(constraint, exp.Reference) and not meaning.inline_references:
             reason = f"{self.dialect} before 9.0 ignores a column-level REFERENCES"
@@ -2184,8 +2212,8 @@ class IrParser:
             return "enforced"
         if ("RELY" in options and meaning.rely) or self.trust_unenforced_keys:
             return "declared"
-        kind = "foreign key" if foreign else "primary key" if isinstance(constraint, exp.PrimaryKey | exp.PrimaryKeyColumnConstraint) else "unique constraint"
-        fixes = ["mark it RELY"] if meaning.rely else []
+        kind = "check constraint" if check else "foreign key" if foreign else "primary key" if isinstance(constraint, exp.PrimaryKey | exp.PrimaryKeyColumnConstraint) else "unique constraint"
+        fixes = ["mark it RELY"] if meaning.rely and not check else []
         if foreign and meaning.foreign_key_engines is not None and _engine(symbol) is None:
             fixes.append("write ENGINE=InnoDB")
         fixes.append("analyze with trust_unenforced_keys=True")
@@ -2415,7 +2443,10 @@ def _unwrap_constraints(constraints: Iterable[Expr]) -> list[Expr]:
 
 
 def _is_added_constraint(constraint: Expr) -> bool:
-    return isinstance(constraint, exp.PrimaryKey | exp.ForeignKey) or _table_level_unique_columns(constraint) is not None
+    return (
+        isinstance(constraint, exp.PrimaryKey | exp.ForeignKey | exp.CheckColumnConstraint)
+        or _table_level_unique_columns(constraint) is not None
+    )
 
 
 def _references(symbol: _Symbol) -> list[tuple[tuple[str, ...], exp.Table, tuple[str, ...] | None, Expr]]:
@@ -2752,6 +2783,36 @@ def _enum_type_values(definition: exp.ColumnDef, meaning: DialectSemantics) -> f
     if meaning.enum_strips_trailing_spaces:
         members = {replace(value, text=value.text.rstrip(" ")) for value in members}
     return frozenset(members)
+
+
+def _check_domains(condition: Expr, meaning: DialectSemantics) -> list[tuple[str, frozenset[ir.LiteralValue]]] | None:
+    """The Enumerated Domains a CHECK condition states, by lower-cased
+    column name, or None for a shape that states none sqlassert reads.
+
+    A CHECK passes a row unless its condition is FALSE, so NULL passes. Each
+    AND-ed `col IN (v, ...)` or `col = v` over non-null literals is FALSE for
+    a non-null value equal to no v, which makes the whole condition FALSE: so
+    every non-null value of col equals one of them, exactly what ENUM states.
+    A NULL among the values would make the IN NULL instead, and pass any row.
+    """
+    parts = list(condition.flatten()) if isinstance(condition, exp.And) else [condition]
+    found = []
+    for part in parts:
+        match part.unnest():
+            case exp.EQ(this=exp.Column() as column, expression=value) | exp.EQ(this=value, expression=exp.Column() as column):
+                values = [value]
+            case exp.In(this=exp.Column() as column, expressions=list(values)) if values and part.unnest().args.get("query") is None:
+                pass
+            case _:
+                return None
+        literals = [literal_value(value) for value in values]
+        if column.table or any(
+            literal is None or (meaning.empty_string_is_null and literal.type == "string" and literal.text == "")
+            for literal in literals
+        ):
+            return None
+        found.append((column.name.lower(), frozenset(literal for literal in literals if literal is not None)))
+    return found
 
 
 def _engine(symbol: _Symbol) -> str | None:

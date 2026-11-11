@@ -22,7 +22,7 @@ then OR branches.
   side of an outer join (`ON ... AND u.x = u.z`) is a strict equivalence in
   the result (both NULL on padded rows), but does not merge an Equality Group,
   so `u.z = 3` in the same ON does not bound x's domain.
-- [ ] **S5** (§3.2.1): CHECK constraints are ignored without a diagnostic.
+- [x] **S5** (§3.2.1): Done: an AND of `col IN (...)` and `col = v` over literals is an Enumerated Domain, trusted like keys (`convert._check_domains`, `DialectSemantics.check_constraints`); any other CHECK warns `ignored-check-constraint`. Was: CHECK constraints are ignored without a diagnostic.
   `CHECK (m = 1)` or `CHECK (m IN ('a', 'b'))` states a constant or an
   Enumerated Domain of m's non-null values (CHECK is true-interpreted: NULL
   passes), which is exactly what ENUM means.

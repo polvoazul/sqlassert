@@ -155,6 +155,13 @@ added by `ALTER TABLE ... NOT VALID`, a MySQL column-level `REFERENCES`
 `ENGINE` is not InnoDB or NDB, or that names no `ENGINE` (the server's
 `default_storage_engine` decides, and may be MyISAM).
 
+CHECK constraints follow the same rule (`check_constraints`). DuckDB,
+PostgreSQL, SQLite, MySQL 8.4, Oracle and ClickHouse check them. Snowflake,
+BigQuery, Redshift and Trino have none, so one in the SQL describes a table
+another engine holds; Hive's and Spark's are not taken as checked (Databricks
+checks them only on Delta tables). A CHECK has no `RELY`. A PostgreSQL CHECK
+added `NOT VALID` is not Knowledge either.
+
 ## Catalog fetchers
 
 `discovery/information_schema.py` is one fetcher over any DB-API connection

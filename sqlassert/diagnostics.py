@@ -37,6 +37,7 @@ CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
 COMPOSITE_COMPARISON = "composite-comparison"
 CONSTRAINT_WITHOUT_TABLE = "constraint-without-table"
 DUPLICATE_DECLARATION = "duplicate-declaration"
+IGNORED_CHECK_CONSTRAINT = "ignored-check-constraint"
 INCOMPLETE_CATALOG_METADATA = "incomplete-catalog-metadata"
 INVALID_FOREIGN_KEY_CONSTRAINT = "invalid-foreign-key-constraint"
 MULTIPLE_ROOT_SELECTS = "multiple-root-selects"
@@ -65,4 +66,4 @@ class Diagnostic:
 
 
 # Warnings about the SQL itself, which no connection answers: `analyze_database` keeps them.
-SQL_WARNINGS = frozenset({AMBIGUOUS_OPERATOR, COMPOSITE_COMPARISON, ZONED_TIMESTAMP_CAST})
+SQL_WARNINGS = frozenset({AMBIGUOUS_OPERATOR, COMPOSITE_COMPARISON, IGNORED_CHECK_CONSTRAINT, ZONED_TIMESTAMP_CAST})
