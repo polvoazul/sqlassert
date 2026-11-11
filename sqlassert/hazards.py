@@ -144,9 +144,10 @@ def _unselected_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[
     if _reaches_row_identity(_closure(aggregate, shown, frozenset())).value:
         return []
     names = ", ".join(column.scalar_expr.origin.detail for column in hidden)
+    terms, verb, pronoun = ("term", "does", "it") if len(hidden) == 1 else ("terms", "do", "them")
     message = (
-        f"GROUP BY {names} is not selected, and the selected keys do not determine it: rows that differ "
-        f"only in {names} come out looking the same; select it, or drop it from GROUP BY"
+        f"GROUP BY {terms} {names} {verb} not appear in SELECT. This is probably a mistake: "
+        f"select {pronoun}, or drop {pronoun} from GROUP BY"
     )
     return [Hazard(site, Concern.UNSELECTED_GROUPING, message, Result(True, "a grouping key is not selected", tuple(hidden)))]
 

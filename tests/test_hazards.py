@@ -266,6 +266,15 @@ def test_a_grouping_key_not_selected_is_a_hazard(sql: str):
     assert Concern.UNSELECTED_GROUPING in concerns(sql)
 
 
+def test_a_grouping_key_not_selected_says_it_is_probably_a_mistake():
+    [hazard] = [h for h in suggest(TRAPS + "SELECT count(*) AS n FROM orders GROUP BY customer_id").hazards
+                if h.concern is Concern.UNSELECTED_GROUPING]
+    assert hazard.message == (
+        "GROUP BY term customer_id does not appear in SELECT. This is probably a mistake: "
+        "select it, or drop it from GROUP BY"
+    )
+
+
 @pytest.mark.parametrize("sql", [
     # The selected key determines the other.
     "SELECT id, count(*) AS n FROM orders GROUP BY id, customer_id",
