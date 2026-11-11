@@ -1401,25 +1401,33 @@ class IrParser:
 
     def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.RelationExpr | None:
         """`select` grouped by `keys`; [] is one group, one row however many
-        rows its input has. HAVING filters the groups (`_lower_having`)."""
-        group = select.args.get("group")
-        if group is not None and any(group.args.get(key) for key in ("grouping_sets", "rollup", "cube", "totals")):
+        rows its input has. HAVING filters the groups (`_lower_having`). A
+        key not selected is a hidden output of the Aggregate, which a Project
+        then drops: it still splits the groups, and HAVING may read it."""
+        if _unsupported_grouping(select) is not None:
             return None
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
 
+        items: list[Expr] = list(select.expressions)
+        selected_names = {item.alias_or_name.lower() for item in items}
         grouped_items: set[int] = set()
+        matched: list[Expr] = []
         for group_expression in keys:
-            item = _matching_grouping_output(group_expression, select.expressions)
+            item = _matching_grouping_output(group_expression, select.expressions) or _same_column_alias(group_expression, select.expressions)
             if item is None:
-                return None
+                if (isinstance(group_expression, exp.Literal) and group_expression.is_int) or (
+                    isinstance(group_expression, exp.Column) and not group_expression.table
+                    and group_expression.name.lower() in selected_names
+                ) or group_expression.find(exp.AggFunc, exp.Window, exp.Subquery) is not None:
+                    return None  # A position out of range, a name that may be a select alias, or not a key.
+                item = exp.alias_(group_expression.copy(), f"{HIDDEN_GROUPING}{len(items)}")
+                items.append(item)
             grouped_items.add(id(item))
+            matched.append(item)
 
-        output_columns = self._aggregate_output_columns(select.expressions, lowered, grouped_items)
-        grouping_outputs: list[ir.OutputColumn] = []
-        for group_expression in keys:
-            item = _matching_grouping_output(group_expression, select.expressions)
-            grouping_outputs.append(output_columns[select.expressions.index(item)])
+        output_columns = self._aggregate_output_columns(items, lowered, grouped_items)
+        grouping_outputs = [output_columns[next(index for index, item in enumerate(items) if item is match)] for match in matched]
         calls = tuple(
             ir.AggregateCall(
                 origin=self._origin(call), description=call.sql(dialect=self.dialect),
@@ -1436,9 +1444,14 @@ class IrParser:
             grouping_outputs=tuple(grouping_outputs), calls=calls,
         )
         having = select.args.get("having")
-        return aggregate if having is None else self._lower_having(aggregate, select, having)
+        relation: ir.RelationExpr = aggregate if having is None else self._lower_having(aggregate, items, having)
+        if len(items) == len(select.expressions):
+            return relation
+        origin = self._origin(select)
+        selected = _pass_output_columns(relation.output_columns[:len(select.expressions)], origin)
+        return ir.Project(origin=origin, output_columns=selected, is_schema_complete=True, input=relation)
 
-    def _lower_having(self, aggregate: ir.Aggregate, select: exp.Select, having: exp.Having) -> ir.Filter:
+    def _lower_having(self, aggregate: ir.Aggregate, items: list[Expr], having: exp.Having) -> ir.Filter:
         """HAVING as a Filter of the grouped rows. A condition reads the
         aggregate's output columns, so each part of it written as a select
         item is that item's column (`count(*) > 1` beside `count(*) AS c` is
@@ -1449,7 +1462,7 @@ class IrParser:
         qualifier = "__having"
         bindings = tuple(_Binding(qualifier, f"c{index}", column) for index, column in enumerate(aggregate.output_columns))
         written: dict[str, int] = {}
-        for index, item in enumerate(select.expressions):
+        for index, item in enumerate(items):
             expression = item.this if isinstance(item, exp.Alias) else item
             if not isinstance(expression, exp.Literal):
                 written.setdefault(expression.sql(dialect=self.dialect), index)
@@ -2528,6 +2541,9 @@ def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
 # Rows of a VALUES list past which its columns get no Enumerated Domain.
 _VALUES_DOMAIN_ROWS = 100
 
+# A grouping key not selected, kept as a hidden Aggregate output: no SQL name can match it.
+HIDDEN_GROUPING = "\0grouping"
+
 # A USING column's merged binding (`_merge_using`): no qualifier can name it.
 _USING_QUALIFIER = "\0using"
 
@@ -2629,6 +2645,18 @@ def _matching_output(group_expression: Expr, items: list[Expr]) -> Expr | None:
         (item for item in items if (item.this if isinstance(item, exp.Alias) else item) == group_expression),
         None,
     )
+
+
+def _same_column_alias(group_expression: Expr, items: list[Expr]) -> Expr | None:
+    """The item `GROUP BY x` names when `x` is both the item's alias and the
+    column it selects (`t.x AS x`): either reading of the name is that column."""
+    if not isinstance(group_expression, exp.Column) or group_expression.table:
+        return None
+    name = group_expression.name.lower()
+    return next((
+        item for item in items
+        if isinstance(item, exp.Alias) and item.alias.lower() == name and isinstance(item.this, exp.Column) and item.this.name.lower() == name
+    ), None)
 
 
 def _matching_grouping_output(group_expression: Expr, items: list[Expr]) -> Expr | None:

@@ -72,3 +72,26 @@ SELECT deptno, (SELECT count_if(sal > 0) FROM emp WHERE emp.deptno = dept.deptno
 -- case: an_aggregate_of_outer_columns_is_not_decorrelated
 SELECT empno FROM emp AS a WHERE sal = (SELECT max(a.sal) FROM emp AS b WHERE b.deptno = a.deptno)
 /**ASSERT UNIQUE(empno)**/  --~ PROVED
+
+-- A grouping key not selected still splits the groups: the selected key
+-- alone is not unique, but its columns keep what they knew.
+-- case: an_unselected_grouping_key_is_a_hidden_output
+SELECT deptno, count(*) AS c FROM emp GROUP BY deptno, job
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+
+-- HAVING may read it: pinned to one value, the other key is a key alone.
+-- case: having_reads_an_unselected_grouping_key
+SELECT job, count(*) AS c FROM emp GROUP BY sal, job HAVING sal = 3
+/**ASSERT UNIQUE(job)**/  --~ PROVED
+
+-- A name that is both an alias and the column it selects is that column.
+-- case: a_grouping_name_that_is_its_own_alias
+SELECT emp.job AS job, count(*) AS c FROM emp GROUP BY job
+/**ASSERT UNIQUE(job)**/  --~ PROVED
+
+-- A name that may be a select alias of something else is not guessed at:
+-- dialects disagree on which one GROUP BY reads.
+-- case: a_grouping_name_that_may_be_an_alias_stays_opaque
+SELECT upper(job) AS job, count(*) AS c FROM emp GROUP BY job
+/**ASSERT NOT NULL(c)**/  --~ UNKNOWN

@@ -25,6 +25,9 @@ the proof that would have pinned it, which failed:
   non-null (the `LEFT JOIN ... IS NULL` form of it), an `EXCEPT` whose left
   rows all appear on the right. Whether the key is enforced is not asked:
   sqlassert trusts every key the SQL states.
+- A GROUP BY key the Select does not return, when the keys it returns do not
+  determine it: output rows told apart only by a value not shown look like
+  duplicates. Silent for the values of an IN, EXISTS or scalar subquery.
 
 A hazard is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
@@ -40,6 +43,7 @@ from typing import ClassVar
 from sqlglot import exp
 
 from sqlassert import ir
+from sqlassert.ir.convert import HIDDEN_GROUPING
 from sqlassert.rewrites import SuggestType, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
@@ -59,6 +63,7 @@ class Concern(Enum):
     IMPLICIT_CAST = "Implicit cast"
     ALWAYS_EMPTY = "Always empty"
     MANY_TO_MANY = "Many-to-many join"
+    UNSELECTED_GROUPING = "Grouping key not selected"
 
 
 @dataclass(frozen=True)
@@ -93,8 +98,11 @@ def hazards(
             if isinstance(node, exp.Join) and assertion_span(node) is None and relation not in deduplicated:
                 found.extend(_many_to_many(site, relation))
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
-        if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
-            found.extend(_traps(site, aggregate, join_labels))
+        grouped = _grouped(aggregate)
+        if grouped is not None and grouped in reachable:
+            found.extend(_traps(site, grouped, join_labels))
+            if site.trailing and isinstance(node, exp.Select) and _rows_are_read(node):
+                found.extend(_unselected_grouping(site, grouped))
         if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
     for site, operation in program.set_operations:
@@ -104,6 +112,43 @@ def hazards(
         if join in reachable and wanted(site):
             found.extend(_scalar_subquery(site, join))
     return sorted(found, key=lambda item: item.site.offset)
+
+
+def _grouped(relation: ir.RelationExpr | ir.SimpleCase) -> ir.Aggregate | None:
+    """The Aggregate of a grouped Select, under its HAVING (a Filter) and the
+    Project that drops grouping keys it does not select."""
+    if isinstance(relation, ir.Project) and isinstance(relation.input, ir.Aggregate | ir.Filter):
+        relation = relation.input
+    if isinstance(relation, ir.Filter) and isinstance(relation.input, ir.Aggregate):
+        relation = relation.input
+    return relation if isinstance(relation, ir.Aggregate) else None
+
+
+def _rows_are_read(select: exp.Select) -> bool:
+    """Whether `select`'s rows are a result, read as rows: not the values of
+    an IN, EXISTS or scalar subquery, where equal rows are no surprise."""
+    if select.find_ancestor(exp.In, exp.Exists) is not None:
+        return False
+    subquery = select.find_ancestor(exp.Subquery)
+    return subquery is None or isinstance(subquery.parent, exp.From | exp.Join)
+
+
+def _unselected_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[Hazard]:
+    """GROUP BY keys the Select does not return, when the keys it returns do
+    not determine them: two output rows may then be equal, told apart only by
+    a value not shown. Rarely what the author meant."""
+    hidden = [column for column in aggregate.grouping_outputs if column.name.startswith(HIDDEN_GROUPING)]
+    if not hidden:
+        return []
+    shown = frozenset(column for column in aggregate.grouping_outputs if column not in hidden)
+    if _reaches_row_identity(_closure(aggregate, shown, frozenset())).value:
+        return []
+    names = ", ".join(column.scalar_expr.origin.detail for column in hidden)
+    message = (
+        f"GROUP BY {names} is not selected, and the selected keys do not determine it: rows that differ "
+        f"only in {names} come out looking the same; select it, or drop it from GROUP BY"
+    )
+    return [Hazard(site, Concern.UNSELECTED_GROUPING, message, Result(True, "a grouping key is not selected", tuple(hidden)))]
 
 
 def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena) -> list[Hazard]:

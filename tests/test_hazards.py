@@ -254,3 +254,34 @@ def test_an_orphan_check_a_foreign_key_guarantees_is_always_empty(sql: str):
 ])
 def test_a_query_that_may_return_a_row_is_not_always_empty(sql: str):
     assert Concern.ALWAYS_EMPTY not in [hazard.concern for hazard in suggest(EMPTY_SCHEMA + sql).hazards]
+
+
+# A grouping key not selected ------------------------------------------------------
+@pytest.mark.parametrize("sql", [
+    "SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id, id",
+    "SELECT count(*) AS n FROM orders GROUP BY customer_id",
+    "SELECT customer_id, n FROM (SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id, id HAVING count(*) > 0) s",
+])
+def test_a_grouping_key_not_selected_is_a_hazard(sql: str):
+    assert Concern.UNSELECTED_GROUPING in concerns(sql)
+
+
+@pytest.mark.parametrize("sql", [
+    # The selected key determines the other.
+    "SELECT id, count(*) AS n FROM orders GROUP BY id, customer_id",
+    # Values for IN: equal rows are no surprise.
+    "SELECT id FROM customers WHERE id IN (SELECT max(customer_id) FROM orders GROUP BY amount)",
+])
+def test_a_grouping_key_the_selected_keys_determine_or_not_read_as_rows_is_not_a_hazard(sql: str):
+    assert Concern.UNSELECTED_GROUPING not in concerns(sql)
+
+
+def test_a_grouping_key_not_selected_repeats_rows_on_data():
+    db = duckdb.connect()
+    db.execute("CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER); INSERT INTO u VALUES (1, 7), (2, 7)")
+    rows = db.execute("SELECT t_id, count(*) AS n FROM u GROUP BY t_id, id").fetchall()
+    assert rows == [(7, 1), (7, 1)]
+
+
+def test_a_trap_under_having_is_still_a_hazard():
+    assert concerns(FAN + " HAVING count(*) > 0") == [Concern.FAN_TRAP]
