@@ -58,8 +58,10 @@ def test_a_marker_the_models_own_tests_state_is_not_suggested(compiled):
     report = suggest_models(
         compiled, ["models/customer_signups.sql", "models/stg_customers.sql", "models/customers.sql"], trust_upstream_tests=True,
     )
-    # unique and not_null tests on every key column of both.
-    assert rows(report, "customer_signups") == rows(report, "stg_customers") == []
+    # unique and not_null tests on every key column of both; only label, which
+    # no test states, is suggested (upper of a non-null value is non-null).
+    assert rows(report, "stg_customers") == []
+    assert rows(report, "customer_signups") == [("models/customer_signups.sql:2", "Root Select", "/**ASSERT NOT NULL(label)**/")]
     # customers tests unique(customer_id) and not_null(n_orders) only.
     assert ("models/customers.sql:11", "Root Select", "/**ASSERT NOT NULL(customer_id)**/") in rows(report, "customers")
     # A CTE's marker is about the CTE, not the model, so its tests do not state it.
