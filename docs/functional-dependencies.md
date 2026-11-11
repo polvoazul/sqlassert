@@ -23,7 +23,12 @@ ideas, and the other papers: [literature-notes.md](literature-notes.md).
   so they are superkeys; we avoid "candidate key" (see `CONTEXT.md`).
 - **Strict vs lax FD**: a strict FD holds on all rows, treating NULL as
   agreeing with NULL (as `GROUP BY` / `DISTINCT` do). A lax FD holds only on
-  rows whose determinant is non-null.
+  rows whose determinant is non-null; agreement on the dependent still counts
+  NULL as equal to NULL. This is CockroachDB's definition, stronger than
+  Paulley's: his lax FD (Def 28) also exempts rows with
+  a NULL dependent, so `a ~~> b` allows rows `(1, 1), (1, NULL)`; ours
+  forbids them. Our variant is the "nulls as no information" reading Paulley
+  surveys in §2.5.3.2; CockroachDB's `func_dep.go` explains the choice.
 - **Three kinds of key** (Paulley Def 6, Claims 16, 18, 22):
   - *Lax*: no two rows with fully non-null values agree on it. Our Unique Set.
     DuckDB `UNIQUE` is this kind (ANSI: several NULLs allowed).
@@ -32,10 +37,14 @@ ideas, and the other papers: [literature-notes.md](literature-notes.md).
     columns. Not yet a property of ours.
   - *Non-null strict*: null-equal strict with every column non-null. Our
     Non-Null Unique Set.
-- **Lax rules need non-null middles** (Paulley fd4b, fd7b, eq9b; counterexample
-  Fig. 2.1, p.38). Lax transitivity and lax decomposition are sound only when
-  the chained or dropped columns are non-null. A lax FD or equivalence becomes
-  strict once every column in it is known non-null (fd6, eq7).
+- **Lax rules need non-null middles** (Paulley fd7b, eq9b; counterexample
+  Fig. 2.1, p.38). Lax transitivity is sound only when the chained columns are
+  non-null. Under our definition a lax FD turns strict once its determinant is
+  non-null, and lax decomposition (`X ~~> YZ` gives `X ~~> Y`) needs nothing;
+  under Paulley's, both need the dependent non-null too (fd4b; the
+  promotion rule needs XY definite). The
+  price: a source that guarantees only Paulley's lax FD gives us nothing (see
+  CHECK constraints under Filter).
 
 ## Theory notes
 
@@ -132,7 +141,9 @@ unknown counts as false), so its equalities are strict.
 - Non-nullness spreads across strict equivalences, which can turn lax FDs
   strict ("Set definite", p.123).
 - Conditions that hold where the predicate is *not false* (CHECK
-  constraints: "true-interpreted") give only lax facts.
+  constraints: "true-interpreted") give only Paulley-lax facts: `CHECK (y =
+  x + 1)` passes `(1, 2)` and `(1, NULL)`, so `x ~~> y` holds his way, not
+  ours. Such a CHECK gives an FD only when `y` is NOT NULL.
 
 ### Left join
 
