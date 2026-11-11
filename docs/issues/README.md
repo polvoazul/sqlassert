@@ -28,6 +28,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [57. dbt: incremental models](0057-dbt-incremental-models.md) — open (bare minimum today; ideas deferred)
 - [58. dbt: test and decide how findings map back to model files](0058-dbt-source-mapping.md) — open (deferred)
 - [59. User-defined functions and table functions (Postgres, Spark, Hive)](0059-postgres-user-defined-functions.md) — not planned (P4: a SETOF UDF or a UDTF in a select list repeats rows; read CREATE FUNCTION and the catalog)
+- [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
@@ -51,6 +52,8 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P4, not planned:** #59 (UDFs and UDTFs in Postgres, Spark and Hive: a
   SETOF function or a UDTF in a select list repeats rows; IMMUTABLE and STRICT
   facts; from CREATE FUNCTION and the catalog).
+- **P4, not planned:** #68 (naming: `suggest` and "hazard" read softer than
+  a hazard is; rename the types by severity).
 - **P4, not planned:** #51-54 (validate Snowflake, BigQuery, Databricks and
   Redshift against a real engine; needs warehouse credentials).
 
