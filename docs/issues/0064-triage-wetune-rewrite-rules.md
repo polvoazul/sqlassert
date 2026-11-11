@@ -26,7 +26,7 @@ report for the rule set.
 2. Group them by rewrite shape; for each group record *covered* (the
    sqlassert Rewrite or hazard), *add* (rewrite, hazard or
    assertion, with its precondition as a Property), or *n/a* (why).
-3. File the *add* rows as items under issue 15's hazards, or new issues.
+3. File the *add* rows as new issues.
 
 ## Acceptance criteria
 

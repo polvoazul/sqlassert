@@ -3,11 +3,9 @@
 Open work, one file per issue. Finished issues move to [`done/`](done/) instead of being deleted. Issues 11 and 14 were migrated from GitHub issues (polvoazul/sqlassert) on 2026-11-01; 16–25 from `TODO.md` and the README Ideas list. 26 and 27 were split out of 16 and 11.
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
-- [15. Suggest provable properties for unannotated SQL](done/0015-suggest-provable-properties-for-unannotated-sql.md) — open
-- [23. Close IR lowering gaps](done/0023-close-ir-lowering-gaps.md) — open (parent epic of 37, 38, 39)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
-- [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
-- [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)
+- [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open
+- [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: Properties under a collation; today any COLLATE is not identity)
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
@@ -34,7 +32,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 15's markers and rewrites. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 15, 23. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (reasoning per item in `tmp/issue_tracker.html`):
@@ -42,7 +40,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P1:** none open. #41 and #38 are done.
 - **P2:** #37 (Paulley audit's missing rules); #45 (Calcite audit's missing
   proofs; its lowering items, HAVING and USING first, lose proofs on common
-  SQL); #15's remaining hazards and rewrites.
+  SQL).
 - **P3, needs downloaded corpora:** #69 (DuckDB logic tests, TPC-H/TPC-DS,
   public dbt projects, run through the oracle unchanged), which unblocks #11
   and #27 Part 2.
@@ -75,6 +73,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [12. Add Unique Set Assertions for Select Expressions (UNIQUE/PRIMARY KEY markers)](done/0012-add-unique-set-assertions-for-select-expressions-unique-prim.md)
 - [13. Refactoring](done/0013-refactoring.md)
 - [14. Hydrate analysis from database catalogs with recursive view expansion](done/0014-hydrate-analysis-from-database-catalogs-with-recursive-view.md)
+- [15. Suggest provable properties for unannotated SQL](done/0015-suggest-provable-properties-for-unannotated-sql.md)
 - [16. Assert and declare string `ENUM` domains](done/0016-assert-and-declare-string-enum-domains.md)
 - [17. Complete typed `ENUM` support](done/0017-complete-typed-enum-support.md)
 - [18. Assert exhaustive simple `CASE` expressions](done/0018-assert-exhaustive-simple-case-expressions.md)
@@ -82,6 +81,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - [20. Propagate Foreign Keys through queries](done/0020-propagate-foreign-keys-through-queries.md)
 - [21. Assert simple `EXACTLY ONE` joins](done/0021-assert-simple-exactly-one-joins.md)
 - [22. Complete `EXACTLY ONE` reasoning](done/0022-complete-exactly-one-reasoning.md)
+- [23. Close IR lowering gaps](done/0023-close-ir-lowering-gaps.md)
 - [24. Functional-dependency reasoning](done/0024-functional-dependency-reasoning.md)
 - [25. Check rule consistency invariants](done/0025-check-rule-consistency-invariants.md)
 - [26. Equality groups](done/0026-equality-groups.md)

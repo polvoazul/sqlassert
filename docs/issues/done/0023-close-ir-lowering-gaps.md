@@ -1,6 +1,6 @@
 # 23. Close IR lowering gaps
 
-- **State:** open
+- **State:** done (2026-11-11)
 - **Labels:** epic (parent of 37, 38, 39; 42 holds what is not planned)
 - **Created:** 2026-11-01
 - **Migrated from:** `TODO.md` (IR Limitations), README Ideas
@@ -8,6 +8,10 @@
 Parent epic for what lowering ([`ir/convert.py`](../../../sqlassert/ir/convert.py)) loses.
 Each gap caps what the rules can prove, however good the rules get. Feature-level gaps
 live in [`docs/mvp-scope.md`](../../mvp-scope.md#limitations-and-future-features).
+
+Closed: every item is done. Leftovers are tracked elsewhere: FDs of INTERSECT's
+right input in 37, cast and multiplication injectivity in 39, `ADD COLUMN` in
+42, more strict Builtins in 45 (item 13). 37 and 39 stand on their own.
 
 ## Children
 

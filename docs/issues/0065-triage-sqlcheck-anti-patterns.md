@@ -23,7 +23,7 @@ closest related work for `suggest`, and its catalog lists hazards we may lack.
    of scope per ADR 0005), or *n/a* (schema design, physical, style).
 3. For *covered* ones, note whether ours is a proof where theirs is a
    heuristic (fewer false positives): material for the related-work section.
-4. File *add* rows under issue 15's hazards.
+4. File *add* rows as new issues.
 
 ## Acceptance criteria
 

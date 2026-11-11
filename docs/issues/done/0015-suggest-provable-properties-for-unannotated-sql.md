@@ -1,6 +1,6 @@
 # 15. Suggest provable properties for unannotated SQL
 
-- **State:** open (rewrites and markers done)
+- **State:** done (2026-11-11)
 - **Labels:** needs-design
 - **Created:** 2026-11-01
 
@@ -179,7 +179,7 @@ Still open:
   "Ideas to adopt"). Order dependencies (ORDER BY / sort elimination) are
   untouched so far.
   Done: see "Kossmann Table 1 triage" below.
-- [ ] Hazards: the rest, from the *add* rows of that triage.
+- [x] Hazards: the rest, from the *add* rows of that triage.
   First hazard done: Arbitrary LIMIT (`sqlassert/hazards.py`, `report.hazards`,
   `SuggestType.HAZARD`, printed last by the CLI). Issue 38 added the scalar subquery
   hazard and the redundant ORDER BY key (a rewrite, `Redundant ORDER BY
@@ -191,6 +191,10 @@ Still open:
 - [x] Annotate in place (a CLI flag over `SuggestionReport.annotated()`).
   Done: `sqlassert suggest --annotate FILE` rewrites FILE with every
   suggested marker; for `-` it prints the annotated SQL instead of the list.
+
+Closed: every *add* row of the triage is built. New hazards come from issues 64
+and 65 as issues of their own. Order Dependencies stay *n/a* (no Order
+Dependency Property).
 
 ## Kossmann Table 1 triage
 
@@ -214,7 +218,7 @@ reasons about the query, not its plan, cost or cardinality.
 | Accurate cardinalities (5.6) | Grouping | ‡ | n/a: estimation |
 | Avoid DISTINCT [101–103] | Projection | ∗ | covered: rewrite "redundant DISTINCT" |
 | Reduce attributes (5.6) | Sorting | ∗ | add, rewrite: `ORDER BY` keys after a prefix that is a Unique Set are redundant. Done in issue 38, as a case of the row below |
-| Unstable sorting (5.6) | Sorting | ∗ | add, hazard: `ORDER BY … LIMIT` whose sort keys are not proved a Unique Set picks arbitrary rows among ties (the inverse precondition) |
+| Unstable sorting (5.6) | Sorting | ∗ | done, hazard `Arbitrary LIMIT`: `ORDER BY … LIMIT` whose sort keys are not proved a Unique Set picks arbitrary rows among ties (the inverse precondition) |
 | EXCEPT to EXCEPT ALL [102] | Set ops | ∗ | done, rewrite `EXCEPT ALL or INTERSECT ALL`: when the left input is unique on all columns (strict), where the dialect has it (`set_operations_all`) |
 | INTERSECT to INTERSECT ALL [60, 101] | Set ops | ∗ | done: same, for either input of `INTERSECT` |
 | INTERSECT to join [101, 102] | Set ops | † | n/a: cost-based |
