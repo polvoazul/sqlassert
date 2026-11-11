@@ -1,7 +1,7 @@
-# 59. Postgres user-defined functions and table functions
+# 59. User-defined functions and table functions (Postgres, Spark, Hive)
 
 - **State:** not planned
-- **Labels:** P4, soundness, lowering, discovery, postgres
+- **Labels:** P4, soundness, lowering, discovery, postgres, spark, hive
 - **Created:** 2026-11-10
 - **Related:** [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md)
   (how unknown functions lower), [42. Lowering support v2](0042-lowering-support-v2.md),
@@ -27,9 +27,14 @@ This breaks ADR 0005's "never guess". It also leaves proofs on the table: an
 `IMMUTABLE` UDF is a function of its arguments and could carry functional
 dependencies, as `upper(x)` does.
 
+Spark and Hive have the same gap. A UDTF (a Hive `GenericUDTF`, registered
+with `CREATE FUNCTION f AS 'class' USING JAR ...`) is called in a select list
+like `explode`, and it repeats rows the same way. The SQL alone never says
+whether a registered class is a UDTF.
+
 DuckDB, Snowflake and BigQuery table functions are only allowed in FROM, where
-they already lower as opaque sources. Spark and Hive UDTFs in a select list
-have the same problem; they are out of scope here.
+they already lower as opaque sources. Databricks SQL and Python table
+functions (`RETURNS TABLE`, `@udtf`) are too, so they're out of scope.
 
 ## What to do
 
@@ -55,6 +60,16 @@ have the same problem; they are out of scope here.
    `proretset`, `provolatile`, `proisstrict`, the argument types and the
    namespace, following `search_path` as for relations. A connection only
    adds facts. Redshift's fetcher can share it for its Python and SQL UDFs.
+4. **Spark and Hive.**
+   - From the SQL: `CREATE FUNCTION ... USING JAR` names a class, not a kind.
+     So the step 2 decision applies to every function that isn't a built-in.
+     The one exception is a Spark SQL UDF (`CREATE FUNCTION f(...) RETURNS
+     type RETURN expr`), which returns one value.
+   - With a connection: `DESCRIBE FUNCTION EXTENDED f` gives the class (and
+     the usage). The Databricks fetcher can read `information_schema.routines`.
+     Whether a class is a UDTF can't be read from the catalog, so a
+     connection settles only SQL UDFs. Allowing a configured list of
+     functions known to return one value is another option.
 
 ## Tests
 
@@ -63,6 +78,8 @@ have the same problem; they are out of scope here.
   in NULL out. Also an unknown function under the decision in step 2.
 - A hydration test against Postgres (`tests/test_postgres_catalog.py`) with
   `CREATE FUNCTION` in the fixture database.
+- Spark: `.sqltest` cases (`-- dialect: spark`) for a registered JAR function
+  in a select list (under the step 2 decision) and for a SQL UDF.
 - The oracle runs DuckDB only. A DuckDB `CREATE MACRO ... AS TABLE` cannot be
   called in a select list, so the set-returning cases are judged by the
   Postgres tests, not the oracle.
