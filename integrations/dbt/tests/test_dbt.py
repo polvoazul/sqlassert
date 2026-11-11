@@ -582,8 +582,9 @@ def test_render_refuses_anything_outside_its_subset(raw):
 
 def test_the_plugin_reads_the_manifest_without_importing_dbt():
     # dbt compiles the project; checking it needs only the manifest, so dbt is a test dependency.
+    # Only `--connect` imports dbt, inside the function that opens its connection.
     for path in (Path(__file__).parents[1] / "sqlassert_dbt").rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.parse(path.read_text()).body:
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):

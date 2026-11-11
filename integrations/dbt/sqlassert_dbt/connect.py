@@ -63,7 +63,7 @@ def dbt_fetcher(project: Path, dbt_arguments: list[str]) -> Generator[DatabaseKn
     on exit: a DuckDB file takes one writer, so close it before dbt runs again."""
     try:
         import yaml
-        from dbt.adapters.factory import cleanup_connections, get_adapter, register_adapter
+        from dbt.adapters.factory import cleanup_connections, get_adapter, register_adapter, reset_adapters
         from dbt.config.runtime import RuntimeConfig
         from dbt.flags import set_from_args
         from dbt.mp_context import get_mp_context
@@ -77,6 +77,9 @@ def dbt_fetcher(project: Path, dbt_arguments: list[str]) -> Generator[DatabaseKn
         )
         set_from_args(args, None)
         config = RuntimeConfig.from_args(args)
+        # An adapter dbt registered earlier in this process (dbtRunner) stays
+        # registered under its type, with that run's profile: replace it.
+        reset_adapters()
         register_adapter(config, get_mp_context())
         adapter = get_adapter(config)
     except Exception as error:  # dbt's internals raise their own types, version by version.
@@ -93,6 +96,20 @@ def dbt_fetcher(project: Path, dbt_arguments: list[str]) -> Generator[DatabaseKn
             yield FETCHERS[kind](handle)
     finally:
         cleanup_connections()
+        if kind == "duckdb":
+            _close_duckdb_environment()
+
+
+def _close_duckdb_environment() -> None:
+    """dbt-duckdb keeps its database open past `cleanup_connections` (its
+    environment's `keep_open`), holding the file's lock against the next dbt
+    process; close it."""
+    from dbt.adapters.duckdb.connections import DuckDBConnectionManager
+
+    environment = DuckDBConnectionManager._ENV
+    DuckDBConnectionManager.close_all_connections()
+    if environment is not None:
+        environment.close()
 
 
 def _profiles_dir(project: Path, arguments: list[str]) -> Path:

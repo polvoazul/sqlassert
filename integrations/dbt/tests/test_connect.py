@@ -4,11 +4,12 @@ connection (`connect.py`) or a fetcher the caller passes."""
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import duckdb
 import pytest
-from dbt_runs import copy_source, dbt
+from dbt_runs import copy_source
 
 from sqlassert.discovery.duckdb import DuckDBKnowledgeFetcher
 from sqlassert_dbt import Status, analyze_project
@@ -35,8 +36,14 @@ def keyed(tmp_path_factory: pytest.TempPathFactory) -> Path:
         connection.execute("create schema raw")
         for statement in KEYED_TABLES:
             connection.execute(statement)
+    # In a separate process: dbt-duckdb keeps the file open in the process that ran it,
+    # and `suggest --connect` runs dbt compile as another process, as the CLI does.
     for command in ("seed", "run", "compile"):
-        assert dbt(project, command), f"dbt {command} failed"
+        ran = subprocess.run(
+            ["dbt", "--quiet", "--no-send-anonymous-usage-stats", command, "--project-dir", str(project), "--profiles-dir", str(project)],
+            capture_output=True, text=True, check=False,
+        )
+        assert ran.returncode == 0, f"dbt {command} failed: {ran.stdout}{ran.stderr}"
     return project
 
 
@@ -58,7 +65,7 @@ def test_the_warehouse_keys_prove_the_tests_a_snapshot_cannot(keyed: Path):
 
 def test_a_fetcher_from_python_reads_the_same_warehouse(keyed: Path):
     database = keyed.parent / "warehouse.duckdb"
-    with duckdb.connect(str(database), read_only=True) as connection:
+    with duckdb.connect(str(database)) as connection:
         report = analyze_project(keyed, fetcher=DuckDBKnowledgeFetcher(connection))
 
     assert statuses(report)["unique_stg_customers_customer_id"] is Status.PROVED
@@ -72,10 +79,10 @@ def test_an_incremental_models_previous_run_is_not_reported_missing(keyed: Path)
     assert "catalog-relation-not-found" not in [problem.code for problem in report.problems]
 
 
-def test_suggest_connects_through_dbt(keyed: Path, capsys: pytest.CaptureFixture[str]):
+def test_suggest_connects_through_dbt(keyed: Path, capfd: pytest.CaptureFixture[str]):
     assert main(["suggest", "--connect", str(keyed / "models" / "stg_orders.sql")]) == 0
 
-    assert "/**ASSERT NOT NULL(customer_id)**/" in capsys.readouterr().out
+    assert "/**ASSERT NOT NULL(customer_id)**/" in capfd.readouterr().out
 
 
 def test_an_unknown_target_is_a_usage_error(keyed: Path):

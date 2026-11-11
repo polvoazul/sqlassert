@@ -16,7 +16,7 @@ SELECT status FROM orders /**ASSERT ENUM(status IN ('new'))**/  --~ UNKNOWN
 
 -- case: a_table_check_of_and_ed_equalities_bounds_each_column
 CREATE TABLE orders (id INTEGER PRIMARY KEY, kind VARCHAR, qty INTEGER, CONSTRAINT k CHECK (kind = 'a' AND qty IN (1, 2)));
-SELECT kind, qty FROM orders /**ASSERT ENUM(kind IN ('a'))**/ /**ASSERT ENUM(qty IN (1, 2))**/  --~ PROVED PROVED
+SELECT kind, qty FROM orders /**ASSERT ENUM(kind IN ('a'))**/ /**ASSERT ENUM(qty IN (1, 2))**/  --~ PROVED, PROVED
 
 -- case: a_check_added_by_alter_table_is_read
 CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR);
