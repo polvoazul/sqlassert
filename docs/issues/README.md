@@ -19,6 +19,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [56. dbt: read the live warehouse catalog in the plugin's commands](0056-dbt-live-connection.md) — open (needs a decision: how to get the connection)
 - [57. dbt: incremental models](0057-dbt-incremental-models.md) — open (bare minimum today; ideas deferred)
 - [58. dbt: test and decide how findings map back to model files](0058-dbt-source-mapping.md) — open (deferred)
+- [59. Postgres user-defined functions and table functions](0059-postgres-user-defined-functions.md) — not planned (P4: a SETOF UDF in a select list repeats rows; read CREATE FUNCTION and pg_proc)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
@@ -39,6 +40,9 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
 - **P4, not planned:** #42 (lowering support v2): window functions (and
   #33's CTE part, which needs them), recursive CTEs, column lineage, LATERAL
   and UNNEST, ADD COLUMN, scalar subqueries in grouped select lists and in ON.
+- **P4, not planned:** #59 (Postgres UDFs and UDTFs: a SETOF function in a
+  select list repeats rows; IMMUTABLE and STRICT facts; from CREATE FUNCTION
+  and pg_proc).
 - **P4, not planned:** #51-54 (validate Snowflake, BigQuery, Databricks and
   Redshift against a real engine; needs warehouse credentials).
 
