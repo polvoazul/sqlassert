@@ -127,8 +127,8 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             # are never NULL together (a FULL JOIN ... USING column).
             # Seen through the same Aliases: one row of that join, not two copies of it.
             sides = [
-                next(iter(sources)) for sources, _ in arguments_sources
-                if len(sources) == 1 and isinstance(next(iter(sources)), Padding) and next(iter(sources)).join.kind == "full"
+                source for sources, _ in arguments_sources if len(sources) == 1
+                for source in sources if isinstance(source, Padding) and source.join.kind == "full"
             ]
             for first in sides:
                 for second in sides:

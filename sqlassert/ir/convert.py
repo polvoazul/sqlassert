@@ -643,7 +643,7 @@ class IrParser:
                 self._knowledge.append(UniqueSet(columns=frozenset({column})))
         literal = all(all(isinstance(item, exp.Null) or literal_value(item) is not None for item in row) for row in rows)
         if literal and len(columns) > 1 and all(
-            any(first[index] is None or second[index] is None or not _may_coincide(first[index], second[index], binary) for index in range(len(columns)))
+            any(one is None or other is None or not _may_coincide(one, other, binary) for one, other in zip(first, second, strict=True))
             for position, first in enumerate(literal_rows) for second in literal_rows[position + 1:]
         ):
             self._knowledge.append(UniqueSet(columns=frozenset(columns)))
@@ -1252,14 +1252,22 @@ class IrParser:
         r filtered by p, grouped by k, left joined on `k = outer.k`. Each
         outer row meets at most its one group, and its value is a function of
         the key. A row with no group gets the aggregate over no rows: NULL,
-        the join's padding, except for count, which is 0 (the count bug), so
-        a count's value is `coalesce(count, 0)`. Only equalities to outer
+        the join's padding, for the aggregates whose value over no rows is
+        NULL (`_EMPTY_NULL_AGGREGATES`); a count's is 0 (the count bug), so its
+        value is `coalesce(count, 0)`; any other aggregate is not
+        decorrelated. Nor is one whose arguments read the outer row: SQL
+        then makes it an aggregate of the outer query. Only equalities to outer
         columns of the same declared type correlate it: grouping by `k`
         then merges exactly the rows one outer value matches."""
         where = select.args.get("where")
         item = select.expressions[0]
         value_expression = item.this if isinstance(item, exp.Alias) else item
-        if where is None or not isinstance(value_expression, exp.AggFunc):
+        if where is None or not isinstance(value_expression, _EMPTY_NULL_AGGREGATES | exp.Count):
+            return None
+        if any(
+            found is None or found[0] != "inner"
+            for found in (self._scope_of(column, right, lowered) for column in value_expression.find_all(exp.Column))
+        ):
             return None
         keys: list[tuple[Expr, ir.OutputColumn, ir.OutputColumn]] = []  # (inner column, inner, outer)
         inner_only: list[Expr] = []
@@ -2524,6 +2532,12 @@ _USING_QUALIFIER = "\0using"
 
 # A scalar subquery's value binding: no SQL name can match it.
 _SCALAR_QUALIFIER = "\0scalar"
+# Aggregates whose value over no rows is NULL, so a decorrelated subquery's
+# padding is that value. Not count_if, approx_count_distinct and the like: 0.
+_EMPTY_NULL_AGGREGATES = (
+    exp.Sum | exp.Avg | exp.Min | exp.Max | exp.AnyValue | exp.LogicalAnd | exp.LogicalOr
+    | exp.ArgMax | exp.ArgMin | exp.First | exp.Last | exp.Stddev | exp.Variance
+)
 
 
 # A set-returning call's value binding: no SQL name can match it.

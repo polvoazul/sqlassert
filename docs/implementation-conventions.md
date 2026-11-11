@@ -189,8 +189,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   the SQL. None of their facts is a Property, so it reads rule
   internals in the same arena -- null sources and null-rejected conjuncts
   for an outer join that cannot pad, the strict (`definite = ∅`) closure for
-  `DISTINCT` and grouping columns -- besides `Arena.prove` for Unique and
-  Exactly One Joins. Whether a join's columns are used, and whether a CTE is
+  `DISTINCT` and grouping columns, Enumerated Domains (`_domain`) and the
+  comparison checks Equality Groups use (`_same_type`,
+  `_identity_comparison`) for implied conditions, cross-input equalities
+  for self-joins -- besides `Arena.prove` for Unique and Exactly One Joins. Whether a join's columns are used, and whether a CTE is
   referenced, is read from the SQLGlot AST, matched to each IR site by its
   marker position: the IR keeps neither ORDER BY nor the columns inside an
   aggregate, window or subquery. Padding is only followed through the joins and WHERE of

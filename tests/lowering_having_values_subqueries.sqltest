@@ -12,6 +12,12 @@ HAVING count(*) > 1 AND max(sal) IS NOT NULL AND deptno IN (10, 20)
 /**ASSERT NOT NULL(m)**/  --~ PROVED
 /**ASSERT ENUM(deptno IN (10, 20))**/  --~ PROVED
 
+-- The grouped key stays a key under HAVING, so a join on it is many to one.
+-- case: having_keeps_the_key_for_a_join
+WITH per_dept AS (SELECT deptno, count(*) AS n FROM emp GROUP BY deptno HAVING count(*) > 1)
+SELECT * FROM dept
+/**ASSERT MANY TO ONE**/ JOIN per_dept ON dept.deptno = per_dept.deptno  --~ PROVED
+
 -- A condition on an aggregate not selected states nothing of its own.
 -- case: having_on_an_unselected_aggregate_keeps_the_key_only
 SELECT deptno, count(*) AS c FROM emp GROUP BY deptno HAVING sum(sal) > 10
@@ -55,3 +61,14 @@ SELECT empno, deptno FROM emp AS a WHERE empno = (SELECT max(empno) FROM emp AS 
 -- case: a_correlated_aggregate_is_a_function_of_its_key__not_a_key
 SELECT empno, deptno FROM emp AS a WHERE sal = (SELECT max(sal) FROM emp AS b WHERE b.deptno = a.deptno)
 /**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- count_if over no rows is 0, not NULL: not decorrelated, so nothing is known.
+-- case: a_correlated_count_if_is_not_decorrelated
+SELECT deptno, (SELECT count_if(sal > 0) FROM emp WHERE emp.deptno = dept.deptno) AS n FROM dept
+/**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- An aggregate of only outer columns belongs to the outer query.
+-- case: an_aggregate_of_outer_columns_is_not_decorrelated
+SELECT empno FROM emp AS a WHERE sal = (SELECT max(a.sal) FROM emp AS b WHERE b.deptno = a.deptno)
+/**ASSERT UNIQUE(empno)**/  --~ PROVED

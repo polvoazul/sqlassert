@@ -95,7 +95,7 @@ def hazards(
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
         if isinstance(aggregate, ir.Aggregate) and aggregate in reachable:
             found.extend(_traps(site, aggregate, join_labels))
-        if site.trailing and aggregate in reachable:
+        if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
     for site, operation in program.set_operations:
         if operation in reachable and wanted(site) and operation.operator == "except":

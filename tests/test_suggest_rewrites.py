@@ -262,6 +262,8 @@ def test_a_group_by_kept_unique_through_a_many_to_one_join_is_a_projection():
     "SELECT id, sum(id) FILTER (WHERE id > 1) AS s FROM users GROUP BY id",
     "SELECT id, string_agg(name, ',') AS s FROM users GROUP BY id",
     "SELECT id, sum(count(*)) OVER () AS s FROM users GROUP BY id",
+    # An aggregate in a subquery is the subquery's (or, of outer columns only, the outer query's).
+    "SELECT id, (SELECT max(ts) FROM sessions) AS m FROM users GROUP BY id",
 ])
 def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projection(query: str):
     assert RewriteKind.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
@@ -373,6 +375,8 @@ def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
     "SELECT id FROM users WHERE name = 'x'",
     "SELECT id FROM (SELECT * FROM users WHERE nick IN ('x', 'y')) t WHERE nick = 'x'",
     "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND u.name = 'x'",
+    # Both pinned to 5, but text '05' = 5 may hold while '05' = '5' does not.
+    "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id WHERE o.total = 5 AND u.nick = 5 AND o.total = u.nick",
 ])
 def test_a_condition_that_may_remove_a_row_is_kept(query: str):
     assert RewriteKind.IMPLIED_CONDITION not in rewrites(SCHEMA + query)

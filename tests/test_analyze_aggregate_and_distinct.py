@@ -168,27 +168,6 @@ def test_grouping_sets_is_unsupported_and_unknown(orders_and_customers):
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_having_keeps_the_grouping_key(orders_and_customers):
-    report = analyze(
-        orders_and_customers
-        + """
-        WITH per_customer AS (
-            SELECT customer_id, COUNT(*) AS n
-            FROM orders
-            GROUP BY customer_id
-            HAVING COUNT(*) > 1
-        )
-        SELECT *
-        FROM customers
-        /**ASSERT MANY TO ONE**/ JOIN per_customer
-            ON customers.id = per_customer.customer_id
-        """
-    )
-
-    # HAVING only removes groups, so customer_id stays a key of per_customer.
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
-
-
 # Distinct ---------------------------------------------------------------
 
 

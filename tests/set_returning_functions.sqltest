@@ -33,7 +33,8 @@ SELECT arr, unnest(arr) + 1 AS x FROM t /**ASSERT DETERMINES(arr -> x)**/  --~ U
 SELECT DISTINCT id, unnest(arr) AS x FROM t /**ASSERT UNIQUE(id, x)**/  --~ PROVED
 
 -- case: a_grouped_select_repeats_its_groups
-SELECT id, unnest(arr) AS x FROM t GROUP BY id, arr /**ASSERT UNIQUE(id)**/  --~ UNKNOWN, unsupported-construct "a set-returning function"
+SELECT id, unnest(arr) AS x FROM t GROUP BY id, arr /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+--~ unsupported-construct "a set-returning function"
 
 -- case: a_limit_after_the_function_still_bounds_the_rows
 SELECT unnest(arr) AS x FROM t LIMIT 1 /**ASSERT UNIQUE(x)**/  --~ PROVED

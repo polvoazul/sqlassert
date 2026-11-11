@@ -276,7 +276,8 @@ SELECT t1.passport AS p1, t2.passport AS p2, t2.nid AS n2 FROM passenger AS t1 J
 SELECT e.deptno, d.name
 FROM (SELECT DISTINCT deptno FROM emp) AS e,
     LATERAL (SELECT * FROM dept WHERE dept.deptno = e.deptno) AS d
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN, unsupported-construct "LATERAL"
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+--~ unsupported-construct "LATERAL"
 
 -- case: uk_correlate_lateral_many
 -- inspired by RelMetadataTest.testCorrelateUniqueKeys (a lateral side with many rows)
@@ -284,7 +285,8 @@ FROM (SELECT DISTINCT deptno FROM emp) AS e,
 SELECT e.deptno, x.empno
 FROM (SELECT DISTINCT deptno FROM emp) AS e,
     LATERAL (SELECT empno FROM emp AS e2 WHERE e2.deptno = e.deptno) AS x
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN, unsupported-construct "LATERAL"
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+--~ unsupported-construct "LATERAL"
 
 -- Unique keys and column uniqueness: aggregation ---------------------------
 
@@ -319,7 +321,8 @@ SELECT value1, min(key1) AS min_key1, max(key2) AS max_key2 FROM composite_keys_
 -- A Unique Set (subtotal rows have job NULL, data rows never do), but
 -- GROUPING SETS is not lowered: missing proof.
 SELECT ename, job FROM emp GROUP BY GROUPING SETS ((ename), (ename, job))
-/**ASSERT UNIQUE(ename, job)**/  --~ UNKNOWN, unsupported-construct "GROUPING SETS"
+/**ASSERT UNIQUE(ename, job)**/  --~ UNKNOWN
+--~ unsupported-construct "GROUPING SETS"
 
 -- case: uk_aggregate_constant
 -- inspired by RelMetadataTest.testColumnUniquenessForAggregateWithConstantColumns

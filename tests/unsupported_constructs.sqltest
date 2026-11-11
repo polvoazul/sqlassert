@@ -7,16 +7,19 @@ CREATE TABLE emp (empno INTEGER PRIMARY KEY, ename VARCHAR, job VARCHAR, sal INT
 
 -- case: grouping_sets_are_named
 SELECT ename, job FROM emp GROUP BY GROUPING SETS ((ename), (ename, job))
-/**ASSERT UNIQUE(ename, job)**/  --~ UNKNOWN, unsupported-construct "GROUPING SETS is not supported by sqlassert yet"
+/**ASSERT UNIQUE(ename, job)**/  --~ UNKNOWN
+--~ unsupported-construct "GROUPING SETS is not supported by sqlassert yet"
 
 -- case: rollup_inside_a_cte_is_named
 WITH t AS (SELECT empno, ename FROM emp GROUP BY ROLLUP (empno, ename))
 SELECT * FROM t
-/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN, unsupported-construct "ROLLUP is not supported by sqlassert yet"
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "ROLLUP is not supported by sqlassert yet"
 
 -- case: a_window_function_is_named_for_its_own_column
 SELECT empno, row_number() OVER (ORDER BY sal) AS r FROM emp
-/**ASSERT UNIQUE(r)**/  --~ UNKNOWN, unsupported-construct "a window function"
+/**ASSERT UNIQUE(r)**/  --~ UNKNOWN
+--~ unsupported-construct "a window function"
 
 -- case: a_window_function_beside_the_asserted_column_is_not_blamed
 SELECT ename, row_number() OVER (ORDER BY sal) AS r FROM emp

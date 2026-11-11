@@ -301,8 +301,10 @@ FULL JOIN (SELECT * FROM emp WHERE sal = 3) AS e ON e.deptno = d.deptno
 -- inspired by RelMdPredicates.allGroupSetsOverlap ("deptno may be NULL as well")
 -- NOT NULL is false (subtotal rows); ENUM holds, NULL being outside it: a missing proof.
 SELECT deptno, sal, count(*) AS n FROM emp WHERE deptno = 10 GROUP BY ROLLUP (sal, deptno)
-/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN, unsupported-construct "ROLLUP"
-/**ASSERT ENUM(deptno IN (10))**/  --~ UNKNOWN, unsupported-construct "ROLLUP"
+/**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
+--~ unsupported-construct "ROLLUP"
+/**ASSERT ENUM(deptno IN (10))**/  --~ UNKNOWN
+--~ unsupported-construct "ROLLUP"
 
 -- case: pullup_aggregate_having_on_group_key
 -- inspired by RelMdPredicates.getPredicates(Filter) over getPredicates(Aggregate)

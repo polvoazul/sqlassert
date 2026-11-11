@@ -427,7 +427,11 @@ def _one_row(item: Expr, dialect: str) -> str | None:
     or None when an aggregate has no such form here: count(*) is 1, count(x)
     is 1 unless x is NULL, sum, avg, min, max, any_value, bool_and and bool_or
     are x. With or without DISTINCT, IGNORE or RESPECT NULLS; never with
-    FILTER, nor a count of several values."""
+    FILTER, nor a count of several values. None too when an aggregate sits in
+    a subquery: it may be the subquery's own or, reading only outer columns,
+    the outer query's."""
+    if any(call.find_ancestor(exp.Select) is not None for call in item.find_all(exp.AggFunc)):
+        return None
     for call in list(item.find_all(exp.AggFunc)):
         target: Expr = call
         while isinstance(target.parent, exp.IgnoreNulls | exp.RespectNulls):
@@ -578,7 +582,7 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
     extra = [conjunct for conjunct in conjuncts if not _key_equality(conjunct, mine, theirs, names)]
     if extra and join.kind == "inner" and _right_or_full_join_follows(node):
         return None
-    if extra and join.kind == "left" and ir.determinants(join.predicate) is None:
+    if extra and join.kind == "left" and join.predicate is not None and ir.determinants(join.predicate) is None:
         return None  # A volatile condition repeated per column would draw again.
     rewritten = select.copy()
     copied = next(other for other, original in zip(rewritten.args.get("joins") or (), select.args.get("joins") or ()) if original is node)
@@ -652,12 +656,8 @@ def _same_rows(relation: ir.RelationExpr, program: ir.Program) -> bool:
     a set operation's, GROUP BY's). Other columns are checked where read."""
     relation = relation.closed
     match relation:
-        case ir.NamedRelation(role=ir.RelationRole.TABLE):
-            return True
-        case ir.NamedRelation(body=None):
-            return False
-        case ir.NamedRelation(body=body) if body is not None:
-            return _same_rows(body, program)
+        case ir.NamedRelation(role=role, body=body):
+            return role is ir.RelationRole.TABLE or (body is not None and _same_rows(body, program))
         case ir.Limit() | ir.QualifyByPartition() | ir.OpaqueRelation() | ir.RecursiveRelation():
             return False
         case ir.Filter(input=source, predicate=predicate):
@@ -763,7 +763,8 @@ def _implication(
             if _chained(first, second, others):
                 return "the other equalities chain its sides", False
             pinned = _pinned(first, others), _pinned(second, others)
-            if pinned[0] is not None and pinned[0] == pinned[1]:
+            comparable = _same_type(first, second) and _identity_comparison(first).value and _identity_comparison(second).value
+            if comparable and pinned[0] is not None and pinned[0] == pinned[1]:
                 return f"both sides are {pinned[0].text}", False
             if isinstance(relation, ir.Join) and _same_row_column(first, second, others, relation, program, arena):
                 return "both sides read one row's column through a self-join on its key", True
