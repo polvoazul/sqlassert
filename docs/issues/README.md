@@ -11,6 +11,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: Properties under a collation; today any COLLATE is not identity)
 - [45. Close the Calcite audit's missing proofs](0045-close-the-calcite-audit-missing-proofs.md) — open (from 40)
+- [60. Audit inference against CockroachDB's FD library](0060-audit-inference-against-cockroachdb.md) — open (like 40; same lax FD definition as ours, `fd:` test corpus; TiDB optional)
 - [43. External integrations](0043-external-integrations.md) — open (epic, parent of 44, 51-54; backlog of CLI, editor, framework, data quality and agent integrations)
 - [51. Validate Snowflake against a real engine](0051-validate-snowflake-against-a-real-engine.md) — not planned (P4, child of 43)
 - [52. Validate BigQuery against a real engine](0052-validate-bigquery-against-a-real-engine.md) — not planned (P4, child of 43)

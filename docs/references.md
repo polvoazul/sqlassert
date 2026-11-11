@@ -80,7 +80,7 @@ Key insights for sqlassert:
   is non-null. Compare with our lax rules before implementing. It also uses
   no tuple identifier (ι). Audit corpus: `pkg/sql/opt/memo/testdata/logprops/*`
   prints an `fd:` line per plan node (260 in `join` alone), like Calcite's
-  `RelMetadataTest`.
+  `RelMetadataTest`. Audit: [issue 60](issues/0060-audit-inference-against-cockroachdb.md).
 - **TiDB `FDSet`** —
   [`pkg/planner/funcdep`](https://pkg.go.dev/github.com/pingcap/tidb/pkg/planner/funcdep).
   Same strict/lax model; upgrades lax FDs to strict from predicates. Apache
