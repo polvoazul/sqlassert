@@ -1,7 +1,7 @@
 # 39. Smaller lowering gaps
 
 - **State:** open
-- **Labels:** child of [23](0023-close-ir-lowering-gaps.md)
+- **Labels:** child of [23](done/0023-close-ir-lowering-gaps.md)
 - **Created:** 2026-11-06
 - **Split from:** issue 23
 

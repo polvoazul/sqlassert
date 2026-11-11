@@ -30,7 +30,7 @@ each other.
 
 ## Blocked by
 
-- [issue 23](../0023-close-ir-lowering-gaps.md) — `Filter` carries its predicate
+- [issue 23](0023-close-ir-lowering-gaps.md) — `Filter` carries its predicate
   (also step 1 of issue 24 (done; see [functional-dependencies.md](../../functional-dependencies.md))).
 
 ## Acceptance criteria

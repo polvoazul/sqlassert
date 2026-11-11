@@ -1,10 +1,10 @@
 # 38. Lower ORDER BY and scalar subqueries
 
 - **State:** done (2026-11-08)
-- **Labels:** child of [23](../0023-close-ir-lowering-gaps.md)
+- **Labels:** child of [23](0023-close-ir-lowering-gaps.md)
 - **Created:** 2026-11-06
 - **Split from:** issue 23
-- **Unblocks:** [15](../0015-suggest-provable-properties-for-unannotated-sql.md)'s remaining Low smells
+- **Unblocks:** [15](0015-suggest-provable-properties-for-unannotated-sql.md)'s remaining Low smells
 
 ## ORDER BY
 

@@ -3,7 +3,7 @@
 - **State:** not planned
 - **Labels:** P4, soundness, lowering, discovery, postgres, spark, hive
 - **Created:** 2026-11-10
-- **Related:** [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md)
+- **Related:** [23. Close IR lowering gaps](done/0023-close-ir-lowering-gaps.md)
   (how unknown functions lower), [42. Lowering support v2](0042-lowering-support-v2.md),
   [56. dbt: read the live warehouse catalog](0056-dbt-live-connection.md)
 

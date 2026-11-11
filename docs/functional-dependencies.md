@@ -575,7 +575,7 @@ conjuncts. Two exceptions to plan for:
 - **Correlated subqueries** make the inner relation depend on the outer one
   and vice versa, a cycle across relations. Lower them as a dependent join
   (apply), so the outer input sits below the subquery and the DAG holds
-  ([issue 23](issues/0023-close-ir-lowering-gaps.md)).
+  ([issue 23](issues/done/0023-close-ir-lowering-gaps.md)).
 - **Recursive CTEs** are a genuine fixpoint. They stay opaque; supporting them
   needs bespoke fixpoint machinery, not strata.
 

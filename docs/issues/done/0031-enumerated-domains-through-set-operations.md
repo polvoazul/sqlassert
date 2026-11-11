@@ -8,7 +8,7 @@
 
 A `UNION`, `INTERSECT` or `EXCEPT` output column gets no Enumerated Domain,
 because the IR tracks only the left arm's columns
-([issue 23](../0023-close-ir-lowering-gaps.md), set-operation item).
+([issue 23](0023-close-ir-lowering-gaps.md), set-operation item).
 
 ## What to build
 

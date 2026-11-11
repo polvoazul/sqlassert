@@ -3,8 +3,8 @@
 Open work, one file per issue. Finished issues move to [`done/`](done/) instead of being deleted. Issues 11 and 14 were migrated from GitHub issues (polvoazul/sqlassert) on 2026-11-01; 16–25 from `TODO.md` and the README Ideas list. 26 and 27 were split out of 16 and 11.
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
-- [15. Suggest provable properties for unannotated SQL](0015-suggest-provable-properties-for-unannotated-sql.md) — open
-- [23. Close IR lowering gaps](0023-close-ir-lowering-gaps.md) — open (parent epic of 37, 38, 39)
+- [15. Suggest provable properties for unannotated SQL](done/0015-suggest-provable-properties-for-unannotated-sql.md) — open
+- [23. Close IR lowering gaps](done/0023-close-ir-lowering-gaps.md) — open (parent epic of 37, 38, 39)
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open (child of 23)
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open (child of 23)

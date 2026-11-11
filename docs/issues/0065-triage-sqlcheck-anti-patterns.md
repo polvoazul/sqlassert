@@ -3,7 +3,7 @@
 - **State:** open
 - **Labels:** research
 - **Created:** 2026-11-11
-- **Related:** [15: suggest](0015-suggest-provable-properties-for-unannotated-sql.md)
+- **Related:** [15: suggest](done/0015-suggest-provable-properties-for-unannotated-sql.md)
 
 ## Why
 

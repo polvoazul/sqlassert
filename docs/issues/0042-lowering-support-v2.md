@@ -3,7 +3,7 @@
 - **State:** not planned
 - **Labels:** epic, P4
 - **Created:** 2026-11-08
-- **Split from:** [23](0023-close-ir-lowering-gaps.md)'s "Not planned" list
+- **Split from:** [23](done/0023-close-ir-lowering-gaps.md)'s "Not planned" list
 
 Lowering gaps that are deliberately out of scope for now: Paulley does not
 cover them, or no proof needs them. Each stays opaque, which is sound: nothing

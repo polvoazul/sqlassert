@@ -3,7 +3,7 @@
 - **State:** done (2026-11-08)
 - **Labels:** markers, suggestions
 - **Created:** 2026-11-08
-- **Related:** [15: suggestions and smells](../0015-suggest-provable-properties-for-unannotated-sql.md), [21](0021-assert-simple-exactly-one-joins.md) and [22](0022-complete-exactly-one-reasoning.md): Exactly One
+- **Related:** [15: suggestions and smells](0015-suggest-provable-properties-for-unannotated-sql.md), [21](0021-assert-simple-exactly-one-joins.md) and [22](0022-complete-exactly-one-reasoning.md): Exactly One
 
 ## Why
 

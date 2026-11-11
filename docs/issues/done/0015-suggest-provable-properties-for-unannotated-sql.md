@@ -38,7 +38,7 @@ Suggestions come in three types, listed in this order:
 - **Rewrites: native SQL changes.** Changes that make the query simpler or
   correct on its own, justified by a proof:
   - A LEFT JOIN whose padding a later filter always removes behaves as INNER
-    (padding promotion, [`docs/functional-dependencies.md`](../functional-dependencies.md#null-sources-decided-first-cut)):
+    (padding promotion, [`docs/functional-dependencies.md`](../../functional-dependencies.md#null-sources-decided-first-cut)):
     suggest `INNER JOIN`. This is the first concrete case, and a likely mistake:
     the author wrote an outer join that cannot pad.
   - A redundant join: exactly-one, and contributes no columns the query uses.
@@ -52,7 +52,7 @@ Suggestions come in three types, listed in this order:
   (below) to build the list.
 
 Rewrites depend on functional dependencies and null sources
-(issue 24 (done; see [functional-dependencies.md](../functional-dependencies.md))).
+(issue 24 (done; see [functional-dependencies.md](../../functional-dependencies.md))).
 
 ## Design decisions (markers, built)
 
@@ -175,7 +175,7 @@ Still open:
   sqlassert feature), *add* (as an assertion, a rewrite, or a
   hazard, with its precondition as a Property), or *not applicable*
   (why: data-dependent, cost-based, physical). Each rewrite precondition is a
-  property sqlassert can prove ([literature-notes.md](../literature-notes.md),
+  property sqlassert can prove ([literature-notes.md](../../literature-notes.md),
   "Ideas to adopt"). Order dependencies (ORDER BY / sort elimination) are
   untouched so far.
   Done: see "Kossmann Table 1 triage" below.
@@ -274,5 +274,5 @@ Chosen first (no new lowering needed): the redundant `EXISTS`/`IN` filter
 
 ## Related
 
-- [0011](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — the
+- [0011](../0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — the
   oracle-based differential testing shares the candidate generator.

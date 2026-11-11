@@ -143,7 +143,7 @@ judge them with the oracle.
 
 - [x] Candidate generator for joins, output-column subsets, and non-null
   columns over a parsed program: `sqlassert.suggest.candidates`, shared with
-  [issue 15](0015-suggest-provable-properties-for-unannotated-sql.md).
+  [issue 15](done/0015-suggest-provable-properties-for-unannotated-sql.md).
 - [ ] Missed-proof report (UNKNOWN but probably true), grouped by cause, as a
   completeness metric to track across engine changes (e.g. FD support).
 - [ ] TPC-H DDL and queries checked in as a corpus, with provenance.
@@ -165,5 +165,5 @@ run VeriEQL instead of writing our own encoding.
 
 - [0011](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — crash
   fuzzing over a real-world corpus; that corpus can feed Part 2.
-- [0015](0015-suggest-provable-properties-for-unannotated-sql.md) — `suggest`
+- [0015](done/0015-suggest-provable-properties-for-unannotated-sql.md) — `suggest`
   mode, a user-facing use of the same candidate generator.

@@ -5,19 +5,19 @@
 - **Created:** 2026-11-01
 - **Migrated from:** `TODO.md` (IR Limitations), README Ideas
 
-Parent epic for what lowering ([`ir/convert.py`](../../sqlassert/ir/convert.py)) loses.
+Parent epic for what lowering ([`ir/convert.py`](../../../sqlassert/ir/convert.py)) loses.
 Each gap caps what the rules can prove, however good the rules get. Feature-level gaps
-live in [`docs/mvp-scope.md`](../mvp-scope.md#limitations-and-future-features).
+live in [`docs/mvp-scope.md`](../../mvp-scope.md#limitations-and-future-features).
 
 ## Children
 
-- [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md): E4, L13, L14, S5, R9, I1, I2, U2, F2, F4, OR branches.
-- [38. Lower ORDER BY and scalar subqueries](done/0038-lower-order-by-and-select-list-subqueries.md): for issue 15's hazards, and R10. Done.
-- [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md): registry entries, cast and multiplication injectivity, more subquery forms, expression indexes, opaque join kinds.
+- [37. Close the Paulley audit's missing rules](../0037-close-the-paulley-audit-missing-rules.md): E4, L13, L14, S5, R9, I1, I2, U2, F2, F4, OR branches.
+- [38. Lower ORDER BY and scalar subqueries](0038-lower-order-by-and-select-list-subqueries.md): for issue 15's hazards, and R10. Done.
+- [39. Smaller lowering gaps](../0039-smaller-lowering-gaps.md): registry entries, cast and multiplication injectivity, more subquery forms, expression indexes, opaque join kinds.
 
 ## Not planned
 
-Moved to [42. Lowering support v2](0042-lowering-support-v2.md) (P4, not
+Moved to [42. Lowering support v2](../0042-lowering-support-v2.md) (P4, not
 planned): window functions, recursive CTEs, LATERAL and UNNEST, column
 lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
 
@@ -75,7 +75,7 @@ lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
   When they are, lower them as a dependent join (apply) over the outer input,
   so the IR stays a DAG; a subquery that refers to its outer relation directly
   would create a cycle across relations that the strata cannot order
-  ([Strata](../functional-dependencies.md#strata)).
+  ([Strata](../../functional-dependencies.md#strata)).
   Done (Paulley §4.4.2): a top-level WHERE conjunct `EXISTS (SELECT … FROM r
   [JOIN …] WHERE p)` is a semi join of the outer input with r on `p` (lowered
   with the outer and inner bindings together), `NOT EXISTS` an anti join, and
@@ -115,7 +115,7 @@ lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
 - [x] Tables without a `CREATE` in the program have an incomplete schema, so an
   unqualified column cannot be resolved when several sources are in scope.
   Today this is silently UNKNOWN. Per
-  [ADR 0005](../adr/0005-analyze-sql-without-a-connection.md):
+  [ADR 0005](../../adr/0005-analyze-sql-without-a-connection.md):
   - **Without a connection:** emit a warning Diagnostic naming the column, the
     candidate sources, and the fix (qualify it, or `CREATE` the tables), and
     treat facts that depend on that column as unknown.
@@ -141,7 +141,7 @@ lineage, ADD COLUMN, and scalar subqueries in grouped select lists and in ON.
   injective expressions since (see scalar expressions above). Keys, equality predicates,
   deterministic expressions, and `GROUP BY` all create them; without them,
   uniqueness only flows through columns that pass through unchanged. Theory
-  and planned opportunities: [`docs/functional-dependencies.md`](../functional-dependencies.md).
+  and planned opportunities: [`docs/functional-dependencies.md`](../../functional-dependencies.md).
 
 ### Folded in from `TODO.md` Later Ideas and the README Ideas list
 

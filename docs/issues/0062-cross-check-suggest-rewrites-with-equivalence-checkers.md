@@ -3,7 +3,7 @@
 - **State:** open
 - **Labels:** check
 - **Created:** 2026-11-11
-- **Related:** [15: suggest](0015-suggest-provable-properties-for-unannotated-sql.md), [61: VeriEQL oracle](0061-symbolic-oracle-with-verieql.md)
+- **Related:** [15: suggest](done/0015-suggest-provable-properties-for-unannotated-sql.md), [61: VeriEQL oracle](0061-symbolic-oracle-with-verieql.md)
 
 ## Why
 

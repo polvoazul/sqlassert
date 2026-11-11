@@ -23,7 +23,7 @@ outright. The user-facing contract stays: Property Markers and the Properties
 they introduce keep their syntax and meaning, and every existing `analyze()`
 test must end green. Work test-first.
 
-1. **IR prerequisites** (from [issue 23](../0023-close-ir-lowering-gaps.md)):
+1. **IR prerequisites** (from [issue 23](0023-close-ir-lowering-gaps.md)):
    - [ ] `Filter` carries recognized conjuncts: `col = col`, `col = constant`,
      `IS NOT NULL`, `IS NULL`; everything else opaque.
    - [ ] Join ON conjuncts beyond top-level `=`, enough to evaluate η.
