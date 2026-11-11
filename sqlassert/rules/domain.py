@@ -34,6 +34,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import assert_never
 
+from sqlassert.diagnostics import quoted
 from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
@@ -48,11 +49,11 @@ type Domain = frozenset[ir.LiteralValue] | None
 def enumerated_domain(column: ir.OutputColumn, values: frozenset[ir.LiteralValue]) -> Result[bool]:
     domain = _domain(column)
     if domain.value is None:
-        return Result(False, f"No finite domain is known for {column.name}", (column,), [domain], kind="unknown")
+        return Result(False, f"No finite domain is known for {quoted(column.name)}", (column,), [domain], kind="unknown")
     uncovered = domain.value - values
     if uncovered:
         return Result(
-            False, f"{column.name} may be {_render(uncovered)}, which the assertion does not cover",
+            False, f"{quoted(column.name)} may be {_render(uncovered)}, which the assertion does not cover",
             (column,), [domain], kind="unknown",
         )
     return Result(True, "Every possible value is listed", (column,), [domain])
@@ -111,10 +112,10 @@ def _domain(column: ir.OutputColumn) -> Result[Domain]:
     owns = [_own_domain(member) for member in members]
     known = [own for own in owns if own.value is not None]
     if not known:
-        return Result(None, f"No finite domain is known for {column.name}", (column,), owns)
+        return Result(None, f"No finite domain is known for {quoted(column.name)}", (column,), owns)
     value = _meet([own.value for own in known if own.value is not None], _binary_text(column))
     premises = [group, *known] if len(members) > 1 else known
-    return Result(value, f"{column.name} is one of {_render(value)}", (column,), premises)
+    return Result(value, f"{quoted(column.name)} is one of {_render(value)}", (column,), premises)
 
 
 @analysis(Stratum.DOMAIN)
@@ -125,7 +126,7 @@ def _own_domain(column: ir.OutputColumn) -> Result[Domain]:
     for item in arena.knowledge:
         match item:
             case EnumeratedDomain(column=known, values=values) if known is column:
-                sources.append(Result(values, f"{column.name} is known to be one of {_render(values)}", (column,), [any_of(arena.accepted_evidence(item))]))
+                sources.append(Result(values, f"{quoted(column.name)} is known to be one of {_render(values)}", (column,), [any_of(arena.accepted_evidence(item))]))
             case _:
                 pass  # Other Knowledge says nothing about values.
     return _intersection(column, sources)
@@ -135,7 +136,7 @@ def _computed_domain(relation: ir.RelationExpr, column: ir.OutputColumn) -> Resu
     relation = relation.closed
     match relation:
         case ir.NamedRelation(body=None) | ir.OpaqueRelation():
-            return Result(None, f"{column.name} is not enumerated", (column,))
+            return Result(None, f"{quoted(column.name)} is not enumerated", (column,))
         case ir.SetOperation():
             return _set_operation_domain(relation, column)
         case ir.Filter() | ir.Join():
@@ -165,11 +166,11 @@ def _set_operation_domain(relation: ir.SetOperation, column: ir.OutputColumn) ->
             return left
         return _intersection(column, [left, right])
     if left.value is None or right.value is None:
-        return Result(None, f"An input of the UNION does not enumerate {column.name}", (relation, column), [left, right])
+        return Result(None, f"An input of the UNION does not enumerate {quoted(column.name)}", (relation, column), [left, right])
     value = left.value | right.value
     if len({member.type for member in value}) > 1:
-        return Result(None, f"The UNION's inputs give {column.name} values of different types", (relation, column), [left, right])
-    return Result(value, f"{column.name} is one of either input's values: {_render(value)}", (relation, column), [left, right])
+        return Result(None, f"The UNION's inputs give {quoted(column.name)} values of different types", (relation, column), [left, right])
+    return Result(value, f"{quoted(column.name)} is one of either input's values: {_render(value)}", (relation, column), [left, right])
 
 
 def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
@@ -231,7 +232,7 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
     for conjunct in conjuncts:
         bound = _conjunct_bound(conjunct, source)
         if bound is not None and bound.value is not None:
-            narrowings.append(Result(bound.value, f"The {clause} conjunct bounds {column.name} to {_render(bound.value)}", (conjunct,), [bound]))
+            narrowings.append(Result(bound.value, f"The {clause} conjunct bounds {quoted(column.name)} to {_render(bound.value)}", (conjunct,), [bound]))
     return narrowings
 
 
@@ -263,7 +264,7 @@ def _conjunct_bound(conjunct: ir.ScalarExpr, source: ir.OutputColumn) -> Result[
     if any(bound is None or bound.value is None for bound in bounds):
         return None
     value = frozenset().union(*(bound.value for bound in bounds if bound is not None and bound.value is not None))
-    return Result(value, f"{source.name} is in {_render(value)} on every row this conjunct keeps", (conjunct,), [bound for bound in bounds if bound is not None])
+    return Result(value, f"{quoted(source.name)} is in {_render(value)} on every row this conjunct keeps", (conjunct,), [bound for bound in bounds if bound is not None])
 
 
 def _bound_domain(column: ir.OutputColumn, expression: ir.ScalarExpr) -> Result[Domain]:
@@ -279,11 +280,11 @@ def _bound_domain(column: ir.OutputColumn, expression: ir.ScalarExpr) -> Result[
 def _intersection(column: ir.OutputColumn, sources: list[Result[Domain]]) -> Result[Domain]:
     known = [source for source in sources if source.value is not None]
     if not known:
-        return Result(None, f"No finite domain is known for {column.name}", (column,), sources)
+        return Result(None, f"No finite domain is known for {quoted(column.name)}", (column,), sources)
     if len(known) == 1:
         return known[0]
     value = _meet([source.value for source in known if source.value is not None], _binary_text(column))
-    return Result(value, f"{column.name} is one of {_render(value)}", (column,), known)
+    return Result(value, f"{quoted(column.name)} is one of {_render(value)}", (column,), known)
 
 
 def _meet(domains: list[frozenset[ir.LiteralValue]], binary_text: bool) -> frozenset[ir.LiteralValue]:

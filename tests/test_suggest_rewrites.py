@@ -378,7 +378,7 @@ def test_a_join_that_may_read_another_row_is_not_a_self_join(query: str):
     ("SELECT id FROM (SELECT * FROM users WHERE name = 'x') t WHERE name = 'x'", "delete it from WHERE"),
     ("SELECT id FROM (SELECT * FROM users WHERE nick = 'x') t WHERE nick IN ('x', 'y')", "delete it from WHERE"),
     ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "write u.nick IS NOT NULL in ON"),
-    ("SELECT id FROM users WHERE name IS NOT NULL", "name IS NOT NULL is always TRUE here (name is never NULL): delete it from WHERE"),
+    ("SELECT id FROM users WHERE name IS NOT NULL", "name IS NOT NULL is always TRUE here ('name' is never NULL): delete it from WHERE"),
 ])
 def test_a_condition_the_others_imply_is_redundant(query: str, message: str):
     rewrites = [i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.IMPLIED_CONDITION]
@@ -687,9 +687,9 @@ def test_a_subquery_filter_that_may_reject_a_row_is_kept(sql: str):
 @pytest.mark.parametrize(
     ("sql", "message"),
     [
-        ("SELECT id, name FROM t_sorted ORDER BY id, name", "(id) determine name"),
-        ("SELECT name FROM t_sorted ORDER BY score, score", "(score) determine score"),
-        ("SELECT score, count(*) AS n FROM t_sorted GROUP BY score ORDER BY score, n", "(score) determine n"),
+        ("SELECT id, name FROM t_sorted ORDER BY id, name", "('id') determine 'name'"),
+        ("SELECT name FROM t_sorted ORDER BY score, score", "('score') determine 'score'"),
+        ("SELECT score, count(*) AS n FROM t_sorted GROUP BY score ORDER BY score, n", "('score') determine 'n'"),
     ],
 )
 def test_an_order_by_key_the_earlier_keys_determine_is_redundant(sql: str, message: str):

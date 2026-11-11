@@ -255,6 +255,12 @@ Assertion evidence supports `.explain()`.
 Properties `analyze` would prove if their markers were pasted in. Like
 `analyze`, it returns data and never prints.
 
+Messages (Diagnostics, Hazards, Rewrites and evidence reasons) write a column
+name, or a term that names one, in single quotes: `'job'`, `('a', 'b')`
+(`diagnostics.quoted`, `quoted_all`). Relation names, whole conditions and
+suggested SQL stay bare, and a marker quoted in a message keeps its own
+spelling.
+
 ## Tests
 
 A test that only analyzes SQL and checks outcomes and Diagnostics is a case in

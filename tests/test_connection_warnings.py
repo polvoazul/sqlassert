@@ -55,7 +55,7 @@ def test_an_unqualified_column_two_undeclared_sources_may_own_warns():
 
     assert sorted(codes(report.warnings)) == [diag.AMBIGUOUS_COLUMN, diag.UNDECLARED_TABLE, diag.UNDECLARED_TABLE]
     ambiguous, = (warning for warning in report.warnings if warning.code == diag.AMBIGUOUS_COLUMN)
-    assert "column id" in ambiguous.message
+    assert "column 'id'" in ambiguous.message
     assert "a, r" in ambiguous.message
     assert "qualify it" in ambiguous.message
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]

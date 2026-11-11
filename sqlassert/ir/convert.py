@@ -17,7 +17,7 @@ from sqlglot import Expr, exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.dialects import DialectSemantics, semantics
-from sqlassert.diagnostics import Diagnostic
+from sqlassert.diagnostics import Diagnostic, quoted, quoted_all
 from sqlassert.properties import (
     EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullElements, NonNullUniqueSet,
     OneToManyJoin, OneToOneJoin, Property, ReferentialCoverage, UniqueJoin,
@@ -1139,7 +1139,7 @@ class IrParser:
                 return one("inner", inner_named)
             self._warnings.append(Diagnostic(
                 diag.AMBIGUOUS_COLUMN,
-                f"column {column.name} in a subquery may belong to its own FROM or to the outer query, "
+                f"column {quoted(column.name)} in a subquery may belong to its own FROM or to the outer query, "
                 "since some of its tables have no declared columns: qualify it, declare those tables with CREATE TABLE, "
                 "or analyze with a database connection (analyze_database)",
                 self._origin(column, _source_line(column)),
@@ -1616,7 +1616,7 @@ class IrParser:
                 sources = ", ".join(dict.fromkeys(binding.qualifier for binding in bindings))
                 self._warnings.append(Diagnostic(
                     diag.AMBIGUOUS_COLUMN,
-                    f"column {expression.name} is unqualified and more than one source may own it ({sources}), "
+                    f"column {quoted(expression.name)} is unqualified and more than one source may own it ({sources}), "
                     "since some have no declared columns: qualify it, declare those tables with CREATE TABLE, "
                     "or analyze with a database connection (analyze_database)",
                     origin if origin.line is not None else replace(origin, line=_source_line(expression)),
@@ -1956,8 +1956,8 @@ class IrParser:
                 self._diagnostics.append(Diagnostic(
                     diag.UNKNOWN_REFERENCED_COLUMN,
                     f"the {MARKER_NOUNS[marker.kind]} on line {marker.span.line} references "
-                    f"{target.name}({', '.join(marker.referenced_columns)}), but {target.name} has no column "
-                    f"{', '.join(_missing(target, marker.referenced_columns))}",
+                    f"{target.name}({quoted_all(marker.referenced_columns)}), but {target.name} has no column "
+                    f"{quoted_all(_missing(target, marker.referenced_columns))}",
                     pending.origin,
                 ))
                 continue
@@ -1996,7 +1996,7 @@ class IrParser:
                 self._diagnostics.append(Diagnostic(
                     diag.INVALID_FOREIGN_KEY_CONSTRAINT,
                     f"a foreign key of {table.name} must pair columns of its own with equally many columns of "
-                    f"{target.name}: ({', '.join(reference.columns)}) references ({', '.join(target_names)})",
+                    f"{target.name}: ({quoted_all(reference.columns)}) references ({quoted_all(target_names)})",
                     reference.origin,
                 ))
                 continue
@@ -2004,8 +2004,8 @@ class IrParser:
             if referenced is None:
                 self._diagnostics.append(Diagnostic(
                     diag.UNKNOWN_REFERENCED_COLUMN,
-                    f"a foreign key of {table.name} references {target.name}({', '.join(target_names)}), "
-                    f"but {target.name} has no column {', '.join(_missing(target, target_names))}",
+                    f"a foreign key of {table.name} references {target.name}({quoted_all(target_names)}), "
+                    f"but {target.name} has no column {quoted_all(_missing(target, target_names))}",
                     reference.origin,
                 ))
                 continue
@@ -2191,7 +2191,7 @@ class IrParser:
         fixes.append("analyze with trust_unenforced_keys=True")
         self._warnings.append(Diagnostic(
             diag.UNENFORCED_CONSTRAINT,
-            f"the {kind} ({', '.join(columns)}) of {symbol.name} is not Knowledge, since {reason}: "
+            f"the {kind} ({quoted_all(columns)}) of {symbol.name} is not Knowledge, since {reason}: "
             f"if the data satisfies it, {' or '.join(fixes)}",
             self._origin(constraint, _source_line(constraint) or _source_line(symbol.statement)),
         ))

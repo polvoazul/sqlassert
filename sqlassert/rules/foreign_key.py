@@ -21,6 +21,7 @@ Anything else stops propagation and names where.
 from itertools import product
 from typing import assert_never
 
+from sqlassert.diagnostics import quoted, quoted_all
 from sqlassert import ir
 from sqlassert.properties import ReferentialCoverage
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
@@ -146,7 +147,7 @@ def _input_rows(
     alternatives: dict[_Columns, Result[bool]] = {}
     for chosen in product(*(sorted(group.value, key=order.__getitem__) for group in equal)):
         substituted = [
-            Result(True, f"{column.name} equals {stand_in.name} on every row where it is non-null", (column, stand_in), [group])
+            Result(True, f"{quoted(column.name)} equals {quoted(stand_in.name)} on every row where it is non-null", (column, stand_in), [group])
             for column, stand_in, group in zip(columns, chosen, equal) if stand_in is not column
         ]
         for target, widened in targets:
@@ -304,7 +305,7 @@ def _key(coverage: ReferentialCoverage) -> tuple:
 
 
 def _names(columns: _Columns) -> str:
-    return ", ".join(column.name for column in columns)
+    return quoted_all(column.name for column in columns)
 
 
 def _describe(columns: _Columns) -> str:

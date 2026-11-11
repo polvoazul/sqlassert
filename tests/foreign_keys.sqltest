@@ -314,21 +314,21 @@ SELECT * FROM tree
 
 -- case: without_a_constraint_the_relationship_is_unknown_and_explained
 SELECT * FROM events /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
---~ UNKNOWN "No known Foreign Key from events(user_id) to users(id)"
+--~ UNKNOWN "No known Foreign Key from events('user_id') to users('id')"
 
 -- case: an_unknown_relationship_names_the_known_ones_from_the_same_columns
 SELECT * FROM orders /**ASSERT FOREIGN KEY(user_id) REFERENCES plain(id)**/
---~ UNKNOWN "these columns reference users(id)"
+--~ UNKNOWN "these columns reference users('id')"
 
 -- case: a_derived_relation_explains_the_closest_missing_relationship
 SELECT s.user_id
 FROM (SELECT user_id FROM events WHERE ts IS NOT NULL) AS s
 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
---~ UNKNOWN "No known Foreign Key from events(user_id) to users(id)"
+--~ UNKNOWN "No known Foreign Key from events('user_id') to users('id')"
 
 -- case: a_computed_column_is_named_where_propagation_stops
 SELECT user_id + 0 AS u FROM orders /**ASSERT FOREIGN KEY(u) REFERENCES users(id)**/
---~ UNKNOWN "(u) are not passed through from one input row"
+--~ UNKNOWN "('u') are not passed through from one input row"
 
 -- case: a_narrowed_target_is_named_in_the_explanation
 WITH a AS (SELECT id FROM users WHERE org = 1)
@@ -341,7 +341,7 @@ FROM orders
 SELECT *
 FROM (SELECT user_id FROM orders UNION SELECT user_id FROM events) AS s
 /**ASSERT FOREIGN KEY(user_id) REFERENCES users(id)**/
---~ UNKNOWN "No known Foreign Key from events(user_id) to users(id)"
+--~ UNKNOWN "No known Foreign Key from events('user_id') to users('id')"
 
 -- case: a_limited_referenced_relation_does_not_inherit_coverage__limit_0
 WITH target AS (SELECT id FROM users LIMIT 0)
@@ -382,7 +382,7 @@ SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES users(id)*
 -- case: a_declaration_still_needs_a_unique_set_on_the_referenced_columns
 SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES plain(id)**/
 /**ASSERT FOREIGN KEY(user_id) REFERENCES plain(id)**/
---~ UNKNOWN "Declared ReferentialCoverage" "referenced columns plain(id) must form a Unique Set"
+--~ UNKNOWN "Declared ReferentialCoverage" "referenced columns plain('id') must form a Unique Set"
 
 -- case: an_undeclared_referenced_relation_is_explained
 SELECT user_id FROM events /**DECLARE FOREIGN KEY(user_id) REFERENCES accounts(id)**/

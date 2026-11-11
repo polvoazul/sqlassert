@@ -30,7 +30,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from sqlassert import diagnostics as diag
 from sqlassert import ir
-from sqlassert.diagnostics import Diagnostic
+from sqlassert.diagnostics import Diagnostic, quoted_all
 from sqlassert.dialects import semantics
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.properties import NonNullColumn, Property, ReferentialCoverage, UniqueSet
@@ -155,7 +155,7 @@ class DatabaseKnowledgeFetcher(ABC):
             else:
                 warnings.append(Diagnostic(
                     diag.UNENFORCED_CONSTRAINT,
-                    f"the {kind} ({', '.join(columns)}) of {metadata.identity} is not Knowledge, since {hydration.dialect} "
+                    f"the {kind} ({quoted_all(columns)}) of {metadata.identity} is not Knowledge, since {hydration.dialect} "
                     "does not enforce it: if the data satisfies it, analyze with trust_unenforced_keys=True",
                     _origin(metadata),
                 ))
@@ -217,10 +217,10 @@ def _incompleteness(metadata: DatabaseRelationMetadata) -> str | None:
     names = {column.name.lower() for column in metadata.columns}
     for unique_set in _unique_sets(metadata):
         if not unique_set or not {name.lower() for name in unique_set} <= names:
-            return f"has a key ({', '.join(unique_set)}) over columns it does not list"
+            return f"has a key ({quoted_all(unique_set)}) over columns it does not list"
     for foreign_key in metadata.foreign_keys:
         if not {name.lower() for name in foreign_key.columns} <= names or len(foreign_key.columns) != len(foreign_key.referenced_columns):
-            return f"has a foreign key ({', '.join(foreign_key.columns)}) that does not pair columns it lists"
+            return f"has a foreign key ({quoted_all(foreign_key.columns)}) that does not pair columns it lists"
     return None
 
 

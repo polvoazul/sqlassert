@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
+from sqlassert.diagnostics import quoted
 from sqlassert import ir
 from sqlassert.properties import NonNullElements
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
@@ -60,7 +61,7 @@ def non_null_columns(columns: frozenset[ir.OutputColumn]) -> Result[bool]:
 def non_null_column(column: ir.OutputColumn) -> Result[bool]:
     sources = _null_sources(column)
     if sources.value:
-        return Result(False, f"{column.name} may be NULL", (column,), list(sources.members.values()), kind="unknown")
+        return Result(False, f"{quoted(column.name)} may be NULL", (column,), list(sources.members.values()), kind="unknown")
     return Result(True, "No NULL source remains", (column,), [sources])
 
 
@@ -79,7 +80,7 @@ def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple
     relation = relation.closed
     match relation:
         case ir.NamedRelation(body=None):
-            return {ORGANIC: unknown(f"{column.name} is nullable in {relation.name}", relation, column)}, []
+            return {ORGANIC: unknown(f"{quoted(column.name)} is nullable in {relation.name}", relation, column)}, []
         case ir.OpaqueRelation():
             return {ORGANIC: unknown("Nullability of an opaque relation's columns is not known", relation, column)}, []
         case ir.SetOperation():
@@ -203,7 +204,7 @@ def _column_elements(column: ir.OutputColumn) -> Result[bool]:
             return unknown("The set operation's inputs are not paired by position", relation, column)
         return all_of(_column_elements(arm) for arm in arms if arm is not None)
     if isinstance(column.scalar_expr.closed, ir.OpaqueExpression):
-        return unknown(f"{column.name} may hold a NULL element (DECLARE NOT NULL ELEMENTS({column.name}) states it does not)", column)
+        return unknown(f"{quoted(column.name)} may hold a NULL element (DECLARE NOT NULL ELEMENTS({column.name}) states it does not)", column)
     return _expression_elements(column.scalar_expr)
 
 
@@ -286,7 +287,7 @@ def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, lis
     sources, removal = _rejected(_on_rejected(join), source, sources, "The ON condition rejects NULL on matched rows")
     left = source in join.left.output_columns
     if left in _padded_sides(join):
-        sources[Padding(join, left)] = unknown(f"{column.name} is padded by the {join.kind.upper()} JOIN", join, column)
+        sources[Padding(join, left)] = unknown(f"{quoted(column.name)} is padded by the {join.kind.upper()} JOIN", join, column)
     return sources, premises + removal
 
 
@@ -306,17 +307,17 @@ def _set_operation_sources(relation: ir.SetOperation, column: ir.OutputColumn) -
             assert right is not None
             if not left.value and not right.value:
                 return {}, [Result(True, "Non-null in both inputs of the UNION", (relation, column), [left, right])]
-            return {ORGANIC: Result(False, f"{column.name} may be NULL in an input of the UNION", (relation, column), [left, right], kind="unknown")}, []
+            return {ORGANIC: Result(False, f"{quoted(column.name)} may be NULL in an input of the UNION", (relation, column), [left, right], kind="unknown")}, []
         case "intersect":
             assert right is not None
             for arm in (left, right):
                 if not arm.value:
                     return {}, [Result(True, "Non-null in one input of the INTERSECT, which every row equals", (relation, column), [arm])]
-            return {ORGANIC: Result(False, f"{column.name} may be NULL in both inputs of the INTERSECT", (relation, column), [left, right], kind="unknown")}, []
+            return {ORGANIC: Result(False, f"{quoted(column.name)} may be NULL in both inputs of the INTERSECT", (relation, column), [left, right], kind="unknown")}, []
         case "except":
             if not left.value:
                 return {}, [Result(True, "Non-null in the left input of the EXCEPT", (relation, column), [left])]
-            return {ORGANIC: Result(False, f"{column.name} may be NULL in the left input of the EXCEPT", (relation, column), [left], kind="unknown")}, []
+            return {ORGANIC: Result(False, f"{quoted(column.name)} may be NULL in the left input of the EXCEPT", (relation, column), [left], kind="unknown")}, []
         case _:
             assert_never(relation.operator)
 

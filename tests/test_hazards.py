@@ -18,11 +18,11 @@ CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER);
 @pytest.mark.parametrize(
     ("sql", "loose"),
     [
-        ("SELECT id, name FROM t ORDER BY score LIMIT 3", "(id, name)"),
+        ("SELECT id, name FROM t ORDER BY score LIMIT 3", "('id', 'name')"),
         ("SELECT id, name FROM t LIMIT 3", None),
-        ("SELECT score, count(*) AS n FROM t GROUP BY score ORDER BY n DESC LIMIT 1", "(score)"),
-        ("SELECT name FROM t ORDER BY score OFFSET 2", "(name)"),
-        ("WITH top AS (SELECT id FROM t ORDER BY score LIMIT 3) SELECT id FROM top", "(id)"),
+        ("SELECT score, count(*) AS n FROM t GROUP BY score ORDER BY n DESC LIMIT 1", "('score')"),
+        ("SELECT name FROM t ORDER BY score OFFSET 2", "('name')"),
+        ("WITH top AS (SELECT id FROM t ORDER BY score LIMIT 3) SELECT id FROM top", "('id')"),
     ],
 )
 def test_a_limit_whose_order_leaves_different_rows_tied_is_a_hazard(sql: str, loose: str | None):
@@ -270,7 +270,7 @@ def test_a_grouping_key_not_selected_says_it_is_probably_a_mistake():
     [hazard] = [h for h in suggest(TRAPS + "SELECT count(*) AS n FROM orders GROUP BY customer_id").hazards
                 if h.concern is Concern.UNSELECTED_GROUPING]
     assert hazard.message == (
-        "GROUP BY term customer_id does not appear in SELECT. This is probably a mistake: "
+        "GROUP BY term 'customer_id' does not appear in SELECT. This is probably a mistake: "
         "select it, or drop it from GROUP BY"
     )
 

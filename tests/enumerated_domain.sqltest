@@ -526,18 +526,18 @@ WITH m AS (SELECT * FROM items /**DECLARE ENUM(tag IN (10, 'b', 2, TRUE, 'a', FA
 SELECT tag
 FROM m
 /**ASSERT ENUM(tag IN ('zzz'))**/
---~ UNKNOWN "tag may be FALSE, TRUE, -1.5, 2, 10, 'a', 'b', which the assertion does not cover"
+--~ UNKNOWN "'tag' may be FALSE, TRUE, -1.5, 2, 10, 'a', 'b', which the assertion does not cover"
 
 -- case: an_unknown_report_names_every_value_the_assertion_does_not_cover
 WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
 SELECT status
 FROM o
 /**ASSERT ENUM(status IN ('void'))**/
---~ UNKNOWN "status may be 'new', 'paid', which the assertion does not cover"
+--~ UNKNOWN "'status' may be 'new', 'paid', which the assertion does not cover"
 
 -- case: an_unknown_report_says_when_no_domain_is_known
 SELECT status FROM orders /**ASSERT ENUM(status IN ('new'))**/
---~ UNKNOWN "No finite domain is known for status"
+--~ UNKNOWN "No finite domain is known for 'status'"
 
 -- case: a_declaration_produces_no_assertion_and_is_shown_as_declared
 WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)

@@ -37,7 +37,7 @@ SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ PROVED "
 -- dialect: snowflake
 CREATE TABLE t (id INT PRIMARY KEY RELY);
 CREATE TABLE o (id INT PRIMARY KEY RELY, t_id INT, CONSTRAINT fk FOREIGN KEY (t_id) REFERENCES t (id) NORELY);
---~ unenforced-constraint "foreign key (t_id)"
+--~ unenforced-constraint "foreign key ('t_id')"
 SELECT t_id FROM o /**ASSERT FOREIGN KEY(t_id) REFERENCES t(id)**/  --~ UNKNOWN
 
 -- case: snowflake_pipes_reject_a_null_operand

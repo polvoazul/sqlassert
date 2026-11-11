@@ -15,9 +15,19 @@ Warnings never make a Report fail.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from sqlassert.provenance import Origin
+
+def quoted(name: str) -> str:
+    """A column name, or a term naming one, as messages write it: 'job'."""
+    return f"'{name}'"
+
+
+def quoted_all(names: Iterable[str]) -> str:
+    return ", ".join(quoted(name) for name in names)
+
 
 CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
 AMBIGUOUS_COLUMN = "ambiguous-column"

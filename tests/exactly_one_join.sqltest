@@ -627,7 +627,7 @@ CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
 SELECT *
 FROM loose AS l
 /**ASSERT EXACTLY ONE**/ JOIN shops AS s
---~ UNKNOWN "UNKNOWN: At most one match" "UNKNOWN: At least one match" "No known Foreign Key from loose(country, code)" "PROVED: Non-null left columns"
+--~ UNKNOWN "UNKNOWN: At most one match" "UNKNOWN: At least one match" "No known Foreign Key from loose('country', 'code')" "PROVED: Non-null left columns"
     ON l.country = s.country AND l.code = s.maybe
 
 -- case: each_nullable_left_column_is_named
@@ -645,7 +645,7 @@ CREATE TABLE loose (country VARCHAR NOT NULL, code VARCHAR NOT NULL);
 SELECT *
 FROM shops AS s
 /**ASSERT EXACTLY ONE**/ JOIN regions AS r
---~ UNKNOWN "PROVED: At most one match" "PROVED: At least one match" "UNKNOWN: Non-null left columns" "maybe may be NULL"
+--~ UNKNOWN "PROVED: At most one match" "PROVED: At least one match" "UNKNOWN: Non-null left columns" "'maybe' may be NULL"
     ON s.country = r.country AND s.maybe = r.code
 
 -- case: a_narrowed_right_relation_is_named_in_the_explanation

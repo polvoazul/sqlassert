@@ -39,6 +39,7 @@ from typing import ClassVar, assert_never
 
 from sqlglot import Expr, exp
 
+from sqlassert.diagnostics import quoted, quoted_all
 from sqlassert import ir
 from sqlassert.dialects import semantics
 from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet
@@ -228,19 +229,19 @@ def _inner_join(
             via = padded_by(column)
             if via is not None:
                 how = f"is padded by the {keyword}" if via[0] is join else f"is NULL on every row the {keyword} pads"
-                padded = Result(True, f"{column.name} {how}", (join, column), chained[via])
+                padded = Result(True, f"{quoted(column.name)} {how}", (join, column), chained[via])
                 evidence = Result(
-                    True, f"{clause} rejects NULL in {column.name}, so every row the {keyword} pads is removed",
+                    True, f"{clause} rejects NULL in {quoted(column.name)}, so every row the {keyword} pads is removed",
                     (conjunct, column), [padded],
                 )
-                message = f"{clause} rejects NULL in {column.name}, so no padded row survives: write JOIN"
+                message = f"{clause} rejects NULL in {quoted(column.name)}, so no padded row survives: write JOIN"
                 return Rewrite(site, RewriteKind.INNER_JOIN, message, evidence)
         if isinstance(parent, ir.Join) and parent.kind in {"left", "full"}:
             for column, conjunct in _null_rejected(parent.conjuncts).items():
                 via = padded_by(column)
                 # The left rows it cannot match keep a padded right side.
                 if via is not None and column in parent.left.output_columns and (parent, False) not in chained:
-                    reason = f"its ON rejects NULL in {column.name}, so the later {parent.kind.upper()} JOIN pads every row the {keyword} pads"
+                    reason = f"its ON rejects NULL in {quoted(column.name)}, so the later {parent.kind.upper()} JOIN pads every row the {keyword} pads"
                     chained[(parent, False)] = [*chained[via], Result(True, reason, (conjunct, column))]
         if isinstance(parent, ir.Filter):
             return None
@@ -275,7 +276,7 @@ def _redundant_sort_keys(
         if key not in closure.value.columns:
             continue
         written = [written_sql(item.this if isinstance(item, exp.Ordered) else item, dialect) for item in items]
-        message = f"({', '.join(written[:position])}) determine {written[position]}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
+        message = f"({quoted_all(written[:position])}) determine {quoted(written[position])}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
         evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
         found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, evidence))
     return found
@@ -367,7 +368,7 @@ def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Rew
     if key is None:
         return []
     evidence = _reaches_row_identity(_closure(distinct.input, frozenset(key), frozenset()))
-    names = ", ".join(selected[column] for column in key)
+    names = quoted_all(selected[column] for column in key)
     message = f"no two rows agree on ({names}), NULL equal to NULL, so DISTINCT removes nothing: delete DISTINCT"
     return [Rewrite(site, RewriteKind.REDUNDANT_DISTINCT, message, evidence)]
 
@@ -414,7 +415,7 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
         if rewritten is None:
             return None
         items.append(rewritten)
-    names = ", ".join(written_sql(expression, dialect) for expression in expressions)
+    names = quoted_all(written_sql(expression, dialect) for expression in expressions)
     message = (
         f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
         f"drop GROUP BY and write SELECT {', '.join(items)}"
@@ -501,12 +502,12 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
         if source not in closure.value.columns:
             continue
         kept.remove(grouped)
-        names = ", ".join(written[other] for other in others)
+        names = quoted_all(written[other] for other in others)
         alias = exp.to_identifier(grouped.name).sql(dialect=dialect)
         selected = node.expressions[aggregate.output_columns.index(grouped)]
         expression = selected.this if isinstance(selected, exp.Alias) else selected
         message = (
-            f"({names}) determine {written[grouped]}, NULL equal to NULL: drop {written[grouped]} from GROUP BY "
+            f"({names}) determine {quoted(written[grouped])}, NULL equal to NULL: drop {quoted(written[grouped])} from GROUP BY "
             f"and select any_value({written_sql(expression, dialect)}) AS {alias}"
         )
         found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, closure.members[source]))
@@ -634,7 +635,7 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
     if guard is not None and join.kind == "inner":
         rewritten.where(guard, copy=False)
     message = (
-        f"each {mine} row matches itself on the key ({', '.join(sorted(column.name for column in keys.values()))}), "
+        f"each {mine} row matches itself on the key ({quoted_all(sorted(column.name for column in keys.values()))}), "
         f"so {theirs} is {mine}: delete the join and read {mine}'s columns: {written_sql(rewritten, dialect)}"
     )
     return Rewrite(site, RewriteKind.SELF_JOIN, message, key)
@@ -781,7 +782,7 @@ def _implication(
     its columns are NULL together (one IS NOT NULL then checks both)."""
     match conjunct:
         case ir.IsNotNull(operand=ir.ColumnRef(column=column)):
-            return (f"{column.name} is never NULL", False) if arena.prove(NonNullColumn(column=column)).value else None
+            return (f"{quoted(column.name)} is never NULL", False) if arena.prove(NonNullColumn(column=column)).value else None
         case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)):
             if _chained(first, second, others):
                 return "the other equalities chain its sides", False
@@ -801,7 +802,7 @@ def _implication(
     domain = _domain(column).value
     if domain is None or not domain or not domain <= listed:
         return None
-    return f"{column.name} is always one of the listed values", False
+    return f"{quoted(column.name)} is always one of the listed values", False
 
 
 def _chained(first: ir.OutputColumn, second: ir.OutputColumn, others: list[ir.ScalarExpr]) -> bool:

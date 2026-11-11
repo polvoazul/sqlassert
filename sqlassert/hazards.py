@@ -42,6 +42,7 @@ from typing import ClassVar
 
 from sqlglot import exp
 
+from sqlassert.diagnostics import quoted, quoted_all
 from sqlassert import ir
 from sqlassert.ir.convert import HIDDEN_GROUPING
 from sqlassert.rewrites import SuggestType, _syntax_at_sites
@@ -143,7 +144,7 @@ def _unselected_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[
     shown = frozenset(column for column in aggregate.grouping_outputs if column not in hidden)
     if _reaches_row_identity(_closure(aggregate, shown, frozenset())).value:
         return []
-    names = ", ".join(column.scalar_expr.origin.detail for column in hidden)
+    names = quoted_all(column.scalar_expr.origin.detail for column in hidden)
     terms, verb, pronoun = ("term", "does", "it") if len(hidden) == 1 else ("terms", "do", "them")
     message = (
         f"GROUP BY {terms} {names} {verb} not appear in SELECT. This is probably a mistake: "
@@ -177,7 +178,7 @@ def _always_empty(site: AttachmentSite, relation: ir.RelationExpr, arena: Arena)
                         case ir.IsNull(operand=ir.ColumnRef(column=column)):
                             proof = arena.prove(NonNullColumn(column=column))
                             if proof.value:
-                                message = f"{conjunct.origin.detail} is never TRUE ({column.name} is never NULL), so this query never returns a row"
+                                message = f"{conjunct.origin.detail} is never TRUE ({quoted(column.name)} is never NULL), so this query never returns a row"
                                 return [Hazard(site, Concern.ALWAYS_EMPTY, message, proof)]
                         case _:
                             pass
@@ -279,7 +280,7 @@ def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
                 if None in types or _binary_text(first).value == _binary_text(second).value:
                     continue
                 message = (
-                    f"{first.name} ({types[0]}) = {second.name} ({types[1]}) compares text with another type: the text is cast, "
+                    f"{quoted(first.name)} ({types[0]}) = {quoted(second.name)} ({types[1]}) compares text with another type: the text is cast, "
                     "so different strings may match one value ('01' and '1' both equal 1): cast explicitly"
                 )
                 evidence = Result(False, "The comparison casts text", (conjunct,))
@@ -474,7 +475,7 @@ def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, keys: tuple[ir.Outpu
     loose = [column for column, inputs in needed.items() if inputs is None or not inputs <= closure.value.columns]
     if not loose:
         return []
-    names = ", ".join(column.name for column in loose)
+    names = quoted_all(column.name for column in loose)
     reason = f"the ORDER BY does not determine ({names}), so rows tied on it" if keys else "with no ORDER BY, rows"
     message = f"{reason} come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well"
     return [Hazard(site, Concern.ARBITRARY_LIMIT, message, closure)]

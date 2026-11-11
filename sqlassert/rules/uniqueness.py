@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import assert_never
 
+from sqlassert.diagnostics import quoted
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
@@ -70,7 +71,7 @@ def functional_dependency(determinant: frozenset[ir.OutputColumn], dependent: fr
     ordered = [column for column in relation.output_columns if column in dependent]
     return all_of(
         closure.members[column] if column in closure.value.columns
-        else unknown(f"{column.name} is not determined", column)
+        else unknown(f"{quoted(column.name)} is not determined", column)
         for column in ordered
     )
 

@@ -70,7 +70,7 @@ SELECT a, b FROM t WHERE a = (SELECT c FROM r) /**ASSERT UNIQUE(b)**/  --~ UNKNO
 -- With no CREATE for u, c may be u's or t's: the subquery stays unanalyzed.
 -- case: scalar_subqueries__a_column_of_an_undeclared_table_may_be_the_outer_one
 SELECT a, b FROM t WHERE a = (SELECT c FROM u) /**ASSERT UNIQUE(b)**/  --~ UNKNOWN
---~ ambiguous-column "column c in a subquery may belong to its own FROM or to the outer query"
+--~ ambiguous-column "column 'c' in a subquery may belong to its own FROM or to the outer query"
 --~ undeclared-table "table u"
 
 -- A schema-qualified outer column correlates the subquery: s2.t.k = s1.t.k

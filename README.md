@@ -73,7 +73,7 @@ high  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches e
 high  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
 mid   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
 ...
-low   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine (id), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
+low   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine ('id'), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
 ```
 
 Every rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
