@@ -181,3 +181,133 @@ def _condition(text: str, incremental: bool) -> bool:
             return not incremental
         case _:
             raise Unrenderable(f"{{% if {text} %}} is not is_incremental()")
+
+
+# Statements that open a block, closed by `end` + the keyword. `set` opens one
+# only without `=` (`{% set x %}...{% endset %}`).
+_BLOCKS = frozenset({"for", "if", "macro", "call", "filter", "raw", "set", "block"})
+
+
+def align(raw: str, compiled: str, *, incremental: bool) -> tuple[int, ...] | None:
+    """For each character of `compiled` (dbt's rendering of `raw`), the
+    raw-code offset it came from: copied text maps to itself, and text a tag
+    wrote (a macro call, a loop, a `{% set %}`) to the tag's first character,
+    whatever it wrote. None when `raw`'s text between tags does not appear in
+    `compiled` in order.
+
+    Unlike `render`, any tag is allowed: its output is not rendered but taken
+    from `compiled`, so it says only where text came from, never what text is.
+    `{% if [not] is_incremental() %}` follows `incremental`; any other block is
+    one tag, from its opening to its closing tag."""
+    try:
+        pieces = _pieces(raw, incremental)
+    except Unrenderable:
+        return None
+    sources: list[int] = []
+    cursor = 0
+    hole: int | None = None
+    for index, piece in enumerate(pieces):
+        if isinstance(piece, int):
+            hole = piece if hole is None else hole
+            continue
+        text = "".join(raw[i] for i in piece)
+        if index == len(pieces) - 1:
+            text = text.rstrip().rstrip(";").rstrip()
+            piece = piece[:len(text)]
+        if not text:
+            continue
+        if hole is None:
+            found = cursor if compiled.startswith(text, cursor) else -1
+        elif index == len(pieces) - 1:
+            found = len(compiled) - len(text) if compiled.endswith(text) and len(compiled) - len(text) >= cursor else -1
+        else:
+            found = compiled.find(text, cursor)
+        if found < 0:
+            return None
+        sources.extend([hole] * (found - cursor) if hole is not None else [])
+        sources.extend(piece)
+        cursor, hole = found + len(text), None
+    if hole is not None:
+        sources.extend([hole] * (len(compiled) - cursor))
+    elif cursor != len(compiled):
+        return None
+    return tuple(sources)
+
+
+def _pieces(raw: str, incremental: bool) -> list[range | list[int] | int]:
+    """`raw` as the data it copies (raw offsets) and its tags (each as its offset)."""
+    pieces: list[range | list[int] | int] = []
+    branches: list[bool] = []
+    strip_next = False
+    position = 0
+    while True:
+        start = _next_tag(raw, position)
+        data_end = len(raw) if start < 0 else start
+        left_strip = start >= 0 and raw.startswith("-", start + 2)
+        data = range(position, data_end)
+        if strip_next:
+            data = range(_skip_space(raw, position, data_end), data_end)
+        if left_strip:
+            data = range(data.start, _trim_space(raw, data.start, data.stop))
+        if all(branches) and len(data):
+            pieces.append(list(data))
+        if start < 0:
+            break
+        opener = raw[start:start + 2]
+        end = _tag_end(raw, start, _CLOSERS[opener])
+        body = raw[start + 2:end].removeprefix("-")
+        strip_next = body.endswith("-")
+        body = body.removesuffix("-").strip()
+        position = end + 2
+        if opener == "{#":
+            continue
+        if opener == "{{":
+            if all(branches):
+                pieces.append(start)
+            continue
+        keyword, _, rest = body.partition(" ")
+        if keyword == "if":
+            try:
+                branches.append(_condition(rest.strip(), incremental))
+                continue
+            except Unrenderable:
+                pass
+        elif keyword == "else" and branches and not rest.strip():
+            branches[-1] = not branches[-1]
+            continue
+        elif keyword == "endif" and branches and not rest.strip():
+            branches.pop()
+            continue
+        elif keyword in {"elif", "else", "endif"}:
+            raise Unrenderable(f"{{% {body} %}} inside an is_incremental() branch")
+        if keyword in _BLOCKS and not (keyword == "set" and "=" in rest):
+            position, strip_next = _block_end(raw, position, keyword)
+        if all(branches):
+            pieces.append(start)
+    if branches:
+        raise Unrenderable("an {% if %} is never closed")
+    return pieces
+
+
+def _block_end(raw: str, position: int, keyword: str) -> tuple[int, bool]:
+    """Past the tag closing a `keyword` block whose body starts at `position`,
+    and whether that tag strips the space after it."""
+    depth = 1
+    while True:
+        start = _next_tag(raw, position)
+        if start < 0:
+            raise Unrenderable(f"a {{% {keyword} %}} is never closed")
+        opener = raw[start:start + 2]
+        end = _tag_end(raw, start, _CLOSERS[opener])
+        position = end + 2
+        if opener != "{%":
+            continue
+        body = raw[start + 2:end].removeprefix("-")
+        strip = body.endswith("-")
+        word, _, rest = body.removesuffix("-").strip().partition(" ")
+        if word == keyword and not (word == "set" and "=" in rest):
+            depth += 1
+        elif word == f"end{keyword}":
+            depth -= 1
+            if depth == 0:
+                return position, strip

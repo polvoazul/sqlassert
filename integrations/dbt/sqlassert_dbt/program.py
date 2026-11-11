@@ -31,7 +31,7 @@ from sqlglot.tokens import TokenType
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert_dbt.expectations import Expectation, PropertyKind
-from sqlassert_dbt.jinja import Rendered, Unrenderable, has_incremental_branch, render
+from sqlassert_dbt.jinja import Rendered, Unrenderable, align, has_incremental_branch, render
 from sqlassert_dbt.manifest import Column, Relation
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.improvements import Improvement, Level
@@ -119,6 +119,15 @@ def branches(model: Relation, relations: Mapping[str, Relation], this: str | Non
     lines = None
     if taken is not None:
         lines = _raw_lines(model.raw_code, _compiled_sources(renderings[taken], len(compiled), cut, len(joined)))
+    elif original is not None:
+        # Tags this module cannot render (a project macro, a loop): text dbt
+        # copied keeps its line, and text a tag wrote takes the tag's line.
+        aligned = next(
+            (found for flag in ((False, True) if two else (False,)) if (found := align(model.raw_code, original, incremental=flag)) is not None),
+            None,
+        )
+        if aligned is not None:
+            lines = _raw_lines(model.raw_code, _compiled_sources(Rendered(original, aligned), len(compiled), cut, len(joined)))
     first = Body(compiled, model.raw_code, lines, injected)
     if not two:
         return Branches((first,), None, tuple(warnings))

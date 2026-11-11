@@ -18,15 +18,19 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
+import shutil
 import tempfile
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from sqlassert.check import EXIT_FINDINGS, EXIT_OK, EXIT_USAGE
 from sqlassert_dbt.project import ProjectError, analyze_project, suggest_models
 from sqlassert_dbt.report import (
-    DEFAULT_WARNING_LIMIT, DbtReport, WarningLimit, exit_code, format_suggestion_blocks, format_suggestion_summary, format_text,
+    DEFAULT_WARNING_LIMIT, DbtReport, Location, SuggestReport, WarningLimit, exit_code, format_suggestion_blocks, format_suggestion_summary,
+    format_text,
 )
 
 # The dbt flags that narrow which nodes run: under any of them, the tests of
@@ -154,28 +158,83 @@ def _suggest(arguments: argparse.Namespace, passed: list[str]) -> int:
     located = [*passed, *selection, "--project-dir", str(project), *_profiles(project, passed)]
     # dbt writes target/ and logs/ as it compiles; suggest leaves the project's
     # own alone, unless the caller names where.
-    with tempfile.TemporaryDirectory(prefix="sqlassert-dbt-") as scratch:
+    scratch = Path(tempfile.mkdtemp(prefix="sqlassert-dbt-"))
+    shortcut = None
+    try:
         given = _option(passed, "--target-path")
         inplace = arguments.dbt_compile_inplace
-        target = project / given if given is not None else project / "target" if inplace else Path(scratch) / "target"
+        target = project / given if given is not None else project / "target" if inplace else scratch / "target"
         if given is None and not inplace:
             located += ["--target-path", str(target)]
+            shortcut = _Shortcut(target / "compiled")
         if _option(passed, "--log-path") is None and not inplace:
-            located += ["--log-path", str(Path(scratch) / "logs")]
+            located += ["--log-path", str(scratch / "logs")]
         compiled = run_dbt(["compile", *located], to_stderr=True)
         if compiled != 0:
             return compiled
-        return _report_suggestions(arguments, project, relative, target / "manifest.json")
+        return _report_suggestions(arguments, project, relative, target / "manifest.json", shortcut)
+    finally:
+        if shortcut is not None and shortcut.link is not None:
+            print(f"sqlassert-dbt: compiled code kept for the locations above: {shortcut.link} -> {shortcut.compiled}", file=sys.stderr)
+        else:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _report_suggestions(arguments: argparse.Namespace, project: Path, relative: list[str], manifest: Path) -> int:
+# Where the link goes: /tmp is short; macOS's own temporary directory is not.
+_SHORT_ROOT = Path("/tmp") if Path("/tmp").is_dir() else Path(tempfile.gettempdir())
+
+
+class _Shortcut:
+    """A short link, made on first use, to the compiled code in suggest's own
+    temporary target: a location dbt's rendering cannot map back to the model
+    file points at the compiled file, and the link keeps that path short and
+    the file there after the run."""
+
+    def __init__(self, compiled: Path) -> None:
+        self.compiled = compiled
+        self.link: Path | None = None
+
+    def location(self, location: Location) -> Location:
+        path = Path(location.path)
+        if not path.is_absolute() or not path.is_relative_to(self.compiled):
+            return location
+        if self.link is None:
+            while True:
+                link = _SHORT_ROOT / f"sqlassert-{secrets.token_hex(3)}"
+                try:
+                    link.symlink_to(self.compiled, target_is_directory=True)
+                    break
+                except FileExistsError:
+                    continue
+            self.link = link
+        return replace(location, path=str(self.link / path.relative_to(self.compiled)))
+
+    def report(self, report: SuggestReport) -> SuggestReport:
+        return replace(
+            report,
+            suggestions=tuple(replace(item, location=self.location(item.location)) for item in report.suggestions),
+            problems=tuple(
+                replace(problem, location=self.location(problem.location)) if problem.location is not None else problem
+                for problem in report.problems
+            ),
+        )
+
+
+def _report_suggestions(
+    arguments: argparse.Namespace, project: Path, relative: list[str], manifest: Path, shortcut: _Shortcut | None = None,
+) -> int:
     limit = WarningLimit(arguments.warning_limit)
+
+    def shown(part: SuggestReport) -> None:
+        part = shortcut.report(part) if shortcut is not None else part
+        print(format_suggestion_blocks(part, explain=arguments.explain, limit=limit), end="", flush=True)
+
     try:
         report = suggest_models(
             project, relative, manifest_path=manifest, dialect=arguments.dialect,
             trust_upstream_tests=arguments.trust_upstream_tests,
             catalog_path=_path(arguments.catalog), read_catalog=not arguments.no_catalog,
-            on_model=lambda part: print(format_suggestion_blocks(part, explain=arguments.explain, limit=limit), end="", flush=True),
+            on_model=shown,
         )
     except ProjectError as error:
         print(f"sqlassert-dbt: {error}", file=sys.stderr)

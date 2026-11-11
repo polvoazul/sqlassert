@@ -12,7 +12,7 @@ from dbt.cli.main import dbtRunner
 from dbt_runs import copy_source, dbt
 
 from sqlassert_dbt import ProjectError, SuggestReport, analyze_project, suggest_models
-from sqlassert_dbt.report import Problem, WarningLimit
+from sqlassert_dbt.report import Location, Problem, WarningLimit
 from sqlassert_dbt import __main__ as dbt_command
 from sqlassert_dbt.__main__ import main
 from sqlassert.reporting import Outcome
@@ -288,3 +288,19 @@ def test_core_advice_for_unknown_columns_points_at_the_catalog(compiled):
     ambiguous = [problem for problem in report.problems if problem.code == "ambiguous-column"]
     assert ambiguous and all("analyze_database" not in problem.message for problem in report.problems)
     assert "dbt docs generate" in ambiguous[0].message
+
+
+def test_a_compiled_location_goes_through_a_short_link(tmp_path):
+    compiled = tmp_path / "target" / "compiled"
+    (compiled / "jaffle" / "models").mkdir(parents=True)
+    (compiled / "jaffle" / "models" / "m.sql").write_text("select 1")
+    shortcut = dbt_command._Shortcut(compiled)
+    assert shortcut.location(Location("models/m.sql", 3)) == Location("models/m.sql", 3)
+    assert shortcut.link is None  # made only when a location needs it
+    short = shortcut.location(Location(str(compiled / "jaffle" / "models" / "m.sql"), 3))
+    try:
+        assert shortcut.link is not None and short.path == str(shortcut.link / "jaffle" / "models" / "m.sql")
+        assert len(shortcut.link.name) == len("sqlassert-") + 6
+        assert Path(short.path).read_text() == "select 1"
+    finally:
+        shortcut.link.unlink()

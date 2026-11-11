@@ -13,7 +13,7 @@ import pytest
 
 from sqlassert_dbt import DbtReport, ProjectError, Status, analyze_project, suggest_models
 from sqlassert_dbt.expectations import expectations
-from sqlassert_dbt.jinja import Unrenderable, render
+from sqlassert_dbt.jinja import Unrenderable, align, render
 from sqlassert_dbt.manifest import load_manifest
 from sqlassert.ir.model import LiteralValue
 from sqlassert.reporting import Outcome
@@ -532,6 +532,37 @@ def test_render_maps_every_copied_character_to_its_raw_offset():
     assert rendered.raw_offset(0) == raw.index("select")
     assert rendered.raw_offset(rendered.text.index("<")) is None
     assert rendered.raw_offset(len(rendered.text) - 1) == len(raw) - 1
+
+
+def test_align_maps_text_a_macro_wrote_to_the_macro_tag():
+    raw = "with u as (\n    select id from {{ scoped() }}\n),\nv as (select 1)\nselect * from u"
+    compiled = "with u as (\n    select id from \n(select id\n from p)\n),\nv as (select 1)\nselect * from u"
+    sources = align(raw, compiled, incremental=False)
+    assert sources is not None and len(sources) == len(compiled)
+    tag = raw.index("{{")
+    # Every character of the macro's two lines comes from its tag; the rest is copied.
+    assert {sources[i] for i in range(compiled.index("\n(select"), compiled.index("\n),"))} == {tag}
+    assert sources[compiled.index("v as")] == raw.index("v as")
+    assert sources[-1] == len(raw) - 1
+
+
+def test_align_takes_a_loop_or_a_set_as_one_tag():
+    raw = "{% set n = 2 %}\nselect\n{%- for c in cols %} {{ c }},{% endfor %} 1 from t"
+    compiled = "\nselect a, b, 1 from t"
+    sources = align(raw, compiled, incremental=False)
+    assert sources is not None
+    assert sources[compiled.index("a,")] == raw.index("{%- for")
+    assert sources[compiled.index("1 from")] == raw.index("1 from")
+
+
+def test_align_follows_the_incremental_branch_dbt_took():
+    raw = "select {{ m() }} from t\n{% if is_incremental() %}where x > 1{% else %}-- full{% endif %}"
+    assert align(raw, "select 7 from t\nwhere x > 1", incremental=True) is not None
+    assert align(raw, "select 7 from t\nwhere x > 1", incremental=False) is None
+
+
+def test_align_refuses_compiled_code_the_raw_text_does_not_appear_in():
+    assert align("select {{ m() }} from t", "select 1 from u", incremental=False) is None
 
 
 @pytest.mark.parametrize("raw", [
