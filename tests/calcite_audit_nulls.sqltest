@@ -127,11 +127,17 @@ SELECT empno, sal, comm FROM emp_nullables WHERE sal IS NOT DISTINCT FROM comm
 /**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
 /**ASSERT DETERMINES(sal -> comm)**/  --~ PROVED
 
--- case: strong_is_not_distinct_from_a_literal_without_ansi
--- dialect: spark
--- Without ANSI mode a failed cast is NULL: sal <=> 'x' is sal IS NULL.
+-- case: strong_is_not_distinct_from_a_literal_where_a_failed_cast_is_null
+-- dialect: hive
+-- A failed implicit cast is NULL: sal <=> 'x' is sal IS NULL.
 SELECT empno, sal FROM emp_nullables WHERE sal <=> 1
 /**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+
+-- case: strong_is_not_distinct_from_a_literal_under_ansi_mode
+-- dialect: databricks
+-- A failed implicit cast raises, so sal <=> 1 rejects a NULL sal.
+SELECT empno, sal FROM emp_nullables WHERE sal <=> 1
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
 
 -- case: strong_nullif_first_argument
 -- inspired by RexProgramTest.testStrong, NULLIF(null, X) is null
@@ -261,9 +267,9 @@ SELECT mgr = sal AS b, mgr IS NOT DISTINCT FROM sal AS c FROM emp
 /**ASSERT NOT NULL(b)**/  --~ UNKNOWN
 /**ASSERT NOT NULL(c)**/  --~ PROVED
 
--- case: nullability_of_an_equality_without_ansi
--- dialect: spark
--- Without ANSI mode a failed implicit cast is NULL: 1 = 'x' is NULL.
+-- case: nullability_of_an_equality_where_a_failed_cast_is_null
+-- dialect: hive
+-- A failed implicit cast is NULL: 1 = 'x' is NULL.
 SELECT sal = comm AS b, sal <=> comm AS c FROM emp
 /**ASSERT NOT NULL(b)**/  --~ UNKNOWN
 /**ASSERT NOT NULL(c)**/  --~ PROVED

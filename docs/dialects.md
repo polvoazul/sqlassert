@@ -27,9 +27,9 @@ before dialects were listed; see "Not done").
 
 | | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift | Trino |
 |---|---|---|---|---|---|---|---|---|
-| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | no (ANSI off) | yes | yes |
-| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes | yes |
-| comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
+| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | yes (ANSI mode) | yes | yes |
+| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | Databricks yes; Spark no (its docs: `div` by zero is NULL) | yes | yes |
+| comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | Databricks yes; Spark no (not documented) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
@@ -242,8 +242,10 @@ DuckDB oracle. A dialect changes only the inputs the rules read, through the
 flags above, so a dialect's analysis is sound when (a) the rules are, which
 the oracle checks, and (b) each flag it sets is true of that dialect. (b) is
 certified fact by fact (next section): on the engine where one runs locally,
-from vendor documentation otherwise (BigQuery and Redshift
-`checked_arithmetic`, and Snowflake, BigQuery and Redshift `checked_division`: overflow and division by zero raise;
+from vendor documentation otherwise (BigQuery, Redshift, Spark and Databricks
+`checked_arithmetic`, and Snowflake, BigQuery, Redshift and Databricks
+`checked_division`: overflow and division by zero raise, in Spark and
+Databricks under ANSI mode, their default;
 `TRY_`, `SAFE_` and `DIV0` variants are separate functions SQLGlot parses
 apart).
 
@@ -272,12 +274,10 @@ or tables whose constraint violations it attempts (keys, text identity, ENUMs).
 SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is
 VACUOUS for that engine (`^` in SQLite, an ENUM column in PostgreSQL). Each
-fact runs under the engine's defaults and again after the dialect's
-permissive settings (`PERMISSIVE`: Spark ANSI off; MySQL's strict `sql_mode`
-is assumed, and a setting that changes the default collation is out of scope). It prints PASS, FAIL (with
-the weaker setting to apply by hand), ERROR (the probe could not run) or
-VACUOUS per fact, and STRONGER for a weak setting the engine would also
-satisfy (never acted on). Unless `--dry-run`, it files the engine version
+fact runs under the engine's default settings (ADR 0006). It prints PASS,
+FAIL (with the weaker setting to apply by hand), ERROR (the probe could not
+run) or VACUOUS per fact, and STRONGER for a weak setting the engine would
+also satisfy, to strengthen by hand when the engine is the latest release. Unless `--dry-run`, it files the engine version
 under each passing fact's `engine` versions and each vacuous fact's
 `undefined` ones, and removes it from each failing one; it never adds a fact
 or strengthens one. An undefined fact claims nothing on that version, so

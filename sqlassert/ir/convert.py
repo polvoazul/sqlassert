@@ -2380,7 +2380,7 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
 
     Comparisons, LIKE, NOT, BETWEEN and the bitwise operators are never NULL
     for non-null arguments where a failed implicit cast raises (`casts_raise`;
-    in Spark without ANSI mode `1 < 'x'` is NULL). Arithmetic and CAST only
+    in Hive `1 < 'x'` is NULL). Arithmetic and CAST only
     where they raise an error rather than return NULL (`checked_arithmetic`:
     SQLite turns a NaN into NULL, MySQL a bad date CAST), and division and
     remainder only where division by zero raises too (`checked_division`).

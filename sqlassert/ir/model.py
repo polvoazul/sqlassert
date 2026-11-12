@@ -311,7 +311,7 @@ class NullSafeEquality(ScalarExpr):
 
     `rejects` marks one where a non-null side stays non-null as it is
     compared, so a TRUE comparison makes the other side non-null too: where a
-    failed implicit cast raises (in Spark without ANSI mode `n <=> 'x'` is
+    failed implicit cast raises (in Hive `n <=> 'x'` is
     `n IS NULL`) and neither side is a composite."""
 
     left: ScalarExpr

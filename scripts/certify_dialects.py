@@ -14,13 +14,11 @@ VACUOUS (the engine cannot express the construct) or ERROR (the probe could
 not run) per fact. Unless `--dry-run`, it records the engine version into the
 provenance of each fact that passed (`engine`) or was vacuous (`undefined`),
 and removes it from each that failed; it never adds or strengthens a fact. A FAIL names
-the weaker setting to apply by hand in `dialects.py`. A dialect's flags hold
-under all its settings, so a fact must pass under the engine's defaults and
-again after `PERMISSIVE` statements (Spark ANSI off). MySQL is certified
-under its default strict `sql_mode` only: a looser one is out of scope. A setting that changes the default collation is out of scope
-(docs/dialects.md). Weak settings claim nothing;
-the runner only reports, as STRONGER, an engine that would also satisfy the
-strong one (never acted on).
+the weaker setting to apply by hand in `dialects.py`. Facts are probed under
+the engine's default settings only: sqlassert models each engine's latest
+release under its defaults, strict modes on (ADR 0006). Weak settings claim
+nothing; the runner reports, as STRONGER, one the engine would also satisfy,
+to strengthen by hand when that engine is the latest release.
 
     python scripts/certify_dialects.py duckdb
     python scripts/certify_dialects.py sqlite
@@ -57,14 +55,6 @@ from sqlassert.ir.convert import dialect_builtins  # noqa: E402
 from sqlassert.sql_parse import sqlassert_dialect  # noqa: E402
 
 PROVENANCE = ROOT / "docs" / "dialect-provenance.json"
-
-# Statements after which every fact must still hold: the dialect's settings
-# that weaken what its SQL means.
-PERMISSIVE: dict[str, tuple[str, ...]] = {
-    "spark": ("SET spark.sql.ansi.enabled = false",),
-    "spark2": ("SET spark.sql.ansi.enabled = false",),
-    "databricks": ("SET ANSI_MODE = false",),
-}
 
 VERSION_SQL: dict[str, str] = {
     "duckdb": "SELECT version()",
@@ -530,33 +520,21 @@ def _first_line(error: BaseException) -> str:
 
 
 def run(cursor: Any, dialect: str, probed: Sequence[Fact]) -> list[Result]:
-    """Each fact's outcome under the engine's defaults, then again under `PERMISSIVE` settings."""
-    sessions = [()] + ([PERMISSIVE[dialect]] if dialect in PERMISSIVE else [])
-    worst: dict[str, Result] = {}
-    rank = {"PASS": 0, "VACUOUS": 1, "ERROR": 2, "FAIL": 3}
-    for settings in sessions:
-        for statement in settings:
-            _execute(cursor, statement)
-        for fact in probed:
-            result = _run_fact(cursor, fact, settings)
-            previous = worst.get(fact.name)
-            if previous is None or rank[result.outcome] > rank[previous.outcome]:
-                worst[fact.name] = result
-    return [worst[fact.name] for fact in probed]
+    """Each fact's outcome under the engine's default settings."""
+    return [_run_fact(cursor, fact) for fact in probed]
 
 
-def _run_fact(cursor: Any, fact: Fact, settings: tuple[str, ...]) -> Result:
+def _run_fact(cursor: Any, fact: Fact) -> Result:
     """FAIL if a check fails, ERROR if one cannot run, PASS if one ran and
     every one held, VACUOUS if none applied."""
-    under = f" (after {'; '.join(settings)})" if settings else ""
     vacuous: list[str] = []
     for check in fact.checks:
         try:
             outcome, detail = _check(cursor, check)
         except _ProbeError as error:
-            return Result(fact, "ERROR", f"{error}{under}")
+            return Result(fact, "ERROR", str(error))
         if outcome == "FAIL":
-            return Result(fact, "FAIL", f"{detail}{under}")
+            return Result(fact, "FAIL", detail)
         if outcome == "VACUOUS":
             vacuous.append(detail)
     if len(vacuous) == len(fact.checks):
@@ -680,7 +658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{result.outcome:7} {result.fact.name}{hint}{'  ' + result.detail if result.detail else ''}")
     for result in run(cursor, dialect, candidate_facts(dialect)):
         if result.outcome == "PASS":
-            print(f"STRONGER {result.fact.name}: holds on {version} too (not claimed: a setting or another version may break it)")
+            print(f"STRONGER {result.fact.name}: holds on {version} too (not claimed: strengthen it by hand if {version} is the latest release)")
     failed = [result for result in results if result.outcome in ("FAIL", "ERROR")]
     if not options.dry_run:
         provenance = load_provenance()

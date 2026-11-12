@@ -90,16 +90,42 @@ CREATE TABLE t (id INT NOT NULL, CONSTRAINT pk PRIMARY KEY (id));
 --~ unenforced-constraint "databricks does not enforce it"
 SELECT id FROM t /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
 
--- case: databricks_arithmetic_may_be_null
--- Without ANSI mode, overflow and a bad cast are NULL.
--- dialect: databricks
-CREATE TABLE t (n INT NOT NULL);
-SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+-- Spark and Databricks are modelled with ANSI mode on, their default (ADR 0006).
 
--- case: databricks_a_comparison_may_be_null
+-- case: databricks_arithmetic_raises
+-- Overflow and a bad cast raise.
 -- dialect: databricks
 CREATE TABLE t (n INT NOT NULL);
-SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+SELECT n + 1 AS v, CAST(n AS STRING) AS s FROM t
+/**ASSERT NOT NULL(v)**/  --~ PROVED
+/**ASSERT NOT NULL(s)**/  --~ PROVED
+
+-- case: databricks_division_by_zero_raises
+-- dialect: databricks
+CREATE TABLE t (n INT NOT NULL);
+SELECT n / 2 AS v, n % 2 AS w FROM t
+/**ASSERT NOT NULL(v)**/  --~ PROVED
+/**ASSERT NOT NULL(w)**/  --~ PROVED
+
+-- case: databricks_a_comparison_is_never_null
+-- A failed implicit cast raises.
+-- dialect: databricks
+CREATE TABLE t (n INT NOT NULL);
+SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: spark_arithmetic_raises
+-- dialect: spark
+CREATE TABLE t (n INT NOT NULL);
+SELECT n + 1 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: spark_division_and_comparisons_may_be_null
+-- Apache Spark's docs say `div` by zero is NULL, and do not say a failed
+-- implicit cast in a comparison raises.
+-- dialect: spark
+CREATE TABLE t (n INT NOT NULL);
+SELECT n / 2 AS v, n > 0 AS w FROM t
+/**ASSERT NOT NULL(v)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(w)**/  --~ UNKNOWN
 
 -- case: spark_a_right_semi_join_keeps_right_rows
 -- dialect: spark
