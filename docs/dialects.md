@@ -9,17 +9,23 @@ for dialects the oracle does not run.
 
 ## The rule for every flag
 
-Superseded by [ADR 0006](adr/0006-model-only-current-strict-engines.md) (latest release, default settings, strict modes; cleanup in [issue 70](issues/0070-drop-legacy-and-permissive-dialect-support.md)). Until then:
-A flag may only claim what holds under *all* of the dialect's settings,
-because the SQL alone does not say which are in force (ADR 0005). Where a
-setting decides (Spark's ANSI mode), the flag takes the
-weaker reading: the analysis loses a proof, never gains a wrong one. Two
-exceptions. MySQL is modelled under its default strict `sql_mode`, in versions
-8.4 and later only: a looser `sql_mode`, `INSERT IGNORE` and older versions are
-out of scope. And the default collation: text without a `COLLATE` is taken to
-compare under the engine's shipped default, and a setting that changes it
-(DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`, Oracle's
-`NLS_COMP`) is out of scope, like MySQL's `foreign_key_checks = 0`. A dialect not listed gets `DialectSemantics()`:
+A flag claims what the dialect's latest release does under its default
+settings, with strict modes on ([ADR 0006](adr/0006-model-only-current-strict-engines.md)).
+Where a setting decides a fact, the default decides it: Spark and Databricks
+under ANSI mode, MySQL (8.4 and later) under its default strict `sql_mode`,
+so `||` is OR. Older versions and settings that loosen what the engine checks
+or accepts are out of scope: a looser `sql_mode`, `PIPES_AS_CONCAT`,
+`ONLY_FULL_GROUP_BY` off, `INSERT IGNORE`, Spark with ANSI mode off, Spark 2,
+MySQL's `foreign_key_checks = 0`. So is a setting that changes the default
+collation (DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`,
+Oracle's `NLS_COMP`): text without a `COLLATE` compares under the engine's
+shipped default. On a legacy version or a permissive setting a result may not
+be sound. SQL that standard SQL rejects is not given a meaning because a
+flavor accepts it (SQLite's column neither grouped nor inside an aggregate):
+it is opaque and warns `unsupported-construct`. A flag stays weak where the
+default behaviour is not established (not certified on the engine, nor stated
+in its docs): the analysis then loses a proof, never gains a wrong one. A
+dialect not listed gets `DialectSemantics()`:
 cautious arithmetic, collation and `||`, and enforced keys (the behaviour
 before dialects were listed; see "Not done").
 
