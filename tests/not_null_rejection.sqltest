@@ -223,3 +223,29 @@ FROM t
 JOIN r
     ON (r.id = t.id AND r.n > 0) OR (r.id = t.n AND r.n < 0)
 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- A later ON rejects a whole padding too: an inner join's ON on either side, an
+-- outer join's only on the side it pads.
+-- case: an_inner_join_on_an_or_of_padded_columns_rejects_their_padding
+CREATE TABLE u (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, tid INTEGER);
+SELECT t.id, u.id AS uid
+FROM t
+LEFT JOIN u ON u.tid = t.id
+JOIN t AS x ON x.n = u.a OR x.m = u.b
+/**ASSERT NOT NULL(uid)**/  --~ PROVED
+
+-- case: a_left_join_on_an_or_of_its_preserved_side_s_padded_columns_keeps_their_padding
+CREATE TABLE u (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, tid INTEGER);
+SELECT t.id, u.id AS uid
+FROM t
+LEFT JOIN u ON u.tid = t.id
+LEFT JOIN t AS x ON x.n = u.a OR x.m = u.b
+/**ASSERT NOT NULL(uid)**/  --~ UNKNOWN
+
+-- case: a_left_join_on_an_or_rejects_the_padding_inside_its_padded_side
+CREATE TABLE u (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, tid INTEGER);
+SELECT t.id, u.id AS uid
+FROM t AS x
+LEFT JOIN (t LEFT JOIN u ON u.tid = t.id) ON x.n = u.a OR x.m = u.b
+WHERE t.id IS NOT NULL
+/**ASSERT NOT NULL(uid)**/  --~ PROVED

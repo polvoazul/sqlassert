@@ -301,7 +301,9 @@ def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, lis
             pass
         case _:
             raise TypeError(f"Join column {column.name} is not a pass-through")
-    sources, removal = _rejected(_on_rejected(join), source, sources, "The ON condition rejects NULL on matched rows")
+    sources, removal = _rejected(
+        _on_rejected(join), _on_rejected_paddings(join), source, sources, "The ON condition rejects NULL on matched rows"
+    )
     left = source in join.left.output_columns
     if left in _padded_sides(join):
         sources[Padding(join, left)] = unknown(f"{quoted(column.name)} is padded by the {join.kind.upper()} JOIN", join, column)
@@ -354,29 +356,98 @@ def _filter_sources(relation: ir.Filter, column: ir.OutputColumn) -> tuple[_Sour
             pass
         case _:
             raise TypeError(f"Filter column {column.name} is not a pass-through")
-    sources, removal = _rejected(_null_rejected(relation.conjuncts), source, sources, "The WHERE clause rejects NULL")
+    sources, removal = _rejected(
+        _null_rejected(relation.conjuncts), _rejected_paddings(relation.conjuncts), source, sources, "The WHERE clause rejects NULL"
+    )
     return sources, premises + removal
 
 
 def _rejected(
-    rejected: dict[ir.OutputColumn, ir.ScalarExpr], source: ir.OutputColumn, sources: _Sources, reason: str
+    rejected: dict[ir.OutputColumn, ir.ScalarExpr], paddings: dict[Padding, ir.ScalarExpr],
+    source: ir.OutputColumn, sources: _Sources, reason: str,
 ) -> tuple[_Sources, list[Result]]:
-    """`sources` once the rows on which a rejected column is NULL are gone.
+    """`sources` once the rows a condition rejects are gone.
 
-    A rejected column loses its organic NULLs, and every join that padded a
-    rejected column is proved matched, so its padding goes from every column.
+    A rejected column loses its organic NULLs, and every rejected padding
+    (`_rejected_paddings`) is proved matched, so it goes from every column.
     """
     sources = dict(sources)
     removal = []
     if source in rejected and ORGANIC in sources:
         del sources[ORGANIC]
         removal.append(Result(True, reason, (rejected[source], source)))
-    for column, conjunct in rejected.items():
-        for padding in _null_sources(column).value:
-            if isinstance(padding, Padding) and padding in sources:
-                del sources[padding]
-                removal.append(Result(True, f"{reason}, so the padding join matched", (conjunct, column)))
+    for padding, conjunct in paddings.items():
+        if padding in sources:
+            del sources[padding]
+            removal.append(Result(True, f"{reason}, so the padding join matched", (conjunct, padding.join)))
     return sources, removal
+
+
+def _rejected_paddings(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[Padding, ir.ScalarExpr]:
+    """Each padding no row of which a conjunct holds on, with that conjunct.
+
+    A padded row is NULL in every column its join pads, all at once: a
+    conjunct NULL there (`_null_with`) is never TRUE, `IS NOT NULL` of such an
+    expression is FALSE, and an OR rejects the paddings every part rejects:
+    `e.sal > 0 OR e.comm > 0` and `coalesce(e.sal, e.comm) > 0` reject the
+    join that pads both (Calcite's whole-side `Strong`).
+    """
+    rejected: dict[Padding, ir.ScalarExpr] = {}
+    for conjunct in conjuncts:
+        for padding in _conjunct_paddings(conjunct):
+            rejected.setdefault(padding, conjunct)
+    return rejected
+
+
+def _conjunct_paddings(conjunct: ir.ScalarExpr) -> frozenset[Padding]:
+    conjunct = conjunct.closed
+    match conjunct:
+        case ir.Or(parts=parts):
+            first, *others = (frozenset(_rejected_paddings(ir.conjuncts(part))) for part in parts)
+            return first.intersection(*others)
+        case ir.And(parts=parts):
+            return frozenset(_rejected_paddings(parts))
+        case ir.IsNotNull(operand=operand):
+            return _null_with(operand)
+        case ir.NullSafeEquality(left=left, right=right, rejects=True):
+            # Equal to a non-null side, the other is non-null too.
+            return frozenset(
+                padding for side, other in ((left, right), (right, left)) if not _expression_sources(other)[0]
+                for padding in _null_with(side)
+            )
+        case _:
+            return _null_with(conjunct)
+
+
+def _null_with(expression: ir.ScalarExpr) -> frozenset[Padding]:
+    """The paddings on every row of which `expression` is NULL: a column's,
+    those of an argument it is strict in, or, for AND and OR, those every part
+    is NULL on (`NULL OR TRUE` is TRUE). Any other expression is NULL on a
+    padding's rows when its Null Sources keep that padding (coalesce: when
+    every argument is NULL there)."""
+    expression = expression.closed
+    match expression:
+        case ir.ColumnRef(column=column):
+            return frozenset(source for source in _null_sources(column).value if isinstance(source, Padding))
+        case ir.Call(strict_arguments=arguments):
+            return frozenset(padding for argument in arguments for padding in _null_with(argument))
+        case ir.Equality(left=left, right=right):
+            return _null_with(left) | _null_with(right)
+        case ir.InList(operand=operand):
+            return _null_with(operand)
+        case ir.And(parts=(first, *others)) | ir.Or(parts=(first, *others)):
+            return _null_with(first).intersection(*(_null_with(other) for other in others))
+        case ir.Coalesce(arguments=(first, *others)):
+            return _null_with(first).intersection(*(_null_with(other) for other in others))
+        case (
+            ir.And() | ir.Or() | ir.Coalesce() | ir.Constant() | ir.NullLiteral() | ir.SimpleCase() | ir.OpaquePureFunction()
+            | ir.OpaqueExpression() | ir.Count() | ir.AnyAggregate() | ir.Accumulation() | ir.Elements() | ir.IsNull()
+            | ir.IsNotNull() | ir.NullSafeEquality()
+        ):
+            sources, _ = _expression_sources(expression)
+            return frozenset(source for source in sources if isinstance(source, Padding))
+        case _:
+            assert_never(expression)
 
 
 def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn, ir.ScalarExpr]:
@@ -428,6 +499,30 @@ def _on_rejected(join: ir.Join) -> dict[ir.OutputColumn, ir.ScalarExpr]:
             return {}
         case _:
             assert_never(join.kind)
+
+
+def _on_rejected_paddings(join: ir.Join) -> dict[Padding, ir.ScalarExpr]:
+    """The paddings of `join`'s inputs its ON rejects, on the side whose
+    unmatched rows it drops (see `_on_rejected`)."""
+    match join.kind:
+        case "inner" | "semi":
+            sides: tuple[ir.RelationExpr, ...] = (join.left, join.right)
+        case "left":
+            sides = (join.right,)
+        case "right":
+            sides = (join.left,)
+        case "cross" | "full" | "anti":
+            return {}
+        case _:
+            assert_never(join.kind)
+    rejected = _rejected_paddings(join.conjuncts)
+    if not rejected:
+        return {}
+    own = {
+        source for side in sides for column in side.output_columns
+        for source in _null_sources(column).value if isinstance(source, Padding)
+    }
+    return {padding: conjunct for padding, conjunct in rejected.items() if padding in own}
 
 
 def _padded_sides(join: ir.Join) -> frozenset[bool]:

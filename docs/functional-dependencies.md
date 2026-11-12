@@ -405,8 +405,10 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
   A Unique Set and a `DETERMINES` assertion pass `definite = columns` (lax: a
   NULL exempts a row); `definite = ∅` is the strict, null-equal closure, used
   for what an Aggregate's groups share. Strict dependencies always fire; a lax
-  one fires only when every determinant column is definite: requested, or
-  proved non-null in the relation (Paulley fd4b, fd6, fd7b).
+  one fires only when every determinant column is definite: requested,
+  proved non-null in the relation, or NULL only on rows a join pads that
+  also pads a requested column (`_padded_with`: past `d LEFT JOIN e ON
+  d.k = e.k`, `e.k` is non-null wherever `e.id` is) (Paulley fd4b, fd6, fd7b).
 - **Delegation instead of copying ("hide, don't delete").** A relation's
   `_functional_dependencies` holds only what it introduces itself, over its own
   output columns and Row Identity (a join also names its inputs' identities).

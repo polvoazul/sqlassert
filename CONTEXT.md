@@ -219,7 +219,7 @@ An analysis-only set of one relation's output columns that carry the same value 
 _Avoid_: Equivalence class, alias set
 
 **Null Source**:
-A reason an output column may be NULL: organically (a nullable source column, an expression whose nullability is not modelled, a NULL literal) or because an outer join padded its row. A column is non-null when it has no Null Source; a null-rejecting condition on a padded column proves its join matched and removes that padding from every column it padded.
+A reason an output column may be NULL: organically (a nullable source column, an expression whose nullability is not modelled, a NULL literal) or because an outer join padded its row. A column is non-null when it has no Null Source; a condition never TRUE on the rows a join pads (null-rejecting on a padded column, or on every part of an OR over them) proves that join matched and removes that padding from every column it padded.
 _Avoid_: Nullable flag, null-extension
 
 **Row Identity**:

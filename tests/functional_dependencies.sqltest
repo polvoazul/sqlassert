@@ -149,3 +149,21 @@ SELECT code, n FROM codes WHERE code = 1 /**ASSERT UNIQUE(n)**/  --~ UNKNOWN
 -- case: a_string_literal_against_text_pins_it
 CREATE TABLE codes (code VARCHAR, n INTEGER, PRIMARY KEY (code, n));
 SELECT code, n FROM codes WHERE code = '1' /**ASSERT UNIQUE(n)**/  --~ PROVED
+
+-- A padded-side column ON equates to a preserved key is non-null wherever
+-- another padded column is (ON rejects its NULLs, the padding is shared), so
+-- the lax step from it to the key fires: each quote meets one vendor.
+-- case: a_padded_column_on_rejects_is_definite_with_another_padded_column
+SELECT v.vendor_id, q.quote_id
+FROM vendor AS v
+LEFT JOIN quote AS q
+    ON q.vendor_id = v.vendor_id
+/**ASSERT UNIQUE(quote_id)**/  --~ PROVED
+
+-- Equated to a column that is not a key, a quote meets every supply of its part.
+-- case: a_padded_column_equated_to_a_non_key_keeps_its_repeats
+SELECT s.vendor_id, q.quote_id
+FROM supply AS s
+LEFT JOIN quote AS q
+    ON q.part_id = s.part_id
+/**ASSERT UNIQUE(quote_id)**/  --~ UNKNOWN

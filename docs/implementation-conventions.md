@@ -103,7 +103,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `ALTER TABLE` and `CREATE UNIQUE INDEX` append table-level constraints, shaped
   like `CREATE TABLE`'s own, to the table an earlier `CREATE TABLE` declared,
   so one `_table_constraints` view feeds Unique Sets, primary keys, and
-  `REFERENCES` alike.
+  `REFERENCES` alike. A parenthesized join without an alias, `a JOIN (b JOIN
+  c ON ...) ON ...`, is a join input whose sources keep their names
+  (`_nested_join`); with an alias it stays opaque, since DuckDB renames its
+  repeated column names and other dialects leave them ambiguous.
 - Table columns carry a plain `comparison_type` when their declared type has
   value equality without collation. Equality Groups merge only known matching
   types, followed through pass-through columns; unknown and mixed types do not

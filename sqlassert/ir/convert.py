@@ -393,10 +393,11 @@ class IrParser:
                 # An unqualified column in a nested query belongs to that query's scope.
                 self._require(sources[0], column.name)
 
-        for join in query.args.get("joins") or ():
-            for identifier in join.args.get("using") or ():
-                for source in sources:
-                    self._require(source, identifier.name)
+        for joins, level in _join_levels(query):
+            for join in joins:
+                for identifier in join.args.get("using") or ():
+                    for source in level:
+                        self._require(source, identifier.name)
 
         if len(sources) == 1 and _star_only(query):
             for marker in column_markers(query):
@@ -535,7 +536,7 @@ class IrParser:
             row = ir.OpaqueRelation(origin=origin, output_columns=(), is_schema_complete=True, description="no FROM")
             one_row = ir.Limit(origin=origin, output_columns=(), is_schema_complete=True, input=row, count=1)
             relation = self._lower_select_tail(_Lowered(one_row, ()), select)
-        elif any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+        elif any(join.args.get("method") == "NATURAL" for join in _all_joins(select)):
             relation = self._opaque_relation(select, _selected_output_names(select))
         else:
             lowered = self._lower_source(source)
@@ -580,6 +581,14 @@ class IrParser:
                 recursive = self._recursive_relation(symbol, source)
                 return self._alias(recursive, alias_name, self._origin(source), schema)
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema)
+
+        nested = _nested_join(source)
+        if nested is not None:
+            first, joins = nested
+            lowered = self._lower_source(first)
+            for join in joins:
+                lowered = self._lower_join(lowered, join)
+            return lowered
 
         if isinstance(source, exp.Subquery):
             relation = self._lower_query(source)
@@ -962,11 +971,11 @@ class IrParser:
                 return opaque
             lowered = self._fan_out(lowered, calls, self._origin(select))
         if keys is not None:
-            relation = self._lower_aggregate(lowered, select, keys)
+            relation = self._qualified(self._lower_aggregate(lowered, select, keys), select, grouped=True)
         elif select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None:
             relation = self._lower_distinct_on(lowered, select, select.args["distinct"].args["on"])
         elif select.args.get("distinct") is not None:
-            relation = self._lower_distinct(lowered, select)
+            relation = self._qualified(self._lower_distinct(lowered, select), select, grouped=False)
         elif isinstance(select.args.get("qualify"), exp.Qualify):
             relation = self._lower_qualify(lowered, select, select.args["qualify"])
         else:
@@ -1191,7 +1200,7 @@ class IrParser:
             return None
         source = _from_source(select)
         if source is None or select.args.get("with") or any(
-            join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()
+            join.args.get("method") == "NATURAL" for join in _all_joins(select)
         ) or any(isinstance(node, (exp.Subquery, exp.Exists, exp.Query)) and node is not select for node in select.walk()):
             return None
         right = self._lower_source(source)
@@ -1348,7 +1357,7 @@ class IrParser:
             source = _from_source(select)
             if source is None or grouping(select) is not None or any(
                 select.args.get(key) for key in ("having", "qualify", "distinct", "limit", "offset", "with", "windows")
-            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+            ) or any(join.args.get("method") == "NATURAL" for join in _all_joins(select)):
                 # Grouped by nothing (`grouping` is []), it returns one row whatever its WHERE: EXISTS is always true.
                 return None
             right = self._lower_source(source)
@@ -1507,6 +1516,30 @@ class IrParser:
             lowered, select, window.args.get("partition_by") or (), order.expressions if order else (),
         )
 
+    def _qualified(self, relation: ir.RelationExpr | None, select: exp.Select, *, grouped: bool) -> ir.RelationExpr | None:
+        """`relation`, the groups (`grouped`) or distinct rows of `select`, after its
+        QUALIFY. Over groups, `row_number() OVER (PARTITION BY k...) = 1` with
+        every key a selected item keeps one row per partition. Any other
+        QUALIFY drops rows for a reason not known: an opaque Filter, which
+        keeps every fact of the rows and none that needs them all."""
+        qualify = select.args.get("qualify")
+        if relation is None or not isinstance(qualify, exp.Qualify):
+            return relation
+        origin = self._origin(qualify)
+        output_columns = _pass_output_columns(relation.output_columns, origin)
+        window = _row_number_equals_one(qualify.this)
+        if window is not None and grouped:  # Not over DISTINCT: its window sees the rows before it.
+            positions = _partition_positions(window.args.get("partition_by") or (), select.expressions)
+            if positions and len(relation.output_columns) == len(select.expressions):
+                return ir.QualifyByPartition(
+                    origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
+                    partition_outputs=tuple(output_columns[position] for position in positions),
+                )
+        return ir.Filter(
+            origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
+            predicate=ir.OpaqueExpression(origin=origin, description=qualify.this.sql(dialect=self.dialect)),
+        )
+
     def _lower_distinct_on(self, lowered: _Lowered, select: exp.Select, on: Expr) -> ir.QualifyByPartition | None:
         """`DISTINCT ON (k...)` keeps one row per distinct `k...`, like
         `QUALIFY ROW_NUMBER() OVER (PARTITION BY k...) = 1`. Its ORDER BY only
@@ -1525,13 +1558,11 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
 
+        positions = _partition_positions(partitions, select.expressions)
+        if positions is None:
+            return None
         output_columns = self._selected_output_columns(select.expressions, lowered)
-        partition_outputs: list[ir.OutputColumn] = []
-        for partition in partitions:
-            item = _matching_output(partition, select.expressions)
-            if item is None:
-                return None
-            partition_outputs.append(output_columns[select.expressions.index(item)])
+        partition_outputs = [output_columns[position] for position in positions]
         ordering = tuple(
             self._lower_expression(ordered.this, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
             for ordered in order
@@ -2415,8 +2446,51 @@ def _conjuncts(predicate: Expr) -> list[Expr]:
 
 
 def _direct_sources(select: exp.Select) -> list[Expr]:
+    """The sources of `select`'s FROM, those of a parenthesized join in place of it."""
     source = _from_source(select)
-    return ([] if source is None else [source]) + [join.this for join in select.args.get("joins") or ()]
+    return _flattened(([] if source is None else [source]) + [join.this for join in select.args.get("joins") or ()])
+
+
+def _flattened(sources: list[Expr]) -> list[Expr]:
+    flat: list[Expr] = []
+    for source in sources:
+        nested = _nested_join(source)
+        flat.extend([source] if nested is None else _flattened([nested[0], *(join.this for join in nested[1])]))
+    return flat
+
+
+def _all_joins(select: exp.Select) -> list[exp.Join]:
+    """The joins of `select`'s FROM, those inside a parenthesized join included."""
+    return [join for joins, _ in _join_levels(select) for join in joins]
+
+
+def _join_levels(select: exp.Select) -> list[tuple[list[exp.Join], list[Expr]]]:
+    """The joins of `select`'s FROM and of each parenthesized join in it, each
+    list with the sources it joins, flattened: a USING column is one of theirs."""
+    source = _from_source(select)
+    levels: list[tuple[list[exp.Join], list[Expr]]] = [(list(select.args.get("joins") or ()), _direct_sources(select))]
+    pending: list[Expr | None] = [source, *(join.this for join in select.args.get("joins") or ())]
+    while pending:
+        nested = _nested_join(pending.pop())
+        if nested is not None:
+            first, joins = nested
+            levels.append((joins, _flattened([first, *(join.this for join in joins)])))
+            pending.extend([first, *(join.this for join in joins)])
+    return levels
+
+
+def _nested_join(source: Expr | None) -> tuple[Expr, list[exp.Join]] | None:
+    """A parenthesized join, `(a JOIN b ON ...)` without an alias: its first
+    source, which SQLGlot hangs the joins on, and those joins. Its columns keep
+    the names and qualifiers of its sources. Not with an alias, which DuckDB
+    reads as a subquery renaming repeated names (`x`, `x_1`) and other dialects
+    as names that may be ambiguous."""
+    if not isinstance(source, exp.Subquery) or any(value for key, value in source.args.items() if key not in {"this", "joins"}):
+        return None
+    first = source.this
+    if not isinstance(first, exp.Table | exp.Subquery) or not first.args.get("joins"):
+        return None
+    return first, list(first.args["joins"])
 
 
 def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
@@ -2705,6 +2779,23 @@ def _matching_output(group_expression: Expr, items: list[Expr]) -> Expr | None:
     )
 
 
+def _partition_positions(partitions: Sequence[Expr], items: list[Expr]) -> list[int] | None:
+    """The position of the select item each partition key is written as, or
+    None when one is not an item, or is a bare name another item is aliased
+    to (it may read that alias instead)."""
+    positions = []
+    for partition in partitions:
+        item = _matching_output(partition, items)
+        if item is None:
+            return None
+        if isinstance(partition, exp.Column) and not partition.table and any(
+            other is not item and other.alias_or_name.lower() == partition.name.lower() for other in items
+        ):
+            return None
+        positions.append(next(index for index, other in enumerate(items) if other is item))
+    return positions
+
+
 def _same_column_alias(group_expression: Expr, items: list[Expr]) -> Expr | None:
     """The item `GROUP BY x` names when `x` is both the item's alias and the
     column it selects (`t.x AS x`): either reading of the name is that column."""
@@ -2908,6 +2999,8 @@ def _join_kind(join: exp.Join, dialect: str) -> ir.JoinKind | None:
 def _join_label(join: exp.Join, dialect: str) -> str:
     keywords = " ".join(part for part in (join.side, join.kind, "JOIN") if part)
     source = join.this
+    if _nested_join(source) is not None:
+        return f"{keywords} ({', '.join(part.alias_or_name for part in _flattened([source]))})"
     if isinstance(source, exp.Subquery):
         return f"{keywords} subquery {source.alias}".rstrip()
     return f"{keywords} {source.sql(dialect=dialect)}"

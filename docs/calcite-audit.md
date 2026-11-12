@@ -20,7 +20,7 @@ proofs**, filed as [issue 45](issues/0045-close-the-calcite-audit-missing-proofs
 |---|---|---|
 | `tests/calcite_audit.sqltest` | 11 | Regressions for the five soundness bugs, with the sound boundary next to each |
 | `tests/calcite_audit_keys.sqltest` | 53 | FDs, unique keys, column uniqueness (`RelMetadataTest`, `MockCatalogReaderSimple`) |
-| `tests/calcite_audit_nulls.sqltest` | 52 | Predicate inference, null rejection, expression nullability (`RexProgramTest`, `RelMetadataTest`) |
+| `tests/calcite_audit_nulls.sqltest` | 55 | Predicate inference, null rejection, expression nullability (`RexProgramTest`, `RelMetadataTest`) |
 | `tests/calcite_audit_iq.sqltest` | 30 | Plans and NULL boundaries from the Quidem `.iq` files (scott schema) |
 
 Each case names the upstream test or `.iq` query that inspired it.
@@ -41,8 +41,8 @@ Compare contracts before answers:
   null-equal in its dependent.
 - **Null rejection.** Calcite's `Strong` has `isNull` (strict: NULL when the
   inputs are) and `isNotTrue` (never TRUE when they are NULL). Ours is the
-  former per column; the latter is missing (issue 45, item 12). Calcite
-  rejects a whole padded side at once; we reject per column (item 9).
+  former per column; the latter is missing (issue 45, item 12). Like
+  Calcite, we also reject a whole padded side at once (per padding, item 9).
 - **Comparison types.** Calcite's `EquivalenceFinder` and FD projection
   ignore types and collations. Ours require identity comparison
   (`equality._identity_comparison`, `uniqueness._identity_inputs`).
@@ -98,7 +98,7 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 |---|---|---|---|---|
 | Strong#createPolicyMap, #isNull | ANY policy: comparisons, LIKE, NOT, arithmetic, CAST, TRIM, FLOOR, ITEM, GREATEST | `ir/model.strict_inputs`, `ir/convert._builtins` | strong_right_join_through_arithmetic, strong_nondeterministic_conjunct_still_rejects | agrees for modelled Builtins; TRIM, FLOOR, ITEM, NULLIF missing (13) |
 | Strong#isNotTrue | AND: any part; OR: every part | `rules/nullability._null_rejected` | strong_and_rejects_padded_side_through_one_part, strong_or_with_a_preserved_part, strong_not_is_not_null_keeps_padding | agrees per column |
-| RelOptUtil#simplifyJoin | Whole padded side NULL at once | per column | strong_or_of_two_padded_columns, strong_or_of_is_not_null_on_padded_columns, strong_coalesce_of_padded_columns | missing (9) |
+| RelOptUtil#simplifyJoin | Whole padded side NULL at once | per padding: `nullability._rejected_paddings` | strong_or_of_two_padded_columns, strong_or_of_is_not_null_on_padded_columns, strong_coalesce_of_padded_columns, strong_or_of_columns_two_joins_pad, strong_coalesce_of_columns_two_joins_pad, strong_or_with_a_nullable_preserved_part | agrees (9) |
 | RelOptUtil#simplifyJoin | FULL becomes LEFT/RIGHT one side at a time | `nullability.Padding` keyed by join and side | strong_full_join_where_rejects_its_own_side; `calcite_audit` full_join_* | fixed (bug 3) |
 | Strong#isNull CASE | NULL only if every value is | `nullability._case_sources`: padding kept only when every arm has it | `calcite_audit` case_* | fixed (bug 1) |
 | Strong policy map | BETWEEN, non-strict operators | `_expression_sources`: padding kept only through strict arguments | `calcite_audit` between_*, strict_argument_* | fixed (bug 1) |

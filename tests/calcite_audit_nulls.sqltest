@@ -20,9 +20,12 @@ FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE e.sal IS NOT NULL AND d.name IS NOT NULL
 /**ASSERT NOT NULL(empno)**/  --~ PROVED
 
+-- A padded row is NULL in every column its join pads at once, so a condition
+-- NULL or FALSE there on every part rejects that padding (per padding, not
+-- per column).
 -- case: strong_or_of_two_padded_columns
 -- inspired by RexProgramTest.testStrong, isNull(or(i0, i1), c01), via RelOptUtil.simplifyJoin
--- Missing proof: a padded row fails both parts, so the join matched.
+-- A padded row fails both parts, so the join matched.
 SELECT d.deptno, e.empno
 FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE e.sal > 0 OR e.comm > 0
@@ -30,7 +33,7 @@ WHERE e.sal > 0 OR e.comm > 0
 
 -- case: strong_or_of_is_not_null_on_padded_columns
 -- inspired by RexProgramTest.testStrong, isNotTrue(or(i0NotNull, i1NotNull), c01)
--- Missing proof, as above.
+-- Both parts are FALSE on a padded row.
 SELECT d.deptno, e.empno
 FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE e.sal IS NOT NULL OR e.comm IS NOT NULL
@@ -38,11 +41,39 @@ WHERE e.sal IS NOT NULL OR e.comm IS NOT NULL
 
 -- case: strong_coalesce_of_padded_columns
 -- inspired by RexProgramTest.testStrong (COALESCE is null when all operands are)
--- Missing proof: coalesce of two padded columns is NULL on a padded row.
+-- Coalesce of two padded columns is NULL on a padded row.
 SELECT d.deptno, e.empno
 FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE coalesce(e.sal, e.comm) > 0
 /**ASSERT NOT NULL(empno)**/  --~ PROVED
+
+-- Columns padded by two different joins: a row may be padded by one and keep
+-- the other's value.
+-- case: strong_or_of_columns_two_joins_pad
+-- inspired by issue 45 item 9 (boundary)
+SELECT d.deptno, e.empno
+FROM dept AS d
+LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+LEFT JOIN emp_nullables AS e2 ON e2.deptno = d.deptno
+WHERE e.sal > 0 OR e2.comm > 0
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+
+-- case: strong_coalesce_of_columns_two_joins_pad
+-- inspired by issue 45 item 9 (boundary)
+SELECT d.deptno, e.empno
+FROM dept AS d
+LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+LEFT JOIN emp_nullables AS e2 ON e2.deptno = d.deptno
+WHERE e.sal IS NOT NULL OR coalesce(e2.comm, e.comm) IS NOT NULL
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+
+-- A nullable column of the preserved side may be TRUE on a padded row.
+-- case: strong_or_with_a_nullable_preserved_part
+-- inspired by issue 45 item 9 (boundary)
+SELECT d.deptno, e.empno
+FROM emp_nullables AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+WHERE e.sal > 0 OR d.comm > 0
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
 
 -- case: strong_or_with_a_preserved_part
 -- inspired by RexProgramTest.testStrong, isNull(or(i0, i1), c0) is false

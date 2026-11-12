@@ -36,10 +36,10 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 4. ~~**VALUES in FROM** lowers opaque, silently.~~ Done: its literals are Knowledge of its columns (non-null, Enumerated Domain up to 100 rows, lax Unique Sets by `_may_coincide`; `convert._lower_values`). Was: Its literals give domains,
    nullability and (null-equal) uniqueness.
    `keys: uk_values`, `nulls: pullup_values`.
-5. **QUALIFY over GROUP BY** is not recognized as QualifyByPartition.
+5. ~~**QUALIFY over GROUP BY** is not recognized as QualifyByPartition.~~ Done: `row_number() OVER (PARTITION BY k...) = 1` over the groups (after HAVING) is a QualifyByPartition when every key is a selected item and no other item is aliased to a bare key; any other QUALIFY over groups or DISTINCT, which was ignored (unsound: a join onto it was EXACTLY ONE), is an opaque Filter (`convert._qualified`).
    `iq: qualify_over_group_by_keeps_one_row_per_partition`.
-6. **A parenthesized join as a join's right input** gives
-   `unanalyzed-assertion`: `dept d LEFT JOIN (emp e /**ASSERT MANY TO ONE**/ LEFT JOIN emp c USING (empno)) ON ...`.
+6. ~~**A parenthesized join as a join's right input** gives
+   `unanalyzed-assertion`:~~ Done: an unaliased parenthesized join, anywhere in FROM, lowers as a join input whose sources keep their names; an aliased one stays opaque (DuckDB renames its repeated names) (`convert._nested_join`). A lax step's determinant is definite also when it is NULL only on rows a join pads that also pads a requested column (`uniqueness._padded_with`), which the outer UNIQUE(empno) needs. Was: `dept d LEFT JOIN (emp e /**ASSERT MANY TO ONE**/ LEFT JOIN emp c USING (empno)) ON ...`.
 7. ~~**A correlated scalar subquery whose body aggregates** stays opaque:~~ Done for one aggregate call correlated by same-typed equalities: grouped by the key and left joined, count as `coalesce(count, 0)` (`convert._aggregate_subquery_join`). Was:
    `count(*)` of it is never NULL, and `x = (SELECT max(...) ... WHERE corr)`
    pins one row per correlation key.
@@ -50,7 +50,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 
 ### Nullability and null rejection
 
-9. **A whole padded side through OR or COALESCE**: `WHERE e.sal > 0 OR
+9. ~~**A whole padded side through OR or COALESCE**~~ Done: a conjunct rejects each padding on whose rows it is never TRUE: NULL there through strict arguments, coalesce or CASE (`_null_with`), `IS NOT NULL` of such an expression, an OR when every part rejects it; a later ON only on the side it drops unmatched rows of (`nullability._rejected_paddings`, `_on_rejected_paddings`). The INNER JOIN rewrite reads the same (`rewrites._inner_join`). Was: `WHERE e.sal > 0 OR
    e.comm > 0`, or `coalesce(e.sal, e.comm) > 0`, over two columns the same
    join pads, proves that join matched. Compute rejection per padding, not
    only per column. `nulls: strong_or_of_two_padded_columns`,

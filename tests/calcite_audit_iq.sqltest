@@ -144,6 +144,9 @@ FROM emp AS e
 
 -- Parenthesized joins ---------------------------------------------------------
 
+-- A join in parentheses is a join input whose sources keep their names, so
+-- markers on both levels are analyzed. empno is unique: a matched emp row
+-- meets one dept (its deptno, non-null wherever empno is, is dept's key).
 -- case: parenthesized_join_as_a_right_input
 -- inspired by issue 45 item 6: a join in parentheses on a join's right side
 SELECT d.deptno, e.empno, c.ename
@@ -235,7 +238,8 @@ SELECT deptno FROM emp WHERE deptno IS NOT NULL GROUP BY ROLLUP (deptno)
 SELECT dname, sum(deptno) AS s FROM dept GROUP BY dname
 /**ASSERT NOT NULL(s)**/  --~ PROVED
 
--- QUALIFY over a grouped query keeps one row per partition. Missing proof.
+-- QUALIFY over a grouped query keeps one row per partition of the groups,
+-- every partition key being a selected item.
 -- case: qualify_over_group_by_keeps_one_row_per_partition
 -- inspired by qualify.iq, "group by deptno, job qualify row_number() over (partition by deptno order by count(*) desc) = 1"
 SELECT deptno

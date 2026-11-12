@@ -107,6 +107,13 @@ def test_every_select_expression_is_an_attachment_site():
     ]
 
 
+def test_both_levels_of_a_parenthesized_join_are_sites():
+    sql = SCHEMA + "SELECT * FROM sessions\nLEFT JOIN (users AS u\nLEFT JOIN users AS v ON v.id = u.id) ON u.id = sessions.user_id"
+    assert markers(sql)[:2] == [
+        ("LEFT JOIN (u, v)", "/**ASSERT MANY TO ONE**/"), ("LEFT JOIN users AS v", "/**ASSERT EXACTLY ONE**/"),
+    ]
+
+
 def test_a_set_operation_is_a_site_after_its_last_token():
     # The first member has a site of its own; the last one ends where the
     # whole query does, so a marker there is the whole query's.
@@ -243,6 +250,13 @@ ROUND_TRIP_PROGRAMS = [
     ORDER BY 1;
     """,
     SCHEMA + "SELECT id FROM users UNION SELECT DISTINCT user_id FROM sessions ORDER BY 1",
+    SCHEMA + """
+    SELECT s.ts, u.id, v.email
+    FROM sessions AS s
+    LEFT JOIN (users AS u
+        JOIN users AS v ON v.id = u.id)
+        ON u.id = s.user_id
+    """,
     SCHEMA + 'SELECT DISTINCT name AS "full name", nick FROM users',
     SCHEMA + """
     CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id));

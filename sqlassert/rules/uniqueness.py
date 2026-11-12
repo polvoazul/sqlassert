@@ -126,7 +126,7 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
         queue.append(attribute)
 
     def is_definite(attribute: Attribute) -> bool:
-        return attribute in definite or _definite(relation, attribute)
+        return attribute in definite or _definite(relation, attribute) or _padded_with(attribute, definite)
 
     dependencies = _functional_dependencies(relation)
     waiting: dict[Dependency, int] = {}
@@ -197,6 +197,22 @@ def _definite(relation: ir.RelationExpr, attribute: Attribute) -> bool:
             return isinstance(relation, ir.Join) and (side is relation.left) not in _padded_sides(relation)
         case ir.OutputColumn():
             return non_null_column(attribute).value
+
+
+def _padded_with(attribute: Attribute, definite: frozenset[Attribute]) -> bool:
+    """Whether `attribute` is non-null wherever the `definite` columns are:
+    its only null sources are paddings that make one of them NULL too. Past
+    `d LEFT JOIN emp e ON d.deptno = e.deptno`, `e.deptno` is NULL only on
+    padded rows (ON rejects NULL on the others), so it is non-null on every
+    row where `e.empno` is."""
+    if not isinstance(attribute, ir.OutputColumn) or not definite:
+        return False
+    sources = _null_sources(attribute).value
+    covered = {
+        source for column in definite if isinstance(column, ir.OutputColumn)
+        for source in _null_sources(column).value if isinstance(source, Padding)
+    }
+    return bool(sources) and sources <= covered
 
 
 @dataclass(frozen=True)

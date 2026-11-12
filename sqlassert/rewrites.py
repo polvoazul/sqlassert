@@ -49,7 +49,9 @@ from sqlassert.rules.exactly_one import _cross_equalities
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
 from sqlassert.rules.column_set import RowIdentity
-from sqlassert.rules.nullability import Padding, _null_rejected, _null_sources, _on_rejected
+from sqlassert.rules.nullability import (
+    Padding, _null_rejected, _null_sources, _on_rejected, _on_rejected_paddings, _rejected_paddings,
+)
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 from sqlassert.sql_parse import ParsedProgram, grouping, marker_position, written_sql
 
@@ -216,13 +218,13 @@ def _inner_join(
         parent, = parents[relation]
         match parent:
             case ir.Join(kind="anti"):
-                rejected, clause = {}, ""
+                rejected, paddings, clause = {}, {}, ""
             case ir.Join(kind=kind):
                 # A semi join (a WHERE EXISTS or IN) keeps only rows its ON holds on.
                 described = "WHERE EXISTS or IN subquery" if kind == "semi" else f"later {kind.upper()} JOIN"
-                rejected, clause = _on_rejected(parent), f"the ON condition of a {described}"
+                rejected, paddings, clause = _on_rejected(parent), _on_rejected_paddings(parent), f"the ON condition of a {described}"
             case ir.Filter():
-                rejected, clause = _null_rejected(parent.conjuncts), "the WHERE clause"
+                rejected, paddings, clause = _null_rejected(parent.conjuncts), _rejected_paddings(parent.conjuncts), "the WHERE clause"
             case _:
                 return None
         for column, conjunct in rejected.items():
@@ -235,6 +237,18 @@ def _inner_join(
                     (conjunct, column), [padded],
                 )
                 message = f"{clause} rejects NULL in {quoted(column.name)}, so no padded row survives: write JOIN"
+                return Rewrite(site, RewriteKind.INNER_JOIN, message, evidence)
+        for padding, conjunct in paddings.items():
+            # Not TRUE on a row padded as a whole (`a.x > 0 OR a.y > 0`).
+            via = (padding.join, padding.left)
+            if via in chained:
+                how = f"The {keyword}'s padding" if padding.join is join else f"A later join's padding, which every row the {keyword} pads gets"
+                padded = Result(True, how, (join, padding.join), chained[via])
+                evidence = Result(
+                    True, f"{clause} is never TRUE on a padded row, so every row the {keyword} pads is removed",
+                    (conjunct, padding.join), [padded],
+                )
+                message = f"{clause} is never TRUE on a row the {keyword} pads, so no padded row survives: write JOIN"
                 return Rewrite(site, RewriteKind.INNER_JOIN, message, evidence)
         if isinstance(parent, ir.Join) and parent.kind in {"left", "full"}:
             for column, conjunct in _null_rejected(parent.conjuncts).items():
