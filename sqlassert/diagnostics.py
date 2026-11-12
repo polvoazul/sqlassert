@@ -8,8 +8,9 @@ is supported, but a fact a connection would supply is missing, so analysis
 treats it as unknown (ADR 0005). So are a constraint the dialect does not
 enforce, and, about the SQL itself (`SQL_WARNINGS`), a CHECK constraint
 that states no Enumerated Domain, a comparison that depends on something the
-values do not show, like a zoned timestamp's zone (`dialects.py`), and a
-comparison of composites whose elements may be NULL.
+values do not show, like a zoned timestamp's zone (`dialects.py`), a
+comparison of composites whose elements may be NULL, and a proved Property
+that holds only because a column it names is always NULL.
 Warnings never make a Report fail.
 """
 
@@ -30,6 +31,7 @@ def quoted_all(names: Iterable[str]) -> str:
 
 
 CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
+ALWAYS_NULL_COLUMN = "always-null-column"
 AMBIGUOUS_COLUMN = "ambiguous-column"
 CARDINALITY_ON_FILTERING_JOIN = "cardinality-on-filtering-join"
 CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
@@ -65,4 +67,4 @@ class Diagnostic:
 
 
 # Warnings about the SQL itself, which no connection answers: `analyze_database` keeps them.
-SQL_WARNINGS = frozenset({COMPOSITE_COMPARISON, IGNORED_CHECK_CONSTRAINT, ZONED_TIMESTAMP_CAST})
+SQL_WARNINGS = frozenset({ALWAYS_NULL_COLUMN, COMPOSITE_COMPARISON, IGNORED_CHECK_CONSTRAINT, ZONED_TIMESTAMP_CAST})

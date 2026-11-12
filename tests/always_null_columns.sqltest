@@ -1,0 +1,57 @@
+-- Always-NULL columns: a Property that exempts NULL holds trivially.
+--
+-- A column the analysis knows is always NULL (its Enumerated Domain is
+-- empty) satisfies every ENUM, and every UNIQUE, DETERMINES determinant,
+-- FOREIGN KEY or NOT NULL ELEMENTS naming it, because NULL is exempt from
+-- each. The proof stands, but an `always-null-column` warning says it holds
+-- trivially, once per column. It never fails the Report.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE p (k INTEGER PRIMARY KEY);
+
+-- case: an_enum_of_an_always_null_column_holds_trivially
+SELECT CAST(NULL AS INTEGER) + 1 AS g FROM t /**ASSERT ENUM(g IN (1))**/  --~ PROVED
+--~ always-null-column "'g' is always NULL, so this ENUM holds trivially"
+
+-- case: an_enum_of_a_sometimes_null_column_does_not_warn
+SELECT s.h FROM t LEFT JOIN (SELECT 1 AS h) AS s ON t.k = 1 /**ASSERT ENUM(h IN (1))**/  --~ PROVED
+
+-- case: a_null_literal_column_warns
+SELECT NULL AS n FROM t /**ASSERT ENUM(n IN ('x'))**/  --~ PROVED
+--~ always-null-column "'n' is always NULL"
+
+-- case: one_warning_per_column
+SELECT CAST(NULL AS INTEGER) + 1 AS g FROM t
+/**ASSERT ENUM(g IN (1))**/  --~ PROVED
+--~ always-null-column "'g' is always NULL"
+/**ASSERT ENUM(g IN (2))**/  --~ PROVED
+
+-- case: an_unproved_assertion_does_not_warn
+SELECT CAST(NULL AS INTEGER) + 1 AS g FROM t /**ASSERT UNIQUE(g)**/  --~ UNKNOWN
+
+-- case: a_unique_set_with_an_always_null_member_holds_trivially
+-- Every row has a NULL in the set, so none is compared.
+SELECT CAST(NULL AS INTEGER) + 1 AS g, id FROM t /**ASSERT UNIQUE(g, id)**/  --~ PROVED
+--~ always-null-column "'g' is always NULL, so this UNIQUE holds trivially"
+
+-- case: a_dependency_from_an_always_null_column_holds_trivially
+SELECT CAST(NULL AS INTEGER) + 1 AS g, id, k FROM t /**ASSERT DETERMINES(g, id -> k)**/  --~ PROVED
+--~ always-null-column "'g' is always NULL, so this DETERMINES holds trivially"
+
+-- case: a_dependency_onto_an_always_null_column_does_not_warn
+-- Every row agrees on g, as on a constant: not a vacuous truth.
+SELECT CAST(NULL AS INTEGER) + 1 AS g, k FROM t /**ASSERT DETERMINES(k -> g)**/  --~ PROVED
+
+-- case: a_foreign_key_from_an_always_null_column_holds_trivially
+WITH c AS (SELECT CAST(NULL AS INTEGER) + 1 AS g FROM t /**DECLARE FOREIGN KEY(g) REFERENCES p(k)**/)
+SELECT g FROM c /**ASSERT FOREIGN KEY(g) REFERENCES p(k)**/  --~ PROVED
+--~ always-null-column "'g' is always NULL, so this FOREIGN KEY holds trivially"
+
+-- case: an_exhaustive_case_on_an_always_null_operand_holds_trivially
+SELECT /**ASSERT EXHAUSTIVE**/ CASE q.g WHEN 1 THEN 'a' END AS c  --~ PROVED
+--~ always-null-column "'g' is always NULL, so this EXHAUSTIVE holds trivially"
+FROM (SELECT CAST(NULL AS INTEGER) + 1 AS g FROM t) AS q
+
+-- case: an_exhaustive_case_on_a_constant_operand_does_not_warn
+SELECT /**ASSERT EXHAUSTIVE**/ CASE q.g WHEN 1 THEN 'a' END AS c  --~ PROVED
+FROM (SELECT 1 AS g FROM t) AS q

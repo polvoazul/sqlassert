@@ -74,6 +74,7 @@ FROM a
 JOIN items
     ON a.status = items.qty AND items.qty = a.channel) SELECT status FROM j WHERE status = channel
 /**ASSERT ENUM(status IN ('zz'))**/  --~ PROVED
+--~ always-null-column "'status' is always NULL"
 
 -- case: typed_enum_is_not_guessed__numeric_one_is_not_string_one
 SELECT 1 AS n FROM orders /**ASSERT ENUM(n IN ('1'))**/  --~ UNKNOWN
@@ -150,6 +151,7 @@ SELECT 'a' AS tag FROM orders /**ASSERT ENUM(tag IN ('a', 'b'))**/  --~ PROVED
 
 -- case: enum_is_proved__null_literal_is_outside_every_domain
 SELECT NULL AS tag FROM orders /**ASSERT ENUM(tag IN ('a'))**/  --~ PROVED
+--~ always-null-column "'tag' is always NULL"
 
 -- case: enum_is_proved__coalesce_of_literals
 SELECT coalesce(NULL, 'b') AS tag FROM orders /**ASSERT ENUM(tag IN ('a', 'b'))**/

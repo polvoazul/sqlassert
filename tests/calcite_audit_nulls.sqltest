@@ -557,6 +557,7 @@ FROM emp
 /**ASSERT ENUM(f IN (1))**/  --~ PROVED
 /**ASSERT NOT NULL(f)**/  --~ PROVED
 /**ASSERT ENUM(g IN (7))**/  --~ PROVED
+--~ always-null-column "'g' is always NULL, so this ENUM holds trivially"
 
 -- case: pullup_intersect_takes_both_inputs
 -- inspired by RelMetadataTest.testPullUpPredicatesFromIntersect1
