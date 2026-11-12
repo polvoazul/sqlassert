@@ -740,22 +740,20 @@ EQUIVALENT = [
         SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
         RewriteKind.ONE_ROW,
     ),
+    # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
 ]
 
 
 # Kinds whose rewrite has no edits yet: compared with a query written by hand.
 EQUIVALENT_BY_HAND = [
-    # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
-    (
-        SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
-        SCHEMA + "SELECT o.id FROM orders o",
-        RewriteKind.REDUNDANT_FILTER,
-    ),
-    (
-        SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
-        SCHEMA + "SELECT o.id FROM orders o WHERE o.total = 1",
-        RewriteKind.REDUNDANT_FILTER,
-    ),
     (
         SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
         SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1",
@@ -903,6 +901,13 @@ EXPECTED_DIFFS = [
 -WITH used AS (SELECT user_id FROM sessions),
 -dead AS (SELECT id FROM users)
 +WITH used AS (SELECT user_id FROM sessions)""",
+    ),
+    (
+        RewriteKind.REDUNDANT_FILTER,
+        SCHEMA + "SELECT o.id FROM orders o\nWHERE o.total BETWEEN 1 AND 2\n  AND o.user_id IN (SELECT id FROM users)",
+        """\
+@@ -7 +6,0 @@
+-  AND o.user_id IN (SELECT id FROM users)""",
     ),
     (
         RewriteKind.REDUNDANT_SORT_KEY,

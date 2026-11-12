@@ -141,8 +141,8 @@ def rewrites(
         limit = relation if isinstance(relation, ir.Limit) else None
         if isinstance(relation, ir.Limit):
             relation = relation.input
-        if site.trailing:
-            found.extend(_redundant_subquery_filters(arena, site, relation))
+        if site.trailing and isinstance(node, exp.Select):
+            found.extend(_redundant_subquery_filters(arena, site, relation, node, source, dialect))
             found.extend(_implied_where(arena, site, relation, program))
         if site.trailing and isinstance(node, exp.Select):
             one_row = _one_row_tail(site, relation, limit, node, source)
@@ -174,23 +174,98 @@ def rewrites(
     return sorted(found, key=lambda item: item.site.offset)
 
 
-def _redundant_subquery_filters(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr) -> list[Rewrite]:
+def _redundant_subquery_filters(
+    arena: Arena, site: AttachmentSite, relation: ir.RelationExpr, node: exp.Select, source: Source, dialect: str,
+) -> list[Rewrite]:
     """The semi joins of this Select (its WHERE subqueries, issue 23, or an
-    explicit SEMI JOIN) that match every row exactly once, so filter nothing."""
+    explicit SEMI JOIN) that match every row exactly once, so filter nothing.
+    The edit deletes the WHERE conjunct (`_deleted_conjunct`) or the join."""
     found: list[Rewrite] = []
     while True:
         match relation:
-            case ir.Project(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source) | ir.Filter(input=source):
-                relation = source
-            case ir.Join(kind="semi" | "anti", left=source):
+            case ir.Project(input=input_) | ir.Aggregate(input=input_) | ir.Distinct(input=input_) | ir.QualifyByPartition(input=input_) | ir.Filter(input=input_):
+                relation = input_
+            case ir.Join(kind="semi" | "anti", left=input_):
                 if relation.kind == "semi":
                     proof = arena.prove(ExactlyOneJoin(join=relation))
-                    if proof.value:
+                    edits = _semi_join_edits(relation, node, source, dialect)
+                    if proof.value and edits:
                         message = f"every row matches exactly one row, so {relation.origin.detail} filters nothing: delete it"
-                        found.append(Rewrite(site, RewriteKind.REDUNDANT_FILTER, message, (), proof))
-                relation = source
+                        found.append(Rewrite(site, RewriteKind.REDUNDANT_FILTER, message, edits, proof))
+                relation = input_
             case _:
                 return found
+
+
+def _semi_join_edits(join: ir.Join, node: exp.Select, source: Source, dialect: str) -> tuple[Edit, ...]:
+    """Deleting the WHERE subquery or SEMI JOIN of `node` that `join` lowers."""
+    where = node.args.get("where")
+    conjuncts = _where_conjuncts(where, source) if where is not None else None
+    for index, (conjunct, _, _) in enumerate(conjuncts or ()):
+        if written_sql(conjunct, dialect) == join.origin.detail:
+            assert conjuncts is not None and where is not None
+            return _deleted_conjunct(source, conjuncts, index, source.tokens_of(span(where)))
+    for other in node.args.get("joins") or ():
+        tokens = source.tokens_of(span(other))
+        if tokens is not None and written_sql(other, dialect) == join.origin.detail:
+            return source.deletions([tokens])
+    return ()
+
+
+# Conjuncts of a WHERE or ON, as written ----------------------------------------------
+
+
+def _where_conjuncts(where: exp.Where, source: Source) -> list[tuple[Expr, int, int]] | None:
+    clause = source.tokens_of(span(where))
+    return None if clause is None else _conjunct_tokens(where.this, clause[0] + 1, clause[1], source)
+
+
+def _on_conjuncts(node: exp.Join, source: Source) -> tuple[list[tuple[Expr, int, int]] | None, tuple[int, int] | None]:
+    """The ON conjuncts of a join, and the tokens of its condition."""
+    tokens, on = source.tokens_of(span(node)), node.args.get("on")
+    keyword = next(iter(source.top_level(tokens[0], tokens[1], TokenType.ON)), None) if tokens is not None else None
+    if on is None or keyword is None or tokens is None:
+        return None, None
+    return _conjunct_tokens(on, keyword + 1, tokens[1], source), (keyword + 1, tokens[1])
+
+
+def _conjunct_tokens(condition: Expr, first: int, last: int, source: Source) -> list[tuple[Expr, int, int]] | None:
+    """Each conjunct of `condition`, written from token `first` to `last`,
+    as the IR reads them (`ir.convert._conjuncts`: top-level ANDs, parentheses
+    removed), with its first and last token, parentheses around it included.
+    None when the tokens do not line up with the AST."""
+    found: list[tuple[Expr, int, int]] = []
+
+    def walk(node: Expr, first: int, last: int) -> bool:
+        inner, start, end = node, first, last
+        while isinstance(inner, exp.Paren):
+            if not source.is_(start, TokenType.L_PAREN) or source.closing(start) != end:
+                return False
+            inner, start, end = inner.this, start + 1, end - 1
+        if isinstance(inner, exp.And):
+            ands = source.top_level(start, end, TokenType.AND)
+            # AND is left-associative: the last one at this level splits it.
+            return bool(ands) and walk(inner.this, start, ands[-1] - 1) and walk(inner.expression, ands[-1] + 1, end)
+        found.append((inner, first, last))
+        return first <= last
+
+    return found if walk(condition, first, last) else None
+
+
+def _deleted_conjunct(
+    source: Source, conjuncts: list[tuple[Expr, int, int]], index: int, clause: tuple[int, int] | None,
+) -> tuple[Edit, ...]:
+    """Conjunct `index` deleted with the AND joining it to the others; the
+    whole `clause` (a WHERE) when it is the only one, or, with no clause (an
+    ON), the condition written as TRUE."""
+    _, first, last = conjuncts[index]
+    if len(conjuncts) == 1:
+        return source.deletions([clause]) if clause is not None else (source.replace(first, last, "TRUE"),)
+    if index == 0:
+        following = next(token for token in range(last + 1, conjuncts[1][1]) if source.is_(token, TokenType.AND))
+        return source.deletions([(first, following)])
+    preceding = next(token for token in range(first - 1, conjuncts[index - 1][2], -1) if source.is_(token, TokenType.AND))
+    return source.deletions([(preceding, last)])
 
 
 def _syntax_at_sites(ast: ParsedProgram) -> dict[tuple[int, bool], exp.Join | exp.Select]:
