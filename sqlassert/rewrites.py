@@ -30,6 +30,9 @@ is used is read from the syntax: the IR keeps neither ORDER BY nor the
 columns inside opaque expressions. Anything the checks cannot see whole --
 a padded row leaving its own Select Expression, a join whose right side's
 columns are unknown -- is left alone.
+
+Each Rewrite carries the exact edits that make it (`edits.py`), placed from
+the SQL's tokens; one whose syntax they cannot place is not offered.
 """
 
 from __future__ import annotations
