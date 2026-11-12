@@ -1,16 +1,16 @@
 # 45. Close the Calcite audit's missing proofs
 
-- **State:** open
+- **State:** done (2026-11-11)
 - **Priority:** P2 (ready): With #37: what the #40 audit found missing. None is
   unsound. Its lowering items lose proofs on common SQL, so do those first.
 - **Theme:** soundness
 - **Labels:** ready-for-agent
 - **Created:** 2026-11-08
-- **Related:** [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [37: Paulley audit gaps](0037-close-the-paulley-audit-missing-rules.md), [42: lowering support v2](0042-lowering-support-v2.md)
+- **Related:** [40: Calcite audit](0040-audit-inference-against-calcite.md), [37: Paulley audit gaps](../0037-close-the-paulley-audit-missing-rules.md), [42: lowering support v2](../0042-lowering-support-v2.md)
 
 ## Why
 
-The [Calcite audit](../calcite-audit.md) found Properties that hold on every
+The [Calcite audit](../../calcite-audit.md) found Properties that hold on every
 instance but that sqlassert leaves UNKNOWN. None is unsound. Each has a case
 in `tests/calcite_audit_*.sqltest` annotated UNKNOWN with a "missing proof"
 comment. Turn that annotation into PROVED and keep the boundary cases next to
@@ -111,9 +111,9 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 24. ~~**EXACTLY ONE onto a scalar aggregate** with ON TRUE or CROSS JOIN.~~ Done: an ON always TRUE matches a right input that always has a row, an aggregate grouped by nothing through Aliases, Projects and DISTINCT, not HAVING (`exactly_one._has_a_row`).
     `iq: left_join_on_true_to_a_scalar_aggregate_matches_exactly_once`.
 
-Consider a warning Diagnostic when a construct lowers opaque silently
-(VALUES, GROUPING SETS, LATERAL, correlated aggregate subqueries), so a user
-knows why an assertion stays UNKNOWN.
+~~Consider a warning Diagnostic when a construct lowers opaque silently.~~ Done:
+GROUPING SETS, ROLLUP and LATERAL warn `unsupported-construct`; VALUES and
+correlated aggregate subqueries are lowered (items 4 and 7).
 
 ## Acceptance criteria
 
