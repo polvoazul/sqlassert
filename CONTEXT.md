@@ -243,9 +243,23 @@ _Avoid_: Marker position, anchor
 A rewrite of the SQL itself, at one Attachment Site, that a Proof shows leaves
 the program's result unchanged as a multiset: an outer join that cannot keep a
 padded row written as an inner join, a join that is redundant or only filters,
-a redundant `DISTINCT` or grouping column, an unused CTE. `suggest` ranks
-Rewrites before markers to paste, and those before Hazards.
+a redundant `DISTINCT` or grouping column, an unused CTE. It guarantees the
+same rows; a column's type may change, which makes it a Rewrite with Caveat.
+Otherwise (same rows, same column types, no new error) it is a plain
+Rewrite, suggestion type `rewrite`. `suggest` ranks Rewrites before Rewrites
+with Caveat, those before markers to paste, and those before Hazards.
 _Avoid_: Improvement, optimization, lint, hint
+
+**Rewrite with Caveat**:
+A Rewrite that keeps the rows but may change an output column's type, its
+message naming the column and the change (suggestion type `rewrite with
+caveat`): a `GROUP BY` whose groups are single rows, written as a projection,
+replaces `sum(x)` by `x` (DuckDB's HUGEINT sum becomes x's INTEGER) and
+`count(*)` by `1`. sqlassert has no result-type model per dialect, so a
+Rewrite that may change a type is caveated. One that could turn a successful
+query into an error (a narrower type inside `sum(x) + 1`) is no Rewrite.
+_Avoid_: Unsafe rewrite, approximate rewrite, lossy rewrite (the rows are
+the same)
 
 **Implied Condition**:
 A conjunct of a WHERE or ON that the other conjuncts and the input's facts
@@ -265,7 +279,8 @@ join that may be many to many, a `LIMIT`
 that picks arbitrary rows among ties, a scalar subquery that may return more
 than one row, a join equality that casts, a query that never returns a row.
 The SQL may be what its author meant. `suggest` lists Hazards last; the
-suggestion's type (`SuggestType`) is rewrite, marker or hazard.
+suggestion's type (`SuggestType`) is rewrite, rewrite with caveat, marker or
+hazard.
 _Avoid_: Smell, code smell, lint, warning; "level" for the suggestion's type
 
 **Create Statement**:

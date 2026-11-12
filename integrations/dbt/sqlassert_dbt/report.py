@@ -13,6 +13,7 @@ from typing import Literal
 
 from sqlassert.check import EXIT_FINDINGS, EXIT_OK
 from sqlassert.reporting import Outcome
+from sqlassert.rewrites import SuggestType
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,7 @@ class DbtReport:
 @dataclass(frozen=True)
 class ModelSuggestion:
     """What `sqlassert suggest` finds in a model's SQL, by `suggest_type`: a
-    rewrite a proof justifies, a marker that will be PROVED, or a hazard: a
+    rewrite a proof justifies (with a caveat when a column's type changes), a marker that will be PROVED, or a hazard: a
     result the SQL leaves unspecified. `location` is the model file's line when
     known, else the compiled file's; `kind` names the rewrite, Property or
     concern; `text` is the marker to paste or the message."""
@@ -197,9 +198,10 @@ def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False, li
 
 
 def format_suggestion_summary(report: SuggestReport, limit: WarningLimit | None = None) -> str:
-    counts = {kind: sum(item.suggest_type == kind for item in report.suggestions) for kind in ("rewrite", "marker", "hazard")}
+    counts = {kind: sum(item.suggest_type == kind.value for item in report.suggestions) for kind in SuggestType}
     return (
-        f"{counts['rewrite']} rewrites, {counts['marker']} markers, {counts['hazard']} hazards in {len(report.models)} models, "
+        f"{counts[SuggestType.REWRITE]} rewrites, {counts[SuggestType.REWRITE_WITH_CAVEAT]} rewrites with caveat, "
+        f"{counts[SuggestType.MARKER]} markers, {counts[SuggestType.HAZARD]} hazards in {len(report.models)} models, "
         f"{sum(p.severity == 'error' for p in report.problems)} errors, "
         f"{sum(p.severity == 'warning' for p in report.problems)} warnings{_suppressed(limit)}\n"
     )

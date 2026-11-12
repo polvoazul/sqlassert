@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _suggest(arguments: argparse.Namespace) -> int:
     from sqlassert import check
-    from sqlassert.suggest import suggest
+    from sqlassert.suggest import SuggestType, suggest
 
     try:
         sql = check.read_sql(Path(arguments.file))
@@ -77,10 +77,11 @@ def _suggest(arguments: argparse.Namespace) -> int:
         return 1 if report.diagnostics else 0
     if arguments.annotate and report.suggestions:
         Path(arguments.file).write_text(report.annotated())
-    # Rewrites first, then markers, then hazards.
-    items = (*report.rewrites, *report.suggestions, *report.hazards)
+    # Rewrites first, those with a caveat after the others, then markers, then hazards.
+    rewrites = sorted(report.rewrites, key=lambda item: item.suggest_type is SuggestType.REWRITE_WITH_CAVEAT)
+    items = (*rewrites, *report.suggestions, *report.hazards)
     rows = [
-        (i.suggest_type.value, f"line {i.site.line}", i.site.label, i.kind.value, i.message) for i in report.rewrites
+        (i.suggest_type.value, f"line {i.site.line}", i.site.label, i.kind.value, i.message) for i in rewrites
     ] + [
         (s.suggest_type.value, f"line {s.site.line}", s.site.label, s.kind, s.marker)
         for s in report.suggestions

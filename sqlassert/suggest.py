@@ -1,8 +1,8 @@
 """Suggest the Property Markers sqlassert can prove for a SQL Program.
 
-Three types of suggestion (`SuggestType`). Rewrites: changes to the SQL
-itself that a proof shows leave its result unchanged (`rewrites.py`).
-Markers: what is provable but not asserted, to lock in. Hazards: places
+Four types of suggestion (`SuggestType`). Rewrites: changes to the SQL
+itself that a proof shows leave its result unchanged (`rewrites.py`), with
+a caveat when a column's type changes. Markers: what is provable but not asserted, to lock in. Hazards: places
 whose result the SQL leaves unspecified (`hazards.py`).
 
 Marker candidates are generated mechanically from the Program IR, one
@@ -81,8 +81,8 @@ class Suggestion:
 
 @dataclass(frozen=True)
 class SuggestionReport:
-    """`rewrites` (High) rewrite the SQL; `suggestions` (Mid) are markers
-    to paste; `hazards` (Low) point at results the SQL leaves unspecified."""
+    """`rewrites` rewrite the SQL, some with a caveat; `suggestions` are
+    markers to paste; `hazards` point at results the SQL leaves unspecified."""
 
     sql: str
     suggestions: tuple[Suggestion, ...] = ()

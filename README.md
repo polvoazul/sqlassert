@@ -69,11 +69,11 @@ limit 10;
 
 ```console
 $ sqlassert suggest orders.sql
-high  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
-high  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
-mid   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
+rewrite  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+rewrite  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+marker   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
 ...
-low   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine ('id'), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
+hazard   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine ('id'), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
 ```
 
 Every rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
@@ -544,15 +544,15 @@ From Python, `suggest(sql)` returns the same suggestions, each with its `site`, 
 
 #### Rewrites
 
-Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row:
+Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row. One that may change an output column's type is a `rewrite with caveat`, listed after the others: its message ends with a `Caveat:` naming the column and the change (sqlassert has no result-type model per dialect, so a rewrite that may change a type is caveated). A rewrite never turns a query that runs into one that fails.
 
 ```bash
 $ sqlassert suggest orders.sql
-high  line 4  CTE big                 Unused CTE          CTE big is never referenced, so it never runs and its markers go unchecked: delete it
-high  line 7  LEFT JOIN users AS u    INNER JOIN          every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
-high  line 8  LEFT JOIN coupons AS c  Redundant Join      at most one match per row and no column of coupons AS c is used outside its ON: delete the join
-high  line 9  Root Select             Redundant GROUP BY  (o.id, u.name) determine u.id, NULL equal to NULL: drop u.id from GROUP BY and select any_value(u.id) AS user_id
-mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE**/
+rewrite  line 4  CTE big                 Unused CTE          CTE big is never referenced, so it never runs and its markers go unchecked: delete it
+rewrite  line 7  LEFT JOIN users AS u    INNER JOIN          every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+rewrite  line 8  LEFT JOIN coupons AS c  Redundant Join      at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+rewrite  line 9  Root Select             Redundant GROUP BY  (o.id, u.name) determine u.id, NULL equal to NULL: drop u.id from GROUP BY and select any_value(u.id) AS user_id
+marker   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE**/
 ...
 ```
 
@@ -564,10 +564,11 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
 | Redundant ORDER BY key | The ORDER BY keys before it determine it, NULL equal to NULL: it never breaks a tie. Silent when a key is an expression or a name sqlassert cannot map to one column. |
 | Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
+| GROUP BY of one row per group | No two input rows agree on the grouping columns, NULL equal to NULL: every group is one row, so `GROUP BY` goes and each aggregate is its value over that row (`count(*)` is 1, `count(x)` a `CASE`, `sum`, `avg`, `min`, `max`, `any_value`, `bool_and`, `bool_or` of x are x). A rewrite with caveat when a type changes: `sum(x)` of an INTEGER is a HUGEINT in DuckDB, `x` an INTEGER. Only where the value is the same (no `avg` of a BIGINT or DECIMAL, which a DOUBLE may round) and, inside an expression, only an aggregate whose type is kept: `sum(x) + 1` may overflow as `x + 1`. |
 | Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 
-`report.rewrites` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
+`report.rewrites` holds them, each with its `site`, `kind`, `message`, `evidence`, and `suggest_type` (`SuggestType.REWRITE` or `SuggestType.REWRITE_WITH_CAVEAT`); `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
 
 Hazards come last: places whose result the SQL leaves unspecified. `report.hazards` holds them, each with its `site`, `concern`, `message`, and the failed proof as `evidence`.
 

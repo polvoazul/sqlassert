@@ -260,14 +260,17 @@ def test_a_redundant_grouping_column_not_selected_is_dropped():
 
 def test_a_group_by_over_a_key_of_its_input_is_a_projection():
     sql = SCHEMA + (
-        "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, any_value(nick) AS a "
+        "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, any_value(nick) AS a "
         "FROM users GROUP BY id"
     )
     rewrite, = suggest(sql).rewrites
     assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.suggest_type is SuggestType.REWRITE_WITH_CAVEAT
     assert rewrite.message.endswith(
-        "drop GROUP BY and write SELECT id, CAST(1 AS BIGINT) AS n, CAST(CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS BIGINT) AS c, "
-        "name AS m, CAST(id AS INT128) + 1 AS s, nick AS a"
+        "drop GROUP BY and write SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, nick AS a. "
+        "Caveat: 'n' changes from count's result type to an integer literal's type; "
+        "'c' changes from count's result type to an integer literal's type; "
+        "'s' changes from sum's result type to the type of id; cast them if later arithmetic needs the wider types"
     )
 
 
@@ -295,12 +298,70 @@ def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projecti
     assert RewriteKind.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
 
 
-def test_an_average_of_an_integer_preserves_its_conversion():
-    schema = "CREATE TABLE t (id INTEGER PRIMARY KEY, i INTEGER, f DOUBLE);"
-    [rewrite] = suggest(schema + "SELECT id, avg(i) / 2 AS a FROM t GROUP BY id").rewrites
-    assert rewrite.message.endswith("write SELECT id, CAST(i AS DOUBLE) / 2 AS a")
-    [rewrite] = suggest(schema + "SELECT id, avg(f) AS a FROM t GROUP BY id").rewrites
-    assert rewrite.message.endswith("write SELECT id, f AS a")
+ONE_ROW_SCHEMA = (
+    "CREATE TABLE t (id INTEGER PRIMARY KEY, i INTEGER, b BIGINT, f DOUBLE, r REAL, d DECIMAL(10, 2), bo BOOLEAN, s VARCHAR);"
+)
+ONE_ROW_VALUES = "INSERT INTO t VALUES (1, 2147483647, 9007199254740993, 1.5, 2.5, 1.25, true, 'a')"
+
+
+@pytest.mark.parametrize(("item", "replacement", "suggest_type", "types"), [
+    # Every group is one row, so each aggregate is its value there; its type
+    # may not be the aggregate's (DuckDB 2.0's, per typeof()).
+    ("sum(i)", "i", SuggestType.REWRITE_WITH_CAVEAT, ("HUGEINT", "INTEGER")),
+    ("sum(r)", "r", SuggestType.REWRITE_WITH_CAVEAT, ("DOUBLE", "FLOAT")),
+    ("sum(d)", "d", SuggestType.REWRITE_WITH_CAVEAT, ("DECIMAL(38,2)", "DECIMAL(10,2)")),
+    ("avg(i)", "i", SuggestType.REWRITE_WITH_CAVEAT, ("DOUBLE", "INTEGER")),
+    ("avg(r)", "r", SuggestType.REWRITE_WITH_CAVEAT, ("DOUBLE", "FLOAT")),
+    ("count(*)", "1", SuggestType.REWRITE_WITH_CAVEAT, ("BIGINT", "INTEGER")),
+    ("count(s)", "CASE WHEN s IS NULL THEN 0 ELSE 1 END", SuggestType.REWRITE_WITH_CAVEAT, ("BIGINT", "INTEGER")),
+    # A picked value, and a sum or average of a DOUBLE, keep the type.
+    ("max(s)", "s", SuggestType.REWRITE, ("VARCHAR", "VARCHAR")),
+    ("min(r) + 1", "r + 1", SuggestType.REWRITE, ("FLOAT", "FLOAT")),
+    ("bool_and(bo)", "bo", SuggestType.REWRITE, ("BOOLEAN", "BOOLEAN")),
+    ("sum(f)", "f", SuggestType.REWRITE, ("DOUBLE", "DOUBLE")),
+    ("avg(f)", "f", SuggestType.REWRITE, ("DOUBLE", "DOUBLE")),
+])
+def test_a_one_row_aggregate_is_a_rewrite_with_caveat_when_its_type_changes(item, replacement, suggest_type, types):
+    query = f"SELECT id, {item} AS v FROM t GROUP BY id"
+    rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
+    assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.GROUPING_PROJECTION, suggest_type)
+    written = f"drop GROUP BY and write SELECT id, {replacement} AS v"
+    if suggest_type is SuggestType.REWRITE:
+        assert rewrite.message.endswith(written)
+    else:
+        aggregate, _, argument = item.partition("(")
+        target = "an integer literal's type" if aggregate == "count" else f"the type of {argument.rstrip(')')}"
+        assert rewrite.message.endswith(
+            f"{written}. Caveat: 'v' changes from {aggregate}'s result type to {target}; "
+            "cast it if later arithmetic needs the wider type"
+        )
+    with duckdb.connect() as con:
+        con.execute(ONE_ROW_SCHEMA + ONE_ROW_VALUES)
+        before = con.execute(f"SELECT id, v, typeof(v) FROM ({query})").fetchall()
+        after = con.execute(f"SELECT id, v, typeof(v) FROM (SELECT id, {replacement} AS v FROM t)").fetchall()
+    assert [row[:2] for row in before] == [row[:2] for row in after]
+    assert (before[0][2], after[0][2]) == types
+
+
+@pytest.mark.parametrize("item", [
+    # A narrower type inside an expression may overflow where the aggregate did not.
+    "sum(i) + 1",
+    "count(*) + 2147483647",
+    "avg(i) / 2",
+    # avg of a BIGINT or DECIMAL is a DOUBLE that may round it: not the same value.
+    "avg(b)",
+    "avg(d)",
+    # sum of a BOOLEAN counts it; of an expression, its type is unknown.
+    "sum(bo)",
+    "sum(i + 1)",
+])
+def test_a_one_row_aggregate_whose_value_or_success_may_change_is_not_rewritten(item: str):
+    assert not suggest(ONE_ROW_SCHEMA + f"SELECT id, {item} AS v FROM t GROUP BY id").rewrites
+
+
+def test_a_rewrite_that_keeps_every_column_type_is_a_plain_rewrite():
+    rewrite, = suggest(SCHEMA + "SELECT DISTINCT id, name FROM users").rewrites
+    assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.REDUNDANT_DISTINCT, SuggestType.REWRITE)
 
 
 # EXCEPT and INTERSECT over a duplicate-free input -----------------------------------
@@ -467,6 +528,17 @@ def test_the_cli_lists_rewrites_before_markers(tmp_path, capsys):
     assert "INNER JOIN" in lines[0]
     assert all(line.startswith("marker") for line in lines[1:])
     assert len(lines) == 1 + len(suggest(path.read_text()).suggestions)
+
+
+def test_the_cli_labels_a_rewrite_with_caveat(tmp_path, capsys):
+    path = tmp_path / "query.sql"
+    path.write_text(SCHEMA + "SELECT id, count(*) AS n FROM users GROUP BY id")
+
+    assert main(["suggest", str(path)]) == 0
+
+    line = capsys.readouterr().out.splitlines()[0]
+    assert line.startswith("rewrite with caveat  line 5  Root Select  GROUP BY of one row per group  ")
+    assert line.endswith("Caveat: 'n' changes from count's result type to an integer literal's type; cast it if later arithmetic needs the wider type")
 
 
 # Rewrites preserve the result ---------------------------------------------------
@@ -645,10 +717,10 @@ EQUIVALENT = [
         RewriteKind.UNUSED_CTE,
     ),
     (
-        SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, "
+        SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, "
         "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
-        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, CAST(id AS HUGEINT) + 1 AS s, "
-        "nick AS a, CAST(id AS DOUBLE) AS v FROM users WHERE nick IS NULL OR id > 1",
+        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, "
+        "nick AS a, id AS v FROM users WHERE nick IS NULL OR id > 1",
         RewriteKind.GROUPING_PROJECTION,
     ),
     (

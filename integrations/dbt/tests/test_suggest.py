@@ -141,7 +141,7 @@ def test_command_compiles_what_the_models_read_and_lists_by_model(compiled, monk
     out = capsys.readouterr().out.splitlines()
     assert out[:2] == ["stg_orders:", "  models/stg_orders.sql:2  marker  Root Select  Not Null  /**ASSERT NOT NULL(order_id)**/"]
     assert "customer_orders:" in out
-    assert out[-1].startswith("0 rewrites, 3 markers, 0 hazards in 2 models")
+    assert out[-1].startswith("0 rewrites, 0 rewrites with caveat, 3 markers, 0 hazards in 2 models")
 
 
 def test_command_explains_and_keeps_the_callers_selection(compiled, monkeypatch, capsys):
