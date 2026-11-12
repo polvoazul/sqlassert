@@ -441,7 +441,10 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
     that column's value from, so the AnyAggregate maps down to its input
     column next to the grouping columns. Groups are disjoint, so a one-column
     key of the input is one of the output. One AnyAggregate per delegation:
-    two may pick different rows (`min(key1), max(key2)`; Calcite's C4).
+    two may pick different rows (`min(key1), max(key2)`; Calcite's C4). An
+    injective Builtin of an integer or decimal column inside the AnyAggregate
+    or around it (`max(empno + 1)`, `max(empno) + 1`, `deptno + 1` of a
+    grouped deptno) maps down the same way (`_picked_input`).
 - **Evidence.** `_closure` returns a `Closure` whose `members` hold one
   `Result` per reached attribute, citing the dependency or input closure that
   reached it; when several reach it, their evidence is combined, so two
