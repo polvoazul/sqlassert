@@ -444,11 +444,11 @@ class IrParser:
         self._discover_marker_targets(query, scope)
 
         where = query.args.get("where")
-        for conjunct in _conjuncts(where.this) if where is not None else ():
+        for conjunct in _filter_conjuncts(where.this) if where is not None else ():
             matched = _subquery_conjunct(conjunct)
             if matched is not None:
                 self._discover_query(matched[1], scope)
-        for expression in (*(_conjuncts(where.this) if where is not None else ()), *query.expressions):
+        for expression in (*(_filter_conjuncts(where.this) if where is not None else ()), *query.expressions):
             for subquery in _scalar_subqueries(expression):
                 if isinstance(subquery.this, exp.Select):
                     self._discover_query(subquery.this, scope)
@@ -1025,7 +1025,7 @@ class IrParser:
         if predicate is None:
             return None
         complete = left.relation.is_schema_complete and right.relation.is_schema_complete
-        return self._lower_condition(predicate, _conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
+        return self._lower_condition(predicate, _filter_conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
 
     def _lower_condition(
         self, source: Expr, conjuncts: list[Expr], bindings: tuple[_Binding, ...], *, schema_complete: bool
@@ -1156,7 +1156,7 @@ class IrParser:
         """WHERE: each `EXISTS`, `NOT EXISTS`, or `IN (subquery)` conjunct as a
         semi or anti join (Paulley §4.4.2), the other conjuncts as one Filter."""
         remaining = []
-        for conjunct in _conjuncts(where.this):
+        for conjunct in _filter_conjuncts(where.this):
             joined = self._subquery_join(lowered, conjunct)
             if joined is None:
                 remaining.append(conjunct)
@@ -1322,7 +1322,7 @@ class IrParser:
                 return None
             inner = select.args.get("where")
             predicate = None if inner is None else self._lower_condition(
-                inner.this, _conjuncts(inner.this), lowered.bindings + right.bindings,
+                inner.this, _filter_conjuncts(inner.this), lowered.bindings + right.bindings,
                 schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
             )
             right_relation, value = right.relation, lowered_value.column
@@ -1372,7 +1372,7 @@ class IrParser:
             return None
         keys: list[tuple[Expr, ir.OutputColumn, ir.OutputColumn]] = []  # (inner column, inner, outer)
         inner_only: list[Expr] = []
-        for conjunct in _conjuncts(where.this):
+        for conjunct in _filter_conjuncts(where.this):
             scoped = [self._scope_of(column, right, lowered) for column in conjunct.find_all(exp.Column)]
             if any(found is None for found in scoped):
                 return None
@@ -1456,7 +1456,7 @@ class IrParser:
                 right = self._lower_join(right, join)
             inner = select.args.get("where")
             predicate = None if inner is None else self._lower_condition(
-                inner.this, _conjuncts(inner.this), lowered.bindings + right.bindings,
+                inner.this, _filter_conjuncts(inner.this), lowered.bindings + right.bindings,
                 schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
             )
             relation = right.relation
@@ -1574,7 +1574,7 @@ class IrParser:
 
         origin = self._origin(having)
         parts: list[ir.ScalarExpr] = []
-        for conjunct in _conjuncts(having.this):
+        for conjunct in _filter_conjuncts(having.this):
             rewritten = conjunct.copy().transform(selected)
             unknown = any(
                 column.table != qualifier for column in rewritten.find_all(exp.Column)
@@ -2676,6 +2676,20 @@ def _conjuncts(predicate: Expr) -> list[Expr]:
     if isinstance(predicate, exp.And):
         return _conjuncts(predicate.this) + _conjuncts(predicate.expression)
     return [predicate]
+
+
+def _filter_conjuncts(predicate: Expr) -> list[Expr]:
+    """The conjuncts of a WHERE, ON or HAVING condition, each `p IS TRUE` as
+    `p`'s own: a filter keeps only the rows where its condition is TRUE, where
+    `p IS TRUE` is TRUE exactly when `p` is. Not in a value, where `p IS TRUE`
+    is FALSE, not NULL, on a NULL `p`."""
+    found: list[Expr] = []
+    for conjunct in _conjuncts(predicate):
+        if isinstance(conjunct, exp.Is) and isinstance(conjunct.expression, exp.Boolean) and conjunct.expression.this:
+            found.extend(_filter_conjuncts(conjunct.this))
+        else:
+            found.append(conjunct)
+    return found
 
 
 def _direct_sources(select: exp.Select) -> list[Expr]:
