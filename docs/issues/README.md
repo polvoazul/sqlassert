@@ -25,7 +25,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [57. dbt: incremental models](0057-dbt-incremental-models.md) — open (bare minimum today; ideas deferred)
 - [58. dbt: test and decide how findings map back to model files](0058-dbt-source-mapping.md) — open (deferred)
 - [59. User-defined functions and table functions (Postgres, Spark, Hive)](0059-postgres-user-defined-functions.md) — not planned (P4: a SETOF UDF or a UDTF in a select list repeats rows; read CREATE FUNCTION and the catalog)
-- [69. Real-world SQL corpora, run through the oracle as they are](0069-real-world-sql-corpora.md) — open (P3, deferred: DuckDB logic tests, TPC-H/TPC-DS, public dbt projects; unblocks 11 and 27 Part 2)
+- [69. Real-world SQL corpora, run through the oracle as they are](0069-real-world-sql-corpora.md) — open (P3, deferred: DuckDB logic tests, TPC-H/TPC-DS, public dbt projects, VeriEQL's LeetCode pairs; unblocks 11 and 27 Part 2)
 - [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
@@ -42,7 +42,8 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
   proofs; its lowering items, HAVING and USING first, lose proofs on common
   SQL).
 - **P3, needs downloaded corpora:** #69 (DuckDB logic tests, TPC-H/TPC-DS,
-  public dbt projects, run through the oracle unchanged), which unblocks #11
+  public dbt projects, VeriEQL's LeetCode pairs, run through the oracle
+  unchanged), which unblocks #11
   and #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
 - **P3, provisional (not prioritized yet):** #60-67.

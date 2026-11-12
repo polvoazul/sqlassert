@@ -8,7 +8,8 @@
 - **Created:** 2026-11-11
 - **Related:** [11: crash fuzzing](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md),
   [27: soundness oracle](0027-soundness-oracle-against-duckdb.md) (Part 2),
-  [63: random programs](0063-generate-random-programs-for-the-oracle.md)
+  [63: random programs](0063-generate-random-programs-for-the-oracle.md),
+  [61: VeriEQL oracle](0061-symbolic-oracle-with-verieql.md) (same repository)
 
 ## Why
 
@@ -18,7 +19,7 @@ we did not.
 
 ## What to do
 
-Take all three sources:
+Take all four sources:
 
 1. **DuckDB's `test/sql` logic tests** (MIT). The richest source of join,
    set-operation and subquery shapes, with their own `CREATE TABLE`s.
@@ -27,6 +28,29 @@ Take all three sources:
    less clear than MIT: check before checking any text in.
 3. **SQL from public dbt projects** (for example jaffle_shop and dbt's
    example projects), compiled to plain SQL.
+4. **VeriEQL's LeetCode benchmark**
+   ([VeriEQL/VeriEQL](https://github.com/VeriEQL/VeriEQL),
+   `benchmarks/leetcode/leetcode.jsonlines`, CC BY-NC-SA 4.0: fetch, never
+   vendor). 23,994 pairs of about 24k distinct hand-written MySQL queries
+   over 56 LeetCode problems: one reference solution per problem paired
+   with its submissions. Each line carries the schema (column types,
+   ENUMs) and constraints (73 primary keys, 31 foreign keys, ranges,
+   `in`, `neq`), so render them as `CREATE TABLE` with keys, ENUM and
+   CHECK. Shapes: joins in about 15k queries, GROUP BY 14k, subqueries
+   8k, CTEs 5k, HAVING 4k, UNION 2k, window functions 800.
+   - The constraints are VeriEQL's, not LeetCode's (problem 175 makes
+     both `ADDRESSID` and `PERSONID` primary keys of `ADDRESS`): treat
+     them as declared facts, and generate oracle data that satisfies them.
+   - Everything is upper-cased, string literals and ENUM values too, so
+     generated data must use the upper-cased values.
+   - Report counts per problem as well as per query: the largest problems
+     have about 900 submissions each and would dominate.
+   - **Completeness check, new to this source:** the two queries of a pair
+     answer the same problem. A Property proved on one but not on the other,
+     where VeriEQL found them equivalent, is a missed proof. List those by
+     shape to rank completeness work.
+   - The same repository has 397 Calcite rewrite pairs and 64 literature
+     pairs; those belong to [62](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md).
 
 **Run them as they are.** Do not curate, reduce or mutate the corpora.
 Point the existing soundness oracle (`pytest --soundness-oracle`) and the
@@ -48,11 +72,13 @@ version, not re-editing fixtures.
 
 ## Acceptance criteria
 
-- [ ] A script fetches the three corpora at pinned versions; provenance and
+- [ ] A script fetches the four corpora at pinned versions; provenance and
   license are noted per source.
 - [ ] One opt-in command runs `analyze`, `suggest` and the soundness oracle
   over every statement, unchanged, and prints crash, refuted-PROVED and
   skip counts per source.
 - [ ] Every crash and refuted PROVED found on the first run is fixed or
   filed.
+- [ ] On LeetCode pairs, missed proofs (proved on one query of an
+  equivalent pair, not the other) are listed by shape.
 - [ ] Issue 11's and 27 Part 2's corpus criteria are ticked or point here.
