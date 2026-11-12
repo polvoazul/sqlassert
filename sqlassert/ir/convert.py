@@ -172,6 +172,15 @@ class IrParser:
                 if self.dialect == "postgres" and node.quoted and node.name != node.name.lower() and node.find_ancestor(exp.Collate, exp.CollateColumnConstraint) is None:
                     diagnostic = Diagnostic(diag.UNSUPPORTED_CONSTRUCT, "case-sensitive quoted PostgreSQL identifiers are not supported", self._origin(node))
                     return IrConversionResult(ir.Program(), (), (diagnostic,))
+            for collate in statement.find_all(exp.Collate, exp.CollateColumnConstraint):
+                # Every COLLATE warns where it is written, whatever reads it.
+                written = collate.find_ancestor(exp.ColumnDef) if isinstance(collate, exp.CollateColumnConstraint) else collate
+                self._warnings.append(Diagnostic(
+                    diag.UNSUPPORTED_CONSTRUCT,
+                    "COLLATE is not supported by sqlassert yet: only the dialect's default collation is, so facts that "
+                    "compare its values are unknown",
+                    self._origin(written or collate, _source_line(written or collate)),
+                ))
             for table in statement.find_all(exp.Table):
                 if any("." in part.name for part in table.parts if isinstance(part, exp.Identifier)):
                     diagnostic = Diagnostic(diag.UNSUPPORTED_CONSTRUCT, "dots inside quoted relation identifiers are not supported", self._origin(table))
@@ -444,11 +453,11 @@ class IrParser:
         self._discover_marker_targets(query, scope)
 
         where = query.args.get("where")
-        for conjunct in _conjuncts(where.this) if where is not None else ():
+        for conjunct in _filter_conjuncts(where.this) if where is not None else ():
             matched = _subquery_conjunct(conjunct)
             if matched is not None:
                 self._discover_query(matched[1], scope)
-        for expression in (*(_conjuncts(where.this) if where is not None else ()), *query.expressions):
+        for expression in (*(_filter_conjuncts(where.this) if where is not None else ()), *query.expressions):
             for subquery in _scalar_subqueries(expression):
                 if isinstance(subquery.this, exp.Select):
                     self._discover_query(subquery.this, scope)
@@ -785,6 +794,10 @@ class IrParser:
         by_name = {definition.name: definition for definition in definitions}
         if symbol.statement is not None:
             self._absent.update(column for column in columns if column.name not in by_name)
+        # A column declared with a COLLATE compares under a collation sqlassert
+        # does not model (`parse` warns): it is left untyped, so its values are unknown.
+        collated = {name for name, definition in by_name.items() if _collated(definition)}
+        by_name = {name: definition for name, definition in by_name.items() if name not in collated}
         typed = tuple(
             replace(
                 column, binary_text=self._is_binary_text(by_name[column.name]),
@@ -806,7 +819,7 @@ class IrParser:
             return None
         if kind.this in exp.DataType.TEXT_TYPES:
             return kind.sql(dialect=self.dialect) if self._is_binary_text(definition) else None
-        if _collated(definition) or self._unscaled_decimal(kind):
+        if self._unscaled_decimal(kind):
             return None
         return kind.sql(dialect=self.dialect)
 
@@ -829,16 +842,11 @@ class IrParser:
         return self.semantics.unscaled_decimal and kind.this == exp.DataType.Type.DECIMAL and not kind.expressions
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
-        """Declared VARCHAR or TEXT, with no COLLATE, in a dialect whose
-        default collation is binary: compared by identity.
-
-        CHAR is not: it ignores trailing spaces when compared. Any COLLATE,
-        even a binary one, is not modelled (issue 49)."""
+        """Declared VARCHAR or TEXT in a dialect whose default collation is
+        binary: compared by identity. CHAR is not: it ignores trailing spaces
+        when compared."""
         kind = definition.args.get("kind")
-        return (
-            isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES
-            and not _collated(definition) and self.semantics.text_is_binary
-        )
+        return isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES and self.semantics.text_is_binary
 
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
@@ -1023,7 +1031,7 @@ class IrParser:
         if predicate is None:
             return None
         complete = left.relation.is_schema_complete and right.relation.is_schema_complete
-        return self._lower_condition(predicate, _conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
+        return self._lower_condition(predicate, _filter_conjuncts(predicate), left.bindings + right.bindings, schema_complete=complete)
 
     def _lower_condition(
         self, source: Expr, conjuncts: list[Expr], bindings: tuple[_Binding, ...], *, schema_complete: bool
@@ -1154,7 +1162,7 @@ class IrParser:
         """WHERE: each `EXISTS`, `NOT EXISTS`, or `IN (subquery)` conjunct as a
         semi or anti join (Paulley §4.4.2), the other conjuncts as one Filter."""
         remaining = []
-        for conjunct in _conjuncts(where.this):
+        for conjunct in _filter_conjuncts(where.this):
             joined = self._subquery_join(lowered, conjunct)
             if joined is None:
                 remaining.append(conjunct)
@@ -1320,7 +1328,7 @@ class IrParser:
                 return None
             inner = select.args.get("where")
             predicate = None if inner is None else self._lower_condition(
-                inner.this, _conjuncts(inner.this), lowered.bindings + right.bindings,
+                inner.this, _filter_conjuncts(inner.this), lowered.bindings + right.bindings,
                 schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
             )
             right_relation, value = right.relation, lowered_value.column
@@ -1370,7 +1378,7 @@ class IrParser:
             return None
         keys: list[tuple[Expr, ir.OutputColumn, ir.OutputColumn]] = []  # (inner column, inner, outer)
         inner_only: list[Expr] = []
-        for conjunct in _conjuncts(where.this):
+        for conjunct in _filter_conjuncts(where.this):
             scoped = [self._scope_of(column, right, lowered) for column in conjunct.find_all(exp.Column)]
             if any(found is None for found in scoped):
                 return None
@@ -1454,7 +1462,7 @@ class IrParser:
                 right = self._lower_join(right, join)
             inner = select.args.get("where")
             predicate = None if inner is None else self._lower_condition(
-                inner.this, _conjuncts(inner.this), lowered.bindings + right.bindings,
+                inner.this, _filter_conjuncts(inner.this), lowered.bindings + right.bindings,
                 schema_complete=lowered.relation.is_schema_complete and right.relation.is_schema_complete,
             )
             relation = right.relation
@@ -1491,7 +1499,13 @@ class IrParser:
         rows its input has. HAVING filters the groups (`_lower_having`). A
         key not selected, or an aggregate only HAVING reads, is a hidden
         output of the Aggregate, which a Project then drops: a key still
-        splits the groups, and HAVING may read either."""
+        splits the groups, and HAVING may read either.
+
+        An item computed over aggregates (`max(sal) + 1`) is computed by that
+        Project from the Aggregate's outputs: each repeatable aggregate call
+        it contains is one output, shared with the item or HAVING conjunct
+        written the same, and so is each column outside them. HAVING's facts
+        about `max(sal)` then hold of the item's operand."""
         if _unsupported_grouping(select) is not None:
             return None
         if select.args.get("where") is not None:
@@ -1513,6 +1527,25 @@ class IrParser:
                 items.append(item)
             grouped_items.add(id(item))
             matched.append(item)
+        computed = {id(item) for item in select.expressions if self._computed_over_aggregates(_unaliased(item))}
+        if any(id(item) in computed for item in matched):
+            return None  # A grouping position naming an item that aggregates.
+        items = [item for item in items if id(item) not in computed]
+        # Each part of a computed item is an output: an item or hidden item
+        # written the same, when repeatable, else a hidden item of its own.
+        parts: dict[int, Expr] = {}
+        for item in select.expressions:
+            if id(item) not in computed:
+                continue
+            for part in _aggregate_parts(_unaliased(item)):
+                text = part.sql(dialect=self.dialect)
+                same = next((
+                    other for other in items if self._repeatable(part) and _unaliased(other).sql(dialect=self.dialect) == text
+                ), None)
+                if same is None:
+                    same = exp.alias_(part.copy(), f"{HIDDEN_AGGREGATE}{len(items)}")
+                    items.append(same)
+                parts[id(part)] = same
         having = select.args.get("having")
         if having is not None:
             # An aggregate HAVING reads that no item writes: a hidden output,
@@ -1542,11 +1575,27 @@ class IrParser:
             grouping_outputs=tuple(grouping_outputs), calls=calls,
         )
         relation: ir.RelationExpr = aggregate if having is None else self._lower_having(aggregate, items, having)
-        if len(items) == len(select.expressions):
+        if len(items) == len(select.expressions) and all(item is written for item, written in zip(items, select.expressions)):
             return relation
         origin = self._origin(select)
-        selected = _pass_output_columns(relation.output_columns[:len(select.expressions)], origin)
-        return ir.Project(origin=origin, output_columns=selected, is_schema_complete=True, input=relation)
+        position = {id(item): index for index, item in enumerate(items)}
+        selected: list[ir.OutputColumn] = []
+        for item in select.expressions:
+            if id(item) not in computed:
+                selected.extend(_pass_output_columns((relation.output_columns[position[id(item)]],), origin))
+                continue
+            values = {
+                part: ir.ColumnRef(origin=self._origin(other), column=relation.output_columns[position[id(other)]])
+                for part, other in parts.items()
+            }
+            self._grouped_values.update(values)
+            try:
+                value = self._lower_expression(_unaliased(item), (), schema_complete=True)
+            finally:
+                for key in values:
+                    del self._grouped_values[key]
+            selected.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=value))
+        return ir.Project(origin=origin, output_columns=tuple(selected), is_schema_complete=True, input=relation)
 
     def _lower_having(self, aggregate: ir.Aggregate, items: list[Expr], having: exp.Having) -> ir.Filter:
         """HAVING as a Filter of the grouped rows. A condition reads the
@@ -1572,7 +1621,7 @@ class IrParser:
 
         origin = self._origin(having)
         parts: list[ir.ScalarExpr] = []
-        for conjunct in _conjuncts(having.this):
+        for conjunct in _filter_conjuncts(having.this):
             rewritten = conjunct.copy().transform(selected)
             unknown = any(
                 column.table != qualifier for column in rewritten.find_all(exp.Column)
@@ -1584,6 +1633,15 @@ class IrParser:
         return ir.Filter(
             origin=origin, output_columns=_pass_output_columns(aggregate.output_columns, origin), is_schema_complete=True,
             input=aggregate, predicate=_and(tuple(parts), origin),
+        )
+
+    def _computed_over_aggregates(self, expression: Expr) -> bool:
+        """Whether a grouped select item computes a value from aggregate
+        calls, rather than being one: `max(sal) + 1`, not `max(sal)`. One
+        with a window or a subquery stays an Aggregate output."""
+        return (
+            not _is_aggregate_call(expression) and bool(_outermost_aggregate_calls(expression))
+            and expression.find(exp.Window, exp.Query, exp.Subquery) is None
         )
 
     def _repeatable(self, expression: Expr) -> bool:
@@ -1871,6 +1929,8 @@ class IrParser:
         match expression:
             case exp.Paren():
                 return self._lower_expression(expression.this, bindings, schema_complete=schema_complete, line=line)
+            case exp.Collate():
+                return ir.OpaqueExpression(origin=origin, description=description)  # `parse` warns.
             case exp.Null():
                 return ir.NullLiteral(origin=origin)
             case exp.Count():
@@ -2672,6 +2732,20 @@ def _conjuncts(predicate: Expr) -> list[Expr]:
     return [predicate]
 
 
+def _filter_conjuncts(predicate: Expr) -> list[Expr]:
+    """The conjuncts of a WHERE, ON or HAVING condition, each `p IS TRUE` as
+    `p`'s own: a filter keeps only the rows where its condition is TRUE, where
+    `p IS TRUE` is TRUE exactly when `p` is. Not in a value, where `p IS TRUE`
+    is FALSE, not NULL, on a NULL `p`."""
+    found: list[Expr] = []
+    for conjunct in _conjuncts(predicate):
+        if isinstance(conjunct, exp.Is) and isinstance(conjunct.expression, exp.Boolean) and conjunct.expression.this:
+            found.extend(_filter_conjuncts(conjunct.this))
+        else:
+            found.append(conjunct)
+    return found
+
+
 def _direct_sources(select: exp.Select) -> list[Expr]:
     """The sources of `select`'s FROM, those of a parenthesized join in place of it."""
     source = _from_source(select)
@@ -3112,6 +3186,20 @@ def _outermost_aggregate_calls(expression: Expr) -> list[Expr]:
         elif not isinstance(node, exp.Window | exp.Query | exp.Subquery):
             pending.extend(node.iter_expressions())
     return calls
+
+
+def _aggregate_parts(expression: Expr) -> list[Expr]:
+    """The aggregate calls of a grouped select item not inside another, and
+    its columns outside them: what it is computed from, per group."""
+    parts: list[Expr] = []
+    pending: list[Expr] = [expression]
+    while pending:
+        node = pending.pop()
+        if _is_aggregate_call(node) or isinstance(node, exp.Column):
+            parts.append(node)
+        else:
+            pending.extend(node.iter_expressions())
+    return parts
 
 
 def _unaliased(item: Expr) -> Expr:

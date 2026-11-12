@@ -242,6 +242,19 @@ def test_mutually_determined_grouping_columns_drop_only_one():
     assert rewrites(sql) == [RewriteKind.REDUNDANT_GROUPING]
 
 
+def test_a_redundant_grouping_column_beside_an_item_computed_over_aggregates():
+    # The item is computed by a Project over the Aggregate, which the rewrite sees through.
+    sql = SCHEMA + "SELECT u.name, max(s.ts) + 1 AS t FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name"
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.message.endswith("drop 'u.name' from GROUP BY and select any_value(u.name) AS name")
+
+
+def test_a_redundant_grouping_column_not_selected_is_dropped():
+    sql = SCHEMA + "SELECT count(*) + 1 AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name"
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.message.endswith("drop 'u.name' from GROUP BY")
+
+
 # A GROUP BY whose groups are single rows ----------------------------------------
 
 
@@ -779,10 +792,10 @@ def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
         "CREATE TABLE q (a INTEGER, b INTEGER);\nSELECT DISTINCT a AS b FROM q ORDER BY q.b, b DESC LIMIT 1",
         # DISTINCT ON's ORDER BY picks which row of each group survives.
         "CREATE TABLE d (id INTEGER, v INTEGER);\nSELECT DISTINCT ON (id) id, v FROM d ORDER BY id, v",
-        # Under NOCASE, 'A' and 'a' tie on name: n orders them.
-        "CREATE TABLE c (name VARCHAR COLLATE NOCASE PRIMARY KEY, n INTEGER);\nSELECT name, n FROM c ORDER BY name, n LIMIT 1",
+        # -0.0 = 0.0, so two rows tie on x: n orders them.
+        "CREATE TABLE c (x DOUBLE PRIMARY KEY, n INTEGER);\nSELECT x, n FROM c ORDER BY x, n LIMIT 1",
     ],
-    ids=["qualified key", "distinct on", "collated key"],
+    ids=["qualified key", "distinct on", "float key"],
 )
 def test_an_order_by_key_whose_earlier_keys_may_tie_different_rows_is_kept(sql: str):
     assert not any(item.kind is RewriteKind.REDUNDANT_SORT_KEY for item in suggest(sql).rewrites)

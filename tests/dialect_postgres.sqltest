@@ -4,7 +4,7 @@
 -- concatenation, NULL for a NULL text operand but not for an array's
 -- (`ARRAY[1] || NULL` is `{1}`); `concat()`, `greatest()` and `least()` skip
 -- NULLs, and `xs[i]` is NULL for a NULL `xs`. Text compares by
--- identity by default and under the deterministic built-in collations. A
+-- identity under the default collation (a COLLATE is unsupported). A
 -- NUMERIC with no scale keeps each value's own (1.0 and 1.00 are equal and
 -- differ). Keys are enforced, except a foreign key added NOT VALID, one
 -- declared NOT ENFORCED (PostgreSQL 18), and a DEFERRABLE constraint.
@@ -12,7 +12,7 @@
 -- dialect: postgres
 CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, m INTEGER, s TEXT NOT NULL, r TEXT);
 CREATE TABLE p (id INTEGER PRIMARY KEY, n NUMERIC, d NUMERIC(10, 2));
-CREATE TABLE c (id INTEGER PRIMARY KEY, s TEXT COLLATE "C", u TEXT COLLATE "und-x-icu", v VARCHAR(5) COLLATE "default", w TEXT);
+CREATE TABLE c (id INTEGER PRIMARY KEY, w TEXT);
 
 -- case: division_by_a_non_null_value_is_non_null
 SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
@@ -52,16 +52,6 @@ SELECT d, CAST(d AS TEXT) AS x FROM p /**ASSERT DETERMINES(d -> x)**/  --~ PROVE
 -- No value equals both 'b' and 'B', so no row is kept.
 SELECT w FROM c WHERE w IN ('a', 'b') AND w = 'B' /**ASSERT ENUM(w IN ('a'))**/  --~ PROVED
 --~ always-null-column "'w' is always NULL"
-
--- case: text_under_an_explicit_collate_is_not_modelled
--- Any COLLATE, even "C" or "default", is not taken to compare by identity (issue 49).
-SELECT s FROM c WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
-
--- case: text_under_an_explicit_default_collate_is_not_modelled
-SELECT v FROM c WHERE v IN ('a', 'b') AND v = 'B' /**ASSERT ENUM(v IN ('a'))**/  --~ UNKNOWN
-
--- case: text_under_another_collation_may_equal_distinct_strings
-SELECT u FROM c WHERE u IN ('a', 'b') AND u = 'B' /**ASSERT ENUM(u IN ('a'))**/  --~ UNKNOWN
 
 -- case: a_foreign_key_added_not_valid_is_not_knowledge
 -- trust_unenforced_keys: false

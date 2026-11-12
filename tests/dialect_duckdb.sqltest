@@ -1,28 +1,17 @@
 -- DuckDB semantics the rules depend on (`sqlassert/dialects.py`).
 --
--- Text with no COLLATE compares by identity under DuckDB's shipped default
--- collation (`SET default_collation` is out of scope). Text with any COLLATE,
--- binary or not, is not taken to compare by identity (issue 49).
+-- Text compares by identity under DuckDB's shipped default collation
+-- (`SET default_collation` is out of scope; a COLLATE is unsupported).
 -- `concat()` and `concat_ws()` skip NULL; `||` does not.
 -- A CAST from JSON may be NULL: JSON `null` casts to NULL.
 
-CREATE TABLE t (id INTEGER PRIMARY KEY, plain VARCHAR, exact VARCHAR COLLATE c, folded VARCHAR COLLATE nocase);
+CREATE TABLE t (id INTEGER PRIMARY KEY, plain VARCHAR);
 
--- case: text_without_a_collate_is_compared_by_identity
+-- case: text_is_compared_by_identity
 SELECT plain FROM t WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/  --~ PROVED
 
--- case: text_under_a_binary_collate_is_not_modelled
-SELECT exact FROM t WHERE exact IN ('x', 'y') AND exact IN ('x', 'z') /**ASSERT ENUM(exact IN ('x'))**/  --~ UNKNOWN
-
--- case: text_under_nocase_is_not_compared_by_identity
-SELECT folded FROM t WHERE folded IN ('x', 'y') AND folded IN ('x', 'z') /**ASSERT ENUM(folded IN ('x'))**/
---~ UNKNOWN
-
--- case: a_function_of_text_without_a_collate_is_determined
+-- case: a_function_of_text_is_determined
 SELECT plain, upper(plain) AS u, count(*) AS n FROM t GROUP BY plain, upper(plain) /**ASSERT UNIQUE(plain)**/  --~ PROVED
-
--- case: a_function_of_collated_text_is_not_determined
-SELECT folded, upper(folded) AS u, count(*) AS n FROM t GROUP BY folded, upper(folded) /**ASSERT UNIQUE(folded)**/  --~ UNKNOWN
 
 -- case: a_cast_from_json_may_be_null
 -- JSON `null` is a value, which casts to NULL: `CAST('null'::JSON AS BIGINT)`.

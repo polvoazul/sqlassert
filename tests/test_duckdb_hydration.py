@@ -156,7 +156,7 @@ def test_an_enforced_foreign_key_proves_against_the_catalog(connection):
     assert [a.outcome for a in analyze_with(connection, "SELECT * FROM payments /**ASSERT FOREIGN KEY(order_id) REFERENCES users(id)**/").assertions] == [Outcome.UNKNOWN]
 
 
-# Column types, enums, and collations (issue 30) -------------------------------
+# Column types and enums (issue 30); a COLLATE leaves a column untyped ---------
 
 TYPED = """
 CREATE TABLE typed (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE NOCASE, status ENUM('new', 'paid'), ratio DOUBLE);

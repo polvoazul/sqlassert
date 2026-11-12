@@ -132,9 +132,13 @@ def rewrites(
                 found.extend(_implied_conjuncts(arena, site, relation, relation.conjuncts, program, "ON"))
             case ir.Distinct():
                 found.extend(_redundant_distinct(site, relation))
-            case ir.Aggregate() if isinstance(node, exp.Select):
-                projection = _grouping_is_projection(site, relation, node, dialect)
-                found.extend([projection] if projection else _redundant_grouping(site, relation, node, dialect))
+            case ir.Aggregate() | ir.Project(input=ir.Aggregate()) if isinstance(node, exp.Select):
+                # A Project over the Aggregate drops its hidden outputs and
+                # computes the items over aggregates (`_lower_aggregate`).
+                aggregate = relation if isinstance(relation, ir.Aggregate) else relation.input
+                assert isinstance(aggregate, ir.Aggregate)
+                projection = _grouping_is_projection(site, aggregate, node, dialect)
+                found.extend([projection] if projection else _redundant_grouping(site, relation, aggregate, node, dialect))
             case _:
                 pass  # Other Select Expressions have nothing to rewrite yet.
     found.extend(item for item in _unused_ctes(ast) if wanted(item.site))
@@ -494,8 +498,12 @@ def _one_row(item: Expr, dialect: str, types: dict[str, str | None]) -> str | No
     return written_sql(item, dialect)
 
 
-def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp.Select, dialect: str) -> list[Rewrite]:
+def _redundant_grouping(
+    site: AttachmentSite, selected: ir.RelationExpr, aggregate: ir.Aggregate, node: exp.Select, dialect: str,
+) -> list[Rewrite]:
     """Each grouping column the grouping columns kept so far strictly determine.
+    `selected` is the relation whose output columns are `node`'s items: the
+    Aggregate, or a Project over it.
 
     One column always stays: grouping by nothing turns an empty input into one row.
     """
@@ -518,12 +526,17 @@ def _redundant_grouping(site: AttachmentSite, aggregate: ir.Aggregate, node: exp
         kept.remove(grouped)
         names = quoted_all(written[other] for other in others)
         alias = exp.to_identifier(grouped.name).sql(dialect=dialect)
-        selected = node.expressions[aggregate.output_columns.index(grouped)]
-        expression = selected.this if isinstance(selected, exp.Alias) else selected
-        message = (
-            f"({names}) determine {quoted(written[grouped])}, NULL equal to NULL: drop {quoted(written[grouped])} from GROUP BY "
-            f"and select any_value({written_sql(expression, dialect)}) AS {alias}"
-        )
+        position = next((
+            index for index, column in enumerate(selected.output_columns)
+            if column is grouped or isinstance(column.scalar_expr, ir.ColumnRef) and column.scalar_expr.column is grouped
+        ), None)
+        drop = f"({names}) determine {quoted(written[grouped])}, NULL equal to NULL: drop {quoted(written[grouped])} from GROUP BY"
+        if position is None:
+            message = drop  # Not selected.
+        else:
+            item = node.expressions[position]
+            expression = item.this if isinstance(item, exp.Alias) else item
+            message = f"{drop} and select any_value({written_sql(expression, dialect)}) AS {alias}"
         found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, closure.members[source]))
     return found
 

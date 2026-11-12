@@ -218,6 +218,50 @@ FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE (e.sal > ANY (SELECT comm FROM emp)) IS TRUE
 /**ASSERT NOT NULL(empno)**/  --~ PROVED
 
+-- A filter keeps the rows where its condition is TRUE, so a conjunct
+-- `p IS TRUE` states every fact `p` does there.
+-- case: is_true_conjunct_pins_a_value_in_where
+SELECT ename, sal FROM emp_nullables WHERE (sal = 5) IS TRUE
+/**ASSERT ENUM(sal IN (5))**/  --~ PROVED
+/**ASSERT DETERMINES(ename -> sal)**/  --~ PROVED
+
+-- case: is_true_conjunct_of_an_and_pins_both_values
+SELECT empno, sal, comm FROM emp_nullables WHERE (sal = 5 AND comm IN (1, 2)) IS TRUE
+/**ASSERT ENUM(sal IN (5))**/  --~ PROVED
+/**ASSERT ENUM(comm IN (1, 2))**/  --~ PROVED
+
+-- case: is_not_false_conjunct_pins_nothing
+-- (NULL = 5) IS NOT FALSE is TRUE: sal may be NULL, but is 5 where it is not.
+SELECT empno, sal FROM emp_nullables WHERE (sal = 5) IS NOT FALSE
+/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+
+-- case: is_true_under_not_pins_nothing
+SELECT empno, sal FROM emp_nullables WHERE NOT ((sal = 5) IS TRUE)
+/**ASSERT ENUM(sal IN (6))**/  --~ UNKNOWN
+/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+
+-- case: is_true_conjunct_equates_columns_in_on
+SELECT e.ename, e.deptno, d.deptno AS d_deptno
+FROM emp_nullables AS e JOIN dept AS d ON (d.deptno = e.deptno) IS TRUE
+WHERE e.deptno = 10
+/**ASSERT ENUM(d_deptno IN (10))**/  --~ PROVED
+/**ASSERT DETERMINES(ename -> d_deptno)**/  --~ PROVED
+
+-- case: is_true_conjunct_of_a_left_join_on_keeps_the_padding
+SELECT d.deptno, e.empno, e.sal
+FROM dept AS d LEFT JOIN emp_nullables AS e ON (e.deptno = d.deptno) IS TRUE AND (e.sal = 5) IS TRUE
+/**ASSERT ENUM(sal IN (5))**/  --~ PROVED
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+
+-- case: is_true_conjunct_pins_an_aggregate_in_having
+SELECT deptno, count(*) AS c FROM emp_nullables GROUP BY deptno HAVING (count(*) = 1) IS TRUE
+/**ASSERT ENUM(c IN (1))**/  --~ PROVED
+
+-- case: is_true_of_an_aggregate_in_value_position_pins_nothing
+SELECT deptno, count(*) AS c, (count(*) = 1) IS TRUE AS one FROM emp_nullables GROUP BY deptno
+/**ASSERT ENUM(c IN (1))**/  --~ UNKNOWN
+/**ASSERT NOT NULL(one)**/  --~ PROVED
+
 -- case: strong_is_not_true_of_a_rejecting_operand_rejects_nothing
 -- (NULL > ANY (...)) IS NOT TRUE is TRUE.
 SELECT empno, sal FROM emp_nullables WHERE (sal > ANY (SELECT comm FROM emp)) IS NOT TRUE
@@ -433,15 +477,6 @@ FROM emp AS e
 WHERE EXISTS (SELECT 1 FROM measure AS m WHERE m.v = e.mgr AND m.v = e.comm)
 /**ASSERT DETERMINES(mgr -> comm)**/  --~ UNKNOWN
 
--- case: pullup_semi_join_through_a_collation
--- 'x' = c.a = 'X' under NOCASE: ename need not be 'x', nor equal name.
-CREATE TABLE coll_ci (id INTEGER PRIMARY KEY, a VARCHAR COLLATE NOCASE NOT NULL);
-SELECT e.empno, e.ename, d.name
-FROM emp AS e JOIN dept AS d ON d.deptno = e.deptno
-WHERE EXISTS (SELECT 1 FROM coll_ci AS c WHERE c.a = e.ename AND c.a = d.name AND c.a = 'x')
-/**ASSERT ENUM(ename IN ('x'))**/  --~ UNKNOWN
-/**ASSERT DETERMINES(ename -> name)**/  --~ UNKNOWN
-
 -- case: pullup_semi_join_through_a_right_column_only_or_bound
 -- An OR in the EXISTS body bounds the matched row's column only when every
 -- part does.
@@ -591,9 +626,3 @@ SELECT w, x, y, z FROM (VALUES (1, 2, 3, NULL), (1, 2, NULL, NULL), (5, 2, 3, NU
 /**ASSERT NOT NULL(w, x)**/  --~ PROVED
 /**ASSERT ENUM(y IN (3))**/  --~ PROVED
 
--- case: pullup_equivalence_under_a_collation
--- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.EquivalenceFinder (any `=` of two columns)
--- 'X' = 'x' under NOCASE, so b need not be 'x'.
-CREATE TABLE coll (id INTEGER PRIMARY KEY, a VARCHAR COLLATE NOCASE, b VARCHAR COLLATE NOCASE);
-SELECT id, a, b FROM coll WHERE a = b AND a = 'x'
-/**ASSERT ENUM(b IN ('x'))**/  --~ UNKNOWN

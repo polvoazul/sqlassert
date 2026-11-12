@@ -1,20 +1,22 @@
 # 49. Collation-aware Properties
 
-- **State:** not planned
-- **Priority:** P4 (not planned): Simplified on 2026-11-08 to text without
-  COLLATE in DuckDB and PostgreSQL compared by identity, any COLLATE not. Too
-  much trouble for little gain until MySQL users or collated keys come up.
+- **State:** closed (2026-11-12): won't do; COLLATE is unsupported and warns
+- **Priority:** P4 (closed): Simplified on 2026-11-08 to text without
+  COLLATE in DuckDB and PostgreSQL compared by identity, any COLLATE not. On
+  2026-11-12 sqlassert dropped COLLATE support altogether: each dialect's
+  default collation only, and a `COLLATE` lowers opaque and warns
+  `unsupported-construct`.
 - **Theme:** lowering
 - **Labels:** dialects, P4
 - **Created:** 2026-11-08
-- **Parent:** [42. Lowering support v2](0042-lowering-support-v2.md)
+- **Parent:** [42. Lowering support v2](../0042-lowering-support-v2.md)
 
 Today text compares by identity only when it is `VARCHAR` or `TEXT` with no
 `COLLATE`, in a dialect whose shipped default collation is binary
 (`DialectSemantics.text_is_binary`: DuckDB and PostgreSQL). Any `COLLATE`,
 binary or not, makes the column not compared by identity, and a setting that
 changes the default (DuckDB's `default_collation`) is out of scope
-([`docs/dialects.md`](../dialects.md)). That is simple and sound, at the cost
+([`docs/dialects.md`](../../dialects.md)). That is simple and sound, at the cost
 of proofs on collated text and on MySQL, whose default ignores case.
 
 ## Idea

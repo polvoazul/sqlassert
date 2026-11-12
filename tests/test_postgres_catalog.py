@@ -98,8 +98,9 @@ def test_tables_have_their_columns_types_and_enforced_keys(fetcher: PostgresKnow
     customers, orders = found["customers"], found["orders"]
     # The partial and the expression unique index are not keys.
     assert customers.schema == CATALOG_SCHEMA and customers.primary_key == ("id",) and customers.unique_sets == (("email",),)
-    assert [(column.name, column.nullable, column.data_type, column.collation) for column in customers.columns] == [
-        ("id", False, "integer", None), ("email", False, "text", None), ("name", True, "text", None), ("amount", True, "numeric", None),
+    # A deterministic collation ("C") compares by identity: the column keeps its type.
+    assert [(column.name, column.nullable, column.data_type) for column in customers.columns] == [
+        ("id", False, "integer"), ("email", False, "text"), ("name", True, "text"), ("amount", True, "numeric"),
     ]
     # The DEFERRABLE UNIQUE is left out; the unique index keeps its key column only.
     assert orders.unique_sets == (("note",),)
@@ -156,10 +157,10 @@ class _ScriptedCursor:
             ("shop", "public", "remote", "f", False),
         ]),
         ("a.attname,", [
-            ("customers", "id", False, "integer", None),
-            ("customers", "name", True, "text", "und-ci"),
-            ("parent", "id", False, "integer", None),
-            ("remote", "id", False, "integer", None),
+            ("customers", "id", False, "integer"),
+            ("customers", "name", True, None),
+            ("parent", "id", False, "integer"),
+            ("remote", "id", False, "integer"),
         ]),
         ("k.contype IN ('p', 'u')", [
             ("customers", "p", ["id"], "shop", None, None, []), ("parent", "p", ["id"], "shop", None, None, []),
@@ -198,7 +199,8 @@ def test_scripted_catalog_rows_become_metadata():
 
     customers = found["customers"]
     assert customers.identity == "shop.public.customers" and customers.primary_key == ("id",)
-    assert [column.collation for column in customers.columns] == [None, "und-ci"]
+    # A nondeterministic collation leaves the column untyped.
+    assert [column.data_type for column in customers.columns] == ["integer", None]
     # An inheritance parent and a foreign table are columns only, all nullable.
     for name in ("public.parent", "remote"):
         assert found[name].primary_key == () and found[name].unique_sets == ()
@@ -215,7 +217,7 @@ class _CaseCursor(_ScriptedCursor):
         ("c.relhassubclass", [
             ("shop", "s1", "T", "r", False), ("shop", "s2", "t", "r", False), ("shop", "s2", "U", "r", False),
         ]),
-        ("a.attname,", [("T", "id", False, "integer", None), ("t", "id", False, "integer", None), ("U", "id", False, "integer", None)]),
+        ("a.attname,", [("T", "id", False, "integer"), ("t", "id", False, "integer"), ("U", "id", False, "integer")]),
         ("k.contype IN ('p', 'u')", [("T", "p", ["id"], "shop", None, None, [])]),
         ("k.contype IN ('f')", []),
         ("pg_catalog.pg_index", []),

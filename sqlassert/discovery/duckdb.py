@@ -46,7 +46,7 @@ WHERE {_TABLES}
 ORDER BY table_name, column_index
 """
 
-# duckdb_columns() drops collations; the stored CREATE TABLE keeps them.
+# duckdb_columns() drops a column's COLLATE; the stored CREATE TABLE keeps it.
 _TABLE_SQL = f"SELECT table_name, sql FROM duckdb_tables() WHERE {_TABLES}"
 
 # A foreign key's referenced table is in the referencing table's own catalog
@@ -110,9 +110,9 @@ class DuckDBKnowledgeFetcher(InformationSchemaKnowledgeFetcher):
 
     def columns(self, catalog: str, schema: str, tables: Sequence[str]) -> list[tuple[str, DatabaseColumn]]:
         lookup = (catalog, schema, list(tables))
-        collations = self._collations(catalog, schema, lookup)
+        collated = self._collated(catalog, schema, lookup)
         return [
-            (table, DatabaseColumn(column, nullable, data_type, collations.get(table, {}).get(column.lower())))
+            (table, DatabaseColumn(column, nullable, None if (table, column.lower()) in collated else data_type))
             for table, column, nullable, data_type in self._rows(_COLUMNS, lookup)
         ]
 
@@ -133,26 +133,22 @@ class DuckDBKnowledgeFetcher(InformationSchemaKnowledgeFetcher):
         rows = self._rows(_VIEW, (relation.catalog, relation.schema, relation.name))
         return rows[0][0] if rows else None
 
-    def _collations(self, catalog: str, schema: str, lookup: tuple[Any, ...]) -> dict[str, dict[str, str]]:
-        """Each table's columns declared with a COLLATE, by name. The
+    def _collated(self, catalog: str, schema: str, lookup: tuple[Any, ...]) -> set[tuple[str, str]]:
+        """Each (table, lowercase column) declared with a COLLATE: sqlassert
+        supports the default collation only, so such a column is untyped. The
         session's `default_collation` is not read: text without a COLLATE has
         the engine's shipped (binary) default (docs/dialects.md)."""
-        collations: dict[str, dict[str, str]] = {}
+        collated: set[tuple[str, str]] = set()
         for table, sql in self._rows(_TABLE_SQL, lookup):
             try:
                 create = sqlglot.parse_one(sql, read="duckdb")
             except SqlglotError as error:
                 raise DatabaseMetadataError(f"definition of table {catalog}.{schema}.{table} could not be parsed: {error}") from error
-            own: dict[str, str] = {}
-            for definition in create.find_all(exp.ColumnDef):
-                collate = next((
-                    constraint.args["kind"] for constraint in definition.constraints
-                    if isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint)
-                ), None)
-                if collate is not None:
-                    own[definition.name.lower()] = collate.this.name
-            collations[table] = own
-        return collations
+            collated.update(
+                (table, definition.name.lower()) for definition in create.find_all(exp.ColumnDef)
+                if any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints)
+            )
+        return collated
 
     def _rows(self, sql: str, parameters: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         """The rows of one catalog query, run on the connection (see the module

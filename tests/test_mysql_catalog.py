@@ -81,9 +81,9 @@ def test_tables_have_columns_and_keys_over_plain_columns():
     # Neither index with a functional key part is a key, nor its plain columns alone.
     assert customers.primary_key == ("id",) and customers.unique_sets == (("email",),)
     # Columns have the dialect's default collation: per-column ones are not read.
-    assert [(column.name, column.nullable, column.data_type, column.collation) for column in customers.columns] == [
-        ("id", False, "int", None), ("email", False, "varchar(50)", None), ("status", False, "enum('new','paid')", None),
-        ("code", True, "varchar(10)", None),
+    assert [(column.name, column.nullable, column.data_type) for column in customers.columns] == [
+        ("id", False, "int"), ("email", False, "varchar(50)"), ("status", False, "enum('new','paid')"),
+        ("code", True, "varchar(10)"),
     ]
     reference, = orders.foreign_keys
     assert (reference.columns, reference.referenced, reference.referenced_columns) == (("customer_id",), "def.shop.customers", ("id",))

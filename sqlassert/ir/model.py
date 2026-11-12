@@ -497,13 +497,14 @@ class OutputColumn(Node):
     """One named output of one relational stage and the expression producing it.
 
     `binary_text` marks a table column declared as text compared by identity:
-    VARCHAR or TEXT, with no COLLATE, in a dialect whose default collation is
-    binary (`DialectSemantics.text_is_binary`). Equal to such a column, distinct strings are distinct values.
+    VARCHAR or TEXT in a dialect whose default collation is binary
+    (`DialectSemantics.text_is_binary`). Equal to such a column, distinct
+    strings are distinct values.
 
     `identity_comparison` marks a table column whose equal values are
     identical: an integer, decimal, boolean, date, time, timestamp or UUID
     type, or binary text. Not a float (`-0.0 = 0.0`), an interval, or text
-    under a collation.
+    under a case-insensitive default collation (MySQL's).
 
     `exact_numeric` marks a table column declared as an integer or decimal.
     """
@@ -511,7 +512,7 @@ class OutputColumn(Node):
     name: str
     scalar_expr: ScalarExpr
     binary_text: bool = False
-    # Declared SQL type where equality compares values without casts or collation.
+    # Declared SQL type where equality compares values without casts.
     comparison_type: str | None = None
     identity_comparison: bool = False
     exact_numeric: bool = False

@@ -146,7 +146,8 @@ def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
     if (both := _both_inputs(column, relation, _identity_comparison)) is not None:
         return both
     match column.scalar_expr:
-        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+        case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)) if not isinstance(relation, ir.SetOperation):
+            # A picked value (min, max, any_value) is a value of its column.
             return _identity_comparison(source)
         case _:
             return Result(column.identity_comparison, "Declared type compares by identity", (column,))
@@ -255,7 +256,7 @@ def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
     if (both := _both_inputs(column, relation, exact_numeric)) is not None:
         return both
     match column.scalar_expr:
-        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+        case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)) if not isinstance(relation, ir.SetOperation):
             return exact_numeric(source)
         case _:
             return Result(column.exact_numeric, "Declared an integer or decimal", (column,))

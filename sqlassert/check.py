@@ -108,8 +108,12 @@ def findings(path: str, sql: str, report: Report, *, ignore: Iterable[str] = ())
         if assertion.outcome is Outcome.UNKNOWN
     ]
     reported = [_diagnostic(path, diagnostic, Severity.ERROR) for diagnostic in report.diagnostics]
-    # An unsupported construct is already named on the assertion it left UNKNOWN.
-    warned = [_diagnostic(path, warning, Severity.WARNING) for warning in report.warnings if warning.code != UNSUPPORTED_CONSTRUCT]
+    # An unsupported construct an UNKNOWN assertion reached is already named on it.
+    named = {assertion.origin for assertion in report.assertions if assertion.unsupported is not None}
+    warned = [
+        _diagnostic(path, warning, Severity.WARNING) for warning in report.warnings
+        if not (warning.code == UNSUPPORTED_CONSTRUCT and warning.origin in named)
+    ]
     return tuple(
         finding for finding in sorted((*unknown, *reported, *warned), key=_source_order)
         if finding.code not in ignored

@@ -24,3 +24,59 @@ SELECT empno, row_number() OVER (ORDER BY sal) AS r FROM emp
 -- case: a_window_function_beside_the_asserted_column_is_not_blamed
 SELECT ename, row_number() OVER (ORDER BY sal) AS r FROM emp
 /**ASSERT UNIQUE(ename)**/  --~ UNKNOWN
+
+-- sqlassert supports each dialect's default collation only: every COLLATE,
+-- in an expression or a column definition, warns where it is written, whether
+-- or not an assertion reads it.
+-- case: a_collate_expression_lowers_opaque
+SELECT ename, ename COLLATE nocase AS e FROM emp /**ASSERT DETERMINES(ename -> e)**/  --~ UNKNOWN
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+
+-- case: an_expression_without_collate_is_determined
+SELECT ename, upper(ename) AS e FROM emp /**ASSERT DETERMINES(ename -> e)**/  --~ PROVED
+
+-- case: each_collate_warns_once_even_when_nothing_reads_it
+SELECT ename FROM emp ORDER BY ename COLLATE nocase, job COLLATE nocase /**ASSERT UNIQUE(ename)**/  --~ UNKNOWN
+--~ unsupported-construct "COLLATE", unsupported-construct "COLLATE"
+
+-- case: a_column_without_collate_beside_one_is_compared_by_identity
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE nocase NOT NULL);
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+SELECT plain FROM coll WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/  --~ PROVED
+
+-- case: a_column_declared_with_collate_has_unknown_values
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE c NOT NULL);
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+SELECT folded FROM coll WHERE folded IN ('x', 'y') AND folded IN ('x', 'z') /**ASSERT ENUM(folded IN ('x'))**/
+--~ UNKNOWN
+
+-- case: a_column_declared_with_collate_keeps_its_nullability
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE c NOT NULL);
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+SELECT folded FROM coll /**ASSERT NOT NULL(folded)**/  --~ PROVED
+
+-- case: a_nullable_column_declared_with_collate_is_not_proved_non_null
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE c);
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+SELECT folded FROM coll /**ASSERT NOT NULL(folded)**/  --~ UNKNOWN
+
+-- case: a_function_of_a_column_declared_with_collate_is_not_determined
+CREATE TABLE coll (id INTEGER PRIMARY KEY, folded VARCHAR COLLATE c);
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+SELECT folded, upper(folded) AS u, count(*) AS n FROM coll GROUP BY folded, upper(folded) /**ASSERT UNIQUE(folded)**/
+--~ UNKNOWN
+
+-- case: a_union_of_collated_text_does_not_bind
+CREATE TABLE a (k VARCHAR PRIMARY KEY, v INTEGER);
+CREATE TABLE b (k VARCHAR COLLATE nocase);
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+WITH ks AS (SELECT k FROM a UNION SELECT k FROM b)
+SELECT ks.k, a.v FROM ks
+/**ASSERT MANY TO ONE**/ LEFT JOIN a ON a.k = ks.k  --~ UNKNOWN
+
+-- case: a_union_of_text_binds
+CREATE TABLE a (k VARCHAR PRIMARY KEY, v INTEGER);
+CREATE TABLE b (k VARCHAR);
+WITH ks AS (SELECT k FROM a UNION SELECT k FROM b)
+SELECT ks.k, a.v FROM ks
+/**ASSERT MANY TO ONE**/ LEFT JOIN a ON a.k = ks.k  --~ PROVED

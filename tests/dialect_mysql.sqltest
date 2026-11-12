@@ -3,7 +3,7 @@
 -- before 8.4 are out of scope.
 --
 -- The default collations ignore case, so distinct strings may compare equal;
--- only a NO PAD binary collation compares text by identity. `||` is OR: the
+-- a COLLATE is unsupported. `||` is OR: the
 -- default sql_mode has no PIPES_AS_CONCAT (ADR 0006). A
 -- comparison of non-null operands is non-null; arithmetic is not modelled as
 -- checked (`-x` of the least BIGINT is an exact DECIMAL), and division by zero
@@ -15,7 +15,7 @@
 -- a table must name its ENGINE for them to be Knowledge.
 
 -- dialect: mysql
-CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL, m INT, s VARCHAR(10), b VARCHAR(10) COLLATE utf8mb4_0900_bin, e ENUM('a', 'b ') NOT NULL);
+CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL, m INT, s VARCHAR(10), e ENUM('a', 'b ') NOT NULL);
 
 -- case: pipes_are_or
 SELECT m FROM t WHERE m = 1 || m = 2 /**ASSERT NOT NULL(m)**/  --~ PROVED
@@ -45,10 +45,6 @@ SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 
 -- case: text_under_the_default_collation_may_equal_distinct_strings
 SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
-
--- case: text_under_a_binary_collation_is_not_modelled
--- Any COLLATE, binary or not, is not taken to compare by identity (issue 49).
-SELECT b FROM t WHERE b IN ('a', 'b') AND b = 'B' /**ASSERT ENUM(b IN ('a'))**/  --~ UNKNOWN
 
 -- case: an_enum_column_holds_its_members_without_trailing_spaces
 SELECT e FROM t /**ASSERT ENUM(e IN ('a', 'b'))**/  --~ PROVED

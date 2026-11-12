@@ -7,7 +7,7 @@
 -- PROVED case here is also judged by the soundness oracle; every UNKNOWN case
 -- is a known counterexample to a plausible but unsound rule.
 
-CREATE TABLE f (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, s VARCHAR, n VARCHAR COLLATE NOCASE, d DOUBLE);
+CREATE TABLE f (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, s VARCHAR, d DOUBLE);
 
 -- case: a_deterministic_function_is_determined_by_its_arguments__arithmetic
 SELECT a, a + 1 AS k, count(*) AS c FROM f GROUP BY a, a + 1 /**ASSERT UNIQUE(a)**/
@@ -89,7 +89,10 @@ GROUP BY a, a + random()
 /**ASSERT UNIQUE(a)**/  --~ UNKNOWN
 
 -- case: a_deterministic_function_is_determined_by_its_arguments__collated_text
-SELECT n, n || '' AS k, count(*) AS c FROM f GROUP BY n, n || '' /**ASSERT UNIQUE(n)**/
+-- dialect: mysql
+-- MySQL's default collation ignores case: 'a' = 'A', yet concat tells them apart.
+CREATE TABLE ci (n VARCHAR(10));
+SELECT n, concat(n, '') AS k, count(*) AS c FROM ci GROUP BY n, concat(n, '') /**ASSERT UNIQUE(n)**/
 --~ UNKNOWN
 
 -- case: a_deterministic_function_is_determined_by_its_arguments__double
@@ -179,7 +182,9 @@ SELECT a, d FROM f WHERE a = CAST(d AS INTEGER) /**ASSERT DETERMINES(d -> a)**/
 --~ UNKNOWN
 
 -- case: a_column_equal_to_a_function_is_determined_by_its_arguments__collated_input
-SELECT a, n FROM f WHERE a = length(n) /**ASSERT DETERMINES(n -> a)**/  --~ UNKNOWN
+-- dialect: mysql
+CREATE TABLE ci (a INT, n VARCHAR(10));
+SELECT a, n FROM ci WHERE a = length(n) /**ASSERT DETERMINES(n -> a)**/  --~ UNKNOWN
 
 -- case: a_column_equal_to_a_function_is_determined_by_its_arguments__under_or
 SELECT a, b FROM f WHERE b = a + 1 OR b = a /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN

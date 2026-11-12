@@ -18,8 +18,11 @@ or accepts are out of scope: a looser `sql_mode`, `PIPES_AS_CONCAT`,
 `ONLY_FULL_GROUP_BY` off, `INSERT IGNORE`, Spark with ANSI mode off, Spark 2,
 MySQL's `foreign_key_checks = 0`. So is a setting that changes the default
 collation (DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`,
-Oracle's `NLS_COMP`): text without a `COLLATE` compares under the engine's
-shipped default. On a legacy version or a permissive setting a result may not
+Oracle's `NLS_COMP`): text compares under the engine's shipped default.
+sqlassert supports no other collation: a `COLLATE`, in an expression or a
+column definition, is opaque and warns `unsupported-construct`, and a column
+declared with one is untyped, so nothing about its values is proved through
+equality or domains (its nullability and keys still hold). On a legacy version or a permissive setting a result may not
 be sound. SQL that standard SQL rejects is not given a meaning because a
 flavor accepts it (SQLite's column neither grouped nor inside an aggregate):
 it is opaque and warns `unsupported-construct`. A flag stays weak where the
@@ -202,8 +205,9 @@ the hooks whose standard view is missing or incomplete there:
   onto a table with row-level security (it may hide the referenced row). A
   table others inherit from returns their rows, which its keys and NOT NULLs
   do not cover, so it is columns only; so is a foreign table. A NOT NULL
-  added `NOT VALID` does not count. A nondeterministic column collation is
-  reported, since the default compares by identity and it does not.
+  added `NOT VALID` does not count. A column under a nondeterministic
+  collation is reported untyped, since the default compares by identity and
+  it does not.
   Names that differ only in case are distinct relations, and the analysis
   does not keep a name's quoting, so a name denotes a relation spelled as
   written or folded to lower case, and none when relations spelled both ways
@@ -226,11 +230,10 @@ the hooks whose standard view is missing or incomplete there:
   views, and does not surface keys a connector's source enforces, so it
   reports NOT NULLs and no keys.
 
-Collation is the dialect's default: per-table collations are not read, and
-of per-column ones only DuckDB's declared `COLLATE`s and Postgres's
-nondeterministic collations. A column reported with any collation is not
-compared by identity. Text with a `COLLATE` is never taken to compare by
-identity, binary or not: collation-aware Properties are issue 49.
+Collation is the dialect's default, the only one sqlassert supports:
+per-table and per-column collations are not read, except that a column
+declared with a `COLLATE` in DuckDB, or under a nondeterministic collation in
+Postgres, is reported untyped, so it is never taken to compare by identity.
 
 Keys are reported as declared: there is no per-constraint trust field, and
 `RELY` in a warehouse catalog is not read. Whether a catalog key is
