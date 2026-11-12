@@ -163,7 +163,7 @@ def rewrites(
                 aggregate = relation if isinstance(relation, ir.Aggregate) else relation.input
                 assert isinstance(aggregate, ir.Aggregate)
                 projection = _grouping_is_projection(site, aggregate, node, dialect)
-                found.extend([projection] if projection else _redundant_grouping(site, relation, aggregate, node, dialect))
+                found.extend([projection] if projection else _redundant_grouping(site, relation, aggregate, node, dialect, source))
             case _:
                 pass  # Other Select Expressions have nothing to rewrite yet.
     found.extend(item for item in _unused_ctes(ast, source) if wanted(item.site))
@@ -701,16 +701,23 @@ def _one_row(item: Expr, name: str, dialect: str, types: dict[str, str | None]) 
 
 
 def _redundant_grouping(
-    site: AttachmentSite, selected: ir.RelationExpr, aggregate: ir.Aggregate, node: exp.Select, dialect: str,
+    site: AttachmentSite, selected: ir.RelationExpr, aggregate: ir.Aggregate, node: exp.Select, dialect: str, source: Source,
 ) -> list[Rewrite]:
     """Each grouping column the grouping columns kept so far strictly determine.
     `selected` is the relation whose output columns are `node`'s items: the
-    Aggregate, or a Project over it.
+    Aggregate, or a Project over it. The edits delete it from GROUP BY, with
+    a comma, and wrap its select item, if any, in any_value, named as before.
 
     One column always stays: grouping by nothing turns an empty input into one row.
     """
     expressions = grouping(node) or []
-    if len(expressions) != len(aggregate.grouping_outputs):
+    group = node.args.get("group")
+    if len(expressions) != len(aggregate.grouping_outputs) or not isinstance(group, exp.Group):
+        return []
+    clause = source.tokens_of(span(group))
+    written_items = source.split(clause[0] + 1, clause[1], TokenType.COMMA) if clause is not None else []
+    items = _select_items(node, source)
+    if len(written_items) != len(group.expressions) or items is None:
         return []
     # Grouping outputs are lowered in GROUP BY order.
     written = {column: written_sql(expression, dialect) for column, expression in zip(aggregate.grouping_outputs, expressions)}
@@ -722,8 +729,8 @@ def _redundant_grouping(
             continue
         determinant = frozenset(other.scalar_expr.column for other in others if isinstance(other.scalar_expr, ir.ColumnRef))
         closure = _closure(aggregate.input, determinant, frozenset())
-        source = grouped.scalar_expr.column
-        if source not in closure.value.columns:
+        source_column = grouped.scalar_expr.column
+        if source_column not in closure.value.columns:
             continue
         kept.remove(grouped)
         names = quoted_all(written[other] for other in others)
@@ -733,14 +740,66 @@ def _redundant_grouping(
             if column is grouped or isinstance(column.scalar_expr, ir.ColumnRef) and column.scalar_expr.column is grouped
         ), None)
         drop = f"({names}) determine {quoted(written[grouped])}, NULL equal to NULL: drop {quoted(written[grouped])} from GROUP BY"
+        index = next(index for index, expression in enumerate(group.expressions) if expression is expressions[aggregate.grouping_outputs.index(grouped)])
+        first, last = written_items[index]
+        edits = list(source.deletions([(first - 1, last) if index else (first, last + 1)]))
         if position is None:
             message = drop  # Not selected.
         else:
             item = node.expressions[position]
             expression = item.this if isinstance(item, exp.Alias) else item
             message = f"{drop} and select any_value({written_sql(expression, dialect)}) AS {alias}"
-        found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, (), closure.members[source]))
+            start, end = items[position][1]
+            edits += [
+                source.insert_before(start, "any_value("),
+                source.insert_after(end, ")" if isinstance(item, exp.Alias) else f") AS {alias}"),
+            ]
+        found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, tuple(edits), closure.members[source_column]))
     return found
+
+
+def _select_items(node: exp.Select, source: Source) -> list[tuple[tuple[int, int], tuple[int, int]]] | None:
+    """The tokens of each item of `node`'s select list, whole and without
+    its alias; None where they cannot be told apart."""
+    position = span(node)
+    end = marker_position(node)
+    start = source.at(position[0]) if position is not None else None
+    last = source.before(end[0]) if end is not None else None
+    if start is None or last is None or not source.is_(start, TokenType.SELECT):
+        return None
+    first = start + 1
+    distinct = node.args.get("distinct")
+    if distinct is not None:
+        tokens = source.tokens_of(span(distinct))
+        if tokens is None or tokens[0] != first:
+            return None  # DISTINCT ON
+        first += 1
+    elif source.is_(first, TokenType.ALL):
+        first += 1
+    # The list ends at FROM, or at the first clause after it.
+    ends = [index for index in source.top_level(first, last, *_AFTER_SELECT_LIST)]
+    parts = source.split(first, (ends[0] - 1) if ends else last, TokenType.COMMA)
+    if len(parts) != len(node.expressions):
+        return None
+    items = []
+    for (item_first, item_last), item in zip(parts, node.expressions):
+        expression_last = item_last
+        if isinstance(item, exp.Alias):
+            identifier = item.args.get("alias")
+            alias = source.at(identifier.meta["start"]) if isinstance(identifier, exp.Identifier) and "start" in identifier.meta else None
+            if alias is None or not item_first < alias <= item_last:
+                return None
+            expression_last = alias - 2 if source.is_(alias - 1, TokenType.ALIAS) else alias - 1
+        items.append(((item_first, item_last), (item_first, expression_last)))
+    return items
+
+
+# Tokens that end a select list.
+_AFTER_SELECT_LIST = (
+    TokenType.FROM, TokenType.WHERE, TokenType.GROUP_BY, TokenType.HAVING, TokenType.QUALIFY, TokenType.WINDOW,
+    TokenType.ORDER_BY, TokenType.LIMIT, TokenType.OFFSET, TokenType.FETCH, TokenType.INTO,
+    TokenType.UNION, TokenType.EXCEPT, TokenType.INTERSECT,
+)
 
 
 # LIMIT and ORDER BY on at most one row ----------------------------------------------

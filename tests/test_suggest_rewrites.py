@@ -786,36 +786,35 @@ EQUIVALENT = [
         SCHEMA + "SELECT s.ts, u.id FROM sessions s LEFT JOIN users u ON u.name IS NOT NULL",
         RewriteKind.IMPLIED_CONDITION,
     ),
+    (
+        SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    (
+        SCHEMA + "SELECT u.id, u.name, count(s.ts) AS n FROM users u LEFT JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id, u.name",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    (
+        SCHEMA + "SELECT s.user_id, u.nick, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "GROUP BY s.user_id, u.nick",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    (
+        SCHEMA + "SELECT u.name AS label, u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY (), u.name, u.id",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
 ]
 
 
 # Kinds whose rewrite has no edits yet: compared with a query written by hand.
 EQUIVALENT_BY_HAND = [
     (
-        SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
-        SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1",
-        RewriteKind.REDUNDANT_GROUPING,
-    ),
-    (
         SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
         "LEFT JOIN orders o ON o.total = s.ts",
         SCHEMA + "SELECT s.ts, o.total FROM sessions s LEFT JOIN orders o ON o.total = s.ts "
         "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')",
         RewriteKind.FILTER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT u.id, u.name, count(s.ts) AS n FROM users u LEFT JOIN sessions s ON s.user_id = u.id "
-        "GROUP BY u.id, u.name",
-        SCHEMA + "SELECT u.id, any_value(u.name) AS name, count(s.ts) AS n FROM users u "
-        "LEFT JOIN sessions s ON s.user_id = u.id GROUP BY u.id",
-        RewriteKind.REDUNDANT_GROUPING,
-    ),
-    (
-        SCHEMA + "SELECT s.user_id, u.nick, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "GROUP BY s.user_id, u.nick",
-        SCHEMA + "SELECT s.user_id, any_value(u.nick) AS nick, count(*) AS n FROM sessions s "
-        "LEFT JOIN users u ON u.id = s.user_id GROUP BY s.user_id",
-        RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, "
@@ -961,6 +960,17 @@ EXPECTED_DIFFS = [
 @@ -6 +6 @@
 -ORDER BY id DESC, name NULLS FIRST
 +ORDER BY id DESC""",
+    ),
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        SCHEMA + "SELECT u.id, u.name, count(*) AS n\nFROM users u JOIN sessions s ON s.user_id = u.id\nGROUP BY u.id, u.name",
+        """\
+@@ -5 +5 @@
+-SELECT u.id, u.name, count(*) AS n
++SELECT u.id, any_value(u.name) AS name, count(*) AS n
+@@ -7 +7 @@
+-GROUP BY u.id, u.name
++GROUP BY u.id""",
     ),
 ]
 
