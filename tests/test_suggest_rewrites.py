@@ -698,6 +698,48 @@ EQUIVALENT = [
         SCHEMA + "SELECT o.total, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
         RewriteKind.INNER_JOIN,
     ),
+    (
+        SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "AND u.nick = '1' GROUP BY s.ts",
+        RewriteKind.REDUNDANT_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT o.total FROM orders o JOIN users u ON u.id = o.user_id",
+        RewriteKind.REDUNDANT_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT DISTINCT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
+        RewriteKind.REDUNDANT_DISTINCT,
+    ),
+    (
+        SCHEMA + "SELECT DISTINCT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
+        "LEFT JOIN users u ON u.id = s.user_id",
+        RewriteKind.REDUNDANT_DISTINCT,
+    ),
+    (
+        SCHEMA + "SELECT DISTINCT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
+        RewriteKind.REDUNDANT_DISTINCT,
+    ),
+    (
+        SCHEMA + "WITH dead AS (SELECT id FROM users) SELECT user_id FROM sessions",
+        RewriteKind.UNUSED_CTE,
+    ),
+    (
+        SCHEMA + "SELECT id, nick FROM users EXCEPT SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
+        RewriteKind.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT user_id FROM sessions INTERSECT SELECT id FROM users",
+        RewriteKind.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
+        RewriteKind.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
+        RewriteKind.ONE_ROW,
+    ),
 ]
 
 
@@ -720,39 +762,11 @@ EQUIVALENT_BY_HAND = [
         RewriteKind.REDUNDANT_GROUPING,
     ),
     (
-        SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "AND u.nick = '1' GROUP BY s.ts",
-        SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s GROUP BY s.ts",
-        RewriteKind.REDUNDANT_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT o.total FROM orders o JOIN users u ON u.id = o.user_id",
-        SCHEMA + "SELECT o.total FROM orders o",
-        RewriteKind.REDUNDANT_JOIN,
-    ),
-    (
         SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
         "LEFT JOIN orders o ON o.total = s.ts",
         SCHEMA + "SELECT s.ts, o.total FROM sessions s LEFT JOIN orders o ON o.total = s.ts "
         "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')",
         RewriteKind.FILTER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT DISTINCT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
-        SCHEMA + "SELECT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
-        RewriteKind.REDUNDANT_DISTINCT,
-    ),
-    (
-        SCHEMA + "SELECT DISTINCT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
-        "LEFT JOIN users u ON u.id = s.user_id",
-        SCHEMA + "SELECT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
-        "LEFT JOIN users u ON u.id = s.user_id",
-        RewriteKind.REDUNDANT_DISTINCT,
-    ),
-    (
-        SCHEMA + "SELECT DISTINCT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
-        SCHEMA + "SELECT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
-        RewriteKind.REDUNDANT_DISTINCT,
     ),
     (
         SCHEMA + "SELECT u.id, u.name, count(s.ts) AS n FROM users u LEFT JOIN sessions s ON s.user_id = u.id "
@@ -769,11 +783,6 @@ EQUIVALENT_BY_HAND = [
         RewriteKind.REDUNDANT_GROUPING,
     ),
     (
-        SCHEMA + "WITH dead AS (SELECT id FROM users) SELECT user_id FROM sessions",
-        SCHEMA + "SELECT user_id FROM sessions",
-        RewriteKind.UNUSED_CTE,
-    ),
-    (
         SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, "
         "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
         SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, "
@@ -786,26 +795,6 @@ EQUIVALENT_BY_HAND = [
         SCHEMA + "SELECT o.id, u.nick AS nick, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END AS c FROM orders o "
         "LEFT JOIN users u ON u.id = o.user_id",
         RewriteKind.GROUPING_PROJECTION,
-    ),
-    (
-        SCHEMA + "SELECT id, nick FROM users EXCEPT SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
-        SCHEMA + "SELECT id, nick FROM users EXCEPT ALL SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
-        RewriteKind.SET_OPERATION_ALL,
-    ),
-    (
-        SCHEMA + "SELECT user_id FROM sessions INTERSECT SELECT id FROM users",
-        SCHEMA + "SELECT user_id FROM sessions INTERSECT ALL SELECT id FROM users",
-        RewriteKind.SET_OPERATION_ALL,
-    ),
-    (
-        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
-        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT ALL SELECT ts FROM sessions",
-        RewriteKind.SET_OPERATION_ALL,
-    ),
-    (
-        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
-        SCHEMA + "SELECT id, name FROM users WHERE id = 3",
-        RewriteKind.ONE_ROW,
     ),
     (
         SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
@@ -874,6 +863,46 @@ EXPECTED_DIFFS = [
 @@ -6 +6 @@
 -LEFT OUTER JOIN users u ON u.id = s.user_id
 +JOIN users u ON u.id = s.user_id""",
+    ),
+    (
+        RewriteKind.REDUNDANT_JOIN,
+        SCHEMA + "SELECT s.ts FROM sessions s\nLEFT JOIN users u ON u.id = s.user_id\nWHERE s.ts = 1",
+        """\
+@@ -6 +5,0 @@
+-LEFT JOIN users u ON u.id = s.user_id""",
+    ),
+    (
+        RewriteKind.REDUNDANT_DISTINCT,
+        SCHEMA + "SELECT DISTINCT id, nick FROM users",
+        """\
+@@ -5 +5 @@
+-SELECT DISTINCT id, nick FROM users
++SELECT id, nick FROM users""",
+    ),
+    (
+        RewriteKind.SET_OPERATION_ALL,
+        SCHEMA + "SELECT id FROM users\nEXCEPT\nSELECT user_id FROM sessions",
+        """\
+@@ -6 +6 @@
+-EXCEPT
++EXCEPT ALL""",
+    ),
+    (
+        RewriteKind.ONE_ROW,
+        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
+        """\
+@@ -5 +5 @@
+-SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1
++SELECT id, name FROM users WHERE id = 3""",
+    ),
+    (
+        RewriteKind.UNUSED_CTE,
+        SCHEMA + "WITH used AS (SELECT user_id FROM sessions),\ndead AS (SELECT id FROM users)\nSELECT user_id FROM used",
+        """\
+@@ -5,2 +5 @@
+-WITH used AS (SELECT user_id FROM sessions),
+-dead AS (SELECT id FROM users)
++WITH used AS (SELECT user_id FROM sessions)""",
     ),
 ]
 

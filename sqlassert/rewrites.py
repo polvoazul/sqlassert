@@ -57,7 +57,7 @@ from sqlassert.rules.nullability import (
     Padding, _null_rejected, _null_sources, _on_rejected, _on_rejected_paddings, _rejected_paddings,
 )
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
-from sqlassert.sql_parse import ParsedProgram, grouping, marker_position, written_sql
+from sqlassert.sql_parse import ParsedProgram, grouping, marker_position, span, written_sql
 
 
 class SuggestType(Enum):
@@ -145,17 +145,17 @@ def rewrites(
             found.extend(_redundant_subquery_filters(arena, site, relation))
             found.extend(_implied_where(arena, site, relation, program))
         if site.trailing and isinstance(node, exp.Select):
-            one_row = _one_row_tail(site, relation, limit, node)
+            one_row = _one_row_tail(site, relation, limit, node, source)
             found.extend(one_row or _redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
                 same = _self_join(arena, site, relation, node, program, dialect)
-                removed = None if same else _redundant_join(arena, site, relation, node, dialect)
+                removed = None if same else _redundant_join(arena, site, relation, node, dialect, source)
                 inner = None if removed or same else _inner_join(arena, site, relation, parents, node, source)
                 found.extend(item for item in (removed, same, inner) if item is not None)
                 found.extend(_implied_conjuncts(arena, site, relation, relation.conjuncts, program, "ON"))
-            case ir.Distinct():
-                found.extend(_redundant_distinct(site, relation))
+            case ir.Distinct() if isinstance(node, exp.Select):
+                found.extend(_redundant_distinct(site, relation, node, source))
             case ir.Aggregate() | ir.Project(input=ir.Aggregate()) if isinstance(node, exp.Select):
                 # A Project over the Aggregate drops its hidden outputs and
                 # computes the items over aggregates (`_lower_aggregate`).
@@ -165,11 +165,11 @@ def rewrites(
                 found.extend([projection] if projection else _redundant_grouping(site, relation, aggregate, node, dialect))
             case _:
                 pass  # Other Select Expressions have nothing to rewrite yet.
-    found.extend(item for item in _unused_ctes(ast) if wanted(item.site))
+    found.extend(item for item in _unused_ctes(ast, source) if wanted(item.site))
     if semantics(dialect).set_operations_all:
         found.extend(
             item for site, operation in program.set_operations
-            if wanted(site) and (item := _set_operation_all(site, operation)) is not None
+            if wanted(site) and (item := _set_operation_all(site, operation, source)) is not None
         )
     return sorted(found, key=lambda item: item.site.offset)
 
@@ -343,21 +343,27 @@ def _redundant_sort_keys(
 # Redundant joins ------------------------------------------------------------------
 
 
-def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, dialect: str) -> Rewrite | None:
+def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, dialect: str, source: Source) -> Rewrite | None:
+    """A join that keeps every left row once, none of whose columns is used
+    outside its ON: its edit deletes it. One that only filters moves into a
+    WHERE EXISTS."""
     if join.kind not in {"inner", "left"} or _right_side_used(join, node):
         return None
-    source = written_sql(node.this, dialect)
-    unused = f"no column of {source} is used outside its ON"
+    tokens = source.tokens_of(span(node))
+    if tokens is None:
+        return None
+    right = written_sql(node.this, dialect)
+    unused = f"no column of {right} is used outside its ON"
     if join.kind == "left":
         unique = arena.prove(ManyToOneJoin(join=join))
         if unique.value:
             message = f"at most one match per row and {unused}: delete the join"
-            return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, (), unique)
+            return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, source.deletions([tokens]), unique)
         return None
     exactly_one = arena.prove(ExactlyOneJoin(join=join))
     if exactly_one.value:
         message = f"exactly one match per row and {unused}: delete the join"
-        return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, (), exactly_one)
+        return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, source.deletions([tokens]), exactly_one)
     unique = arena.prove(ManyToOneJoin(join=join))
     if not unique.value or _right_or_full_join_follows(node):
         # A filter moved to WHERE would act after a later RIGHT or FULL JOIN,
@@ -367,7 +373,7 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
     condition = f" WHERE {written_sql(on, dialect)}" if on is not None else ""
     message = (
         f"at most one match per row and {unused}, so it only filters: "
-        f"write WHERE EXISTS (SELECT 1 FROM {source}{condition})"
+        f"write WHERE EXISTS (SELECT 1 FROM {right}{condition})"
     )
     return Rewrite(site, RewriteKind.FILTER_JOIN, message, (), unique)
 
@@ -415,9 +421,14 @@ def _within(node: Expr, ancestor: Expr) -> bool:
 # DISTINCT and GROUP BY ------------------------------------------------------------
 
 
-def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Rewrite]:
+def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct, node: exp.Select, source: Source) -> list[Rewrite]:
     """DISTINCT over input rows no two of which agree on the selected
-    columns, NULL equal to NULL: a strict key of the input."""
+    columns, NULL equal to NULL: a strict key of the input. Its edit deletes
+    the keyword."""
+    keyword = node.args.get("distinct")
+    tokens = source.tokens_of(span(keyword)) if keyword is not None else None
+    if tokens is None:
+        return []
     selected = {
         column.scalar_expr.column: column.name
         for column in distinct.output_columns if isinstance(column.scalar_expr, ir.ColumnRef)
@@ -428,7 +439,7 @@ def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Rew
     evidence = _reaches_row_identity(_closure(distinct.input, frozenset(key), frozenset()))
     names = quoted_all(selected[column] for column in key)
     message = f"no two rows agree on ({names}), NULL equal to NULL, so DISTINCT removes nothing: delete DISTINCT"
-    return [Rewrite(site, RewriteKind.REDUNDANT_DISTINCT, message, (), evidence)]
+    return [Rewrite(site, RewriteKind.REDUNDANT_DISTINCT, message, source.deletions([tokens]), evidence)]
 
 
 def _strict_key(relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]) -> tuple[ir.OutputColumn, ...] | None:
@@ -653,21 +664,26 @@ def _redundant_grouping(
 # LIMIT and ORDER BY on at most one row ----------------------------------------------
 
 
-def _one_row_tail(site: AttachmentSite, relation: ir.RelationExpr, limit: ir.Limit | None, select: exp.Select) -> list[Rewrite]:
+def _one_row_tail(
+    site: AttachmentSite, relation: ir.RelationExpr, limit: ir.Limit | None, select: exp.Select, source: Source,
+) -> list[Rewrite]:
     """A Select proved to return at most one row (the empty set is a strict
     key of it, Kossmann's early abort) needs no ORDER BY, and no LIMIT of at
     least one row. Not with OFFSET, which may skip that row, nor a LIMIT whose
-    count is unknown or zero."""
+    count is unknown or zero. Its edits delete the clauses."""
     sorted_ = select.args.get("order") is not None
     limited = select.args.get("limit") is not None and select.args.get("offset") is None and limit is not None and (limit.count or 0) >= 1
     if not sorted_ and not limited:
+        return []
+    clauses = [source.tokens_of(span(select.args[key])) for key, present in (("order", sorted_), ("limit", limited)) if present]
+    if any(tokens is None for tokens in clauses):
         return []
     evidence = _reaches_row_identity(_closure(relation, frozenset(), frozenset()))
     if not evidence.value:
         return []
     dropped = " and ".join(clause for clause, present in (("ORDER BY", sorted_), ("LIMIT", limited)) if present)
     message = f"this Select returns at most one row, so {dropped} {'change' if sorted_ and limited else 'changes'} nothing: drop {'them' if sorted_ and limited else 'it'}"
-    return [Rewrite(site, RewriteKind.ONE_ROW, message, (), evidence)]
+    return [Rewrite(site, RewriteKind.ONE_ROW, message, source.deletions(tokens for tokens in clauses if tokens is not None), evidence)]
 
 
 # Self-joins on a key -----------------------------------------------------------------
@@ -1002,29 +1018,42 @@ def _same_row_column(
 # EXCEPT and INTERSECT over inputs without duplicates --------------------------------
 
 
-def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Rewrite | None:
+def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation, source: Source) -> Rewrite | None:
     """`A EXCEPT B` keeps each distinct row of A that B lacks; `EXCEPT ALL`
     keeps it as often as A has it more than B. When A has no two rows alike,
     NULL equal to NULL as a set operation compares them, both keep each such
     row once. `INTERSECT ALL` keeps a row as often as the input with fewer of
-    it, so a duplicate-free input on either side suffices."""
+    it, so a duplicate-free input on either side suffices. Its edit writes
+    ALL after the operator, or in place of DISTINCT."""
     if not operation.distinct or operation.operator == "union" or not _same_set_types(operation, operation.output_columns):
         return None
+    # The site follows the left input's last Select; the operator comes next.
+    operator = source.after(site.offset)
+    while operator is not None and source.is_(operator, TokenType.R_PAREN):
+        operator += 1
+    if operator is None or not source.is_(operator, TokenType.EXCEPT, TokenType.INTERSECT):
+        return None
+    if source.is_(operator + 1, TokenType.DISTINCT):
+        edits = (source.replace(operator + 1, operator + 1, "ALL"),)
+    else:
+        edits = (source.insert_after(operator, " ALL"),)
     keyword = operation.operator.upper()
     sides = [("left", operation.left)] + ([("right", operation.right)] if operation.operator == "intersect" else [])
     for side, relation in sides:
         evidence = _reaches_row_identity(_closure(relation, frozenset(relation.output_columns), frozenset()))
         if evidence.value:
             message = f"no two rows of the {side} input are alike, NULL equal to NULL, so {keyword} removes no duplicates: write {keyword} ALL"
-            return Rewrite(site, RewriteKind.SET_OPERATION_ALL, message, (), evidence)
+            return Rewrite(site, RewriteKind.SET_OPERATION_ALL, message, edits, evidence)
     return None
 
 
 # Unused CTEs ----------------------------------------------------------------------
 
 
-def _unused_ctes(ast: ParsedProgram) -> list[Rewrite]:
+def _unused_ctes(ast: ParsedProgram, source: Source) -> list[Rewrite]:
     """CTEs no query of their WITH reaches, directly or through a used CTE.
+    Each one's edit deletes it (`_cte_tokens`); each is a Rewrite of its own,
+    so a dead CTE another dead one reads is deleted without it.
 
     A name is matched wherever it appears as a table, shadowed or not, so a
     CTE is only ever kept by mistake.
@@ -1043,14 +1072,39 @@ def _unused_ctes(ast: ParsedProgram) -> list[Rewrite]:
         for name, cte in ctes.items():
             body = cte.this.find(exp.Select)
             position = marker_position(body) if body is not None else None
-            if name in live or position is None:
+            tokens = _cte_tokens(source, with_, cte)
+            if name in live or position is None or tokens is None:
                 continue
             offset, line = position
             site = AttachmentSite(f"CTE {cte.alias_or_name}", line, offset, True)
             evidence = Result(True, f"No query of its WITH clause references CTE {cte.alias_or_name}")
             message = f"CTE {cte.alias_or_name} is never referenced, so it never runs and its markers go unchecked: delete it"
-            found.append(Rewrite(site, RewriteKind.UNUSED_CTE, message, (), evidence))
+            found.append(Rewrite(site, RewriteKind.UNUSED_CTE, message, source.deletions([tokens]), evidence))
     return found
+
+
+def _cte_tokens(source: Source, with_: exp.With, cte: exp.CTE) -> tuple[int, int] | None:
+    """The tokens deleting `cte` deletes: `name AS (...)` and the comma
+    after it (before it, for the last), or the whole WITH for its only CTE."""
+    alias = cte.args.get("alias")
+    identifier = alias.this if isinstance(alias, exp.TableAlias) else None
+    name = source.at(identifier.meta["start"]) if isinstance(identifier, exp.Identifier) and "start" in identifier.meta else None
+    if name is None:
+        return None
+    keyword = next(iter(source.top_level(name, len(source.tokens) - 1, TokenType.ALIAS)), None)
+    opening = None if keyword is None else next(
+        (index for index in range(keyword + 1, len(source.tokens)) if source.is_(index, TokenType.L_PAREN)), None
+    )
+    closing = source.closing(opening) if opening is not None else None
+    if closing is None:
+        return None
+    ctes = list(with_.expressions)
+    if len(ctes) == 1:
+        first = name - 1 if source.is_(name - 1, TokenType.RECURSIVE) else name
+        return (first - 1, closing) if source.is_(first - 1, TokenType.WITH) else None
+    if ctes[0] is cte:
+        return (name, closing + 1) if source.is_(closing + 1, TokenType.COMMA) else None
+    return (name - 1, closing) if source.is_(name - 1, TokenType.COMMA) else None
 
 
 def _table_names(node: Expr, skip: Expr | None = None) -> set[str]:

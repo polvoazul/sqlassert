@@ -190,13 +190,38 @@ class Source:
         start, end = self.start(first), self.end(last)
         leading = len(self.sql[:start]) - len(self.sql[:start].rstrip())
         trailing = len(self.sql[end:]) - len(self.sql[end:].lstrip())
-        at_end = end + trailing >= len(self.sql)
         kept = self.kept(start, end)
-        if trailing and not at_end and (not leading or "\n" in self.sql[start - leading:start]):
+        # Whitespace on one side only goes when nothing then runs into the
+        # deleted text's neighbour: `(... ORDER BY a)`, not `(...), b AS`.
+        before = self.sql[start - leading - 1:start - leading]
+        after = self.sql[end + trailing:end + trailing + 1]
+        if leading and not trailing and after not in {"", ")", ",", ";"}:
+            leading = 0
+        if trailing and not leading and before not in {"", "("}:
+            trailing = 0
+        if trailing and after and (not leading or "\n" in self.sql[start - leading:start]):
             return Edit(start, end + trailing, _joined(kept) + (" " if kept and not kept[-1].endswith("\n") else ""))
         if leading:
             return Edit(start - leading, end, (" " if kept else "") + _joined(kept))
         return Edit(start, end, _joined(kept))
+
+    def tokens_of(self, span: tuple[int, int] | None) -> tuple[int, int] | None:
+        """The first and last tokens of a `(start, end)` source span."""
+        if span is None:
+            return None
+        first, last = self.at(span[0]), self.before(span[1])
+        return None if first is None or last is None or last < first else (first, last)
+
+    def deletions(self, ranges: Iterable[tuple[int, int]]) -> tuple[Edit, ...]:
+        """Each `(first, last)` token range deleted (`delete`), ranges with no
+        token between them as one."""
+        merged: list[tuple[int, int]] = []
+        for first, last in sorted(ranges):
+            if merged and first <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(last, merged[-1][1]))
+            else:
+                merged.append((first, last))
+        return tuple(self.delete(first, last) for first, last in merged)
 
     def insert_before(self, index: int, text: str) -> Edit:
         return Edit(self.start(index), self.start(index), text)
