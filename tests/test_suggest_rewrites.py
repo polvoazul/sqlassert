@@ -749,6 +749,43 @@ EQUIVALENT = [
         SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
         RewriteKind.REDUNDANT_FILTER,
     ),
+    # With a LIMIT, the rows kept depend on the order: a key that never breaks a tie changes none.
+    (
+        SCHEMA + "SELECT id, name FROM users ORDER BY id, name LIMIT 2",
+        RewriteKind.REDUNDANT_SORT_KEY,
+    ),
+    (
+        SCHEMA + "SELECT o.id, u.name FROM orders o JOIN users u ON u.id = o.user_id ORDER BY o.user_id DESC, u.name, o.id LIMIT 2",
+        RewriteKind.REDUNDANT_SORT_KEY,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o SEMI JOIN users u ON u.id = o.user_id",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE (o.total BETWEEN 1 AND 2 AND (o.user_id IN (SELECT id FROM users))) AND o.id > 1",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND o.user_id = o.id AND u.id = o.id",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT id FROM orders WHERE id = 5 AND user_id = 5 AND id = user_id",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT id FROM (SELECT * FROM users WHERE nick = 'x') t WHERE (nick IN ('x', 'y'))",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.id FROM sessions s LEFT JOIN users u ON u.name IS NOT NULL",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
 ]
 
 
@@ -908,6 +945,14 @@ EXPECTED_DIFFS = [
         """\
 @@ -7 +6,0 @@
 -  AND o.user_id IN (SELECT id FROM users)""",
+    ),
+    (
+        RewriteKind.IMPLIED_CONDITION,
+        SCHEMA + "SELECT u.id, v.nick FROM users u\nJOIN users v ON u.id = v.id AND (u.nick = v.nick)",
+        """\
+@@ -6 +6 @@
+-JOIN users v ON u.id = v.id AND (u.nick = v.nick)
++JOIN users v ON u.id = v.id AND u.nick IS NOT NULL""",
     ),
     (
         RewriteKind.REDUNDANT_SORT_KEY,

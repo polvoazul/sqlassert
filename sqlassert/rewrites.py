@@ -143,7 +143,7 @@ def rewrites(
             relation = relation.input
         if site.trailing and isinstance(node, exp.Select):
             found.extend(_redundant_subquery_filters(arena, site, relation, node, source, dialect))
-            found.extend(_implied_where(arena, site, relation, program))
+            found.extend(_implied_where(arena, site, relation, program, node, source, dialect))
         if site.trailing and isinstance(node, exp.Select):
             one_row = _one_row_tail(site, relation, limit, node, source)
             found.extend(one_row or _redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect, source))
@@ -153,7 +153,8 @@ def rewrites(
                 removed = None if same else _redundant_join(arena, site, relation, node, dialect, source)
                 inner = None if removed or same else _inner_join(arena, site, relation, parents, node, source)
                 found.extend(item for item in (removed, same, inner) if item is not None)
-                found.extend(_implied_conjuncts(arena, site, relation, relation.conjuncts, program, "ON"))
+                written, _ = _on_conjuncts(node, source)
+                found.extend(_implied_conjuncts(arena, site, relation, program, "ON", written, None, source, dialect))
             case ir.Distinct() if isinstance(node, exp.Select):
                 found.extend(_redundant_distinct(site, relation, node, source))
             case ir.Aggregate() | ir.Project(input=ir.Aggregate()) if isinstance(node, exp.Select):
@@ -946,20 +947,27 @@ def _pure_expression(expression: ir.ScalarExpr, program: ir.Program) -> bool:
 # Conditions the others imply ---------------------------------------------------------
 
 
-def _implied_where(arena: Arena, site: AttachmentSite, relation: ir.RelationExpr, program: ir.Program) -> list[Rewrite]:
+def _implied_where(
+    arena: Arena, site: AttachmentSite, relation: ir.RelationExpr, program: ir.Program, node: exp.Select, source: Source, dialect: str,
+) -> list[Rewrite]:
     """The WHERE of the Select whose relation is `relation`."""
     while True:
         match relation:
-            case ir.Project(input=source) | ir.Aggregate(input=source) | ir.Distinct(input=source) | ir.QualifyByPartition(input=source) | ir.Join(kind="semi" | "anti", left=source):
-                relation = source
+            case ir.Project(input=input_) | ir.Aggregate(input=input_) | ir.Distinct(input=input_) | ir.QualifyByPartition(input=input_) | ir.Join(kind="semi" | "anti", left=input_):
+                relation = input_
             case ir.Filter():
-                return _implied_conjuncts(arena, site, relation, relation.conjuncts, program, "WHERE")
+                where = node.args.get("where")
+                if where is None:
+                    return []
+                clause = source.tokens_of(span(where))
+                return _implied_conjuncts(arena, site, relation, program, "WHERE", _where_conjuncts(where, source), clause, source, dialect)
             case _:
                 return []
 
 
 def _implied_conjuncts(
-    arena: Arena, site: AttachmentSite, relation: ir.Filter | ir.Join, conjuncts: tuple[ir.ScalarExpr, ...], program: ir.Program, clause: str,
+    arena: Arena, site: AttachmentSite, relation: ir.Filter | ir.Join, program: ir.Program, clause: str,
+    written_conjuncts: list[tuple[Expr, int, int]] | None, clause_tokens: tuple[int, int] | None, source: Source, dialect: str,
 ) -> list[Rewrite]:
     """Each conjunct TRUE on every row whose columns it reads are non-null,
     given the other conjuncts and what is known of the input: an equality
@@ -969,10 +977,15 @@ def _implied_conjuncts(
     listed values hold every value x can take (its Enumerated Domain);
     `x IS NOT NULL` where x is never NULL. It is
     deleted when those columns are non-null, else it only removes rows where
-    one is NULL: write `x IS NOT NULL` instead."""
+    one is NULL: write `x IS NOT NULL` instead. The edit deletes it
+    (`_deleted_conjunct`: of an ON, its only conjunct becomes TRUE) or
+    writes the IS NOT NULL in its place. `written_conjuncts` are the
+    clause's conjuncts as written (`_conjunct_tokens`), `clause_tokens` the
+    WHERE's tokens, None for an ON."""
     if isinstance(relation, ir.Join) and relation.kind not in {"inner", "left", "semi"}:
         return []
     found = []
+    conjuncts = relation.conjuncts
     kept = list(conjuncts)
     for conjunct in conjuncts:
         others = [other for other in kept if other is not conjunct]
@@ -985,13 +998,21 @@ def _implied_conjuncts(
         rejected = {column for other in others for column in ir.strict_inputs(other)}
         open_ = [column for column in columns if column not in rejected and not arena.prove(NonNullColumn(column=column)).value]
         written = conjunct.origin.detail
+        index = next((
+            index for index, (node, _, _) in enumerate(written_conjuncts or ()) if written_sql(node, dialect) == written
+        ), None)
+        if index is None or written_conjuncts is None:
+            continue
         if open_:
             written_columns = _written_columns(conjunct)
             check = " AND ".join(f"{written_columns.get(column, column.name)} IS NOT NULL" for column in open_)
             message = f"{written} is TRUE whenever its columns are non-null ({reason}), so it only removes NULLs: write {check} in {clause}"
+            _, first, last = written_conjuncts[index]
+            edits: tuple[Edit, ...] = (source.replace(first, last, check),)
         else:
             message = f"{written} is always TRUE here ({reason}): delete it from {clause}"
-        found.append(Rewrite(site, RewriteKind.IMPLIED_CONDITION, message, (), Result(True, reason, (conjunct,))))
+            edits = _deleted_conjunct(source, written_conjuncts, index, clause_tokens)
+        found.append(Rewrite(site, RewriteKind.IMPLIED_CONDITION, message, edits, Result(True, reason, (conjunct,))))
     return found
 
 
