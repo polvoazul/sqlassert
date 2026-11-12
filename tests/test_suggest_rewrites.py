@@ -826,18 +826,20 @@ EQUIVALENT = [
         "FROM orders o LEFT JOIN users u ON u.id = o.user_id GROUP BY o.id",
         RewriteKind.GROUPING_PROJECTION,
     ),
+    (
+        SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
+        "LEFT JOIN orders o ON o.total = s.ts",
+        RewriteKind.FILTER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts FROM sessions s JOIN users u ON (u.id = s.user_id) WHERE s.ts = 1 OR s.user_id = 2 ORDER BY 1",
+        RewriteKind.FILTER_JOIN,
+    ),
 ]
 
 
 # Kinds whose rewrite has no edits yet: compared with a query written by hand.
 EQUIVALENT_BY_HAND = [
-    (
-        SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
-        "LEFT JOIN orders o ON o.total = s.ts",
-        SCHEMA + "SELECT s.ts, o.total FROM sessions s LEFT JOIN orders o ON o.total = s.ts "
-        "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')",
-        RewriteKind.FILTER_JOIN,
-    ),
     (
         SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
         SCHEMA + "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email FROM users AS u",
@@ -989,6 +991,15 @@ EXPECTED_DIFFS = [
 +SELECT o.id, u.name AS name, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END + 1 AS c
 @@ -7 +6,0 @@
 -GROUP BY o.id""",
+    ),
+    (
+        RewriteKind.FILTER_JOIN,
+        SCHEMA + "SELECT s.ts FROM sessions s\nJOIN users u ON u.id = s.user_id AND u.nick = '1'\nWHERE s.ts = 1",
+        """\
+@@ -6,2 +6 @@
+-JOIN users u ON u.id = s.user_id AND u.nick = '1'
+-WHERE s.ts = 1
++WHERE s.ts = 1 AND EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')""",
     ),
 ]
 

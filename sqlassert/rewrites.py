@@ -451,13 +451,62 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
         # A filter moved to WHERE would act after a later RIGHT or FULL JOIN,
         # which then no longer pads the rows this join used to drop first.
         return None
-    on = node.args.get("on")
-    condition = f" WHERE {written_sql(on, dialect)}" if on is not None else ""
-    message = (
-        f"at most one match per row and {unused}, so it only filters: "
-        f"write WHERE EXISTS (SELECT 1 FROM {right}{condition})"
-    )
-    return Rewrite(site, RewriteKind.FILTER_JOIN, message, (), unique)
+    edits = _filter_join_edits(node, source)
+    if edits is None:
+        return None
+    message = f"at most one match per row and {unused}, so it only filters: move it into a WHERE EXISTS"
+    return Rewrite(site, RewriteKind.FILTER_JOIN, message, edits, unique)
+
+
+def _filter_join_edits(node: exp.Join, source: Source) -> tuple[Edit, ...] | None:
+    """The join deleted and `EXISTS (SELECT 1 FROM <its relation> WHERE <its
+    ON>)`, both as written, ANDed into its Select's WHERE (`_anded_into_where`)."""
+    select = node.parent
+    tokens = source.tokens_of(span(node))
+    if not isinstance(select, exp.Select) or tokens is None:
+        return None
+    keyword = next(iter(source.top_level(tokens[0], tokens[1], TokenType.JOIN)), None)
+    _, condition = _on_conjuncts(node, source)
+    if keyword is None or condition is None and node.args.get("on") is not None:
+        return None
+    relation = (keyword + 1, condition[0] - 2 if condition is not None else tokens[1])
+    where = f" WHERE {source.text(*condition)}" if condition is not None else ""
+    exists = f"EXISTS (SELECT 1 FROM {source.text(*relation)}{where})"
+    return _anded_into_where(select, source, exists, tokens, [relation] + ([condition] if condition is not None else []))
+
+
+def _anded_into_where(
+    select: exp.Select, source: Source, condition: str, deleted: tuple[int, int], moved: list[tuple[int, int]],
+) -> tuple[Edit, ...] | None:
+    """`condition` ANDed to the end of `select`'s WHERE (the WHERE's own
+    condition parenthesized when it is an OR), or written as a new WHERE
+    after its FROM, and the `deleted` join deleted, but for the text it
+    `moved` into `condition`."""
+    where = select.args.get("where")
+    if where is not None:
+        tokens = source.tokens_of(span(where))
+        if tokens is None:
+            return None
+        if isinstance(where.this, exp.Or | exp.Xor):
+            added = (source.insert_before(tokens[0] + 1, "("), source.insert_after(tokens[1], f") AND {condition}"))
+        else:
+            added = (source.insert_after(tokens[1], f" AND {condition}"),)
+        return (source.delete(*deleted, moved), *added)
+    if select.args.get("laterals") or select.args.get("windows"):
+        return None
+    # The WHERE goes where the FROM ends: before the first clause after it.
+    end = marker_position(select)
+    clauses = [
+        position[0] for key, value in select.args.items()
+        if key != "distinct" and isinstance(value, Expr) and (position := span(value)) is not None
+    ]
+    boundary = min(clauses, default=end[0] if end is not None else None)
+    last = source.before(boundary) if boundary is not None else None
+    if last is None:
+        return None
+    if last == deleted[1]:
+        return (source.replace(*deleted, f"WHERE {condition}", moved),)
+    return (source.delete(*deleted, moved), source.insert_after(last, f" WHERE {condition}"))
 
 
 def _right_side_used(join: ir.Join, node: exp.Join) -> bool:
