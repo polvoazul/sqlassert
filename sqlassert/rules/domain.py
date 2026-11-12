@@ -39,10 +39,13 @@ from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
 from sqlassert.rules.equality import _equal_columns, _same_type
-from sqlassert.rules.nullability import non_null_column
+from sqlassert.rules.nullability import _non_null_expression, non_null_column
 
 # A finite set of possible non-null values, or None when any value is possible.
 type Domain = frozenset[ir.LiteralValue] | None
+
+_TRUE = ir.LiteralValue(type="boolean", text="TRUE")
+_FALSE = ir.LiteralValue(type="boolean", text="FALSE")
 
 
 @analysis(Stratum.DOMAIN)
@@ -202,9 +205,28 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(arm.value for arm in arms if arm.value is not None))
             premises = [*arms, unreachable] if unreachable.value else arms
             return Result(value, "A CASE takes one of its arms' values", (expression,), premises)
+        case ir.Call(strict_arguments=arguments) if arguments:
+            # NULL wherever a strict argument is, so always NULL where one always is.
+            for argument in arguments:
+                absent = _expression_domain(argument)
+                if absent.value == frozenset():
+                    return Result(frozenset(), "A strict argument is always NULL, so it is", (expression,), [absent])
+            return Result(None, "Values of this expression are not enumerated", (expression,))
+        case ir.IsNull(operand=operand) | ir.IsNotNull(operand=operand):
+            # A constant where the operand is never NULL, or always.
+            null = isinstance(expression, ir.IsNull)
+            present = _non_null_expression(operand)
+            if present.value:
+                value = frozenset({_FALSE if null else _TRUE})
+                return Result(value, f"Its operand is never NULL, so it is {_render(value)}", (expression,), [present])
+            absent = _expression_domain(operand)
+            if absent.value == frozenset():
+                value = frozenset({_TRUE if null else _FALSE})
+                return Result(value, f"Its operand is always NULL, so it is {_render(value)}", (expression,), [absent])
+            return Result(None, "Its operand may be NULL or not", (expression,), [present, absent])
         case (
             ir.Constant() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.Accumulation() | ir.Elements() | ir.Equality()
-            | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
+            | ir.NullSafeEquality() | ir.InList() | ir.And() | ir.Or()
         ):
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:

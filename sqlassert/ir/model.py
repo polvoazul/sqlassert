@@ -81,15 +81,27 @@ class Builtin:
     integer or decimal literal, when that argument is an integer or decimal:
     `a + 1`, `10 - a`, `-a`. Only where exact arithmetic raises an error on
     overflow instead of wrapping, saturating, or turning to a float.
+
+    A `rejecting` parameter makes the value never TRUE (FALSE or NULL)
+    whenever its argument is NULL, though perhaps not NULL: `x > ANY (...)`
+    is FALSE over no rows, `p IS TRUE` is FALSE. A strict parameter is one
+    too, so only one that is not strict needs the flag; `()` when none does.
+
+    With `skips_null` the value is non-null whenever any argument is
+    (`greatest` where it ignores NULLs), and `total` is None.
     """
 
     name: str
     strict: tuple[bool, ...]
     total: tuple[bool, ...] | None
     injective: bool
+    rejecting: tuple[bool, ...] = field(default=(), kw_only=True)
+    skips_null: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         assert self.total is None or len(self.total) == len(self.strict), f"{self.name}: one total flag per parameter"
+        assert not self.rejecting or len(self.rejecting) == len(self.strict), f"{self.name}: one rejecting flag per parameter"
+        assert not self.skips_null or self.total is None, f"{self.name}: skipping NULLs, it is not total in each argument"
         assert self.total is None or all(total for strict, total in zip(self.strict, self.total) if strict), (
             f"{self.name}: a strict parameter is total"
         )
@@ -145,6 +157,14 @@ class Call(ScalarExpr):
         return tuple(argument for argument, strict in zip(self.arguments, flags) if strict)
 
     @property
+    def rejecting_arguments(self) -> tuple[ScalarExpr, ...]:
+        """The arguments whose NULL makes the value never TRUE: the strict ones
+        and the `rejecting` ones."""
+        flags = self.function.strict_flags(len(self.arguments))
+        rejecting = self.function.rejecting or (False,) * len(flags)
+        return tuple(argument for argument, strict, rejects in zip(self.arguments, flags, rejecting) if strict or rejects)
+
+    @property
     def total_arguments(self) -> tuple[ScalarExpr, ...] | None:
         """The arguments whose being non-null makes the value non-null (none:
         never NULL), or None when the value may be NULL regardless."""
@@ -164,7 +184,7 @@ class Call(ScalarExpr):
 class OpaquePureFunction(ScalarExpr):
     """A built-in function or operator whose behaviour is not modelled: a pure
     function of its arguments, and nothing else is known about it. Searched
-    CASE, `concat`, `||`, `greatest`, and the like."""
+    CASE, and `concat`, `||` or `greatest` where the dialect's is not modelled."""
 
     arguments: tuple[ScalarExpr, ...]
     description: str
@@ -398,12 +418,15 @@ def total(expression: ScalarExpr) -> bool:
     """Whether `expression` is non-null whenever every column it reads is: a
     column, a literal, `count(...)`, the IS family, a Builtin total in its
     arguments over total ones, a total equality of total sides, or a coalesce
-    with one total argument. NULL, CASE (a missed WHEN), IN, AND, OR (not
-    inferred), and unmodelled functions may be NULL on non-null columns."""
+    or a Builtin that skips NULLs with one total argument. NULL, CASE (a
+    missed WHEN), IN, AND, OR (not inferred), and unmodelled functions may be
+    NULL on non-null columns."""
     expression = expression.closed
     match expression:
         case ColumnRef() | Constant() | Count() | IsNull() | IsNotNull() | NullSafeEquality():
             return True
+        case Call(function=Builtin(skips_null=True), arguments=arguments):
+            return any(total(argument) for argument in arguments)
         case Call(total_arguments=tuple() as arguments):
             return all(total(argument) for argument in arguments)
         case Equality(total=True, left=left, right=right):

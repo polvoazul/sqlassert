@@ -155,9 +155,10 @@ SELECT n, m FROM t WHERE m IN (1, n) /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 SELECT n, m FROM t WHERE n > ALL (SELECT m FROM t WHERE FALSE) /**ASSERT NOT NULL(n)**/
 --~ UNKNOWN
 
--- case: a_conjunct_true_on_a_null_rejects_nothing__n_any_select_m_from_t
+-- case: a_conjunct_never_true_on_a_null_rejects_it__n_any_select_m_from_t
+-- NULL >= ANY is FALSE over no rows and NULL otherwise, never TRUE (issue 45, item 12).
 SELECT n, m FROM t WHERE n >= ANY (SELECT m FROM t) /**ASSERT NOT NULL(n)**/
---~ UNKNOWN
+--~ PROVED
 
 -- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_in_select_m_from_t
 SELECT n, m FROM t WHERE NOT (n IN (SELECT m FROM t)) /**ASSERT NOT NULL(n)**/

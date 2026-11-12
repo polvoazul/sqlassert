@@ -20,7 +20,7 @@ proofs**, filed as [issue 45](issues/0045-close-the-calcite-audit-missing-proofs
 |---|---|---|
 | `tests/calcite_audit.sqltest` | 11 | Regressions for the five soundness bugs, with the sound boundary next to each |
 | `tests/calcite_audit_keys.sqltest` | 53 | FDs, unique keys, column uniqueness (`RelMetadataTest`, `MockCatalogReaderSimple`) |
-| `tests/calcite_audit_nulls.sqltest` | 55 | Predicate inference, null rejection, expression nullability (`RexProgramTest`, `RelMetadataTest`) |
+| `tests/calcite_audit_nulls.sqltest` | 66 | Predicate inference, null rejection, expression nullability (`RexProgramTest`, `RelMetadataTest`) |
 | `tests/calcite_audit_iq.sqltest` | 30 | Plans and NULL boundaries from the Quidem `.iq` files (scott schema) |
 
 Each case names the upstream test or `.iq` query that inspired it.
@@ -41,7 +41,8 @@ Compare contracts before answers:
   null-equal in its dependent.
 - **Null rejection.** Calcite's `Strong` has `isNull` (strict: NULL when the
   inputs are) and `isNotTrue` (never TRUE when they are NULL). Ours is the
-  former per column; the latter is missing (issue 45, item 12). Like
+  former per column, and the latter for Builtins never TRUE on a NULL
+  argument (`x > ANY (...)`, `p IS TRUE`; issue 45, item 12). Like
   Calcite, we also reject a whole padded side at once (per padding, item 9).
 - **Comparison types.** Calcite's `EquivalenceFinder` and FD projection
   ignore types and collations. Ours require identity comparison
@@ -96,18 +97,19 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 
 | Calcite | Behavior | Ours | Cases (nulls unless noted) | Verdict |
 |---|---|---|---|---|
-| Strong#createPolicyMap, #isNull | ANY policy: comparisons, LIKE, NOT, arithmetic, CAST, TRIM, FLOOR, ITEM, GREATEST | `ir/model.strict_inputs`, `ir/convert._builtins` | strong_right_join_through_arithmetic, strong_nondeterministic_conjunct_still_rejects | agrees for modelled Builtins; TRIM, FLOOR, ITEM, NULLIF missing (13) |
+| Strong#createPolicyMap, #isNull | ANY policy: comparisons, LIKE, NOT, arithmetic, CAST, TRIM, FLOOR, ITEM, GREATEST | `ir/model.strict_inputs`, `ir/convert.dialect_builtins` | strong_right_join_through_arithmetic, strong_nondeterministic_conjunct_still_rejects, strong_nullif_first_argument, strong_trim_and_floor, strong_item_of_a_list, strong_item_of_a_list_may_be_null, strong_item_of_a_list_not_modelled | agrees for modelled Builtins (13); ITEM only where certified (DuckDB, PostgreSQL) |
 | Strong#isNotTrue | AND: any part; OR: every part | `rules/nullability._null_rejected` | strong_and_rejects_padded_side_through_one_part, strong_or_with_a_preserved_part, strong_not_is_not_null_keeps_padding | agrees per column |
 | RelOptUtil#simplifyJoin | Whole padded side NULL at once | per padding: `nullability._rejected_paddings` | strong_or_of_two_padded_columns, strong_or_of_is_not_null_on_padded_columns, strong_coalesce_of_padded_columns, strong_or_of_columns_two_joins_pad, strong_coalesce_of_columns_two_joins_pad, strong_or_with_a_nullable_preserved_part | agrees (9) |
 | RelOptUtil#simplifyJoin | FULL becomes LEFT/RIGHT one side at a time | `nullability.Padding` keyed by join and side | strong_full_join_where_rejects_its_own_side; `calcite_audit` full_join_* | fixed (bug 3) |
 | Strong#isNull CASE | NULL only if every value is | `nullability._case_sources`: padding kept only when every arm has it | `calcite_audit` case_* | fixed (bug 1) |
 | Strong policy map | BETWEEN, non-strict operators | `_expression_sources`: padding kept only through strict arguments | `calcite_audit` between_*, strict_argument_* | fixed (bug 1) |
 | Strong SEARCH | `x IN (1, NULL)` strict in x | `InList` | strong_search_with_null_value | agrees, ours stronger (ENUM) |
-| Strong SOME/ALL; IS TRUE | SOME not strong; ALL true over no rows | quantified comparisons opaque | strong_any_subquery_is_never_true_on_null, strong_all_subquery_is_true_over_no_rows, strong_is_true_rejects | ALL agrees; ANY, IS TRUE missing in both (12) |
+| Strong SOME/ALL; IS TRUE | SOME not strong; ALL true over no rows | `x op ANY (...)`, `IS TRUE` and `IS FALSE` are Builtins `rejecting` their operand, never TRUE on its NULL but not strict (`nullability._null_rejected`); ALL opaque | strong_any_subquery_is_never_true_on_null, strong_any_subquery_is_not_strict, strong_all_subquery_is_true_over_no_rows, strong_is_true_rejects, strong_is_true_rejects_a_padded_side | agrees (12) |
+| Strong through a Project (RelMetadataTest#testPredicates) | A computed column non-null makes its strict inputs non-null | `nullability._row_lineage`: a rejected column rejects the columns of its own row it is strict in, through Projects, Aliases and joins, not aggregates, set operations or another occurrence of a view or CTE | strong_rejected_computed_column, strong_rejected_computed_column_through_a_join, strong_rejected_computed_column_not_strict, strong_rejected_computed_column_of_another_row, strong_rejected_computed_column_of_a_group | agrees (15) |
 | PR#getPredicates(Filter) | Drops volatile conjuncts | keeps their null rejection | strong_nondeterministic_conjunct_still_rejects | ours stronger |
 | Strong NOT_NULL; RelOptPredicateList#isEffectivelyNotNull | IS NULL, IS DISTINCT FROM, EXISTS never NULL | `nullability._expression_sources`: the IS family never NULL, `=` total where casts raise (`Equality.total`) | nullability_of_comparisons_and_is_family, nullability_of_an_equality_with_a_nullable_side, nullability_of_an_equality_without_ansi | agrees (10) |
 | ReturnTypes ARG0_NULLABLE_IF_EMPTY, AGG_SUM | Grouped MIN/MAX/SUM non-null | MIN/MAX an `AnyAggregate`, SUM an `Accumulation` (where arithmetic is checked), `empty` when grouped by nothing | nullability_of_grouped_max_and_sum, nullability_of_scalar_max | agrees (14) |
-| SqlStdOperatorTable#CONCAT; GREATEST_PG | `\|\|` AS_IS; PG greatest skips NULLs | opaque (dialects differ) | nullability_of_concat_operator, nullability_of_greatest_duckdb | agrees on rejection; nullability missing (13) |
+| SqlStdOperatorTable#CONCAT; GREATEST_PG | `\|\|` AS_IS; PG greatest skips NULLs | per dialect: `\|\|` strict where certified, `greatest`/`least` a Builtin that `skips_null` in DuckDB and PostgreSQL, opaque elsewhere | nullability_of_concat_operator, nullability_of_greatest_duckdb, nullability_of_greatest_mysql | agrees (13) |
 | MOD/DIVIDE typing | Non-null | `convert._CHECKED_DIVISION_DIALECTS` | nullability_of_mod_by_zero_duckdb, nullability_of_mod_by_zero_postgres | different: Calcite's typing is wrong for DuckDB |
 | (none) | Oracle `''` is NULL | `convert._EMPTY_STRING_IS_NULL_DIALECTS` | `calcite_audit` oracle_empty_string_is_null | fixed (bug 4) |
 
@@ -115,7 +117,7 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 
 | Calcite | Behavior | Ours | Cases (nulls) | Verdict |
 |---|---|---|---|---|
-| PR#getPredicates(Project), #eqConstant | Literal columns are constants | `domain._expression_domain` | pullup_project_constants, pullup_project_is_null_of_constrained_column | agrees; casts of literals and `IS NULL` under `=` missing (16, 17) |
+| PR#getPredicates(Project), #eqConstant | Literal columns are constants | `domain._expression_domain`: a strict Call of an always-NULL argument is empty, `IS [NOT] NULL` of a non-null or always-NULL operand a constant; `convert._cast_integer_literal` folds a plain integer CAST | pullup_project_constants, pullup_project_casts_folded_only_when_exact, pullup_project_is_null_of_constrained_column, pullup_project_is_null_of_nullable_column | agrees (16, 17) |
 | RexUtil#predicateConstants | `IS NOT DISTINCT FROM c`, `IS NULL` are constants | `NullSafeEquality`: a domain bound, a constant, and rejection of the other side of a non-null one | strong_is_not_distinct_from_a_literal, strong_is_not_distinct_from_a_non_null_column, strong_is_not_distinct_from_a_nullable_column, strong_is_not_distinct_from_a_literal_without_ansi | agrees (11) |
 | JoinConditionBasedPredicateInference INNER | Equivalence closure; rewrites any predicate across it, any type | `equality._equality_groups`, `_same_type`; `domain._meet` | pullup_inner_join_transitive_constant, pullup_inner_join_on_nullable_column, pullup_equivalence_under_a_collation | agrees; Calcite ignores collation (different) |
 | inferPredicates SEMI | Left predicates plus inferred from the right | `domain._narrowings` | pullup_semi_join_from_in_subquery, pullup_semi_join_from_exists_on_constant, pullup_semi_join_equates_two_left_columns | agrees for IN; EXISTS constant and two-column equality missing (23) |

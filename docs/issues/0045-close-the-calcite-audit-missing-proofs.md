@@ -65,10 +65,10 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
     `keys: fd_equality_conditions`, `uk_null_safe_join_on_key`,
     `uk_null_safe_join_on_nullable_unique` (boundary);
     `not_null_rejection: a_null_safe_equality_to_a_literal_is_not_inferred`.
-12. **Never TRUE on NULL, without being strict**: `x > ANY (subquery)` and
+12. ~~**Never TRUE on NULL, without being strict**:~~ Done: `x op ANY (...)`, `IS TRUE` and `IS FALSE` are Builtins whose operand is `rejecting` (a NULL there makes the value never TRUE, not NULL), so a conjunct rejects that operand's strict columns and paddings (`nullability._null_rejected`, `_conjunct_paddings`); the value stays nullable for ANY and never NULL for the IS forms. ALL and `IS NOT FALSE` reject nothing. Was: `x > ANY (subquery)` and
     `(x > 0) IS TRUE` reject x. This is Calcite's `Strong.isNotTrue`, weaker
     than strictness. `nulls: strong_any_subquery_is_never_true_on_null`, `strong_is_true_rejects`.
-13. Partly done: `lower`, `upper`, `length`, `trim` (not total where '' is NULL), `abs`, `floor`, `ceil` (total where CAST is checked) and `nullif` (strict in its first argument) are Builtins, certified per dialect; a call with more arguments (`trim(x, chars)`, `floor(x, 2)`) stays opaque. Still open: list indexing, `||` and greatest/least per dialect. Was: **More strict Builtins**: NULLIF (first argument), trim, floor/ceil,
+13. ~~More strict Builtins~~ Done: `lower`, `upper`, `length`, `trim` (not total where '' is NULL), `abs`, `floor`, `ceil` (total where CAST is checked) and `nullif` (strict in its first argument) are Builtins, certified per dialect; a call with more arguments (`trim(x, chars)`, `floor(x, 2)`) stays opaque. `||` as each dialect treats NULL. A subscript `xs[i]` is strict in `xs` (`subscript_strict`) and `greatest`/`least` non-null when any argument is (`skips_null`), in DuckDB and PostgreSQL only, where certified; other dialects leave them opaque (MySQL's strict greatest is not certified). Was: **More strict Builtins**: NULLIF (first argument), trim, floor/ceil,
     upper/lower, abs, length, list indexing. Per dialect: `||` is non-null
     when its operands are in DuckDB and Postgres (not Oracle, not MySQL), and
     greatest/least are non-null when any argument is in DuckDB and Postgres.
@@ -78,12 +78,12 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
     MIN/MAX keep the argument's domain. A scalar one stays nullable.
     `nulls: nullability_of_grouped_max_and_sum`, `nullability_of_scalar_max` (boundary),
     `iq: grouped_sum_of_a_non_null_column_is_non_null`.
-15. **Rejection back through a computed column**: `WHERE q.ms > 0` with
+15. ~~**Rejection back through a computed column**:~~ Done: a rejected column rejects every column of its own row it is strict in, down through Projects, Aliases, Filters and joins, and through views and CTEs per occurrence, never an aggregate or set operation (`nullability._row_lineage`). Was: `WHERE q.ms > 0` with
     `ms = mgr + sal` rejects NULL in mgr. `nulls: strong_rejected_computed_column`.
-16. **Domains of strict Calls over literals**: `CAST(NULL AS INTEGER)` has
+16. ~~**Domains of strict Calls over literals**:~~ Done: a strict Call with an always-NULL strict argument has the empty domain (`domain._expression_domain`), and a CAST of a plain non-negative integer literal (number or string, no sign, leading zero or space) to a signed integer type within its range is that constant (`convert._cast_integer_literal`); `CAST('1.5' AS INTEGER)` differs by dialect and stays opaque. Was: `CAST(NULL AS INTEGER)` has
     the empty domain, `CAST('1' AS INTEGER)` is `{1}`.
     `nulls: pullup_union_with_cast_null`, `pullup_project_constants`.
-17. `comm IS NULL` under `comm = 2` is FALSE, a constant.
+17. ~~`comm IS NULL` under `comm = 2` is FALSE, a constant.~~ Done: `IS [NOT] NULL` of a non-null operand, or of an always-NULL one, has a one-value domain (`domain._expression_domain`).
     `nulls: pullup_project_is_null_of_constrained_column`.
 
 ### Dependencies and keys

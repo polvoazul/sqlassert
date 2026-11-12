@@ -7,6 +7,7 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
@@ -1706,18 +1707,25 @@ class IrParser:
                 )
             case exp.NullSafeNEQ() if not quantified:
                 return ir.Call(origin=origin, function=_IS_DISTINCT_FROM, arguments=(lower(expression.this), lower(expression.expression)), description=description)
+            case exp.EQ() | exp.NEQ() | exp.GT() | exp.GTE() | exp.LT() | exp.LTE() if isinstance(expression.expression, exp.Any) and not isinstance(expression.this, (exp.Any, exp.All)):
+                function = _any_comparison(type(expression))
+                arguments = (lower(expression.this), lower(expression.expression))
+                return ir.Call(origin=origin, function=function, arguments=arguments, description=description)
             case exp.Exists():
                 subquery = ir.OpaqueExpression(origin=origin, description=description)
                 return ir.Call(origin=origin, function=_EXISTS, arguments=(subquery,), description=description)
             case exp.Is(expression=exp.Null()):
                 return ir.IsNull(origin=origin, operand=lower(expression.this))
+            case exp.Is(expression=exp.Boolean() as truth):
+                function = _IS_TRUE if truth.this else _IS_FALSE
+                return ir.Call(origin=origin, function=function, arguments=(lower(expression.this),), description=description)
             case exp.Not(this=exp.Is(expression=exp.Null()) as test):
                 return ir.IsNotNull(origin=origin, operand=lower(test.this))
             case exp.In() if expression.expressions and not any(expression.args.get(key) for key in ("query", "unnest", "field")):
                 return ir.InList(origin=origin, operand=lower(expression.this), values=tuple(lower(value) for value in expression.expressions))
             case _:
                 pass
-        value = literal_value(expression)
+        value = literal_value(expression) or _cast_integer_literal(expression)
         if value == ir.LiteralValue(type="string", text="") and self.semantics.empty_string_is_null:
             return ir.NullLiteral(origin=origin)
         if value is not None or isinstance(expression, exp.Literal):
@@ -2331,9 +2339,9 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     remainder only where division by zero raises too (`checked_division`).
     A CAST from JSON is not total anywhere (`convert._is_json`): JSON `null`
     is a value that casts to NULL. `+`, `-` and negation are injective where exact arithmetic overflows into
-    an error. `||`, `concat()` and `concat_ws()` as each dialect treats NULL;
-    `||` not at all where a setting decides what it means (MySQL: OR, or
-    concatenation)."""
+    an error. `||`, `concat()`, `concat_ws()`, `greatest()`, `least()` and
+    subscripts (`xs[1]`) as each dialect treats NULL; `||` not at all where a
+    setting decides what it means (MySQL: OR, or concatenation)."""
     checked = meaning.checked_arithmetic
     casts = meaning.casts_raise
 
@@ -2393,6 +2401,23 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
             pass
         case _:
             assert_never(meaning.concat)
+    match meaning.greatest:
+        case "skips-null":
+            # NULL only when every argument is: `greatest(NULL, 1)` is 1.
+            for node, name in {exp.Greatest: "greatest", exp.Least: "least"}.items():
+                builtins[node] = (
+                    ir.BuiltinVariadic(
+                        name=name, strict=(False,), total=None, injective=False, repeated_strict=False, repeated_total=False, skips_null=True,
+                    ),
+                    ("this", "expressions"),
+                )
+        case None:
+            pass
+        case _:
+            assert_never(meaning.greatest)
+    if meaning.subscript_strict:
+        # NULL for a NULL list, and for an index out of range or a NULL element.
+        builtins[exp.Bracket] = (ir.Builtin(name="[]", strict=(True, False), total=None, injective=False), ("this", "expressions"))
     match meaning.concat_ws:
         case "strict":
             builtins[exp.ConcatWs] = (
@@ -2886,11 +2911,48 @@ _IS_DISTINCT_FROM = ir.Builtin(name="IS DISTINCT FROM", strict=(False, False), t
 # Never NULL: TRUE or FALSE, whatever its subquery returns.
 _EXISTS = ir.Builtin(name="EXISTS", strict=(False,), total=(False,), injective=False)
 _ORDER_COMPARISONS = {"<>", ">", ">=", "<", "<=", "BETWEEN"}
+# Never NULL: `NULL IS TRUE` is FALSE, so never TRUE where the operand is NULL.
+_IS_TRUE = ir.Builtin(name="IS TRUE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
+_IS_FALSE = ir.Builtin(name="IS FALSE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
+
+
+@cache
+def _any_comparison(node: type[Expr]) -> ir.Builtin:
+    """`x op ANY (...)`, in every dialect: FALSE over no values, even for a
+    NULL `x`, else NULL where `x` is, so never TRUE where `x` is NULL. Not
+    `ALL`, which is TRUE over no values."""
+    name = {exp.EQ: "=", exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<="}[node]
+    return ir.Builtin(name=f"{name} ANY", strict=(False, False), total=None, injective=False, rejecting=(True, False))
 
 # Comparisons, whose operands a zoned timestamp's text may be.
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Like, exp.ILike, exp.Between)
 
 _EXACT_NUMERIC_TYPES = {*exp.DataType.INTEGER_TYPES, exp.DataType.Type.DECIMAL}
+
+# The largest value of each signed integer type, the same in every dialect.
+_INTEGER_MAXIMA = {
+    exp.DataType.Type.TINYINT: 2**7 - 1, exp.DataType.Type.SMALLINT: 2**15 - 1,
+    exp.DataType.Type.INT: 2**31 - 1, exp.DataType.Type.BIGINT: 2**63 - 1,
+}
+
+
+def _cast_integer_literal(expression: Expr) -> ir.LiteralValue | None:
+    """The value of `CAST('1' AS INTEGER)` or `CAST(1 AS BIGINT)`: a
+    non-negative integer, written as a number or a string with no sign,
+    leading zero or space, within a signed integer type's range. That is the
+    same integer in every dialect; a decimal (`CAST('1.5' AS INTEGER)` rounds
+    or truncates by dialect) or any other cast is not folded."""
+    if type(expression) is not exp.Cast:  # TRY_CAST and the like are not modelled
+        return None
+    to = expression.args.get("to")
+    maximum = _INTEGER_MAXIMA.get(to.this) if isinstance(to, exp.DataType) else None
+    value = literal_value(expression.this)
+    if maximum is None or value is None or value.type == "boolean" or not _PLAIN_INTEGER.fullmatch(value.text):
+        return None
+    return ir.LiteralValue(type="numeric", text=value.text) if int(value.text) <= maximum else None
+
+
+_PLAIN_INTEGER = re.compile(r"0|[1-9][0-9]{0,18}")
 
 # Nodes whose value is not a function of the columns an expression reads.
 # Builtins modelled only when the call sets no argument but their own.

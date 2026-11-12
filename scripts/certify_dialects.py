@@ -202,6 +202,9 @@ _SHAPES: dict[str, _Shape] = {
     "floor": _Shape("DOUBLE", (exp.Literal.number("1.5"),), bad=((_X,),)),
     "ceil": _Shape("DOUBLE", (exp.Literal.number("1.5"),), bad=((_X,),)),
     "nullif": _Shape("INT", (_n(1), _n(2))),
+    "greatest": _Shape("INT", (_n(1), _n(2))),
+    "least": _Shape("INT", (_n(1), _n(2))),
+    "[]": _Shape("INT[]", (exp.Array(expressions=[_n(1), _n(2)]), _n(1))),
 }
 
 # The flag each Builtin's totality and injectivity rest on (`dialect_builtins`).
@@ -238,10 +241,20 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
                 # NULL as a CASE around it; `coalesce` says the node is that dialect's own,
                 # so the probe runs the engine's concat_ws, not SQLGlot's emulation.
                 args["coalesce"] = sqlglot.Dialect.get_or_raise(sqlassert_dialect(dialect)).CONCAT_WS_COALESCE
+            if node in (exp.Greatest, exp.Least):
+                # Likewise: SQLGlot writes a NULL-strict CASE unless the node skips NULLs as the dialect's own does.
+                args["ignore_nulls"] = sqlglot.parse_one("greatest(a, b)", read=sqlassert_dialect(dialect)).args.get("ignore_nulls")
             if variadic:
-                args[keys[0]] = list(arguments)
+                # The fixed parameters by their own keys (none when one list holds all), then the list.
+                fixed = len(keys) - 1
+                args.update(zip(keys[:fixed], arguments[:fixed], strict=True))
+                args[keys[-1]] = list(arguments[fixed:])
             else:
-                args.update(zip(keys, arguments, strict=True))
+                # SQLGlot keeps `expressions` as a list (a subscript's index).
+                args.update((key, [argument] if key == "expressions" else argument) for key, argument in zip(keys, arguments, strict=True))
+            if node is exp.Bracket:
+                # PostgreSQL subscripts a CAST only in parentheses.
+                args["this"] = exp.Paren(this=args["this"])
             return node(**args)
 
         def null_at(arguments: Sequence[Expr], positions: Iterable[int]) -> tuple[Expr, ...]:
@@ -275,6 +288,13 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
             cases = [ordinary, *(case + ordinary[len(case):] for case in (*shape.overflow, *shape.bad))]
             checks = tuple(check for case in cases for check in probe(null_at(case, free), "error or true", accepted_error=_DATA_ERROR))
             yield Fact(f"total({label})", _total_flag(label), checks)
+        if builtin.skips_null:
+            # Non-null whenever any argument is: every other one NULL.
+            checks = tuple(
+                check for i in range(count)
+                for check in probe(null_at(ordinary, [j for j in range(count) if j != i]), "error or true", accepted_error=_DATA_ERROR)
+            )
+            yield Fact(f"skips_null({label})", "greatest=None", checks)
         if builtin.injective:
             checks = tuple(check for case in shape.overflow for check in probe(case, "error or true", exact=_exact(label, case), accepted_error=_OVERFLOW_ERROR))
             yield Fact(f"injective({label})", "checked_arithmetic=False", checks)

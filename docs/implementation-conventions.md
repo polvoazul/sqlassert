@@ -168,7 +168,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   go through it; `analyze` stays pure.
 - `dialects.py` is what each SQL dialect means by the constructs the rules
   depend on (`DialectSemantics`): which Builtins raise rather than return
-  NULL, which text compares by identity, `||` and `concat()`, and which keys
+  NULL, which text compares by identity, what `||`, `concat()`, `greatest()`
+  and subscripts do with NULL, and which keys
   are enforced, keys and CHECK constraints alike. Only `ir/convert.py` reads it, and `discovery/` for catalog
   keys; the rules see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
   dialect not listed gets cautious defaults. An unenforced key is never

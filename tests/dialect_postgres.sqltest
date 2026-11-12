@@ -2,7 +2,8 @@
 --
 -- Arithmetic, CAST and division raise rather than return NULL. `||` is
 -- concatenation, NULL for a NULL text operand but not for an array's
--- (`ARRAY[1] || NULL` is `{1}`); `concat()` skips NULLs. Text compares by
+-- (`ARRAY[1] || NULL` is `{1}`); `concat()`, `greatest()` and `least()` skip
+-- NULLs, and `xs[i]` is NULL for a NULL `xs`. Text compares by
 -- identity by default and under the deterministic built-in collations. A
 -- NUMERIC with no scale keeps each value's own (1.0 and 1.00 are equal and
 -- differ). Keys are enforced, except a foreign key added NOT VALID, one
@@ -15,6 +16,16 @@ CREATE TABLE c (id INTEGER PRIMARY KEY, s TEXT COLLATE "C", u TEXT COLLATE "und-
 
 -- case: division_by_a_non_null_value_is_non_null
 SELECT n / 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: greatest_skips_nulls
+-- greatest and least are NULL only when every argument is.
+SELECT greatest(m, 1) AS g, least(m, n) AS l, greatest(m, m) AS x FROM t
+/**ASSERT NOT NULL(g, l)**/  --~ PROVED
+/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: a_subscript_is_null_for_a_null_array
+CREATE TABLE a (id INTEGER PRIMARY KEY, xs INTEGER[]);
+SELECT id, xs FROM a WHERE xs[1] = 5 /**ASSERT NOT NULL(xs)**/  --~ PROVED
 
 -- case: pipes_of_non_null_operands_are_non_null
 SELECT s || 'x' AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
