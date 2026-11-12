@@ -146,7 +146,7 @@ def rewrites(
             found.extend(_implied_where(arena, site, relation, program))
         if site.trailing and isinstance(node, exp.Select):
             one_row = _one_row_tail(site, relation, limit, node, source)
-            found.extend(one_row or _redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect))
+            found.extend(one_row or _redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect, source))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
                 same = _self_join(arena, site, relation, node, program, dialect)
@@ -311,19 +311,25 @@ def _inner_join(
 
 
 def _redundant_sort_keys(
-    site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select, keys: tuple[ir.OutputColumn, ...] | None, dialect: str
+    site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select, keys: tuple[ir.OutputColumn, ...] | None, dialect: str,
+    source: Source,
 ) -> list[Rewrite]:
     """Each ORDER BY key the keys before it determine, NULL equal to NULL
     (Paulley §3, reducing the sort list): rows tied on the earlier keys agree
     on it, so it never breaks a tie. Only while the earlier keys compare by
     identity: a collation or a float ties values its equality tells apart.
     Silent when a key is an expression or a name that does not resolve to one
-    column, and for DISTINCT ON, whose ORDER BY picks the rows it keeps."""
+    column, and for DISTINCT ON, whose ORDER BY picks the rows it keeps. Its
+    edit deletes the key and the comma before it."""
     from sqlassert.hazards import _ties_identical
 
     if not keys:
         return []
     items = select.args["order"].expressions
+    clause = source.tokens_of(span(select.args["order"]))
+    parts = source.split(clause[0] + 1, clause[1], TokenType.COMMA) if clause is not None else []
+    if len(parts) != len(items):
+        return []
     scope = relation.input if isinstance(relation, ir.Project) else relation
     found = []
     for position in range(1, len(keys)):
@@ -336,7 +342,7 @@ def _redundant_sort_keys(
         written = [written_sql(item.this if isinstance(item, exp.Ordered) else item, dialect) for item in items]
         message = f"({quoted_all(written[:position])}) determine {quoted(written[position])}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
         evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
-        found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, (), evidence))
+        found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, source.deletions([(parts[position][0] - 1, parts[position][1])]), evidence))
     return found
 
 

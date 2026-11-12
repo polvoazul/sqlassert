@@ -904,6 +904,14 @@ EXPECTED_DIFFS = [
 -dead AS (SELECT id FROM users)
 +WITH used AS (SELECT user_id FROM sessions)""",
     ),
+    (
+        RewriteKind.REDUNDANT_SORT_KEY,
+        SCHEMA + "SELECT id, name FROM users\nORDER BY id DESC, name NULLS FIRST\nLIMIT 2",
+        """\
+@@ -6 +6 @@
+-ORDER BY id DESC, name NULLS FIRST
++ORDER BY id DESC""",
+    ),
 ]
 
 
