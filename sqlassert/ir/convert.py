@@ -407,7 +407,7 @@ class IrParser:
 
         sources = _direct_sources(query)
         by_qualifier: dict[str, list[Expr]] = {}
-        for source in sources:
+        for source in [*sources, *(hidden for source in sources for hidden in _hidden_sources(source))]:
             self._source_required.setdefault(id(source), set())
             self._source_expressions[id(source)] = source
             qualifier = source.alias_or_name.lower()
@@ -629,13 +629,13 @@ class IrParser:
                 return self._alias(recursive, alias_name, self._origin(source), schema)
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema, _column_aliases(source))
 
-        nested = _nested_join(source)
+        nested = _nested_join(source) or _aliased_join(source)
         if nested is not None:
             first, joins = nested
             lowered = self._lower_source(first)
             for join in joins:
                 lowered = self._lower_join(lowered, join)
-            return lowered
+            return lowered if source.alias == "" else self._alias_join(lowered.relation, source)
 
         if isinstance(source, exp.Subquery):
             relation = self._lower_query(source)
@@ -654,6 +654,32 @@ class IrParser:
         if construct is not None:
             self._unsupported.append((opaque, construct))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
+
+    def _alias_join(self, join: ir.RelationExpr, source: Expr) -> _Lowered:
+        """`(a JOIN b ...) AS x`: a relation of its own, which hides the names
+        of a and b and has each of their columns under its own name. A name
+        two columns share each dialect resolves differently (DuckDB renames
+        the second `x_1`, others reject reading it), so its columns are
+        opaque, the first one readable by that name; every name is, when a
+        source's columns are not all known."""
+        origin = self._origin(source)
+        counts = Counter(column.name.lower() for column in join.output_columns)
+        relation = join
+        if not join.is_schema_complete or any(count > 1 for count in counts.values()):
+            outputs = tuple(
+                ir.OutputColumn(
+                    origin=origin, name=column.name,
+                    scalar_expr=ir.ColumnRef(origin=origin, column=column) if join.is_schema_complete and counts[column.name.lower()] == 1
+                    else ir.OpaqueExpression(origin=origin, description=f"{source.alias}.{column.name}"),
+                )
+                for column in join.output_columns
+            )
+            relation = ir.Project(origin=origin, output_columns=outputs, is_schema_complete=join.is_schema_complete, input=join)
+        lowered = self._alias(relation, source.alias, origin, column_aliases=_column_aliases(source))
+        bindings: dict[str, _Binding] = {}
+        for binding in lowered.bindings:
+            bindings.setdefault(binding.name, binding)
+        return _Lowered(lowered.relation, tuple(bindings.values()))
 
     def _lower_values(self, values: exp.Values) -> ir.OpaqueRelation | None:
         """`(VALUES (...), ...) AS t (a, ...)`: rows of literals, stated as
@@ -2665,7 +2691,8 @@ def _join_levels(select: exp.Select) -> list[tuple[list[exp.Join], list[Expr]]]:
     levels: list[tuple[list[exp.Join], list[Expr]]] = [(list(select.args.get("joins") or ()), _direct_sources(select))]
     pending: list[Expr | None] = [source, *(join.this for join in select.args.get("joins") or ())]
     while pending:
-        nested = _nested_join(pending.pop())
+        source = pending.pop()
+        nested = _nested_join(source) or _aliased_join(source)
         if nested is not None:
             first, joins = nested
             levels.append((joins, _flattened([first, *(join.this for join in joins)])))
@@ -2685,6 +2712,29 @@ def _nested_join(source: Expr | None) -> tuple[Expr, list[exp.Join]] | None:
     if not isinstance(first, exp.Table | exp.Subquery) or not first.args.get("joins"):
         return None
     return first, list(first.args["joins"])
+
+
+def _aliased_join(source: Expr | None) -> tuple[Expr, list[exp.Join]] | None:
+    """A parenthesized join with an alias, `(a JOIN b ON ...) AS x`, perhaps
+    naming its columns: its first source and its joins, as `_nested_join`."""
+    if not isinstance(source, exp.Subquery) or not source.alias or any(
+        value for key, value in source.args.items() if key not in {"this", "alias"}
+    ):
+        return None
+    first = source.this
+    if not isinstance(first, exp.Table | exp.Subquery) or not first.args.get("joins"):
+        return None
+    return first, list(first.args["joins"])
+
+
+def _hidden_sources(source: Expr) -> list[Expr]:
+    """The sources inside an aliased parenthesized join, at any depth: their
+    names are visible only inside it."""
+    nested = _aliased_join(source)
+    if nested is None:
+        return []
+    inner = _flattened([nested[0], *(join.this for join in nested[1])])
+    return [*inner, *(hidden for source in inner for hidden in _hidden_sources(source))]
 
 
 def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
