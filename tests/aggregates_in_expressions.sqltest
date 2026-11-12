@@ -64,3 +64,36 @@ SELECT comm FROM emp GROUP BY comm HAVING max(sal) > 5
 -- case: having_on_a_selected_aggregate_inside_an_expression
 SELECT deptno, max(comm) + 1 AS m FROM emp GROUP BY deptno HAVING max(comm) + 1 > 5
 /**ASSERT NOT NULL(m)**/  --~ PROVED
+
+-- Each repeatable aggregate call is computed once per group, so HAVING and
+-- every select item containing it read one value.
+-- case: having_on_an_aggregate_a_select_item_contains
+SELECT deptno, max(comm) + 1 AS m FROM emp GROUP BY deptno HAVING max(comm) > 5
+/**ASSERT NOT NULL(m)**/  --~ PROVED
+
+-- case: having_on_another_aggregate_rejects_nothing_of_the_item
+SELECT deptno, max(comm) + 1 AS m FROM emp GROUP BY deptno HAVING min(comm) > 5
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+
+-- case: having_pins_an_aggregate_a_select_item_contains
+SELECT deptno, max(comm) + deptno AS m, max(comm) AS x FROM emp GROUP BY deptno HAVING max(comm) = 3
+/**ASSERT ENUM(x IN (3))**/  --~ PROVED
+/**ASSERT DETERMINES(deptno -> m)**/  --~ PROVED
+/**ASSERT NOT NULL(m)**/  --~ PROVED
+
+-- any_value picks a value per call: two calls may pick different ones.
+-- case: having_on_any_value_rejects_nothing_of_another_call
+SELECT deptno, any_value(comm) + 1 AS m FROM emp GROUP BY deptno HAVING any_value(comm) > 5
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+
+-- case: a_key_stays_a_key_beside_items_computed_over_aggregates
+SELECT deptno, max(sal) + 1 AS m, count(*) * 2 AS c FROM emp GROUP BY deptno HAVING count(*) > 1
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT DETERMINES(deptno -> m, c)**/  --~ PROVED
+/**ASSERT UNIQUE(m)**/  --~ UNKNOWN
+
+-- case: one_group_of_items_computed_over_aggregates_is_exactly_one_row
+SELECT max(sal) + 1 AS m, count(*) * 2 AS c FROM emp
+/**ASSERT UNIQUE(m)**/  --~ PROVED
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN

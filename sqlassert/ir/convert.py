@@ -1493,7 +1493,13 @@ class IrParser:
         rows its input has. HAVING filters the groups (`_lower_having`). A
         key not selected, or an aggregate only HAVING reads, is a hidden
         output of the Aggregate, which a Project then drops: a key still
-        splits the groups, and HAVING may read either."""
+        splits the groups, and HAVING may read either.
+
+        An item computed over aggregates (`max(sal) + 1`) is computed by that
+        Project from the Aggregate's outputs: each repeatable aggregate call
+        it contains is one output, shared with the item or HAVING conjunct
+        written the same, and so is each column outside them. HAVING's facts
+        about `max(sal)` then hold of the item's operand."""
         if _unsupported_grouping(select) is not None:
             return None
         if select.args.get("where") is not None:
@@ -1515,6 +1521,25 @@ class IrParser:
                 items.append(item)
             grouped_items.add(id(item))
             matched.append(item)
+        computed = {id(item) for item in select.expressions if self._computed_over_aggregates(_unaliased(item))}
+        if any(id(item) in computed for item in matched):
+            return None  # A grouping position naming an item that aggregates.
+        items = [item for item in items if id(item) not in computed]
+        # Each part of a computed item is an output: an item or hidden item
+        # written the same, when repeatable, else a hidden item of its own.
+        parts: dict[int, Expr] = {}
+        for item in select.expressions:
+            if id(item) not in computed:
+                continue
+            for part in _aggregate_parts(_unaliased(item)):
+                text = part.sql(dialect=self.dialect)
+                same = next((
+                    other for other in items if self._repeatable(part) and _unaliased(other).sql(dialect=self.dialect) == text
+                ), None)
+                if same is None:
+                    same = exp.alias_(part.copy(), f"{HIDDEN_AGGREGATE}{len(items)}")
+                    items.append(same)
+                parts[id(part)] = same
         having = select.args.get("having")
         if having is not None:
             # An aggregate HAVING reads that no item writes: a hidden output,
@@ -1544,11 +1569,27 @@ class IrParser:
             grouping_outputs=tuple(grouping_outputs), calls=calls,
         )
         relation: ir.RelationExpr = aggregate if having is None else self._lower_having(aggregate, items, having)
-        if len(items) == len(select.expressions):
+        if len(items) == len(select.expressions) and all(item is written for item, written in zip(items, select.expressions)):
             return relation
         origin = self._origin(select)
-        selected = _pass_output_columns(relation.output_columns[:len(select.expressions)], origin)
-        return ir.Project(origin=origin, output_columns=selected, is_schema_complete=True, input=relation)
+        position = {id(item): index for index, item in enumerate(items)}
+        selected: list[ir.OutputColumn] = []
+        for item in select.expressions:
+            if id(item) not in computed:
+                selected.extend(_pass_output_columns((relation.output_columns[position[id(item)]],), origin))
+                continue
+            values = {
+                part: ir.ColumnRef(origin=self._origin(other), column=relation.output_columns[position[id(other)]])
+                for part, other in parts.items()
+            }
+            self._grouped_values.update(values)
+            try:
+                value = self._lower_expression(_unaliased(item), (), schema_complete=True)
+            finally:
+                for key in values:
+                    del self._grouped_values[key]
+            selected.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=value))
+        return ir.Project(origin=origin, output_columns=tuple(selected), is_schema_complete=True, input=relation)
 
     def _lower_having(self, aggregate: ir.Aggregate, items: list[Expr], having: exp.Having) -> ir.Filter:
         """HAVING as a Filter of the grouped rows. A condition reads the
@@ -1586,6 +1627,15 @@ class IrParser:
         return ir.Filter(
             origin=origin, output_columns=_pass_output_columns(aggregate.output_columns, origin), is_schema_complete=True,
             input=aggregate, predicate=_and(tuple(parts), origin),
+        )
+
+    def _computed_over_aggregates(self, expression: Expr) -> bool:
+        """Whether a grouped select item computes a value from aggregate
+        calls, rather than being one: `max(sal) + 1`, not `max(sal)`. One
+        with a window or a subquery stays an Aggregate output."""
+        return (
+            not _is_aggregate_call(expression) and bool(_outermost_aggregate_calls(expression))
+            and expression.find(exp.Window, exp.Query, exp.Subquery) is None
         )
 
     def _repeatable(self, expression: Expr) -> bool:
@@ -3132,6 +3182,20 @@ def _outermost_aggregate_calls(expression: Expr) -> list[Expr]:
         elif not isinstance(node, exp.Window | exp.Query | exp.Subquery):
             pending.extend(node.iter_expressions())
     return calls
+
+
+def _aggregate_parts(expression: Expr) -> list[Expr]:
+    """The aggregate calls of a grouped select item not inside another, and
+    its columns outside them: what it is computed from, per group."""
+    parts: list[Expr] = []
+    pending: list[Expr] = [expression]
+    while pending:
+        node = pending.pop()
+        if _is_aggregate_call(node) or isinstance(node, exp.Column):
+            parts.append(node)
+        else:
+            pending.extend(node.iter_expressions())
+    return parts
 
 
 def _unaliased(item: Expr) -> Expr:

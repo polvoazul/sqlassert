@@ -242,6 +242,19 @@ def test_mutually_determined_grouping_columns_drop_only_one():
     assert rewrites(sql) == [RewriteKind.REDUNDANT_GROUPING]
 
 
+def test_a_redundant_grouping_column_beside_an_item_computed_over_aggregates():
+    # The item is computed by a Project over the Aggregate, which the rewrite sees through.
+    sql = SCHEMA + "SELECT u.name, max(s.ts) + 1 AS t FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name"
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.message.endswith("drop 'u.name' from GROUP BY and select any_value(u.name) AS name")
+
+
+def test_a_redundant_grouping_column_not_selected_is_dropped():
+    sql = SCHEMA + "SELECT count(*) + 1 AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name"
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.message.endswith("drop 'u.name' from GROUP BY")
+
+
 # A GROUP BY whose groups are single rows ----------------------------------------
 
 
