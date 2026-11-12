@@ -353,11 +353,16 @@ def _join_violation(join: exp.Join, property: Property) -> str:
     input also carries a flag that is null exactly on the row a left row with
     no match is null-extended with.
     """
-    select = join.parent
-    assert isinstance(select, exp.Select), "an asserted join is one of a Select's joins"
-    joins = select.args["joins"]
+    parent = join.parent
+    assert parent is not None, "an asserted join is one of a Select's joins"
+    joins = parent.args["joins"]
     position = next(index for index, candidate in enumerate(joins) if candidate is join)
-    source = (select.args.get("from_") or select.args["from"]).this
+    if isinstance(parent, exp.Select):
+        source = (parent.args.get("from_") or parent.args["from"]).this
+    else:
+        # In parentheses, `(a JOIN b ...)`: the joins hang on their first source.
+        source = parent.copy()
+        source.set("joins", None)
     exactly_one = isinstance(property, ExactlyOneJoin)
 
     def from_joins(chosen: list[exp.Join]) -> str:
@@ -374,7 +379,11 @@ def _join_violation(join: exp.Join, property: Property) -> str:
         return outer
 
     as_left, as_right = made("LEFT"), made("RIGHT")
-    if exactly_one:
+    if exactly_one and isinstance(as_left.this, exp.Subquery) and isinstance(as_left.this.this, exp.Table | exp.Subquery) and as_left.this.this.args.get("joins"):
+        # A parenthesized join keeps its sources' names with a one-row flag joined in.
+        nested = as_left.this.this
+        nested.set("joins", [*nested.args["joins"], exp.Join(this=exp.select(f"1 AS {_MATCHED}").subquery("__sqlassert_flag"), kind="CROSS")])
+    elif exactly_one:
         # The flagged right input keeps its name, so the predicate still reads its columns.
         right = as_left.this
         flagged = exp.select("*", f"1 AS {_MATCHED}").from_(right.copy()).subquery(exp.to_identifier(right.alias_or_name))

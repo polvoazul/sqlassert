@@ -34,6 +34,8 @@ before dialects were listed; see "Not done").
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
+| `greatest()`, `least()` | skip NULL | skip NULL | not modelled | not modelled | not modelled | not modelled | not modelled | not modelled |
+| `xs[i]` NULL for a NULL `xs` (`subscript_strict`) | yes | yes | no (not modelled) | no | no | no | no | no |
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | `EXCEPT ALL`, `INTERSECT ALL` (`set_operations_all`) | yes | yes | yes (8.0.31) | no | no | yes | no | yes |
@@ -71,6 +73,16 @@ An operand is composite when declared or cast so, or built by `ARRAY[...]`,
 unknown type is taken to be a scalar.
 `NOT NULL ELEMENTS` declares its elements non-null, and a comparison of a
 composite column or CAST without one warns (`composite-comparison`).
+`greatest()` and `least()` skip NULLs in DuckDB and PostgreSQL: NULL only
+when every argument is, so non-null when any argument is (`skips_null`).
+Elsewhere they are not modelled: MySQL's, Snowflake's and BigQuery's are
+documented NULL for any NULL argument, Spark's skip NULLs, and none of those
+is certified on an engine yet. A subscript (`xs[i]`, a list, array, map or
+struct element) is strict in its container in DuckDB and PostgreSQL, and may
+be NULL for a non-null one (an index out of range, a NULL element); it is
+not modelled elsewhere (ClickHouse returns a default value out of range, and
+its arrays are never NULL). Both facts are certified on DuckDB and
+PostgreSQL.
 `concat_ws()` is modelled only where it is listed: a NULL separator makes it
 NULL everywhere, but whether a NULL value is skipped differs.
 
@@ -242,7 +254,7 @@ oracle's judgement of the same rules covers it. The `.sqltest` cases in each dia
 ## Certifying facts
 
 Every claim a dialect's flags make, and every Builtin fact
-(`strict(op)`, `total(op)`, `injective(op)`) `ir/convert.dialect_builtins`
+(`strict(op)`, `total(op)`, `injective(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
 derives from them, has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
 version or date}` otherwise. A weak setting (unchecked arithmetic, text not
@@ -254,6 +266,7 @@ is certified on an engine, and reruns the DuckDB and SQLite probes.
 `scripts/certify_dialects.py` (not part of the package) generates one probe
 per fact from the fact itself: the Builtin called with a typed NULL (strict),
 with overflowing, zero-dividing and badly cast arguments (total, injective),
+with every argument NULL but one (skips_null),
 or tables whose constraint violations it attempts (keys, text identity, ENUMs).
 SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is

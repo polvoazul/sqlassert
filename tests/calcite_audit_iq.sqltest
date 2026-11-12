@@ -119,19 +119,51 @@ FROM emp AS e
 /**ASSERT DETERMINES(empno -> ono)**/  --~ PROVED
 
 -- A scalar aggregate has exactly one row, so ON TRUE matches every left row
--- exactly once; Calcite removes the join. Missing proof: EXACTLY ONE wants
--- equalities onto Referential Coverage.
+-- exactly once; Calcite removes the join.
 -- case: left_join_on_true_to_a_scalar_aggregate_matches_exactly_once
 -- inspired by misc.iq, "left join (select count(*) from \"hr\".\"depts\") on true"
 SELECT e.deptno
 FROM emp AS e
 /**ASSERT MANY TO ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS x  --~ PROVED
     ON TRUE
-/**ASSERT EXACTLY ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS y  --~ UNKNOWN
+/**ASSERT EXACTLY ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS y  --~ PROVED
     ON TRUE
 
+-- case: cross_join_to_a_scalar_aggregate_matches_exactly_once
+-- inspired by misc.iq (as above, written as CROSS JOIN)
+SELECT e.deptno, x.c
+FROM emp AS e
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS c FROM dept) AS x  --~ PROVED
+
+-- case: cross_join_to_a_filtered_scalar_aggregate_matches_exactly_once
+-- A scalar aggregate has one row even when its WHERE keeps none; HAVING can drop it.
+SELECT e.deptno, x.c, y.c AS c2
+FROM emp AS e
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS c FROM dept WHERE 1 = 0) AS x  --~ PROVED
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS c FROM dept HAVING count(*) > 5) AS y  --~ UNKNOWN
+
+-- Parenthesized joins ---------------------------------------------------------
+
+-- A join in parentheses is a join input whose sources keep their names, so
+-- markers on both levels are analyzed. empno is unique: a matched emp row
+-- meets one dept (its deptno, non-null wherever empno is, is dept's key).
+-- case: parenthesized_join_as_a_right_input
+-- inspired by issue 45 item 6: a join in parentheses on a join's right side
+SELECT d.deptno, e.empno, c.ename
+FROM dept AS d
+LEFT JOIN (emp AS e /**ASSERT MANY TO ONE**/ LEFT JOIN emp AS c USING (empno))  --~ PROVED
+    ON d.deptno = e.deptno
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
+
+-- case: parenthesized_join_unique_from_the_outside
+SELECT e.empno, d.dname
+FROM emp AS e
+/**ASSERT MANY TO ONE**/ LEFT JOIN (dept AS d JOIN dept AS d2 ON d.deptno = d2.deptno)  --~ PROVED
+    ON e.deptno = d.deptno
+
 -- A correlated scalar subquery over count(*) always yields a row, and count is
--- never NULL; Calcite plans it as CASE WHEN c IS NULL THEN 0. Missing proof.
+-- never NULL; Calcite plans it as CASE WHEN c IS NULL THEN 0. Lowered as a
+-- grouped left join whose count is coalesce(count, 0).
 -- case: correlated_scalar_count_is_never_null
 -- inspired by scalar.iq, "select deptno, (select count(*) from emp where deptno = dept.deptno) as x from dept"
 SELECT deptno, (SELECT count(*) FROM emp WHERE emp.deptno = dept.deptno) AS x
@@ -171,8 +203,8 @@ GROUP BY e.deptno, d.deptno
 /**ASSERT NOT NULL UNIQUE(ed)**/  --~ PROVED
 /**ASSERT DETERMINES(dd -> ed)**/  --~ PROVED
 
--- HAVING only drops groups, so the grouping keys stay a key. Missing proof:
--- a GROUP BY with HAVING is not lowered.
+-- HAVING only drops groups, so the grouping keys stay a key: it is a Filter
+-- of the groups.
 -- case: having_keeps_the_grouping_key
 -- inspired by agg.iq, "select deptno + 1 as d1, count(*) as c from emp group by rollup(deptno) having count(*) > 3"
 SELECT deptno, count(*) AS c FROM emp GROUP BY deptno HAVING count(*) > 1
@@ -201,20 +233,21 @@ SELECT deptno FROM emp WHERE deptno IS NOT NULL GROUP BY ROLLUP (deptno)
 --~ unsupported-construct "ROLLUP"
 
 -- SUM over a non-null column is non-null in every (non-empty) group; Calcite
--- types it NOT NULL. Missing proof.
+-- types it NOT NULL.
 -- case: grouped_sum_of_a_non_null_column_is_non_null
 -- inspired by agg.iq, "select sum(deptno) as deptno from dept group by dname" (CALCITE-6557)
 SELECT dname, sum(deptno) AS s FROM dept GROUP BY dname
-/**ASSERT NOT NULL(s)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(s)**/  --~ PROVED
 
--- QUALIFY over a grouped query keeps one row per partition. Missing proof.
+-- QUALIFY over a grouped query keeps one row per partition of the groups,
+-- every partition key being a selected item.
 -- case: qualify_over_group_by_keeps_one_row_per_partition
 -- inspired by qualify.iq, "group by deptno, job qualify row_number() over (partition by deptno order by count(*) desc) = 1"
 SELECT deptno
 FROM emp
 GROUP BY deptno, job
 QUALIFY row_number() OVER (PARTITION BY deptno ORDER BY count(*) DESC) = 1
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 
 -- Set operations --------------------------------------------------------------
 
@@ -247,7 +280,8 @@ SELECT ename FROM q
 -- USING ---------------------------------------------------------------------
 
 -- The USING column of a RIGHT JOIN is COALESCE(emp.deptno, dept.deptno),
--- which is dept.deptno on every row. Missing proof.
+-- which is dept.deptno on every row: an unqualified USING column of a RIGHT
+-- join is the right input's.
 -- case: right_join_using_column_is_the_preserved_side_s
 -- inspired by join.iq, "select distinct deptno, dept.deptno, emp.deptno from emp right join dept using (deptno)"
 SELECT deptno FROM emp RIGHT JOIN dept USING (deptno)

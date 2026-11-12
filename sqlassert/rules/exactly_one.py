@@ -7,11 +7,15 @@ left columns, as one tuple, onto the right columns they are paired with: a
 row of the right input carrying every left value then satisfies the whole ON.
 Coverage of each column separately does not give a row matching all of them.
 Any other conjunct may reject the covering row, so matching stays unknown.
+An ON that is always TRUE (none, for a CROSS JOIN) matches every right row,
+so a right input that always has a row (a scalar aggregate) is matched.
 Non-null left columns: a null equals nothing, and `MATCH SIMPLE` exempts a
 row with any null referencing component. The input relations may be derived:
 coverage, uniqueness and nullability each follow their own propagation, and
 coverage onto a narrowed right input must hold on its own.
 """
+
+from typing import assert_never
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, analysis, all_of, unknown
@@ -27,6 +31,10 @@ def exactly_one_join(join: ir.Join) -> Result[bool]:
     if join.kind == "anti":
         return unknown("An anti join drops the rows it matches", join)
     at_most_one = _half("At most one match: the right predicate columns cover a Unique Set", (join,), many_to_one_join(join))
+    if all(_is_true(conjunct) for conjunct in join.conjuncts):
+        return at_most_one & _half(
+            "At least one match: ON is always TRUE, and the right input has a row", (join,), _has_a_row(join.right),
+        )
     pairs, others = _cross_equalities(join)
     if not pairs:
         return at_most_one & unknown(
@@ -47,6 +55,29 @@ def exactly_one_join(join: ir.Join) -> Result[bool]:
             "Non-null left columns: a null left value matches no row", lefts, non_null_columns(frozenset(lefts))
         ),
     ))
+
+
+def _is_true(conjunct: ir.ScalarExpr) -> bool:
+    return isinstance(conjunct, ir.Constant) and conjunct.value == ir.LiteralValue(type="boolean", text="TRUE")
+
+
+def _has_a_row(relation: ir.RelationExpr) -> Result[bool]:
+    """Whether `relation` has at least one row on every instance: an
+    aggregate grouped by nothing has one even over no input rows, and an
+    Alias, Project or DISTINCT keeps it. HAVING (a Filter) may drop it."""
+    relation = relation.closed
+    match relation:
+        case ir.Aggregate(grouping_outputs=()):
+            return Result(True, "An aggregate grouped by nothing has one row, even over no input rows", (relation,))
+        case ir.Alias(source=source) | ir.NamedRelation(body=ir.RelationExpr() as source) | ir.Project(input=source) | ir.Distinct(input=source):
+            return _has_a_row(source)
+        case (
+            ir.Aggregate() | ir.NamedRelation() | ir.Join() | ir.Filter() | ir.Limit() | ir.SetOperation()
+            | ir.QualifyByPartition() | ir.OpaqueRelation() | ir.RecursiveRelation()
+        ):
+            return unknown("The right input may have no rows", relation)
+        case _:
+            assert_never(relation)
 
 
 def _half(reason: str, subjects: tuple[object, ...], evidence: Result[bool]) -> Result[bool]:

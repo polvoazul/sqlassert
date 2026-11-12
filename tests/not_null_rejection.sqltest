@@ -100,8 +100,8 @@ SELECT n, m FROM t WHERE n IS NULL /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 SELECT n, m FROM t WHERE n IS DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 
 -- case: a_null_safe_equality_to_a_literal_is_not_inferred
--- NULL IS NOT DISTINCT FROM 1 is FALSE, so this rejects n: a missing proof (issue 45).
-SELECT n, m FROM t WHERE n IS NOT DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+-- NULL IS NOT DISTINCT FROM 1 is FALSE, so this rejects n.
+SELECT n, m FROM t WHERE n IS NOT DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ PROVED
 
 -- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_is_not_null
 SELECT n, m FROM t WHERE NOT (n IS NOT NULL) /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
@@ -155,9 +155,10 @@ SELECT n, m FROM t WHERE m IN (1, n) /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 SELECT n, m FROM t WHERE n > ALL (SELECT m FROM t WHERE FALSE) /**ASSERT NOT NULL(n)**/
 --~ UNKNOWN
 
--- case: a_conjunct_true_on_a_null_rejects_nothing__n_any_select_m_from_t
+-- case: a_conjunct_never_true_on_a_null_rejects_it__n_any_select_m_from_t
+-- NULL >= ANY is FALSE over no rows and NULL otherwise, never TRUE (issue 45, item 12).
 SELECT n, m FROM t WHERE n >= ANY (SELECT m FROM t) /**ASSERT NOT NULL(n)**/
---~ UNKNOWN
+--~ PROVED
 
 -- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_in_select_m_from_t
 SELECT n, m FROM t WHERE NOT (n IN (SELECT m FROM t)) /**ASSERT NOT NULL(n)**/
@@ -223,3 +224,29 @@ FROM t
 JOIN r
     ON (r.id = t.id AND r.n > 0) OR (r.id = t.n AND r.n < 0)
 /**ASSERT NOT NULL(n)**/  --~ PROVED
+
+-- A later ON rejects a whole padding too: an inner join's ON on either side, an
+-- outer join's only on the side it pads.
+-- case: an_inner_join_on_an_or_of_padded_columns_rejects_their_padding
+CREATE TABLE u (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, tid INTEGER);
+SELECT t.id, u.id AS uid
+FROM t
+LEFT JOIN u ON u.tid = t.id
+JOIN t AS x ON x.n = u.a OR x.m = u.b
+/**ASSERT NOT NULL(uid)**/  --~ PROVED
+
+-- case: a_left_join_on_an_or_of_its_preserved_side_s_padded_columns_keeps_their_padding
+CREATE TABLE u (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, tid INTEGER);
+SELECT t.id, u.id AS uid
+FROM t
+LEFT JOIN u ON u.tid = t.id
+LEFT JOIN t AS x ON x.n = u.a OR x.m = u.b
+/**ASSERT NOT NULL(uid)**/  --~ UNKNOWN
+
+-- case: a_left_join_on_an_or_rejects_the_padding_inside_its_padded_side
+CREATE TABLE u (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, tid INTEGER);
+SELECT t.id, u.id AS uid
+FROM t AS x
+LEFT JOIN (t LEFT JOIN u ON u.tid = t.id) ON x.n = u.a OR x.m = u.b
+WHERE t.id IS NOT NULL
+/**ASSERT NOT NULL(uid)**/  --~ PROVED

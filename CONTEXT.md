@@ -215,11 +215,11 @@ database enum type, though a catalog's enum type could supply it as Knowledge.
 _Avoid_: Enum type, value set, check constraint
 
 **Equality Group**:
-An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE` and inner-join `ON` `a = b`) between known matching comparison types, never by an outer join's `ON`. Implicit casts and collations do not establish value identity. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
+An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE`, inner-join and semi-join `ON` `a = b`, or `a IS NOT DISTINCT FROM b`, NULL then being a shared value; a semi join's through the matched right row's columns) between known matching comparison types, never by an outer join's `ON`. Implicit casts and collations do not establish value identity. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
 _Avoid_: Equivalence class, alias set
 
 **Null Source**:
-A reason an output column may be NULL: organically (a nullable source column, an expression whose nullability is not modelled, a NULL literal) or because an outer join padded its row. A column is non-null when it has no Null Source; a null-rejecting condition on a padded column proves its join matched and removes that padding from every column it padded.
+A reason an output column may be NULL: organically (a nullable source column, an expression whose nullability is not modelled, a NULL literal) or because an outer join padded its row. A column is non-null when it has no Null Source; a condition never TRUE on the rows a join pads (null-rejecting on a padded column, or on every part of an OR over them) proves that join matched and removes that padding from every column it padded.
 _Avoid_: Nullable flag, null-extension
 
 **Row Identity**:

@@ -90,9 +90,15 @@ FROM orders
     ON orders.buyer = users.id
 
 -- case: an_unproved_exactly_one_join_is_unknown__cross_join
+-- Grouped by a constant, the aggregate has no row over no input rows.
 SELECT *
 FROM orders
-/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS n FROM users) AS c  --~ UNKNOWN
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS n FROM users GROUP BY 'all') AS c  --~ UNKNOWN
+
+-- case: an_exactly_one_cross_join_onto_a_scalar_aggregate_is_proved
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS n FROM users) AS c  --~ PROVED
 
 -- case: an_unproved_exactly_one_join_is_unknown__foreign_key_onto_a_narrowed_relation
 WITH active AS (SELECT * FROM users WHERE name = 'x')

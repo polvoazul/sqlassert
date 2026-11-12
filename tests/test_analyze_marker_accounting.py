@@ -52,6 +52,10 @@ JOIN_CONTEXTS = {
     "root": "SELECT * FROM a\n{m} JOIN b ON a.id = b.aid",
     "WHERE subquery": "SELECT * FROM a WHERE id IN (SELECT b.id FROM b\n{m} JOIN c ON b.id = c.id)",
     "unused CTE": "WITH w AS (SELECT * FROM a\n{m} JOIN b ON a.id = b.aid) SELECT * FROM c",
+    "parenthesized join": "SELECT * FROM a JOIN (b\n{m} JOIN c ON b.id = c.id) ON a.id = b.aid",
+    "aliased parenthesized join": "SELECT * FROM a JOIN (b\n{m} JOIN c ON b.id = c.id) AS j ON a.id = j.aid",
+    "parenthesized FROM": "SELECT * FROM (a\n{m} JOIN b ON a.id = b.aid)",
+    "join onto a parenthesized join": "SELECT * FROM a\n{m} JOIN (b JOIN c ON b.id = c.id) ON a.id = b.aid",
 }
 
 CASE_CONTEXTS = {

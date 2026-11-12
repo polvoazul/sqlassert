@@ -35,3 +35,46 @@ SELECT *
 FROM customer_regions
 /**ASSERT MANY TO ONE**/ JOIN latest_order  --~ UNKNOWN
     ON customer_regions.customer_id = latest_order.customer_id
+
+-- QUALIFY over GROUP BY keeps one row per partition of the groups.
+-- case: qualify_over_groups_keeps_one_row_per_partition
+CREATE TABLE emp (empno INTEGER PRIMARY KEY, deptno INTEGER, job VARCHAR);
+
+SELECT deptno, job, count(*) AS n
+FROM emp
+GROUP BY deptno, job
+HAVING count(*) > 1
+QUALIFY row_number() OVER (PARTITION BY job ORDER BY count(*) DESC) = 1
+/**ASSERT UNIQUE(job)**/  --~ PROVED
+
+-- A partition key that is a bare name another item is aliased to may read
+-- that alias: no Unique Set.
+-- case: qualify_over_groups_by_a_name_an_alias_shadows_is_unknown
+CREATE TABLE emp (empno INTEGER PRIMARY KEY, deptno INTEGER, job VARCHAR);
+
+SELECT deptno AS dept, job AS deptno
+FROM emp
+GROUP BY 1, 2
+QUALIFY row_number() OVER (PARTITION BY deptno) = 1
+/**ASSERT UNIQUE(dept)**/  --~ UNKNOWN
+
+-- Any other QUALIFY drops rows: the grouped or distinct rows keep their key,
+-- but no longer every value, so a join onto them may miss.
+-- case: other_qualify_over_groups_or_distinct_drops_rows
+CREATE TABLE dept (deptno INTEGER PRIMARY KEY);
+CREATE TABLE emp (empno INTEGER PRIMARY KEY, deptno INTEGER NOT NULL REFERENCES dept (deptno));
+
+SELECT e.empno
+FROM emp AS e
+/**ASSERT EXACTLY ONE**/ JOIN (  --~ UNKNOWN
+    SELECT deptno FROM dept GROUP BY deptno QUALIFY sum(1) OVER () > 5
+) AS d
+    ON e.deptno = d.deptno
+/**ASSERT EXACTLY ONE**/ JOIN (  --~ UNKNOWN
+    SELECT DISTINCT deptno FROM dept QUALIFY sum(1) OVER () > 5
+) AS d2
+    ON e.deptno = d2.deptno
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT DISTINCT deptno FROM dept QUALIFY sum(1) OVER () > 5
+) AS d3
+    ON e.deptno = d3.deptno

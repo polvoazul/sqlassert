@@ -20,28 +20,59 @@ FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE e.sal IS NOT NULL AND d.name IS NOT NULL
 /**ASSERT NOT NULL(empno)**/  --~ PROVED
 
+-- A padded row is NULL in every column its join pads at once, so a condition
+-- NULL or FALSE there on every part rejects that padding (per padding, not
+-- per column).
 -- case: strong_or_of_two_padded_columns
 -- inspired by RexProgramTest.testStrong, isNull(or(i0, i1), c01), via RelOptUtil.simplifyJoin
--- Missing proof: a padded row fails both parts, so the join matched.
+-- A padded row fails both parts, so the join matched.
 SELECT d.deptno, e.empno
 FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE e.sal > 0 OR e.comm > 0
-/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
 
 -- case: strong_or_of_is_not_null_on_padded_columns
 -- inspired by RexProgramTest.testStrong, isNotTrue(or(i0NotNull, i1NotNull), c01)
--- Missing proof, as above.
+-- Both parts are FALSE on a padded row.
 SELECT d.deptno, e.empno
 FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE e.sal IS NOT NULL OR e.comm IS NOT NULL
-/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
 
 -- case: strong_coalesce_of_padded_columns
 -- inspired by RexProgramTest.testStrong (COALESCE is null when all operands are)
--- Missing proof: coalesce of two padded columns is NULL on a padded row.
+-- Coalesce of two padded columns is NULL on a padded row.
 SELECT d.deptno, e.empno
 FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE coalesce(e.sal, e.comm) > 0
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
+
+-- Columns padded by two different joins: a row may be padded by one and keep
+-- the other's value.
+-- case: strong_or_of_columns_two_joins_pad
+-- inspired by issue 45 item 9 (boundary)
+SELECT d.deptno, e.empno
+FROM dept AS d
+LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+LEFT JOIN emp_nullables AS e2 ON e2.deptno = d.deptno
+WHERE e.sal > 0 OR e2.comm > 0
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+
+-- case: strong_coalesce_of_columns_two_joins_pad
+-- inspired by issue 45 item 9 (boundary)
+SELECT d.deptno, e.empno
+FROM dept AS d
+LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+LEFT JOIN emp_nullables AS e2 ON e2.deptno = d.deptno
+WHERE e.sal IS NOT NULL OR coalesce(e2.comm, e.comm) IS NOT NULL
+/**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+
+-- A nullable column of the preserved side may be TRUE on a padded row.
+-- case: strong_or_with_a_nullable_preserved_part
+-- inspired by issue 45 item 9 (boundary)
+SELECT d.deptno, e.empno
+FROM emp_nullables AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+WHERE e.sal > 0 OR d.comm > 0
 /**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
 
 -- case: strong_or_with_a_preserved_part
@@ -80,10 +111,27 @@ SELECT empno, sal FROM emp_nullables WHERE sal IN (1, NULL)
 
 -- case: strong_is_not_distinct_from_a_literal
 -- inspired by RexUtil.predicateConstants (IS_NOT_DISTINCT_FROM gathers a constant)
--- Missing proofs: NULL IS NOT DISTINCT FROM 1 is FALSE, so sal is 1.
+-- NULL IS NOT DISTINCT FROM 1 is FALSE, so sal is 1.
 SELECT empno, sal FROM emp_nullables WHERE sal IS NOT DISTINCT FROM 1
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
+/**ASSERT ENUM(sal IN (1))**/  --~ PROVED
+
+-- case: strong_is_not_distinct_from_a_non_null_column
+-- inspired by RexUtil.predicateConstants, as above, against a column
+SELECT e.empno, e.sal FROM emp_nullables AS e JOIN dept AS d ON e.sal IS NOT DISTINCT FROM d.deptno
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
+
+-- case: strong_is_not_distinct_from_a_nullable_column
+-- NULL IS NOT DISTINCT FROM NULL is TRUE.
+SELECT empno, sal, comm FROM emp_nullables WHERE sal IS NOT DISTINCT FROM comm
 /**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
-/**ASSERT ENUM(sal IN (1))**/  --~ UNKNOWN
+/**ASSERT DETERMINES(sal -> comm)**/  --~ PROVED
+
+-- case: strong_is_not_distinct_from_a_literal_without_ansi
+-- dialect: spark
+-- Without ANSI mode a failed cast is NULL: sal <=> 'x' is sal IS NULL.
+SELECT empno, sal FROM emp_nullables WHERE sal <=> 1
+/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
 
 -- case: strong_nullif_first_argument
 -- inspired by RexProgramTest.testStrong, NULLIF(null, X) is null
@@ -100,16 +148,38 @@ SELECT empno, ename, sal FROM emp_nullables WHERE trim(ename) = 'a' AND floor(sa
 
 -- case: strong_item_of_a_list
 -- inspired by RexProgramTest.testItemStrong
--- Missing proof: xs[1] is NULL when xs is.
+-- xs[1] is NULL when xs is (DuckDB and PostgreSQL, certified).
 CREATE TABLE lists (id INTEGER PRIMARY KEY, xs INTEGER[]);
+SELECT id, xs FROM lists WHERE xs[1] = 5
+/**ASSERT NOT NULL(xs)**/  --~ PROVED
+
+-- case: strong_item_of_a_list_may_be_null
+-- An element is NULL past the end of a non-null list, or where it is NULL.
+CREATE TABLE lists (id INTEGER PRIMARY KEY, xs INTEGER[] NOT NULL);
+SELECT id, xs[1] AS x FROM lists
+/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: strong_item_of_a_list_not_modelled
+-- dialect: spark
+-- Subscripts are modelled only where certified.
+CREATE TABLE lists (id INTEGER PRIMARY KEY, xs ARRAY<INT>);
 SELECT id, xs FROM lists WHERE xs[1] = 5
 /**ASSERT NOT NULL(xs)**/  --~ UNKNOWN
 
 -- case: strong_any_subquery_is_never_true_on_null
 -- inspired by Strong.isNull (SOME over a RexSubQuery is not null-strong)
--- Missing proof in both: NULL > ANY is FALSE or NULL, never TRUE.
+-- NULL > ANY is FALSE over no rows and NULL otherwise, never TRUE, so it rejects sal.
 SELECT empno, sal FROM emp_nullables WHERE sal > ANY (SELECT comm FROM emp)
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
+
+-- case: strong_any_subquery_is_not_strict
+-- A conjunct that rejects sal is no value NULL with it: a is FALSE over no rows.
+-- (NULL > ANY (...)) IS FALSE is TRUE over no rows, so the WHERE rejects nothing.
+SELECT empno, sal, sal > ANY (SELECT comm FROM emp) AS a
+FROM emp_nullables
+WHERE (sal > ANY (SELECT comm FROM emp)) IS FALSE
 /**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(a)**/  --~ UNKNOWN
 
 -- case: strong_all_subquery_is_true_over_no_rows
 -- inspired by Strong.isNull, "select NULL > all (select comm from emp where 1 = 0)"
@@ -118,9 +188,16 @@ SELECT empno, sal FROM emp_nullables WHERE sal > ALL (SELECT comm FROM emp WHERE
 
 -- case: strong_is_true_rejects
 -- inspired by Strong.isNotTrue (IS_TRUE falls to isNull, Policy.NOT_NULL)
--- Missing proof in both: (NULL > 0) IS TRUE is FALSE.
-SELECT empno, sal FROM emp_nullables WHERE (sal > 0) IS TRUE
-/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+-- (NULL > 0) IS TRUE is FALSE: never TRUE on a NULL sal, though never NULL.
+SELECT empno, sal, (sal > 0) IS TRUE AS t, (sal > 0) IS FALSE AS f FROM emp_nullables WHERE (sal > 0) IS TRUE
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
+/**ASSERT NOT NULL(t, f)**/  --~ PROVED
+
+-- case: strong_is_true_rejects_a_padded_side
+SELECT d.deptno, e.empno
+FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+WHERE (e.sal > 0) IS TRUE
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
 
 -- case: strong_nondeterministic_conjunct_still_rejects
 -- inspired by RelMetadataTest.testGetPredicatesForFilter (retainDeterministic drops it)
@@ -129,24 +206,67 @@ SELECT empno, sal FROM emp_nullables WHERE sal = random()
 
 -- case: strong_rejected_computed_column
 -- inspired by RelMetadataTest.testPredicates, "MGR IS NOT NULL OR MGR_COMM IS NOT NULL"
--- Missing proof: ms = mgr + sal is non-null, so mgr is (same row, strict +).
+-- ms = mgr + sal is non-null, so mgr is: computed from the same row, by a strict +.
 SELECT q.empno, q.mgr
 FROM (SELECT empno, mgr, mgr + sal AS ms FROM emp_nullables) AS q
 WHERE q.ms > 0
+/**ASSERT NOT NULL(mgr)**/  --~ PROVED
+
+-- case: strong_rejected_computed_column_through_a_join
+SELECT q.empno, q.mgr, d.name
+FROM (SELECT empno, deptno, mgr, mgr + sal AS ms FROM emp_nullables) AS q
+JOIN dept AS d ON d.deptno = q.deptno
+WHERE q.ms > 0
+/**ASSERT NOT NULL(mgr)**/  --~ PROVED
+
+-- case: strong_rejected_computed_column_not_strict
+-- coalesce(mgr, sal) is non-null with mgr NULL.
+SELECT q.empno, q.mgr
+FROM (SELECT empno, mgr, coalesce(mgr, sal) AS ms FROM emp_nullables) AS q
+WHERE q.ms > 0
 /**ASSERT NOT NULL(mgr)**/  --~ UNKNOWN
+
+-- case: strong_rejected_computed_column_of_another_row
+-- a and b are two rows of one CTE: b's ms says nothing of a's mgr.
+WITH c AS (SELECT empno, mgr, mgr + sal AS ms FROM emp_nullables)
+SELECT a.mgr AS a_mgr, b.mgr AS b_mgr
+FROM c AS a JOIN c AS b ON b.empno < a.empno
+WHERE b.ms > 0
+/**ASSERT NOT NULL(b_mgr)**/  --~ PROVED
+/**ASSERT NOT NULL(a_mgr)**/  --~ UNKNOWN
+
+-- case: strong_rejected_computed_column_of_a_group
+-- m and s come from different rows of a group.
+SELECT q.deptno, q.m
+FROM (SELECT deptno, max(mgr) AS m, sum(mgr + sal) AS s FROM emp_nullables GROUP BY deptno) AS q
+WHERE q.s > 0
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
 
 -- Expression nullability (operator return types) ------------------------------
 
 -- case: nullability_of_comparisons_and_is_family
 -- inspired by RelMetadataTest.testPullUpPredicatesFromProject3 and Strong NOT_NULL policies
--- Missing proofs: a, c, d are never NULL; b is non-null for non-null inputs, like e.
+-- a, c, d are never NULL; b is non-null for non-null inputs, like e.
 SELECT sal IS NULL AS a, sal = comm AS b, mgr IS DISTINCT FROM sal AS c, EXISTS (SELECT 1 FROM dept) AS d, sal > comm AS e
 FROM emp
-/**ASSERT NOT NULL(a)**/  --~ UNKNOWN
-/**ASSERT NOT NULL(b)**/  --~ UNKNOWN
-/**ASSERT NOT NULL(c)**/  --~ UNKNOWN
-/**ASSERT NOT NULL(d)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(a)**/  --~ PROVED
+/**ASSERT NOT NULL(b)**/  --~ PROVED
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+/**ASSERT NOT NULL(d)**/  --~ PROVED
 /**ASSERT NOT NULL(e)**/  --~ PROVED
+
+-- case: nullability_of_an_equality_with_a_nullable_side
+-- inspired by Strong.createPolicyMap (EQUALS is Policy.ANY)
+SELECT mgr = sal AS b, mgr IS NOT DISTINCT FROM sal AS c FROM emp
+/**ASSERT NOT NULL(b)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+
+-- case: nullability_of_an_equality_without_ansi
+-- dialect: spark
+-- Without ANSI mode a failed implicit cast is NULL: 1 = 'x' is NULL.
+SELECT sal = comm AS b, sal <=> comm AS c FROM emp
+/**ASSERT NOT NULL(b)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
 
 -- case: nullability_of_concat_operator
 -- inspired by SqlStdOperatorTable.CONCAT (nullable only if an operand is)
@@ -167,32 +287,39 @@ SELECT sal % comm AS m FROM emp
 
 -- case: nullability_of_greatest_duckdb
 -- inspired by SqlLibraryOperators.GREATEST_PG (kind GREATEST_PG, not Policy.ANY)
--- Missing proof: DuckDB's greatest skips NULLs, so one non-null argument suffices.
+-- DuckDB's greatest skips NULLs, so one non-null argument suffices (as PostgreSQL's).
+SELECT greatest(mgr, 1) AS g, least(1, mgr) AS l, greatest(mgr, mgr) AS n FROM emp
+/**ASSERT NOT NULL(g, l)**/  --~ PROVED
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: nullability_of_greatest_mysql
+-- dialect: mysql
+-- MySQL's greatest is NULL when any argument is: not modelled.
 SELECT greatest(mgr, 1) AS g FROM emp
 /**ASSERT NOT NULL(g)**/  --~ UNKNOWN
 
 -- case: nullability_of_grouped_max_and_sum
 -- inspired by RelMetadataTest.testPullUpPredicatesFromAggregation and ReturnTypes.ARG0_NULLABLE_IF_EMPTY
--- Missing proofs: a group is never empty, b is a non-null 2, so max(b) is 2 and non-null.
+-- A group is never empty, b is a non-null 2, so max(b) is 2 and non-null, like sum(b).
 SELECT a, max(b) AS mb, sum(b) AS sb
 FROM (SELECT 1 AS a, 2 AS b FROM emp) AS subq
 GROUP BY a
 /**ASSERT ENUM(a IN (1))**/  --~ PROVED
-/**ASSERT ENUM(mb IN (2))**/  --~ UNKNOWN
-/**ASSERT NOT NULL(mb, sb)**/  --~ UNKNOWN
+/**ASSERT ENUM(mb IN (2))**/  --~ PROVED
+/**ASSERT NOT NULL(mb, sb)**/  --~ PROVED
 
 -- case: nullability_of_scalar_max
 -- inspired by RelMdPredicates.getPredicates(Aggregate), "GROUP BY () can convert an empty relation"
--- NOT NULL is false (no input rows); ENUM holds, NULL being outside it: a missing proof.
+-- NOT NULL is false (no input rows); ENUM holds, NULL being outside it.
 SELECT max(sal) AS m FROM emp WHERE sal = 5
 /**ASSERT NOT NULL(m)**/  --~ UNKNOWN
-/**ASSERT ENUM(m IN (5))**/  --~ UNKNOWN
+/**ASSERT ENUM(m IN (5))**/  --~ PROVED
 
 -- Predicate pull-up (RelMdPredicates) ------------------------------------------
 
 -- case: pullup_project_constants
 -- inspired by RelMetadataTest.testPullUpPredicatesOnConstant
--- Missing proof: CAST('1' AS INTEGER) is the constant 1.
+-- CAST('1' AS INTEGER) is the constant 1 in every dialect; CAST(NULL AS INTEGER) is NULL.
 SELECT deptno, mgr, x, 'y' AS y, z
 FROM (
     SELECT deptno, mgr, CAST(NULL AS INTEGER) AS x, CAST('1' AS INTEGER) AS z
@@ -202,14 +329,23 @@ FROM (
 /**ASSERT ENUM(y IN ('y'))**/  --~ PROVED
 /**ASSERT NOT NULL(y)**/  --~ PROVED
 /**ASSERT DETERMINES(deptno -> y, mgr, x)**/  --~ PROVED
-/**ASSERT ENUM(z IN (1))**/  --~ UNKNOWN
+/**ASSERT ENUM(z IN (1))**/  --~ PROVED
 
 -- case: pullup_project_is_null_of_constrained_column
 -- inspired by RelMetadataTest.testPullUpPredicatesFromProject3
--- Missing proofs: comm = 2 makes a FALSE and b TRUE on every row.
+-- comm = 2 rejects NULL, so a is FALSE and b TRUE on every row.
 SELECT comm IS NULL AS a, comm IS NOT NULL AS b FROM emp_nullables WHERE comm = 2
+/**ASSERT ENUM(a IN (FALSE))**/  --~ PROVED
+/**ASSERT ENUM(b IN (TRUE))**/  --~ PROVED
+/**ASSERT NOT NULL(a, b)**/  --~ PROVED
+
+-- case: pullup_project_is_null_of_nullable_column
+-- Without the WHERE comm may be NULL or not; NULL IS NULL is TRUE.
+SELECT comm IS NULL AS a, NULL IS NULL AS c, CAST(NULL AS INTEGER) IS NOT NULL AS d FROM emp_nullables
 /**ASSERT ENUM(a IN (FALSE))**/  --~ UNKNOWN
-/**ASSERT NOT NULL(a, b)**/  --~ UNKNOWN
+/**ASSERT ENUM(a IN (TRUE))**/  --~ UNKNOWN
+/**ASSERT ENUM(c IN (TRUE))**/  --~ PROVED
+/**ASSERT ENUM(d IN (FALSE))**/  --~ PROVED
 
 -- case: pullup_inner_join_on_nullable_column
 -- inspired by RelMetadataTest.testPredicates, "IS NOT NULL($0)" from e.MGR = d.DEPTNO
@@ -235,21 +371,60 @@ WHERE e.mgr IN (SELECT d.deptno FROM dept AS d WHERE d.deptno = 10)
 
 -- case: pullup_semi_join_from_exists_on_constant
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.inferPredicates (SEMI)
--- Missing proof: the ON constant reaches mgr only through d.deptno, which is no output.
+-- mgr equals d.deptno of the matched dept row, which the ON constant pins to
+-- 10 (same type: equal values are identical).
 SELECT e.empno, e.mgr
 FROM emp AS e
 WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND d.deptno = 10)
-/**ASSERT ENUM(mgr IN (10))**/  --~ UNKNOWN
+/**ASSERT ENUM(mgr IN (10))**/  --~ PROVED
 /**ASSERT NOT NULL(mgr)**/  --~ PROVED
 
 -- case: pullup_semi_join_equates_two_left_columns
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference (ON equalities are not pulled up for SEMI)
--- Missing proof in both: mgr and comm each equal d.deptno on every output row.
+-- mgr and comm each equal d.deptno of the matched dept row, all INTEGER, so
+-- they are equal: one Equality Group, a dependency each way.
 SELECT e.empno, e.mgr, e.comm
 FROM emp_nullables AS e
 WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND d.deptno = e.comm)
-/**ASSERT DETERMINES(mgr -> comm)**/  --~ UNKNOWN
+  AND e.mgr IN (1, 2)
+/**ASSERT DETERMINES(mgr -> comm)**/  --~ PROVED
+/**ASSERT DETERMINES(comm -> mgr)**/  --~ PROVED
+/**ASSERT ENUM(comm IN (1, 2))**/  --~ PROVED
 /**ASSERT NOT NULL(mgr, comm)**/  --~ PROVED
+
+-- case: pullup_semi_join_null_safe_through_a_right_column
+-- IS NOT DISTINCT FROM equates NULLs too: mgr and comm are equal or both NULL.
+SELECT e.empno, e.mgr, e.comm
+FROM emp_nullables AS e
+WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno IS NOT DISTINCT FROM e.mgr AND d.deptno IS NOT DISTINCT FROM e.comm)
+/**ASSERT DETERMINES(mgr -> comm)**/  --~ PROVED
+/**ASSERT DETERMINES(comm -> mgr)**/  --~ PROVED
+
+-- case: pullup_semi_join_through_a_wider_type
+-- Two INTEGERs equal to one DOUBLE need not be equal: above 2^53 distinct
+-- integers cast to one double.
+CREATE TABLE measure (id INTEGER PRIMARY KEY, v DOUBLE NOT NULL);
+SELECT e.empno, e.mgr, e.comm
+FROM emp AS e
+WHERE EXISTS (SELECT 1 FROM measure AS m WHERE m.v = e.mgr AND m.v = e.comm)
+/**ASSERT DETERMINES(mgr -> comm)**/  --~ UNKNOWN
+
+-- case: pullup_semi_join_through_a_collation
+-- 'x' = c.a = 'X' under NOCASE: ename need not be 'x', nor equal name.
+CREATE TABLE coll_ci (id INTEGER PRIMARY KEY, a VARCHAR COLLATE NOCASE NOT NULL);
+SELECT e.empno, e.ename, d.name
+FROM emp AS e JOIN dept AS d ON d.deptno = e.deptno
+WHERE EXISTS (SELECT 1 FROM coll_ci AS c WHERE c.a = e.ename AND c.a = d.name AND c.a = 'x')
+/**ASSERT ENUM(ename IN ('x'))**/  --~ UNKNOWN
+/**ASSERT DETERMINES(ename -> name)**/  --~ UNKNOWN
+
+-- case: pullup_semi_join_through_a_right_column_only_or_bound
+-- An OR in the EXISTS body bounds the matched row's column only when every
+-- part does.
+SELECT e.empno, e.mgr
+FROM emp AS e
+WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND (d.deptno = 10 OR d.name = 'x'))
+/**ASSERT ENUM(mgr IN (10))**/  --~ UNKNOWN
 
 -- case: pullup_anti_join_keeps_left_only
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.inferPredicates (ANTI pulls up the left only)
@@ -299,7 +474,8 @@ FULL JOIN (SELECT * FROM emp WHERE sal = 3) AS e ON e.deptno = d.deptno
 
 -- case: pullup_aggregate_rollup
 -- inspired by RelMdPredicates.allGroupSetsOverlap ("deptno may be NULL as well")
--- NOT NULL is false (subtotal rows); ENUM holds, NULL being outside it: a missing proof.
+-- NOT NULL is false (subtotal rows); ENUM holds, NULL being outside it: a
+-- missing proof (ROLLUP is not lowered; issue 42).
 SELECT deptno, sal, count(*) AS n FROM emp WHERE deptno = 10 GROUP BY ROLLUP (sal, deptno)
 /**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
 --~ unsupported-construct "ROLLUP"
@@ -336,10 +512,27 @@ SELECT a FROM u
 
 -- case: pullup_union_with_cast_null
 -- inspired by RelMetadataTest.testPullUpPredicatesFromUnionWithValues1
--- Missing proof: CAST(NULL AS INTEGER) is NULL, outside every domain.
+-- CAST is strict, so CAST(NULL AS INTEGER) is NULL, outside every domain.
 WITH u AS (SELECT CAST(NULL AS INTEGER) AS a UNION ALL SELECT 5 AS a)
 SELECT a FROM u
-/**ASSERT ENUM(a IN (5))**/  --~ UNKNOWN
+/**ASSERT ENUM(a IN (5))**/  --~ PROVED
+
+-- case: pullup_project_casts_folded_only_when_exact
+-- Only a plain integer literal within the type's range is folded: CAST('1.5' AS
+-- INTEGER) rounds or truncates by dialect, '01' and ' 1' are not plain, 300
+-- overflows a TINYINT, and a TRY_CAST may be NULL. g is NULL on every row
+-- (+ is strict), so it has no non-null value and every ENUM holds.
+SELECT CAST('1.5' AS INTEGER) AS a, CAST('01' AS INTEGER) AS b, CAST(' 1' AS INTEGER) AS c, CAST(300 AS TINYINT) AS d,
+    TRY_CAST('1' AS INTEGER) AS e, CAST(1 AS BIGINT) AS f, CAST(NULL AS INTEGER) + 1 AS g
+FROM emp
+/**ASSERT ENUM(a IN (1, 2))**/  --~ UNKNOWN
+/**ASSERT ENUM(b IN (1))**/  --~ UNKNOWN
+/**ASSERT ENUM(c IN (1))**/  --~ UNKNOWN
+/**ASSERT ENUM(d IN (300))**/  --~ UNKNOWN
+/**ASSERT ENUM(e IN (1))**/  --~ UNKNOWN
+/**ASSERT ENUM(f IN (1))**/  --~ PROVED
+/**ASSERT NOT NULL(f)**/  --~ PROVED
+/**ASSERT ENUM(g IN (7))**/  --~ PROVED
 
 -- case: pullup_intersect_takes_both_inputs
 -- inspired by RelMetadataTest.testPullUpPredicatesFromIntersect1

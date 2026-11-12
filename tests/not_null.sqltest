@@ -215,7 +215,30 @@ FROM sessions
 GROUP BY user_id
 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 
--- case: not_null_is_not_guessed__sum
+-- case: not_null_is_not_guessed__filtered_sum
+-- FILTER may keep none of a group's rows.
+SELECT user_id, sum(user_id) FILTER (WHERE ts IS NOT NULL) AS n
+FROM sessions
+GROUP BY user_id
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: not_null_of_a_grouped_aggregate_follows_its_argument
+-- Groups are never empty: sum(id) is non-null, max(nickname) NULL in the NULL group.
+SELECT nickname, sum(id) AS n, max(nickname) AS m
+FROM users
+GROUP BY nickname
+/**ASSERT NOT NULL(n)**/  --~ PROVED
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__scalar_sum
+-- Grouped by nothing, sum is NULL over no rows.
+SELECT sum(user_id) AS n, min(user_id) AS m FROM sessions
+/**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__sum_without_checked_arithmetic
+-- dialect: spark
+-- Without ANSI mode a DECIMAL sum that overflows is NULL.
 SELECT user_id, sum(user_id) AS n
 FROM sessions
 GROUP BY user_id

@@ -103,7 +103,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `ALTER TABLE` and `CREATE UNIQUE INDEX` append table-level constraints, shaped
   like `CREATE TABLE`'s own, to the table an earlier `CREATE TABLE` declared,
   so one `_table_constraints` view feeds Unique Sets, primary keys, and
-  `REFERENCES` alike.
+  `REFERENCES` alike. A parenthesized join without an alias, `a JOIN (b JOIN
+  c ON ...) ON ...`, is a join input whose sources keep their names
+  (`_nested_join`); with an alias it stays opaque, since DuckDB renames its
+  repeated column names and other dialects leave them ambiguous.
 - Table columns carry a plain `comparison_type` when their declared type has
   value equality without collation. Equality Groups merge only known matching
   types, followed through pass-through columns; unknown and mixed types do not
@@ -136,7 +139,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `tests/test_ir_unions.py` fails until the unions name it. A wildcard is for
   shape-pickers only, where it means "not this shape".
 - `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
-  `Join.conjuncts`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
+  `Join.conjuncts`: `=`, `IS NOT DISTINCT FROM`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
   any other conjunct is kept as an ordinary (usually opaque) scalar expression,
   so the tuple is always the whole condition.
 - `discovery/` hydrates a SQL Program from a database catalog before the
@@ -165,7 +168,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   go through it; `analyze` stays pure.
 - `dialects.py` is what each SQL dialect means by the constructs the rules
   depend on (`DialectSemantics`): which Builtins raise rather than return
-  NULL, which text compares by identity, `||` and `concat()`, and which keys
+  NULL, which text compares by identity, what `||`, `concat()`, `greatest()`
+  and subscripts do with NULL, and which keys
   are enforced, keys and CHECK constraints alike. Only `ir/convert.py` reads it, and `discovery/` for catalog
   keys; the rules see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
   dialect not listed gets cautious defaults. An unenforced key is never

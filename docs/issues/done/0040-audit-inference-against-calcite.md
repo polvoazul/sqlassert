@@ -108,7 +108,7 @@ comment, all passing with `pytest --soundness-oracle` (0 counterexamples).
   INTERSECT bound first).
 - **Nine soundness problems in Calcite** (C1-C9), among them the shared
   INNER/LEFT/RIGHT FD branch; sqlassert stays UNKNOWN on each.
-- **24 missing proofs**, filed as [issue 45](../0045-close-the-calcite-audit-missing-proofs.md).
+- **24 missing proofs**, filed as [issue 45](0045-close-the-calcite-audit-missing-proofs.md).
 - **`.iq` files**: mostly irrelevant or duplicate; 25 cases migrated from 10
   files, every file has a verdict, and the issue-11 corpus candidates are
   marked.

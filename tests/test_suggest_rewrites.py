@@ -68,6 +68,8 @@ def test_a_left_join_that_matches_exactly_one_row_pads_nothing():
 
 
 @pytest.mark.parametrize("where", [
+    "WHERE u.nick = 'a' OR s.ts = 1",  # A part TRUE on a padded row.
+    "LEFT JOIN users v ON v.id = s.user_id WHERE u.nick = 'a' OR v.email = 'b'",  # Another join's padding.
     "",  # Nothing removes the padded rows.
     "WHERE u.nick IS NULL",  # Keeps them.
     "WHERE coalesce(u.nick, 'x') = 'x'",  # Not a column the padding NULLs.
@@ -75,6 +77,15 @@ def test_a_left_join_that_matches_exactly_one_row_pads_nothing():
 ])
 def test_a_left_join_whose_padding_may_survive_is_left_alone(where: str):
     sql = SCHEMA + f"SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id {where}"
+    assert RewriteKind.INNER_JOIN not in rewrites(sql)
+
+
+@pytest.mark.parametrize("outer", ["RIGHT", "FULL"])
+def test_a_join_that_keeps_a_parenthesized_join_unmatched_keeps_its_padding(outer: str):
+    sql = SCHEMA + (
+        f"SELECT s.ts, u.name, o.total FROM sessions s {outer} JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) "
+        "ON o.total = s.ts"
+    )
     assert RewriteKind.INNER_JOIN not in rewrites(sql)
 
 
@@ -471,6 +482,53 @@ EQUIVALENT = [
         "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
+        RewriteKind.INNER_JOIN,
+    ),
+    # A condition never TRUE on a padded row, through OR or coalesce (issue 45, item 9).
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
+        RewriteKind.INNER_JOIN,
+    ),
+    # A parenthesized join: the ON or WHERE outside rejects its padding.
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u LEFT JOIN orders o ON o.user_id = u.id) "
+        "RIGHT JOIN sessions s ON o.total = s.ts",
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u JOIN orders o ON o.user_id = u.id) "
+        "RIGHT JOIN sessions s ON o.total = s.ts",
         RewriteKind.INNER_JOIN,
     ),
     # A WHERE EXISTS is a semi join, whose ON rejects NULL like a later inner join's.

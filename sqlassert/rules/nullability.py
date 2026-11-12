@@ -105,6 +105,14 @@ def _output_sources(relation: ir.RelationExpr, column: ir.OutputColumn) -> tuple
             assert_never(relation)
 
 
+def _non_null_expression(expression: ir.ScalarExpr) -> Result[bool]:
+    """Whether `expression` is non-null on every row of the relation computing it."""
+    sources, premises = _expression_sources(expression)
+    if sources:
+        return Result(False, "It may be NULL", (expression,), list(sources.values()), kind="unknown")
+    return Result(True, "No NULL source remains", (expression,), premises)
+
+
 def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Result]]:
     expression = expression.closed
     match expression:
@@ -117,12 +125,13 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             return {}, [Result(True, "count(...) is never NULL", (expression,))]
         case ir.NullLiteral():
             return {ORGANIC: unknown("A NULL literal is null", expression)}, []
-        case ir.Coalesce(arguments=arguments):
+        case ir.Coalesce(arguments=arguments) | ir.Call(function=ir.Builtin(skips_null=True), arguments=arguments):
             # Null only when every argument is, so one non-null argument suffices.
+            name = expression.function.name if isinstance(expression, ir.Call) else "coalesce"
             arguments_sources = [_expression_sources(argument) for argument in arguments]
             for sources, premises in arguments_sources:
                 if not sources:
-                    return {}, [Result(True, "Coalesce is non-null when any argument is", (expression,), premises)]
+                    return {}, [Result(True, f"{name} is non-null when any argument is", (expression,), premises)]
             # A FULL JOIN pads its two sides on different rows: an argument NULL
             # only on its left padding and one NULL only on its right padding
             # are never NULL together (a FULL JOIN ... USING column).
@@ -144,10 +153,13 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             result: _Sources = {source: first[source] for source in common}
             if any(set(sources) - common for sources, _ in arguments_sources):
                 evidence = [evidence for sources, _ in arguments_sources for evidence in sources.values()]
-                result[ORGANIC] = Result(False, "Every coalesce argument may be NULL", (expression,), evidence, kind="unknown")
+                result[ORGANIC] = Result(False, f"Every {name} argument may be NULL", (expression,), evidence, kind="unknown")
             return result, []
-        case ir.AnyAggregate(input=value):
-            # Groups are never empty, so the value comes from some input row.
+        case ir.AnyAggregate(empty=True) | ir.Accumulation(empty=True):
+            return {ORGANIC: unknown("An aggregate grouped by nothing is NULL over no rows", expression)}, []
+        case ir.AnyAggregate(input=value) | ir.Accumulation(input=value):
+            # Groups are never empty, so the value comes from some input row,
+            # NULL only when the rows' values are.
             return _expression_sources(value)
         case ir.Call(total_arguments=tuple() as arguments, description=description):
             # NULL only when an argument it is total in is, so only through
@@ -173,7 +185,21 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             if elements.value:
                 return {}, [Result(True, "No element is NULL", (expression,), [elements])]
             return {ORGANIC: Result(False, "An element may be NULL", (expression,), [elements], kind="unknown")}, []
-        case ir.Equality() | ir.IsNull() | ir.IsNotNull() | ir.InList() | ir.And() | ir.Or():
+        case ir.IsNull() | ir.IsNotNull() | ir.NullSafeEquality():
+            return {}, [Result(True, "The IS family is never NULL", (expression,))]
+        case ir.Equality(total=True, left=left, right=right):
+            # NULL exactly when a side is: strict and total in both.
+            result: _Sources = {}
+            premises: list[Result] = []
+            for side in (left, right):
+                sources, side_premises = _expression_sources(side)
+                for source, evidence in sources.items():
+                    result[source] = result[source] | evidence if source in result else evidence
+                premises.extend(side_premises)
+            if result:
+                return result, []
+            return {}, [Result(True, "= is non-null when its operands are", (expression,), premises)]
+        case ir.Equality() | ir.InList() | ir.And() | ir.Or():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []
         case ir.SimpleCase():
             return _case_sources(expression)
@@ -222,8 +248,8 @@ def _expression_elements(expression: ir.ScalarExpr) -> Result[bool]:
         case ir.SimpleCase(thens=thens, default=default):
             return all_of(_expression_elements(arm) for arm in (*thens, default))
         case (
-            ir.Constant() | ir.Count() | ir.Call() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Elements()
-            | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
+            ir.Constant() | ir.Count() | ir.Accumulation() | ir.Call() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Elements()
+            | ir.Equality() | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
         ):
             return unknown("Its elements may be NULL", expression)
         case _:
@@ -284,7 +310,9 @@ def _join_sources(join: ir.Join, column: ir.OutputColumn) -> tuple[_Sources, lis
             pass
         case _:
             raise TypeError(f"Join column {column.name} is not a pass-through")
-    sources, removal = _rejected(_on_rejected(join), source, sources, "The ON condition rejects NULL on matched rows")
+    sources, removal = _rejected(
+        _on_rejected(join), _on_rejected_paddings(join), source, sources, "The ON condition rejects NULL on matched rows"
+    )
     left = source in join.left.output_columns
     if left in _padded_sides(join):
         sources[Padding(join, left)] = unknown(f"{quoted(column.name)} is padded by the {join.kind.upper()} JOIN", join, column)
@@ -337,29 +365,150 @@ def _filter_sources(relation: ir.Filter, column: ir.OutputColumn) -> tuple[_Sour
             pass
         case _:
             raise TypeError(f"Filter column {column.name} is not a pass-through")
-    sources, removal = _rejected(_null_rejected(relation.conjuncts), source, sources, "The WHERE clause rejects NULL")
+    sources, removal = _rejected(
+        _null_rejected(relation.conjuncts), _rejected_paddings(relation.conjuncts), source, sources, "The WHERE clause rejects NULL"
+    )
     return sources, premises + removal
 
 
 def _rejected(
-    rejected: dict[ir.OutputColumn, ir.ScalarExpr], source: ir.OutputColumn, sources: _Sources, reason: str
+    rejected: dict[ir.OutputColumn, ir.ScalarExpr], paddings: dict[Padding, ir.ScalarExpr],
+    source: ir.OutputColumn, sources: _Sources, reason: str,
 ) -> tuple[_Sources, list[Result]]:
-    """`sources` once the rows on which a rejected column is NULL are gone.
+    """`sources` once the rows a condition rejects are gone.
 
-    A rejected column loses its organic NULLs, and every join that padded a
-    rejected column is proved matched, so its padding goes from every column.
+    A rejected column loses its organic NULLs, and so does one passing on a
+    column whose NULL would make a rejected one NULL on the same row
+    (`_row_lineage`): `WHERE q.ms > 0` with `ms = mgr + sal` rejects `q.mgr`.
+    Every rejected padding (`_rejected_paddings`) is proved matched, so it
+    goes from every column.
     """
     sources = dict(sources)
     removal = []
-    if source in rejected and ORGANIC in sources:
-        del sources[ORGANIC]
-        removal.append(Result(True, reason, (rejected[source], source)))
-    for column, conjunct in rejected.items():
-        for padding in _null_sources(column).value:
-            if isinstance(padding, Padding) and padding in sources:
-                del sources[padding]
-                removal.append(Result(True, f"{reason}, so the padding join matched", (conjunct, column)))
+    if ORGANIC in sources:
+        passed = _row_lineage(source, pass_through=True)
+        conjunct = next((c for column, c in rejected.items() if passed & _row_lineage(column)), None)
+        if conjunct is not None:
+            del sources[ORGANIC]
+            removal.append(Result(True, reason, (conjunct, source)))
+    for padding, conjunct in paddings.items():
+        if padding in sources:
+            del sources[padding]
+            removal.append(Result(True, f"{reason}, so the padding join matched", (conjunct, padding.join)))
     return sources, removal
+
+
+type _RowColumn = tuple[ir.OutputColumn, tuple[ir.Alias, ...]]
+
+
+def _row_lineage(column: ir.OutputColumn, *, pass_through: bool = False, aliases: tuple[ir.Alias, ...] = ()) -> frozenset[_RowColumn]:
+    """`column` and the columns below it, on the one input row its value is
+    computed from, whose NULL makes it NULL (strict inputs), or that it equals
+    (`pass_through`); each with the Aliases of Named Relations it was reached
+    through, so two occurrences of a view or CTE never share a row.
+
+    Followed down through the relations that compute a row from one row of
+    each input: not through an aggregate (a group's rows), a set operation
+    (its columns name its left input's), or an expression reading columns of
+    no direct input (a correlated one). Apart from Named Relations, which
+    each occurrence enters through its own Alias, the IR is a tree, so two
+    columns of one relation reaching one column with the same Aliases reach
+    it on the same row.
+    """
+    relation = column.get_relation(current_arena().program).closed
+    match relation:
+        case ir.Alias(source=ir.NamedRelation()):
+            below_aliases = (*aliases, relation)
+        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Filter() | ir.Limit() | ir.Distinct() | ir.QualifyByPartition() | ir.Join():
+            below_aliases = aliases
+        case ir.Aggregate() | ir.SetOperation() | ir.OpaqueRelation() | ir.RecursiveRelation():
+            return frozenset({(column, aliases)})
+        case _:
+            assert_never(relation)
+    match column.scalar_expr:
+        case ir.ColumnRef(column=input_column):
+            below: tuple[ir.OutputColumn, ...] = (input_column,)
+        case expression if not pass_through:
+            below = ir.strict_inputs(expression)
+        case _:
+            return frozenset({(column, aliases)})
+    inputs = {each for child in ir.children(relation) if isinstance(child, ir.RelationExpr) for each in child.output_columns}
+    if not all(each in inputs for each in below):
+        return frozenset({(column, aliases)})
+    return frozenset({(column, aliases)}).union(
+        *(_row_lineage(each, pass_through=pass_through, aliases=below_aliases) for each in below)
+    )
+
+
+def _rejected_paddings(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[Padding, ir.ScalarExpr]:
+    """Each padding no row of which a conjunct holds on, with that conjunct.
+
+    A padded row is NULL in every column its join pads, all at once: a
+    conjunct NULL there (`_null_with`) is never TRUE, nor is a Builtin with a
+    `rejecting` argument NULL there, `IS NOT NULL` of such an expression is
+    FALSE, and an OR rejects the paddings every part rejects:
+    `e.sal > 0 OR e.comm > 0` and `coalesce(e.sal, e.comm) > 0` reject the
+    join that pads both (Calcite's whole-side `Strong`).
+    """
+    rejected: dict[Padding, ir.ScalarExpr] = {}
+    for conjunct in conjuncts:
+        for padding in _conjunct_paddings(conjunct):
+            rejected.setdefault(padding, conjunct)
+    return rejected
+
+
+def _conjunct_paddings(conjunct: ir.ScalarExpr) -> frozenset[Padding]:
+    conjunct = conjunct.closed
+    match conjunct:
+        case ir.Or(parts=parts):
+            first, *others = (frozenset(_rejected_paddings(ir.conjuncts(part))) for part in parts)
+            return first.intersection(*others)
+        case ir.And(parts=parts):
+            return frozenset(_rejected_paddings(parts))
+        case ir.IsNotNull(operand=operand):
+            return _null_with(operand)
+        case ir.NullSafeEquality(left=left, right=right, rejects=True):
+            # Equal to a non-null side, the other is non-null too.
+            return frozenset(
+                padding for side, other in ((left, right), (right, left)) if not _expression_sources(other)[0]
+                for padding in _null_with(side)
+            )
+        case ir.Call(rejecting_arguments=arguments):
+            # Never TRUE where a rejecting argument is NULL, though perhaps not NULL.
+            return frozenset(padding for argument in arguments for padding in _null_with(argument))
+        case _:
+            return _null_with(conjunct)
+
+
+def _null_with(expression: ir.ScalarExpr) -> frozenset[Padding]:
+    """The paddings on every row of which `expression` is NULL: a column's,
+    those of an argument it is strict in, or, for AND and OR, those every part
+    is NULL on (`NULL OR TRUE` is TRUE). Any other expression is NULL on a
+    padding's rows when its Null Sources keep that padding (coalesce: when
+    every argument is NULL there)."""
+    expression = expression.closed
+    match expression:
+        case ir.ColumnRef(column=column):
+            return frozenset(source for source in _null_sources(column).value if isinstance(source, Padding))
+        case ir.Coalesce(arguments=(first, *others)) | ir.Call(function=ir.Builtin(skips_null=True), arguments=(first, *others)):
+            return _null_with(first).intersection(*(_null_with(other) for other in others))
+        case ir.Call(strict_arguments=arguments):
+            return frozenset(padding for argument in arguments for padding in _null_with(argument))
+        case ir.Equality(left=left, right=right):
+            return _null_with(left) | _null_with(right)
+        case ir.InList(operand=operand):
+            return _null_with(operand)
+        case ir.And(parts=(first, *others)) | ir.Or(parts=(first, *others)):
+            return _null_with(first).intersection(*(_null_with(other) for other in others))
+        case (
+            ir.And() | ir.Or() | ir.Coalesce() | ir.Constant() | ir.NullLiteral() | ir.SimpleCase() | ir.OpaquePureFunction()
+            | ir.OpaqueExpression() | ir.Count() | ir.AnyAggregate() | ir.Accumulation() | ir.Elements() | ir.IsNull()
+            | ir.IsNotNull() | ir.NullSafeEquality()
+        ):
+            sources, _ = _expression_sources(expression)
+            return frozenset(source for source in sources if isinstance(source, Padding))
+        case _:
+            assert_never(expression)
 
 
 def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn, ir.ScalarExpr]:
@@ -367,7 +516,11 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
 
     A conjunct cannot be TRUE while it is NULL, so it rejects every column it
     is strict in; `IS NOT NULL` rejects those of its operand (Paulley §3.2.4,
-    footnote 9). An OR rejects the columns each of its parts rejects.
+    footnote 9), and `IS NOT DISTINCT FROM` a non-null value those of its
+    other side. A Builtin never TRUE on a NULL argument rejects that
+    argument's, though it may not be NULL there (Calcite's `Strong.isNotTrue`):
+    `x > ANY (...)` and `(x > 0) IS TRUE` reject x. An OR rejects the columns
+    each of its parts rejects.
     """
     rejected: dict[ir.OutputColumn, ir.ScalarExpr] = {}
     for conjunct in conjuncts:
@@ -377,6 +530,15 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
                 columns = tuple(column for column in first if all(column in other for other in others))
             case ir.IsNotNull(operand=operand):
                 columns = ir.strict_inputs(operand)
+            case ir.NullSafeEquality(left=left, right=right, rejects=True):
+                # Equal to a non-null side, the other is non-null too.
+                columns = tuple(dict.fromkeys(
+                    column for side, other in ((left, right), (right, left)) if not _expression_sources(other)[0]
+                    for column in ir.strict_inputs(side)
+                ))
+            case ir.Call(rejecting_arguments=arguments):
+                # Never TRUE where a rejecting argument is NULL: `x > ANY (...)`, `p IS TRUE`.
+                columns = tuple(dict.fromkeys(column for argument in arguments for column in ir.strict_inputs(argument)))
             case _:
                 columns = ir.strict_inputs(conjunct)
         for column in columns:
@@ -404,6 +566,30 @@ def _on_rejected(join: ir.Join) -> dict[ir.OutputColumn, ir.ScalarExpr]:
             return {}
         case _:
             assert_never(join.kind)
+
+
+def _on_rejected_paddings(join: ir.Join) -> dict[Padding, ir.ScalarExpr]:
+    """The paddings of `join`'s inputs its ON rejects, on the side whose
+    unmatched rows it drops (see `_on_rejected`)."""
+    match join.kind:
+        case "inner" | "semi":
+            sides: tuple[ir.RelationExpr, ...] = (join.left, join.right)
+        case "left":
+            sides = (join.right,)
+        case "right":
+            sides = (join.left,)
+        case "cross" | "full" | "anti":
+            return {}
+        case _:
+            assert_never(join.kind)
+    rejected = _rejected_paddings(join.conjuncts)
+    if not rejected:
+        return {}
+    own = {
+        source for side in sides for column in side.output_columns
+        for source in _null_sources(column).value if isinstance(source, Padding)
+    }
+    return {padding: conjunct for padding, conjunct in rejected.items() if padding in own}
 
 
 def _padded_sides(join: ir.Join) -> frozenset[bool]:

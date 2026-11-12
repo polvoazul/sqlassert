@@ -5,7 +5,7 @@
 - **Theme:** soundness
 - **Labels:** check, ready-for-agent
 - **Created:** 2026-11-11
-- **Related:** [35: Paulley audit](done/0035-audit-fd-propagation-against-paulley.md), [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [45: Calcite missing proofs](0045-close-the-calcite-audit-missing-proofs.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md)
+- **Related:** [35: Paulley audit](done/0035-audit-fd-propagation-against-paulley.md), [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [45: Calcite missing proofs](done/0045-close-the-calcite-audit-missing-proofs.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md)
 
 ## Why
 

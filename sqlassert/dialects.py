@@ -2,8 +2,8 @@
 
 One `DialectSemantics` per dialect name (SQLGlot's), read by `ir/convert.py`
 while it lowers SQL: which Builtins raise an error rather than return NULL,
-which text compares by identity, what `||` and `concat()` do with NULL, and
-which constraints the database enforces. A dialect not listed gets
+which text compares by identity, what `||`, `concat()`, `greatest()` and
+subscripts do with NULL, and which constraints the database enforces. A dialect not listed gets
 `DialectSemantics()`, whose arithmetic, collation and `||` are the cautious
 choice; only its keys are taken as enforced, as before dialects were listed.
 
@@ -36,6 +36,11 @@ type PipesMeaning = Literal["strict", "lenient", "ambiguous"] | None
 # skips it, so the result is never NULL ("skips-null"); None when not modelled.
 type ConcatMeaning = Literal["strict", "skips-null"] | None
 
+# What `greatest(a, ...)` and `least(a, ...)` do with NULL: skip it, so the
+# result is NULL only when every argument is ("skips-null"); None when not
+# modelled.
+type GreatestMeaning = Literal["skips-null"] | None
+
 
 @dataclass(frozen=True)
 class DialectSemantics:
@@ -65,6 +70,9 @@ class DialectSemantics:
     # What `concat_ws(sep, a, ...)` does with a NULL value (a NULL separator
     # makes it NULL either way); None where it does not exist or is not modelled.
     concat_ws: ConcatMeaning = None
+    greatest: GreatestMeaning = None
+    # `xs[i]` (an element of a list, array, map or struct) is NULL when `xs` is.
+    subscript_strict: bool = False
     unique_keys: KeyTrust = "enforced"
     foreign_keys: KeyTrust = "enforced"
     # CHECK constraints. Where the dialect has none (Snowflake, BigQuery,
@@ -116,6 +124,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         pipes="strict",
         concat="skips-null",
         concat_ws="skips-null",
+        greatest="skips-null",
+        subscript_strict=True,
         set_operations_all=True,
     ),
     "postgres": DialectSemantics(
@@ -127,6 +137,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         pipes="lenient",  # `ARRAY[1] || NULL` is `{1}`.
         concat="skips-null",
         concat_ws="skips-null",
+        greatest="skips-null",
+        subscript_strict=True,
         set_operations_all=True,
     ),
     "mysql": DialectSemantics(

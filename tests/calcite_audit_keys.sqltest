@@ -55,9 +55,9 @@ SELECT empno, deptno, random() AS r1, random() AS r2 FROM emp
 
 -- case: fd_identical_expressions
 -- inspired by RelMetadataTest.testFunctionalDependencyWithIdenticalExpressions
--- deptno2 -> deptno: missing proof (one input column passed through twice).
+-- deptno2 -> deptno: one input column passed through twice maps back to both.
 SELECT deptno, deptno AS deptno2, deptno + 1 AS deptno3 FROM emp
-/**ASSERT DETERMINES(deptno2 -> deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(deptno2 -> deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(deptno2 -> deptno3)**/  --~ PROVED
 
 -- case: fd_constants
@@ -121,10 +121,12 @@ SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno, d.name FROM emp AS e
 -- inspired by RelMetadataTest.testFunctionalDependencyLeftJoin (shared INNER/LEFT/RIGHT branch)
 -- e_deptno -> d_deptno is false (emp 10 with sal 2000 matches, with sal 500
 -- is padded); Calcite derives it from the ON equality. {e_deptno, sal} ->
--- d_deptno holds (Paulley Lemma 9): missing proof.
+-- d_deptno holds (Paulley Lemma 9): the pure conjunct e.sal > 1000 is fixed
+-- by sal, so e_deptno and sal fix whether a row matched, and a matched row's
+-- d_deptno equals e_deptno.
 SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp AS e LEFT JOIN dept AS d ON e.deptno = d.deptno AND e.sal > 1000
 /**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ UNKNOWN
-/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(empno -> d_deptno)**/  --~ PROVED
 
 -- case: fd_right_join
@@ -136,14 +138,30 @@ SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno, d.name FROM dept AS 
 -- case: fd_right_join_extra_conjunct
 -- inspired by RelMetadataTest.testFunctionalDependencyRightJoin (shared INNER/LEFT/RIGHT branch)
 -- False, as in fd_left_join_extra_conjunct; Calcite derives it.
-SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno FROM dept AS d RIGHT JOIN emp AS e ON e.deptno = d.deptno AND e.sal > 1000
+-- {e_deptno, sal} -> d_deptno holds, as there.
+SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM dept AS d RIGHT JOIN emp AS e ON e.deptno = d.deptno AND e.sal > 1000
 /**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ PROVED
+
+-- case: fd_left_join_volatile_conjunct
+-- A volatile conjunct on the preserved side is fixed by nothing it reads:
+-- one emp row may match and an equal one be padded.
+SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp AS e LEFT JOIN dept AS d ON e.deptno = d.deptno AND random() > 0.5
+/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(empno -> d_deptno)**/  --~ PROVED
+
+-- case: fd_left_join_collated_conjunct
+-- Under a case-insensitive collation 'a' = 'A', yet e.ename LIKE 'a%' tells
+-- them apart: ename does not fix the match.
+CREATE TABLE emp_ci (empno INTEGER PRIMARY KEY, ename VARCHAR(20) COLLATE NOCASE NOT NULL, deptno INTEGER NOT NULL);
+SELECT e.empno, e.ename, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp_ci AS e LEFT JOIN dept AS d ON e.deptno = d.deptno AND e.ename LIKE 'a%'
+/**ASSERT DETERMINES(e_deptno, ename -> d_deptno)**/  --~ UNKNOWN
 
 -- case: fd_full_join
 -- inspired by RelMetadataTest.testFunctionalDependencyFullOuterJoin
 -- Calcite has no FDs for a FULL join. empno -> name and UNIQUE(empno) hold
 -- (an emp row matches at most one dept; dept-only rows have NULL empno):
--- missing proofs.
+-- missing proofs (F2/F4, issue 37).
 SELECT e.empno, e.deptno, d.name FROM emp AS e FULL JOIN dept AS d ON e.deptno = d.deptno
 /**ASSERT DETERMINES(empno -> deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(empno -> name)**/  --~ UNKNOWN
@@ -151,21 +169,22 @@ SELECT e.empno, e.deptno, d.name FROM emp AS e FULL JOIN dept AS d ON e.deptno =
 
 -- case: fd_equality_conditions
 -- inspired by RelMetadataTest.testFunctionalDependencyFilterEqualityCondition
--- mgr IS NOT DISTINCT FROM deptno with deptno NOT NULL is mgr = deptno:
--- missing proofs (IS NOT DISTINCT FROM gives no dependency).
+-- mgr IS NOT DISTINCT FROM deptno equates them, NULLs included: a dependency
+-- each way.
 SELECT e1.empno, e1.sal, e2.mgr, e2.deptno
 FROM emp AS e1
 JOIN emp AS e2
     ON e2.mgr IS NOT DISTINCT FROM e2.deptno
 WHERE e1.empno = e1.sal
 /**ASSERT DETERMINES(sal -> empno)**/  --~ PROVED
-/**ASSERT DETERMINES(mgr -> deptno)**/  --~ UNKNOWN
-/**ASSERT DETERMINES(deptno -> mgr)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(mgr -> deptno)**/  --~ PROVED
+/**ASSERT DETERMINES(deptno -> mgr)**/  --~ PROVED
 
 -- case: fd_union_all
 -- inspired by RelMetadataTest.testFunctionalDependencyUnion
 -- The branches are disjoint (deptno 10 and 20), so empno -> deptno holds:
--- missing proof (tagged UNION ALL); Calcite has no set-operation FDs either.
+-- missing proof (tagged UNION ALL, U2, issue 37); Calcite has no set-operation
+-- FDs either.
 WITH q AS (
     SELECT empno, deptno FROM emp WHERE deptno = 10
     UNION ALL
@@ -242,9 +261,10 @@ SELECT l.k1, l.k2 FROM ck AS l LEFT JOIN (SELECT 5 AS c) AS s ON l.k1 = s.c
 
 -- case: uk_null_safe_join_on_key
 -- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (IS NOT DISTINCT FROM onto a non-null key)
--- Each left row matches at most one s row: missing proof.
+-- Each left row matches at most one s row: k is a Non-Null Unique Set, so a
+-- NULL x matches none.
 SELECT l.k FROM r AS l JOIN r AS s ON l.x IS NOT DISTINCT FROM s.k
-/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(k)**/  --~ PROVED
 
 -- case: uk_null_safe_join_on_nullable_unique
 -- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (JoinInfo counts IS NOT DISTINCT FROM as an equi-key)
@@ -302,11 +322,12 @@ SELECT empno, ename FROM emp GROUP BY empno, ename
 
 -- case: uk_group_by_pass_through_aggregate
 -- inspired by RelMetadataTest.testGroupByNonKey
--- max(empno) is unique: groups are disjoint and empno is a key. Missing proof.
+-- max(empno) is unique: groups are disjoint, so two groups' maxima are empno
+-- of two distinct rows, and empno is a key. deptno is not.
 SELECT sal, max(deptno) AS max_dept, max(empno) AS max_emp FROM emp GROUP BY sal
 /**ASSERT UNIQUE(sal)**/  --~ PROVED
 /**ASSERT UNIQUE(max_dept)**/  --~ UNKNOWN
-/**ASSERT UNIQUE(max_emp)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(max_emp)**/  --~ PROVED
 
 -- case: uk_composite_key_pass_through_aggregates
 -- inspired by RelMetadataTest.testCompositeKeysAggregationUniqueKeys
@@ -316,10 +337,40 @@ SELECT value1, min(key1) AS min_key1, max(key2) AS max_key2 FROM composite_keys_
 /**ASSERT UNIQUE(value1)**/  --~ PROVED
 /**ASSERT UNIQUE(min_key1, max_key2)**/  --~ UNKNOWN
 
+-- case: uk_any_value_of_a_key
+-- any_value picks one row's value, like max.
+SELECT sal, any_value(empno) AS any_emp, min(ename) AS min_name FROM emp GROUP BY sal
+/**ASSERT NOT NULL UNIQUE(any_emp)**/  --~ PROVED
+/**ASSERT UNIQUE(min_name)**/  --~ UNKNOWN
+
+-- case: uk_max_of_a_nullable_unique_column
+-- A NULL max is exempt from a Unique Set: groups whose u is all NULL share it.
+SELECT x, max(u) AS max_u FROM r GROUP BY x
+/**ASSERT UNIQUE(max_u)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(max_u)**/  --~ UNKNOWN
+
+-- case: uk_max_of_a_key_within_the_group
+-- k2 is a key only together with the grouping column k1: groups 1 and 2 may
+-- both have max(k2) = 5.
+SELECT k1, max(k2) AS max_k2 FROM ck GROUP BY k1
+/**ASSERT UNIQUE(max_k2)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(k1, max_k2)**/  --~ PROVED
+
+-- case: uk_max_of_a_key_the_join_repeats
+-- e.empno is a key of emp, not of the join: every e2 of one department has
+-- the same maximum.
+SELECT e2.empno AS g, max(e.empno) AS max_emp FROM emp AS e JOIN emp AS e2 ON e.deptno = e2.deptno GROUP BY e2.empno
+/**ASSERT UNIQUE(max_emp)**/  --~ UNKNOWN
+
+-- case: uk_max_of_a_key_the_join_keeps
+-- emp to dept is many to one: empno stays a key of the join.
+SELECT d.deptno, max(e.empno) AS max_emp FROM emp AS e JOIN dept AS d ON e.deptno = d.deptno GROUP BY d.deptno
+/**ASSERT UNIQUE(max_emp)**/  --~ PROVED
+
 -- case: uk_grouping_sets
 -- inspired by RelMetadataTest.testUniqueKeysWithConfOnAggregateWithGroupingSets
 -- A Unique Set (subtotal rows have job NULL, data rows never do), but
--- GROUPING SETS is not lowered: missing proof.
+-- GROUPING SETS is not lowered: missing proof (issue 42).
 SELECT ename, job FROM emp GROUP BY GROUPING SETS ((ename), (ename, job))
 /**ASSERT UNIQUE(ename, job)**/  --~ UNKNOWN
 --~ unsupported-construct "GROUPING SETS"

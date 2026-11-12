@@ -1,0 +1,81 @@
+-- A join in parentheses, `a JOIN (b JOIN c ON ...) ON ...`, is a join whose
+-- input is another join: its sources keep their names, so the ON outside reads
+-- `b` and `c`, and a marker on either level is analyzed. An outer join pads
+-- every column of a nested join on its padded side.
+
+CREATE TABLE dept (deptno INTEGER PRIMARY KEY, dname VARCHAR NOT NULL);
+CREATE TABLE emp (
+    empno INTEGER PRIMARY KEY,
+    ename VARCHAR NOT NULL,
+    mgr INTEGER,
+    deptno INTEGER NOT NULL REFERENCES dept (deptno)
+);
+
+-- case: markers_on_both_levels_of_a_nested_right_input
+SELECT d.deptno, e.empno, m.ename
+FROM dept AS d
+/**ASSERT ONE TO MANY**/ LEFT JOIN (  --~ PROVED
+    emp AS e
+    /**ASSERT MANY TO ONE**/ LEFT JOIN emp AS m  --~ PROVED
+        ON m.empno = e.mgr
+)
+    ON d.deptno = e.deptno
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
+/**ASSERT NOT NULL(ename)**/  --~ UNKNOWN
+
+-- The outer LEFT JOIN pads `e`, NOT NULL in its table, and a WHERE on it
+-- proves that join matched.
+-- case: an_outer_join_pads_the_nested_join_until_a_where_rejects_it
+SELECT d.deptno, e.ename
+FROM dept AS d
+LEFT JOIN (emp AS e /**ASSERT EXACTLY ONE**/ JOIN dept AS d2 ON d2.deptno = e.deptno)  --~ PROVED
+    ON d.deptno = e.deptno
+/**ASSERT NOT NULL(ename)**/  --~ UNKNOWN
+
+-- case: a_where_on_a_nested_column_rejects_the_outer_padding
+SELECT d.deptno, e.ename
+FROM dept AS d
+LEFT JOIN (emp AS e JOIN dept AS d2 ON d2.deptno = e.deptno)
+    ON d.deptno = e.deptno
+WHERE d2.dname = 'x'
+/**ASSERT NOT NULL(ename)**/  --~ PROVED
+
+-- A RIGHT JOIN preserves the nested side, so its own padding survives.
+-- case: a_right_join_keeps_the_nested_join_s_padding
+SELECT m.ename
+FROM dept AS d
+RIGHT JOIN (emp AS e LEFT JOIN emp AS m ON m.empno = e.mgr)
+    ON d.deptno = m.deptno
+/**ASSERT NOT NULL(ename)**/  --~ UNKNOWN
+
+-- A USING column inside the parentheses is one column, read unqualified outside.
+-- case: a_using_column_inside_the_parentheses_is_read_outside
+SELECT empno AS id, d.dname
+FROM (emp AS e JOIN emp AS m USING (empno))
+/**ASSERT MANY TO ONE**/ JOIN dept AS d  --~ PROVED
+    ON d.deptno = e.deptno
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: nested_parentheses_and_a_comma
+SELECT e.empno
+FROM dept AS d
+JOIN ((emp AS e /**ASSERT EXACTLY ONE**/ JOIN dept AS d2 ON d2.deptno = e.deptno), dept AS d3)  --~ PROVED
+    ON d.deptno = d3.deptno
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+
+-- With an alias the parentheses are a relation of their own, whose repeated
+-- names each dialect resolves differently: not analyzed.
+-- case: an_aliased_nested_join_is_opaque
+SELECT j.deptno
+FROM dept AS d
+JOIN (emp AS e /**ASSERT MANY TO ONE**/ JOIN dept AS d2 ON d2.deptno = e.deptno) AS j
+--~ unanalyzed-assertion
+    ON d.deptno = j.deptno
+
+-- case: a_natural_join_inside_the_parentheses_makes_the_select_opaque
+SELECT d.deptno
+FROM dept AS d
+JOIN (emp AS e NATURAL JOIN dept AS d2)
+--~ unsupported-natural-join
+    ON d.deptno = e.deptno
+/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN

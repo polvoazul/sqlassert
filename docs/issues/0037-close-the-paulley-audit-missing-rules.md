@@ -38,10 +38,16 @@ then OR branches.
   left column's comparison (`identity_comparison`).
 - [ ] **U2** (§3.2.6, Example 15): equivalences and constants that hold in
   both UNION ALL inputs at the same positions hold in the output.
+  With it, from issue 45 (item 22): a UNION ALL whose inputs are disjoint
+  (`WHERE deptno = 10` / `= 20`) keeps each input's FDs. Calcite case
+  `keys: fd_union_all`.
 - [ ] **F2, F4** (Lemma 10, Thm 4): a full join's ON gives no dependencies
   today. `t FULL JOIN u ON u.z = t.a` gives `a → z` (a non-null a is a left
   row, and a fixes which rows it matches) when η holds for z and for every
   right column of p, and the lax `z → a`.
+  With it, from issue 45 (item 21): a FULL join that is Many To One keeps
+  the left side's key laxly (the left Row Identity determines the right
+  one). Calcite case `keys: fd_full_join`.
 - [ ] **OR branches** (beyond R13): constants and Equality Groups that hold in
   every branch of an OR hold after it. `(k = 5 AND …) OR (k = 5 AND …)` makes
   `k` constant; today an OR gives only null rejection and Enumerated Domains.

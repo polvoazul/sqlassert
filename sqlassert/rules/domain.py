@@ -39,10 +39,13 @@ from sqlassert import ir
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
 from sqlassert.rules.equality import _equal_columns, _same_type
-from sqlassert.rules.nullability import non_null_column
+from sqlassert.rules.nullability import _non_null_expression, non_null_column
 
 # A finite set of possible non-null values, or None when any value is possible.
 type Domain = frozenset[ir.LiteralValue] | None
+
+_TRUE = ir.LiteralValue(type="boolean", text="TRUE")
+_FALSE = ir.LiteralValue(type="boolean", text="FALSE")
 
 
 @analysis(Stratum.DOMAIN)
@@ -190,7 +193,7 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(domain.value for domain in domains if domain.value is not None))
             return Result(value, "Coalesce takes one of its arguments' values", (expression,), domains)
         case ir.AnyAggregate(input=value):
-            # Groups are never empty, so the value comes from some input row.
+            # The value comes from some input row, or is NULL (an empty group).
             return _expression_domain(value)
         case ir.SimpleCase(thens=thens, default=default):
             arms = [_expression_domain(then) for then in thens]
@@ -202,7 +205,29 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(arm.value for arm in arms if arm.value is not None))
             premises = [*arms, unreachable] if unreachable.value else arms
             return Result(value, "A CASE takes one of its arms' values", (expression,), premises)
-        case ir.Constant() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.Elements() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+        case ir.Call(strict_arguments=arguments) if arguments:
+            # NULL wherever a strict argument is, so always NULL where one always is.
+            for argument in arguments:
+                absent = _expression_domain(argument)
+                if absent.value == frozenset():
+                    return Result(frozenset(), "A strict argument is always NULL, so it is", (expression,), [absent])
+            return Result(None, "Values of this expression are not enumerated", (expression,))
+        case ir.IsNull(operand=operand) | ir.IsNotNull(operand=operand):
+            # A constant where the operand is never NULL, or always.
+            null = isinstance(expression, ir.IsNull)
+            present = _non_null_expression(operand)
+            if present.value:
+                value = frozenset({_FALSE if null else _TRUE})
+                return Result(value, f"Its operand is never NULL, so it is {_render(value)}", (expression,), [present])
+            absent = _expression_domain(operand)
+            if absent.value == frozenset():
+                value = frozenset({_TRUE if null else _FALSE})
+                return Result(value, f"Its operand is always NULL, so it is {_render(value)}", (expression,), [absent])
+            return Result(None, "Its operand may be NULL or not", (expression,), [present, absent])
+        case (
+            ir.Constant() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.Accumulation() | ir.Elements() | ir.Equality()
+            | ir.NullSafeEquality() | ir.InList() | ir.And() | ir.Or()
+        ):
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:
             assert_never(expression)
@@ -233,6 +258,33 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
         bound = _conjunct_bound(conjunct, source)
         if bound is not None and bound.value is not None:
             narrowings.append(Result(bound.value, f"The {clause} conjunct bounds {quoted(column.name)} to {_render(bound.value)}", (conjunct,), [bound]))
+    if isinstance(relation, ir.Join) and relation.kind == "semi":
+        narrowings.extend(_matched_narrowings(relation, column, source))
+    return narrowings
+
+
+def _matched_narrowings(join: ir.Join, column: ir.OutputColumn, source: ir.OutputColumn) -> list[Result[Domain]]:
+    """A semi join's left column equal to a right column of the same type
+    takes that column's value on the matched right row, which every other ON
+    conjunct bounds too: `d.deptno = e.mgr AND d.deptno = 10` bounds mgr."""
+    narrowings: list[Result[Domain]] = []
+    for conjunct in join.conjuncts:
+        match conjunct:
+            case (
+                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+            ) if source in (first, second):
+                other = second if first is source else first
+            case _:
+                continue
+        if other not in join.right.output_columns or not _same_type(source, other):
+            continue
+        bounds = [bound for part in join.conjuncts if part is not conjunct and (bound := _conjunct_bound(part, other)) is not None]
+        if bounds:
+            bound = _intersection(other, bounds)
+            if bound.value is not None:
+                reason = f"{quoted(column.name)} equals {quoted(other.name)} of the matched right row, which ON bounds to {_render(bound.value)}"
+                narrowings.append(Result(bound.value, reason, (conjunct,), [bound]))
     return narrowings
 
 
@@ -245,9 +297,10 @@ def _conjunct_bound(conjunct: ir.ScalarExpr, source: ir.OutputColumn) -> Result[
     unknown domain.
     """
     match conjunct:
-        case ir.Equality(left=ir.ColumnRef(column=first), right=other) if first is source:
+        # A TRUE IS NOT DISTINCT FROM leaves a non-null side equal to the other.
+        case ir.Equality(left=ir.ColumnRef(column=first), right=other) | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=other) if first is source:
             bounds = [_bound_domain(source, other)]
-        case ir.Equality(left=other, right=ir.ColumnRef(column=second)) if second is source:
+        case ir.Equality(left=other, right=ir.ColumnRef(column=second)) | ir.NullSafeEquality(left=other, right=ir.ColumnRef(column=second)) if second is source:
             bounds = [_bound_domain(source, other)]
         case ir.InList(operand=ir.ColumnRef(column=operand), values=values) if operand is source:
             bounds = [_bound_domain(source, value) for value in values]

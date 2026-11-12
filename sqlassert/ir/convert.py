@@ -7,6 +7,7 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
@@ -393,10 +394,11 @@ class IrParser:
                 # An unqualified column in a nested query belongs to that query's scope.
                 self._require(sources[0], column.name)
 
-        for join in query.args.get("joins") or ():
-            for identifier in join.args.get("using") or ():
-                for source in sources:
-                    self._require(source, identifier.name)
+        for joins, level in _join_levels(query):
+            for join in joins:
+                for identifier in join.args.get("using") or ():
+                    for source in level:
+                        self._require(source, identifier.name)
 
         if len(sources) == 1 and _star_only(query):
             for marker in column_markers(query):
@@ -535,7 +537,7 @@ class IrParser:
             row = ir.OpaqueRelation(origin=origin, output_columns=(), is_schema_complete=True, description="no FROM")
             one_row = ir.Limit(origin=origin, output_columns=(), is_schema_complete=True, input=row, count=1)
             relation = self._lower_select_tail(_Lowered(one_row, ()), select)
-        elif any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+        elif any(join.args.get("method") == "NATURAL" for join in _all_joins(select)):
             relation = self._opaque_relation(select, _selected_output_names(select))
         else:
             lowered = self._lower_source(source)
@@ -580,6 +582,14 @@ class IrParser:
                 recursive = self._recursive_relation(symbol, source)
                 return self._alias(recursive, alias_name, self._origin(source), schema)
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema)
+
+        nested = _nested_join(source)
+        if nested is not None:
+            first, joins = nested
+            lowered = self._lower_source(first)
+            for join in joins:
+                lowered = self._lower_join(lowered, join)
+            return lowered
 
         if isinstance(source, exp.Subquery):
             relation = self._lower_query(source)
@@ -962,11 +972,11 @@ class IrParser:
                 return opaque
             lowered = self._fan_out(lowered, calls, self._origin(select))
         if keys is not None:
-            relation = self._lower_aggregate(lowered, select, keys)
+            relation = self._qualified(self._lower_aggregate(lowered, select, keys), select, grouped=True)
         elif select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None:
             relation = self._lower_distinct_on(lowered, select, select.args["distinct"].args["on"])
         elif select.args.get("distinct") is not None:
-            relation = self._lower_distinct(lowered, select)
+            relation = self._qualified(self._lower_distinct(lowered, select), select, grouped=False)
         elif isinstance(select.args.get("qualify"), exp.Qualify):
             relation = self._lower_qualify(lowered, select, select.args["qualify"])
         else:
@@ -1191,7 +1201,7 @@ class IrParser:
             return None
         source = _from_source(select)
         if source is None or select.args.get("with") or any(
-            join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()
+            join.args.get("method") == "NATURAL" for join in _all_joins(select)
         ) or any(isinstance(node, (exp.Subquery, exp.Exists, exp.Query)) and node is not select for node in select.walk()):
             return None
         right = self._lower_source(source)
@@ -1348,7 +1358,7 @@ class IrParser:
             source = _from_source(select)
             if source is None or grouping(select) is not None or any(
                 select.args.get(key) for key in ("having", "qualify", "distinct", "limit", "offset", "with", "windows")
-            ) or any(join.args.get("method") == "NATURAL" for join in select.args.get("joins") or ()):
+            ) or any(join.args.get("method") == "NATURAL" for join in _all_joins(select)):
                 # Grouped by nothing (`grouping` is []), it returns one row whatever its WHERE: EXISTS is always true.
                 return None
             right = self._lower_source(source)
@@ -1507,6 +1517,30 @@ class IrParser:
             lowered, select, window.args.get("partition_by") or (), order.expressions if order else (),
         )
 
+    def _qualified(self, relation: ir.RelationExpr | None, select: exp.Select, *, grouped: bool) -> ir.RelationExpr | None:
+        """`relation`, the groups (`grouped`) or distinct rows of `select`, after its
+        QUALIFY. Over groups, `row_number() OVER (PARTITION BY k...) = 1` with
+        every key a selected item keeps one row per partition. Any other
+        QUALIFY drops rows for a reason not known: an opaque Filter, which
+        keeps every fact of the rows and none that needs them all."""
+        qualify = select.args.get("qualify")
+        if relation is None or not isinstance(qualify, exp.Qualify):
+            return relation
+        origin = self._origin(qualify)
+        output_columns = _pass_output_columns(relation.output_columns, origin)
+        window = _row_number_equals_one(qualify.this)
+        if window is not None and grouped:  # Not over DISTINCT: its window sees the rows before it.
+            positions = _partition_positions(window.args.get("partition_by") or (), select.expressions)
+            if positions and len(relation.output_columns) == len(select.expressions):
+                return ir.QualifyByPartition(
+                    origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
+                    partition_outputs=tuple(output_columns[position] for position in positions),
+                )
+        return ir.Filter(
+            origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
+            predicate=ir.OpaqueExpression(origin=origin, description=qualify.this.sql(dialect=self.dialect)),
+        )
+
     def _lower_distinct_on(self, lowered: _Lowered, select: exp.Select, on: Expr) -> ir.QualifyByPartition | None:
         """`DISTINCT ON (k...)` keeps one row per distinct `k...`, like
         `QUALIFY ROW_NUMBER() OVER (PARTITION BY k...) = 1`. Its ORDER BY only
@@ -1525,13 +1559,11 @@ class IrParser:
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
 
+        positions = _partition_positions(partitions, select.expressions)
+        if positions is None:
+            return None
         output_columns = self._selected_output_columns(select.expressions, lowered)
-        partition_outputs: list[ir.OutputColumn] = []
-        for partition in partitions:
-            item = _matching_output(partition, select.expressions)
-            if item is None:
-                return None
-            partition_outputs.append(output_columns[select.expressions.index(item)])
+        partition_outputs = [output_columns[position] for position in positions]
         ordering = tuple(
             self._lower_expression(ordered.this, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
             for ordered in order
@@ -1560,14 +1592,20 @@ class IrParser:
         for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
             lowered = self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
+            # Grouped by nothing (no grouped items), the one row exists even
+            # over no input rows, where an aggregate of its values is NULL.
+            empty = not grouped_items
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
-                # Grouped by nothing (no grouped items), the one row exists even
-                # over no input rows, so a bare column, where a dialect allows
-                # one, may be NULL.
-                lowered = (
-                    ir.AnyAggregate(origin=self._origin(expression), input=lowered) if grouped_items
-                    else ir.OpaqueExpression(origin=self._origin(expression), description=expression.sql(dialect=self.dialect))
-                )
+                # A bare column, where a dialect allows one.
+                lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered, empty=empty)
+            elif (argument := _picked_argument(expression)) is not None:
+                # One of its argument's values on some row of the group.
+                value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
+                lowered = ir.AnyAggregate(origin=self._origin(expression), input=value, empty=empty)
+            elif (argument := _aggregate_argument(expression, (exp.Sum,))) is not None and self.semantics.checked_arithmetic:
+                # NULL over non-null values only where arithmetic does not raise (overflow, NaN).
+                value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
+                lowered = ir.Accumulation(origin=self._origin(expression), input=value, empty=empty)
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 
@@ -1658,16 +1696,36 @@ class IrParser:
                     for branch in _disjuncts(expression)
                 ))
             case exp.EQ() if not quantified:
-                return ir.Equality(origin=origin, left=lower(expression.this), right=lower(expression.expression))
+                return ir.Equality(
+                    origin=origin, left=lower(expression.this), right=lower(expression.expression),
+                    total=self._checked_comparison(expression, lower),
+                )
+            case exp.NullSafeEQ() if not quantified:
+                return ir.NullSafeEquality(
+                    origin=origin, left=lower(expression.this), right=lower(expression.expression),
+                    rejects=self._checked_comparison(expression, lower),
+                )
+            case exp.NullSafeNEQ() if not quantified:
+                return ir.Call(origin=origin, function=_IS_DISTINCT_FROM, arguments=(lower(expression.this), lower(expression.expression)), description=description)
+            case exp.EQ() | exp.NEQ() | exp.GT() | exp.GTE() | exp.LT() | exp.LTE() if isinstance(expression.expression, exp.Any) and not isinstance(expression.this, (exp.Any, exp.All)):
+                function = _any_comparison(type(expression))
+                arguments = (lower(expression.this), lower(expression.expression))
+                return ir.Call(origin=origin, function=function, arguments=arguments, description=description)
+            case exp.Exists():
+                subquery = ir.OpaqueExpression(origin=origin, description=description)
+                return ir.Call(origin=origin, function=_EXISTS, arguments=(subquery,), description=description)
             case exp.Is(expression=exp.Null()):
                 return ir.IsNull(origin=origin, operand=lower(expression.this))
+            case exp.Is(expression=exp.Boolean() as truth):
+                function = _IS_TRUE if truth.this else _IS_FALSE
+                return ir.Call(origin=origin, function=function, arguments=(lower(expression.this),), description=description)
             case exp.Not(this=exp.Is(expression=exp.Null()) as test):
                 return ir.IsNotNull(origin=origin, operand=lower(test.this))
             case exp.In() if expression.expressions and not any(expression.args.get(key) for key in ("query", "unnest", "field")):
                 return ir.InList(origin=origin, operand=lower(expression.this), values=tuple(lower(value) for value in expression.expressions))
             case _:
                 pass
-        value = literal_value(expression)
+        value = literal_value(expression) or _cast_integer_literal(expression)
         if value == ir.LiteralValue(type="string", text="") and self.semantics.empty_string_is_null:
             return ir.NullLiteral(origin=origin)
         if value is not None or isinstance(expression, exp.Literal):
@@ -1698,6 +1756,14 @@ class IrParser:
                 self._unsupported.append((opaque, "a window function (other than QUALIFY row_number() ... = 1)"))
             return opaque
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
+
+    def _checked_comparison(self, comparison: exp.Binary, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
+        """Whether `comparison` compares its operands' values as they are:
+        where a failed implicit cast raises, and neither is a composite, which
+        may hold a NULL element."""
+        return self.semantics.casts_raise and not any(
+            self._is_composite(operand, lower) for operand in (comparison.this, comparison.expression)
+        )
 
     def _check_zoned_text(self, comparison: Expr, lower: Callable[[Expr], ir.ScalarExpr], origin: Origin) -> None:
         """Warn of a comparison with a CAST of a zoned timestamp, where it keeps
@@ -2273,9 +2339,9 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     remainder only where division by zero raises too (`checked_division`).
     A CAST from JSON is not total anywhere (`convert._is_json`): JSON `null`
     is a value that casts to NULL. `+`, `-` and negation are injective where exact arithmetic overflows into
-    an error. `||`, `concat()` and `concat_ws()` as each dialect treats NULL;
-    `||` not at all where a setting decides what it means (MySQL: OR, or
-    concatenation)."""
+    an error. `||`, `concat()`, `concat_ws()`, `greatest()`, `least()` and
+    subscripts (`xs[1]`) as each dialect treats NULL; `||` not at all where a
+    setting decides what it means (MySQL: OR, or concatenation)."""
     checked = meaning.checked_arithmetic
     casts = meaning.casts_raise
 
@@ -2335,6 +2401,23 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
             pass
         case _:
             assert_never(meaning.concat)
+    match meaning.greatest:
+        case "skips-null":
+            # NULL only when every argument is: `greatest(NULL, 1)` is 1.
+            for node, name in {exp.Greatest: "greatest", exp.Least: "least"}.items():
+                builtins[node] = (
+                    ir.BuiltinVariadic(
+                        name=name, strict=(False,), total=None, injective=False, repeated_strict=False, repeated_total=False, skips_null=True,
+                    ),
+                    ("this", "expressions"),
+                )
+        case None:
+            pass
+        case _:
+            assert_never(meaning.greatest)
+    if meaning.subscript_strict:
+        # NULL for a NULL list, and for an index out of range or a NULL element.
+        builtins[exp.Bracket] = (ir.Builtin(name="[]", strict=(True, False), total=None, injective=False), ("this", "expressions"))
     match meaning.concat_ws:
         case "strict":
             builtins[exp.ConcatWs] = (
@@ -2388,8 +2471,51 @@ def _conjuncts(predicate: Expr) -> list[Expr]:
 
 
 def _direct_sources(select: exp.Select) -> list[Expr]:
+    """The sources of `select`'s FROM, those of a parenthesized join in place of it."""
     source = _from_source(select)
-    return ([] if source is None else [source]) + [join.this for join in select.args.get("joins") or ()]
+    return _flattened(([] if source is None else [source]) + [join.this for join in select.args.get("joins") or ()])
+
+
+def _flattened(sources: list[Expr]) -> list[Expr]:
+    flat: list[Expr] = []
+    for source in sources:
+        nested = _nested_join(source)
+        flat.extend([source] if nested is None else _flattened([nested[0], *(join.this for join in nested[1])]))
+    return flat
+
+
+def _all_joins(select: exp.Select) -> list[exp.Join]:
+    """The joins of `select`'s FROM, those inside a parenthesized join included."""
+    return [join for joins, _ in _join_levels(select) for join in joins]
+
+
+def _join_levels(select: exp.Select) -> list[tuple[list[exp.Join], list[Expr]]]:
+    """The joins of `select`'s FROM and of each parenthesized join in it, each
+    list with the sources it joins, flattened: a USING column is one of theirs."""
+    source = _from_source(select)
+    levels: list[tuple[list[exp.Join], list[Expr]]] = [(list(select.args.get("joins") or ()), _direct_sources(select))]
+    pending: list[Expr | None] = [source, *(join.this for join in select.args.get("joins") or ())]
+    while pending:
+        nested = _nested_join(pending.pop())
+        if nested is not None:
+            first, joins = nested
+            levels.append((joins, _flattened([first, *(join.this for join in joins)])))
+            pending.extend([first, *(join.this for join in joins)])
+    return levels
+
+
+def _nested_join(source: Expr | None) -> tuple[Expr, list[exp.Join]] | None:
+    """A parenthesized join, `(a JOIN b ON ...)` without an alias: its first
+    source, which SQLGlot hangs the joins on, and those joins. Its columns keep
+    the names and qualifiers of its sources. Not with an alias, which DuckDB
+    reads as a subquery renaming repeated names (`x`, `x_1`) and other dialects
+    as names that may be ambiguous."""
+    if not isinstance(source, exp.Subquery) or any(value for key, value in source.args.items() if key not in {"this", "joins"}):
+        return None
+    first = source.this
+    if not isinstance(first, exp.Table | exp.Subquery) or not first.args.get("joins"):
+        return None
+    return first, list(first.args["joins"])
 
 
 def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
@@ -2678,6 +2804,23 @@ def _matching_output(group_expression: Expr, items: list[Expr]) -> Expr | None:
     )
 
 
+def _partition_positions(partitions: Sequence[Expr], items: list[Expr]) -> list[int] | None:
+    """The position of the select item each partition key is written as, or
+    None when one is not an item, or is a bare name another item is aliased
+    to (it may read that alias instead)."""
+    positions = []
+    for partition in partitions:
+        item = _matching_output(partition, items)
+        if item is None:
+            return None
+        if isinstance(partition, exp.Column) and not partition.table and any(
+            other is not item and other.alias_or_name.lower() == partition.name.lower() for other in items
+        ):
+            return None
+        positions.append(next(index for index, other in enumerate(items) if other is item))
+    return positions
+
+
 def _same_column_alias(group_expression: Expr, items: list[Expr]) -> Expr | None:
     """The item `GROUP BY x` names when `x` is both the item's alias and the
     column it selects (`t.x AS x`): either reading of the name is that column."""
@@ -2695,6 +2838,27 @@ def _matching_grouping_output(group_expression: Expr, items: list[Expr]) -> Expr
         position = int(group_expression.this)
         return items[position - 1] if 1 <= position <= len(items) else None
     return _matching_output(group_expression, items)
+
+
+def _aggregate_argument(expression: Expr, kinds: tuple[type[exp.AggFunc], ...]) -> Expr | None:
+    """The one argument of a plain call of one of `kinds`: no DISTINCT, FILTER,
+    window, or other argument (DuckDB's `max(x, 3)` is a list)."""
+    if type(expression) not in kinds or isinstance(expression.this, (exp.Distinct, exp.Star)) or expression.this is None:
+        return None
+    if any(value for key, value in expression.args.items() if key != "this"):
+        return None
+    return expression.this
+
+
+def _picked_argument(expression: Expr) -> Expr | None:
+    """The argument of an aggregate whose value is the argument's value on
+    some row of the group: `min` and `max` (a non-null one when there is one)
+    and `any_value`, whatever its NULL treatment (DuckDB parses its own as
+    IGNORE NULLS). Not BigQuery's `any_value(x HAVING MAX y)`, opaque."""
+    if isinstance(expression, (exp.IgnoreNulls, exp.RespectNulls)):
+        expression = expression.this
+    argument = _aggregate_argument(expression, (exp.Min, exp.Max, exp.AnyValue))
+    return None if isinstance(argument, exp.HavingMax) else argument
 
 
 def _is_bare_aggregate_expression(expression: Expr) -> bool:
@@ -2753,12 +2917,53 @@ _JSON_TYPES = {exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Typ
 _COMPOSITE_TYPES = {exp.DataType.Type.ARRAY, exp.DataType.Type.LIST, exp.DataType.Type.STRUCT, exp.DataType.Type.MAP, exp.DataType.Type.NESTED}
 
 # The Builtins that compare two values, which compare composites element by element.
+# Never NULL, in every dialect: a NULL operand is a value they compare.
+_IS_DISTINCT_FROM = ir.Builtin(name="IS DISTINCT FROM", strict=(False, False), total=(False, False), injective=False)
+# Never NULL: TRUE or FALSE, whatever its subquery returns.
+_EXISTS = ir.Builtin(name="EXISTS", strict=(False,), total=(False,), injective=False)
 _ORDER_COMPARISONS = {"<>", ">", ">=", "<", "<=", "BETWEEN"}
+# Never NULL: `NULL IS TRUE` is FALSE, so never TRUE where the operand is NULL.
+_IS_TRUE = ir.Builtin(name="IS TRUE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
+_IS_FALSE = ir.Builtin(name="IS FALSE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
+
+
+@cache
+def _any_comparison(node: type[Expr]) -> ir.Builtin:
+    """`x op ANY (...)`, in every dialect: FALSE over no values, even for a
+    NULL `x`, else NULL where `x` is, so never TRUE where `x` is NULL. Not
+    `ALL`, which is TRUE over no values."""
+    name = {exp.EQ: "=", exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<="}[node]
+    return ir.Builtin(name=f"{name} ANY", strict=(False, False), total=None, injective=False, rejecting=(True, False))
 
 # Comparisons, whose operands a zoned timestamp's text may be.
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NullSafeEQ, exp.NullSafeNEQ, exp.In, exp.Like, exp.ILike, exp.Between)
 
 _EXACT_NUMERIC_TYPES = {*exp.DataType.INTEGER_TYPES, exp.DataType.Type.DECIMAL}
+
+# The largest value of each signed integer type, the same in every dialect.
+_INTEGER_MAXIMA = {
+    exp.DataType.Type.TINYINT: 2**7 - 1, exp.DataType.Type.SMALLINT: 2**15 - 1,
+    exp.DataType.Type.INT: 2**31 - 1, exp.DataType.Type.BIGINT: 2**63 - 1,
+}
+
+
+def _cast_integer_literal(expression: Expr) -> ir.LiteralValue | None:
+    """The value of `CAST('1' AS INTEGER)` or `CAST(1 AS BIGINT)`: a
+    non-negative integer, written as a number or a string with no sign,
+    leading zero or space, within a signed integer type's range. That is the
+    same integer in every dialect; a decimal (`CAST('1.5' AS INTEGER)` rounds
+    or truncates by dialect) or any other cast is not folded."""
+    if type(expression) is not exp.Cast:  # TRY_CAST and the like are not modelled
+        return None
+    to = expression.args.get("to")
+    maximum = _INTEGER_MAXIMA.get(to.this) if isinstance(to, exp.DataType) else None
+    value = literal_value(expression.this)
+    if maximum is None or value is None or value.type == "boolean" or not _PLAIN_INTEGER.fullmatch(value.text):
+        return None
+    return ir.LiteralValue(type="numeric", text=value.text) if int(value.text) <= maximum else None
+
+
+_PLAIN_INTEGER = re.compile(r"0|[1-9][0-9]{0,18}")
 
 # Nodes whose value is not a function of the columns an expression reads.
 # Builtins modelled only when the call sets no argument but their own.
@@ -2867,6 +3072,8 @@ def _join_kind(join: exp.Join, dialect: str) -> ir.JoinKind | None:
 def _join_label(join: exp.Join, dialect: str) -> str:
     keywords = " ".join(part for part in (join.side, join.kind, "JOIN") if part)
     source = join.this
+    if _nested_join(source) is not None:
+        return f"{keywords} ({', '.join(part.alias_or_name for part in _flattened([source]))})"
     if isinstance(source, exp.Subquery):
         return f"{keywords} subquery {source.alias}".rstrip()
     return f"{keywords} {source.sql(dialect=dialect)}"

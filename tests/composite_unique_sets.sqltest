@@ -101,14 +101,25 @@ FROM sessions
 /**ASSERT MANY TO ONE**/ LEFT JOIN users  --~ UNKNOWN
     ON sessions.user_id = users.id
 
--- case: null_safe_equality_does_not_cover_a_key_member_and_stays_unknown
+-- case: null_safe_equality_onto_a_non_null_key_is_many_to_one
+-- A NULL user_id matches no id, as with `=`.
 CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR);
 CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);
 
 SELECT *
 FROM sessions
-/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
     ON sessions.user_id IS NOT DISTINCT FROM users.id
+
+-- case: null_safe_equality_onto_a_nullable_unique_set_stays_unknown
+-- A NULL user_code matches every user whose code is NULL, which UNIQUE allows.
+CREATE TABLE users (id INTEGER PRIMARY KEY, code INTEGER UNIQUE);
+CREATE TABLE sessions (user_code INTEGER, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
+    ON sessions.user_code IS NOT DISTINCT FROM users.code
 
 -- case: an_or_predicate_does_not_cover_a_key_member_and_stays_unknown
 CREATE TABLE users (id INTEGER PRIMARY KEY, other_id INTEGER, name VARCHAR);
