@@ -35,13 +35,16 @@ is through a join that is not proved to be a Unique Join; a Chasm Trap through
 a One To Many (or Many To One) Join whose argument is on the side with one row
 per key.
 
-**Lossy Comparison**:
-An equality of an integer or decimal column with a DOUBLE or REAL column
-that cannot hold all its values (a Hazard): the dialect converts the exact
-side to the float, which rounds (a BIGINT above 2^53), so one float value
-matches several exact ones. Reported only when both declared types are
-known; an INTEGER against a DOUBLE is exact, so it is none.
-_Avoid_: Float comparison, precision loss, implicit cast (that Hazard is text)
+**Float Equality**:
+An equality comparison (`=`, `<>`, `IS [NOT] DISTINCT FROM`, an IN list or
+subquery) with an operand of a known floating type, REAL, FLOAT or DOUBLE
+in any spelling (a Hazard): floats round, so comparing one for exact
+equality is wrong, against another float, an integer, a decimal or a
+literal (`x = 0.1`). Which values a float holds exactly, and how each
+dialect converts the other side, are no rule to rely on. An ordering
+(`<`, `>`) is none, and so is an operand whose type is unknown.
+_Avoid_: Lossy comparison, float comparison (an ordering is fine), precision
+loss, rounding comparison, implicit cast (that Hazard is text)
 
 **Exactly One Join Assertion**:
 An assertion that every row of a join's left-hand input matches exactly one
@@ -289,9 +292,8 @@ A place whose result the SQL leaves unspecified or likely wrong, with the
 failed Proof that would have pinned it: a Fan Trap or Chasm Trap, an unmarked
 join that may be many to many, a `LIMIT`
 that picks arbitrary rows among ties, a scalar subquery that may return more
-than one row, a join equality that casts, a comparison that rounds an
-integer or decimal to a float (a Lossy Comparison), a query that never
-returns a row.
+than one row, a join equality that casts, an exact equality of a float
+(a Float Equality), a query that never returns a row.
 The SQL may be what its author meant. `suggest` lists Hazards last; the
 suggestion's type (`SuggestType`) is rewrite, rewrite with caveat, marker or
 hazard.

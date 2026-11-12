@@ -17,14 +17,14 @@ the proof that would have pinned it, which failed:
 - A join equality between text and another declared type: the text is cast,
   so different strings may match one value (`'01'` and `'1'` both equal 1),
   and no cardinality is proved across it. Write the cast explicitly.
-- An equality (`=`, `IS NOT DISTINCT FROM`) of two columns, one an integer
-  or decimal and the other a DOUBLE or REAL that cannot hold all its values
-  (a BIGINT against a DOUBLE, an INTEGER against a REAL, a DECIMAL of more
-  than 15 digits against a DOUBLE): the exact side is converted to the float
-  and rounded, so one float value matches several exact ones. In a join's
-  ON, a WHERE or HAVING, and the correlation of an IN or EXISTS subquery
-  (its semi or anti join). Only when both declared types are known, and not
-  in a dialect that compares the two exactly (`exact_float_comparison`).
+- A Float Equality: an equality (`=`, `<>`, `IS [NOT] DISTINCT FROM`, an
+  IN list or subquery) with an operand of a known floating type (REAL,
+  FLOAT, DOUBLE in any spelling), against another float, an integer, a
+  decimal or a literal. Floats round, so exact equality is wrong; which
+  values a float holds exactly is no rule to rely on. In a join's ON, a
+  WHERE or HAVING, and the correlation of an IN or EXISTS subquery (its
+  semi or anti join). Silent for an ordering (`<`, `>`) and an operand
+  whose type is unknown: a literal's type is the dialect's, never guessed.
 - A scalar subquery not proved to return at most one row (issue 38): more
   than one is a runtime error. Uncorrelated, its body must have at most one
   row; correlated, the columns its WHERE binds must reach its Row Identity.
@@ -52,7 +52,6 @@ from sqlglot import exp
 
 from sqlassert.diagnostics import quoted, quoted_all
 from sqlassert import ir
-from sqlassert.dialects import semantics
 from sqlassert.ir.convert import HIDDEN_GROUPING
 from sqlassert.rewrites import SuggestType, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
@@ -71,7 +70,7 @@ class Concern(Enum):
     CHASM_TRAP = "Chasm trap"
     SCALAR_SUBQUERY = "Scalar subquery"
     IMPLICIT_CAST = "Implicit cast"
-    LOSSY_COMPARISON = "Lossy comparison"
+    FLOAT_EQUALITY = "Float equality"
     ALWAYS_EMPTY = "Always empty"
     MANY_TO_MANY = "Many-to-many join"
     UNSELECTED_GROUPING = "Grouping key not selected"
@@ -94,7 +93,7 @@ def hazards(
 ) -> list[Hazard]:
     """Every Hazard in `program` at a site `wanted` accepts, in source order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
-    compared: set[ir.ScalarExpr] = set()  # Conjuncts already checked for a lossy comparison.
+    compared: set[ir.ScalarExpr] = set()  # Comparisons already checked for a float equality.
     reachable = set(program.nodes())
     found: list[Hazard] = []
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
@@ -108,7 +107,7 @@ def hazards(
             found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
         if isinstance(relation, ir.Join) and relation in reachable and not site.trailing:
             found.extend(_implicit_casts(site, relation))
-            found.extend(_lossy_comparisons(site, relation.conjuncts, compared, dialect))
+            found.extend(_float_equalities(site, relation.conjuncts, compared, dialect))
             if isinstance(node, exp.Join) and assertion_span(node) is None and relation not in deduplicated:
                 found.extend(_many_to_many(site, relation))
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
@@ -119,7 +118,7 @@ def hazards(
                 found.extend(_unselected_grouping(site, grouped))
         if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
-            found.extend(_lossy_comparisons(site, _filter_conjuncts(aggregate), compared, dialect))
+            found.extend(_float_equalities(site, _filter_conjuncts(aggregate), compared, dialect))
     for site, operation in program.set_operations:
         if operation in reachable and wanted(site) and operation.operator == "except":
             found.extend(_empty_except(site, operation, arena))
@@ -322,71 +321,55 @@ def _filter_conjuncts(relation: ir.RelationExpr) -> list[ir.ScalarExpr]:
                 return found
 
 
-# Bits of a float's significand, and the decimal digits it holds exactly.
-_FLOAT_PRECISION = {exp.DataType.Type.DOUBLE: (53, 15), exp.DataType.Type.FLOAT: (24, 6)}
+_FLOATS = {exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE, exp.DataType.Type.UDOUBLE}
 
-# Bits an integer type's magnitude needs.
-_INTEGER_BITS = {
-    exp.DataType.Type.TINYINT: 7, exp.DataType.Type.UTINYINT: 8,
-    exp.DataType.Type.SMALLINT: 15, exp.DataType.Type.USMALLINT: 16,
-    exp.DataType.Type.MEDIUMINT: 23, exp.DataType.Type.UMEDIUMINT: 24,
-    exp.DataType.Type.INT: 31, exp.DataType.Type.UINT: 32,
-    exp.DataType.Type.BIGINT: 63, exp.DataType.Type.UBIGINT: 64,
-    exp.DataType.Type.INT128: 127, exp.DataType.Type.UINT128: 128,
-    exp.DataType.Type.INT256: 255, exp.DataType.Type.UINT256: 256,
-}
+# Call names that compare for equality, as their operands' values.
+_EQUALITY_CALLS = {"<>", "IS DISTINCT FROM"}
 
 
-def _lossy_comparisons(
+def _float_equalities(
     site: AttachmentSite, conjuncts: Iterable[ir.ScalarExpr], compared: set[ir.ScalarExpr], dialect: str,
 ) -> list[Hazard]:
-    """Each equality of an integer or decimal column with a float column
-    that cannot hold all its values: the dialect converts the exact side to
-    the float, so values the float rounds alike all match one float value."""
-    if semantics(dialect).exact_float_comparison:
-        return []
+    """Each equality in `conjuncts`, at any depth (`x = 1 OR y = 2` is two),
+    with an operand column of a known floating type."""
     found = []
-    for conjunct in conjuncts:
-        if conjunct in compared:
+    pending = list(conjuncts)
+    while pending:
+        node = pending.pop(0)
+        if node in compared:
             continue
-        compared.add(conjunct)
-        match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)) | ir.NullSafeEquality(
-                left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)
-            ):
-                pass
+        compared.add(node)
+        match node:
+            case ir.Equality(left=left, right=right) | ir.NullSafeEquality(left=left, right=right):
+                operands: tuple[ir.ScalarExpr, ...] = (left, right)
+            case ir.Call(function=function, arguments=(left, right)) if function.name in _EQUALITY_CALLS:
+                operands = (left, right)
+            case ir.InList(operand=operand, values=values):
+                operands = (operand, *values)
             case _:
+                pending.extend(child for child in ir.children(node) if isinstance(child, ir.ScalarExpr))
                 continue
-        for exact, inexact in ((first, second), (second, first)):
-            types = _comparison_type(exact).value, _comparison_type(inexact).value
-            if types[0] is None or types[1] is None:
-                break  # Unknown: never guessed.
-            rounding = _rounding(exp.DataType.build(types[0], dialect=dialect), exp.DataType.build(types[1], dialect=dialect))
-            if rounding is None:
-                continue
-            message = (
-                f"{conjunct.origin.detail} compares {types[0]} with {types[1]}, which {rounding}, "
-                f"so one {quoted(inexact.name)} can match several {quoted(exact.name)}: compare in one type"
-            )
-            evidence = Result(False, f"The comparison converts {types[0]} to {types[1]}, which {rounding}", (conjunct,))
-            found.append(Hazard(site, Concern.LOSSY_COMPARISON, message, evidence))
-            break
+        floats = [(operand.column, kind) for operand in operands if isinstance(operand, ir.ColumnRef) and (kind := _float_type(operand.column, dialect)) is not None]
+        if not floats:
+            continue
+        written = node.origin.detail
+        for operand in operands:
+            if isinstance(operand, ir.ColumnRef) and operand.origin.detail.startswith("__having."):
+                written = written.replace(operand.origin.detail, operand.column.name)  # HAVING reads the grouped columns.
+        message = f"{written} compares a floating-point value for exact equality; compare within a tolerance or use an exact type"
+        column, kind = floats[0]
+        evidence = Result(False, f"{quoted(column.name)} is {kind}, a floating-point type, compared for exact equality", (node,))
+        found.append(Hazard(site, Concern.FLOAT_EQUALITY, message, evidence))
     return found
 
 
-def _rounding(exact: exp.DataType, inexact: exp.DataType) -> str | None:
-    """How converting `exact` values to the float type `inexact` rounds some
-    of them alike, or None when it holds them all (or either is no such type,
-    or a DECIMAL's precision is not written)."""
-    if inexact.this not in _FLOAT_PRECISION:
+def _float_type(column: ir.OutputColumn, dialect: str) -> str | None:
+    """`column`'s declared floating type, or None when its type is not a
+    float or not known."""
+    declared = _comparison_type(column).value
+    if declared is None or exp.DataType.build(declared, dialect=dialect).this not in _FLOATS:
         return None
-    bits, digits = _FLOAT_PRECISION[inexact.this]
-    if exact.this in _INTEGER_BITS:
-        return f"rounds above 2^{bits}" if _INTEGER_BITS[exact.this] > bits else None
-    if exact.this is exp.DataType.Type.DECIMAL and exact.expressions:
-        precision = exact.expressions[0].name
-        return f"rounds past {digits} significant digits" if precision.isdigit() and int(precision) > digits else None
-    return None
+    return declared
 
 
 def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Hazard]:

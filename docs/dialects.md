@@ -50,7 +50,6 @@ before dialects were listed; see "Not done").
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | `EXCEPT ALL`, `INTERSECT ALL` (`set_operations_all`) | yes | yes | yes (8.0.31) | no | no | yes | no | yes |
-| integer or decimal compared with a float exactly (`exact_float_comparison`) | no | no | no | no | no | no | no | no |
 
 Also: SQLite foreign keys are unenforced (`PRAGMA foreign_keys` is off by
 default) and its primary keys may be NULL (only an `INTEGER PRIMARY KEY` may
@@ -69,11 +68,6 @@ arguments (`trim(x, chars)`, `floor(x, 2)`) is not modelled.
 (`suggest`): a wrong value suggests SQL the engine rejects, never a wrong
 proof, so it is no fact and is not certified. It is off for SQLite, Oracle
 (before 21c), ClickHouse and Hive, and any dialect not listed.
-`exact_float_comparison` only gates the lossy-comparison hazard (`suggest`):
-a BIGINT compared with a DOUBLE is converted to DOUBLE, which rounds above
-2^53, in every dialect above, but SQLite and ClickHouse compare the two
-exactly, so it is on for them alone. Like `set_operations_all`, it is no
-fact and is not certified.
 A CAST from JSON (or a VARIANT) may be NULL in every dialect: JSON `null` is
 a value, and `CAST(JSON 'null' AS BIGINT)` is NULL (DuckDB, Trino, Snowflake's
 `PARSE_JSON('null')::INT`). So a CAST is never taken to be non-null when its
