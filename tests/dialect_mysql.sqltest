@@ -7,7 +7,9 @@
 -- default sql_mode has no PIPES_AS_CONCAT (ADR 0006). A
 -- comparison of non-null operands is non-null; arithmetic is not modelled as
 -- checked (`-x` of the least BIGINT is an exact DECIMAL), and division by zero
--- is NULL in any mode. An ENUM column
+-- is NULL in any mode. A sum or avg of non-null values is non-null: an
+-- integer sum is an exact DECIMAL, and a DOUBLE holds no infinity or NaN.
+-- greatest() and least() are NULL when any argument is. An ENUM column
 -- holds only its members, which lose trailing spaces. MySQL 8.4 ignores a
 -- column-level REFERENCES, and only InnoDB (and NDB) enforces foreign keys:
 -- a table must name its ENGINE for them to be Knowledge.
@@ -87,3 +89,12 @@ SELECT id FROM t /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
 -- case: a_loose_group_by_keeps_one_row_per_group
 -- Without ONLY_FULL_GROUP_BY, `s` is some row's value.
 SELECT n, s FROM t GROUP BY n /**ASSERT UNIQUE(n)**/  --~ PROVED
+
+-- case: a_sum_of_non_null_values_is_non_null
+SELECT n, sum(n) AS s, avg(n) AS a FROM t GROUP BY n /**ASSERT NOT NULL(s, a)**/  --~ PROVED
+
+-- case: greatest_rejects_a_null_argument
+SELECT m FROM t WHERE greatest(m, 1) > 0 AND least(m, n) < 9 /**ASSERT NOT NULL(m)**/  --~ PROVED
+
+-- case: greatest_of_non_null_arguments_is_not_modelled_as_non_null
+SELECT greatest(n, 1) AS g FROM t /**ASSERT NOT NULL(g)**/  --~ UNKNOWN

@@ -26,6 +26,8 @@ to strengthen by hand when that engine is the latest release.
         --connect 'host=127.0.0.1 port=55432 user=postgres password=probe'
     python scripts/certify_dialects.py mysql --driver pymysql \\
         --connect '{"host": "127.0.0.1", "port": 53306, "user": "root", "password": "probe", "database": "probe"}'
+    python scripts/certify_dialects.py spark --driver pyhive.hive --only 'checked_sum,strict([])' \\
+        --connect '{"host": "127.0.0.1", "port": 50000, "auth": "NOSASL", "username": "probe"}'
     python scripts/certify_dialects.py snowflake --list   # the probes, no connection
 
 `docs/dialects.md` ("Certifying facts") has the docker setup.
@@ -124,7 +126,7 @@ def candidate_facts(dialect: str) -> tuple[Fact, ...]:
     """The facts the strong reading of each weak flag would add: probed only to report."""
     meaning = semantics(dialect)
     strong = replace(
-        meaning, checked_arithmetic=True, checked_division=True, casts_raise=True, text_is_binary=True, unscaled_decimal=False,
+        meaning, checked_arithmetic=True, checked_division=True, checked_sum=True, casts_raise=True, text_is_binary=True, unscaled_decimal=False,
         zoned_timestamp_is_instant=True,
     )
     claimed = {fact.name for fact in facts(dialect, meaning)}
@@ -271,7 +273,8 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
         strict_positions = [i for i, flag in enumerate(strict) if flag]
         if strict_positions:
             checks = tuple(check for i in strict_positions for check in probe(null_at(ordinary, [i]), "true"))
-            yield Fact(f"strict({label})", f"make {label} non-strict in ir/convert.dialect_builtins", checks)
+            weaken = "greatest=None" if label in ("greatest", "least") else f"make {label} non-strict in ir/convert.dialect_builtins"
+            yield Fact(f"strict({label})", weaken, checks)
         if total is not None:
             free = [i for i, flag in enumerate(total) if not flag]
             cases = [ordinary, *(case + ordinary[len(case):] for case in (*shape.overflow, *shape.bad))]
@@ -396,7 +399,40 @@ def _not_null_key_check(dialect: str, columns: str, attempts: tuple[str, ...]) -
     )
 
 
+# A DOUBLE infinity and NaN, as SQL that SQLGlot writes in the dialect; None
+# where a DOUBLE cannot hold one: MySQL has neither, SQLite's NaN is NULL
+# (and `CAST('Infinity' AS DOUBLE)` is 0 in both).
+_INFINITY: dict[str, str | None] = {"sqlite": "9e999", "mysql": None}
+_NAN: dict[str, str | None] = {"sqlite": None, "mysql": None}
+
+
+def _sum_checks(dialect: str) -> Iterable[Check]:
+    """`sum` and `avg` of non-null values that overflow (BIGINT, DOUBLE) or
+    meet infinities and NaN raise an overflow error or return a non-null
+    value: a widened type, the overflowed sum, an infinity, NaN. A NULL fails."""
+    infinity = _INFINITY.get(dialect, "CAST('Infinity' AS DOUBLE)")
+    nan = _NAN.get(dialect, "CAST('NaN' AS DOUBLE)")
+    summed = (
+        ("CAST('9223372036854775807' AS BIGINT)",) * 2,
+        ("CAST('1e308' AS DOUBLE)",) * 2,
+        (infinity, f"-{infinity}") if infinity else f"{dialect} has no DOUBLE infinity",
+        (nan, "CAST('1' AS DOUBLE)") if nan else f"{dialect} has no DOUBLE NaN",
+    )
+    for function in ("sum", "avg"):
+        for values in summed:
+            if isinstance(values, str):
+                yield Check("", "error or true", problem=values)
+                continue
+            rows = " UNION ALL ".join(f"SELECT {value} AS x" for value in values)
+            yield Check(
+                _query(f"SELECT CASE WHEN {function}(x) IS NULL THEN 0 ELSE 1 END FROM ({rows}) AS t", dialect), "error or true",
+                guard=(_query(f"SELECT {values[0]}", dialect),), accepted_error=_OVERFLOW_ERROR,
+            )
+
+
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
+    if meaning.checked_sum:
+        yield Fact("checked_sum", "checked_sum=False", tuple(_sum_checks(dialect)))
     if meaning.text_is_binary:
         yield Fact("text_is_binary", "text_is_binary=False", (_identity_check(dialect, "VARCHAR(10)"),))
     if not meaning.unscaled_decimal:
@@ -571,15 +607,17 @@ def write_provenance(provenance: dict[str, dict[str, dict[str, Any]]], path: Pat
     path.write_text("\n".join(lines) + "\n")
 
 
-def record(provenance: dict[str, dict[str, dict[str, Any]]], dialect: str, version: str, results: Sequence[Result]) -> list[str]:
+def record(
+    provenance: dict[str, dict[str, dict[str, Any]]], dialect: str, version: str, results: Sequence[Result], *, every_fact: bool = True,
+) -> list[str]:
     """File `version` under each passing fact's `engine` versions and each
     vacuous fact's `undefined` ones (replacing a doc provenance), and remove it
-    from each failing fact's; drop facts the dialect no longer has. An ERROR
-    changes nothing. Returns what changed."""
+    from each failing fact's; when the results cover `every_fact`, drop facts
+    the dialect no longer has. An ERROR changes nothing. Returns what changed."""
     entries = provenance.setdefault(dialect, {})
     changes: list[str] = []
     current = {result.fact.name for result in results}
-    for name in sorted(set(entries) - current):
+    for name in sorted(set(entries) - current if every_fact else ()):
         del entries[name]
         changes.append(f"dropped {name}: no longer a fact")
     for result in results:
@@ -636,9 +674,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--connect", help="its connect() argument, or a JSON object of keyword arguments")
     parser.add_argument("--dry-run", action="store_true", help="probe, but record nothing")
     parser.add_argument("--list", action="store_true", help="print each fact and its probe; connect to nothing")
+    parser.add_argument("--only", help="comma-separated fact names: probe and record those alone (the others keep their provenance)")
     options = parser.parse_args(argv)
     dialect = options.dialect
     probed = facts(dialect)
+    if options.only:
+        only = set(options.only.split(","))
+        if unknown := only - {fact.name for fact in probed}:
+            raise SystemExit(f"{dialect} has no fact {', '.join(sorted(unknown))}")
+        probed = tuple(fact for fact in probed if fact.name in only)
     if options.list:
         for fact in probed:
             print(f"{fact.name}  (fails: {fact.weaken})")
@@ -655,13 +699,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     for result in results:
         hint = f"  -> set {result.fact.weaken}" if result.outcome == "FAIL" else ""
         print(f"{result.outcome:7} {result.fact.name}{hint}{'  ' + result.detail if result.detail else ''}")
-    for result in run(cursor, dialect, candidate_facts(dialect)):
+    for result in () if options.only else run(cursor, dialect, candidate_facts(dialect)):
         if result.outcome == "PASS":
             print(f"STRONGER {result.fact.name}: holds on {version} too (not claimed: strengthen it by hand if {version} is the latest release)")
     failed = [result for result in results if result.outcome in ("FAIL", "ERROR")]
     if not options.dry_run:
         provenance = load_provenance()
-        changes = record(provenance, dialect, version, results)
+        changes = record(provenance, dialect, version, results, every_fact=not options.only)
         write_provenance(provenance)
         print(*(f"recorded: {change}" for change in changes), sep="\n")
     print(f"{len(results) - len(failed)} of {len(results)} facts hold on {version}")

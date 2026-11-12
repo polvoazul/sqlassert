@@ -1,5 +1,6 @@
 {
   "bigquery": {
+    "checked_sum": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/aggregate_functions", "read": "read 2026-11-12"},
     "empty_string_is_null=False": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/operators", "read": "read 2026-11-08"},
     "enum_members_only": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types", "read": "cited 2026-11-08, not fetched"},
     "injective(+)": {"doc": "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/operators", "read": "read 2026-11-08"},
@@ -207,6 +208,7 @@
     "zoned_timestamp_is_instant": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/data-types/timestamp-type", "read": "read 2026-11-08"}
   },
   "duckdb": {
+    "checked_sum": {"engine": ["duckdb 2.0.0"]},
     "empty_string_is_null=False": {"engine": ["duckdb 2.0.0"]},
     "enum_members_only": {"engine": ["duckdb 2.0.0"]},
     "foreign_keys=enforced": {"engine": ["duckdb 2.0.0"]},
@@ -215,8 +217,8 @@
     "injective(unary -)": {"engine": ["duckdb 2.0.0"]},
     "inline_references": {"engine": ["duckdb 2.0.0"]},
     "primary_key_not_null": {"engine": ["duckdb 2.0.0"]},
-    "skips_null(greatest)": {"engine": ["duckdb 1.5.2"]},
-    "skips_null(least)": {"engine": ["duckdb 1.5.2"]},
+    "skips_null(greatest)": {"engine": ["duckdb 1.5.2", "duckdb 2.0.0"]},
+    "skips_null(least)": {"engine": ["duckdb 1.5.2", "duckdb 2.0.0"]},
     "strict(%)": {"engine": ["duckdb 2.0.0"]},
     "strict(&)": {"engine": ["duckdb 2.0.0"]},
     "strict(*)": {"engine": ["duckdb 2.0.0"]},
@@ -236,7 +238,7 @@
     "strict(ILIKE)": {"engine": ["duckdb 2.0.0"]},
     "strict(LIKE)": {"engine": ["duckdb 2.0.0"]},
     "strict(NOT)": {"engine": ["duckdb 2.0.0"]},
-    "strict([])": {"engine": ["duckdb 1.5.2"]},
+    "strict([])": {"engine": ["duckdb 1.5.2", "duckdb 2.0.0"]},
     "strict(^)": {"engine": ["duckdb 2.0.0"]},
     "strict(abs)": {"engine": ["duckdb 2.0.0"]},
     "strict(ceil)": {"engine": ["duckdb 2.0.0"]},
@@ -331,6 +333,7 @@
     "unscaled_decimal=False": {"doc": "https://cwiki.apache.org/confluence/display/Hive/LanguageManual+Types", "read": "cited 2026-11-08, not fetched"}
   },
   "mysql": {
+    "checked_sum": {"engine": ["mysql 8.4.13"]},
     "empty_string_is_null=False": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
     "enum_members_only": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
     "foreign_key_engines:innodb": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
@@ -363,6 +366,8 @@
     "strict(concat)": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
     "strict(concat_ws)": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
     "strict(floor)": {"engine": ["mysql 8.4.13"]},
+    "strict(greatest)": {"engine": ["mysql 8.4.13"]},
+    "strict(least)": {"engine": ["mysql 8.4.13"]},
     "strict(length)": {"engine": ["mysql 8.4.13"]},
     "strict(lower)": {"engine": ["mysql 8.4.13"]},
     "strict(nullif)": {"engine": ["mysql 8.4.13"]},
@@ -455,6 +460,7 @@
     "unscaled_decimal=False": {"doc": "https://docs.oracle.com/en/database/oracle/oracle-database/26/sqlrf/Data-Types.html", "read": "Oracle AI Database 26, cited 2026-11-08, not fetched"}
   },
   "postgres": {
+    "checked_sum": {"engine": ["postgres 18.6"]},
     "empty_string_is_null=False": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
     "enum_members_only": {"undefined": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
     "foreign_keys=enforced": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
@@ -672,11 +678,14 @@
     "unscaled_decimal=False": {"doc": "https://docs.snowflake.com/en/sql-reference/intro-summary-data-types", "read": "cited 2026-11-08, not fetched"}
   },
   "spark": {
+    "checked_sum": {"engine": ["spark 4.3.0"]},
     "empty_string_is_null=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "enum_members_only": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"},
     "injective(+)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html", "read": "Spark 4.3.0, ANSI mode (default since 4.0)"},
     "injective(-)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html", "read": "Spark 4.3.0, ANSI mode (default since 4.0)"},
     "injective(unary -)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html", "read": "Spark 4.3.0, ANSI mode (default since 4.0)"},
+    "skips_null(greatest)": {"engine": ["spark 4.3.0"]},
+    "skips_null(least)": {"engine": ["spark 4.3.0"]},
     "strict(%)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(&)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(*)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
@@ -696,6 +705,7 @@
     "strict(ILIKE)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(LIKE)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(NOT)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
+    "strict([])": {"engine": ["spark 4.3.0"]},
     "strict(^)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(abs)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-functions-builtin.html", "read": "cited 2026-11-11, not fetched"},
     "strict(ceil)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-functions-builtin.html", "read": "cited 2026-11-11, not fetched"},
@@ -790,6 +800,7 @@
     "unscaled_decimal=False": {"engine": ["sqlite 3.50.4"]}
   },
   "trino": {
+    "checked_sum": {"engine": ["trino 484"]},
     "empty_string_is_null=False": {"engine": ["trino 484"]},
     "enum_members_only": {"undefined": ["trino 484"]},
     "injective(+)": {"engine": ["trino 484"]},
@@ -814,11 +825,14 @@
     "strict(ILIKE)": {"undefined": ["trino 484"]},
     "strict(LIKE)": {"engine": ["trino 484"]},
     "strict(NOT)": {"engine": ["trino 484"]},
+    "strict([])": {"engine": ["trino 484"]},
     "strict(^)": {"engine": ["trino 484"]},
     "strict(abs)": {"engine": ["trino 484"]},
     "strict(ceil)": {"engine": ["trino 484"]},
     "strict(concat)": {"engine": ["trino 484"]},
     "strict(floor)": {"engine": ["trino 484"]},
+    "strict(greatest)": {"engine": ["trino 484"]},
+    "strict(least)": {"engine": ["trino 484"]},
     "strict(length)": {"engine": ["trino 484"]},
     "strict(lower)": {"engine": ["trino 484"]},
     "strict(nullif)": {"engine": ["trino 484"]},

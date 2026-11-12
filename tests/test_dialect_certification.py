@@ -21,6 +21,9 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "certify_dialects.
 LOCAL_ENGINES = {"duckdb", "sqlite", "postgres", "mysql", "clickhouse", "trino"}
 # Facts of a local engine that no local engine can run: MySQL Cluster's NDB.
 DOCUMENTED_ONLY = {("mysql", "foreign_key_engines:ndb"), ("mysql", "foreign_key_engines:ndbcluster")}
+# Facts of a documented dialect certified on an engine: Spark 4.3 runs locally,
+# but only these were probed there.
+ENGINE_CERTIFIED = {("spark", name) for name in ("checked_sum", "skips_null(greatest)", "skips_null(least)", "strict([])")}
 
 
 def _script() -> ModuleType:
@@ -48,7 +51,7 @@ def test_every_fact_has_a_provenance(dialect: str):
         else:
             assert entry.keys() == {"doc", "read"} and entry["doc"].startswith("https://"), name
         local = dialect in LOCAL_ENGINES and (dialect, name) not in DOCUMENTED_ONLY
-        assert probed == local, name
+        assert probed == (local or (dialect, name) in ENGINE_CERTIFIED), name
 
 
 @pytest.mark.parametrize(("dialect", "connect"), [("duckdb", lambda: duckdb.connect()), ("sqlite", lambda: sqlite3.connect(":memory:"))])
@@ -127,3 +130,21 @@ def test_a_returned_value_passes_only_when_exact():
     assert certify._check(cursor, certify.Check("SELECT 1", "error or true"))[0] == "PASS"
     assert certify._check(cursor, certify.Check("SELECT 0", "error or true", accepted_error=".*"))[0] == "FAIL"
     assert certify._check(cursor, certify.Check("SELECT NULL", "error or true", accepted_error=".*"))[0] == "FAIL"
+
+
+def test_recording_some_facts_keeps_the_others():
+    fact = certify.Fact("strict([])", "", ())
+    provenance = {"spark": {"strict(+)": {"doc": "https://spark.apache.org/x", "read": "4.3"}}}
+
+    certify.record(provenance, "spark", "spark 4.3.0", [certify.Result(fact, "PASS")], every_fact=False)
+
+    assert provenance == {"spark": {"strict(+)": {"doc": "https://spark.apache.org/x", "read": "4.3"}, "strict([])": {"engine": ["spark 4.3.0"]}}}
+
+
+def test_sqlite_sum_of_infinities_is_null_so_checked_sum_fails():
+    strong = certify.replace(certify.semantics("sqlite"), checked_sum=True)
+    fact, = (fact for fact in certify.facts("sqlite", strong) if fact.name == "checked_sum")
+
+    result, = certify.run(sqlite3.connect(":memory:").cursor(), "sqlite", [fact])
+
+    assert result.outcome == "FAIL"

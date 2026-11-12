@@ -3,6 +3,8 @@
 -- Arithmetic, CAST and division raise rather than return NULL, and Trino
 -- never casts implicitly between text and numbers. `||` and `concat()` are
 -- NULL when an operand is, arrays included; `concat_ws()` is not modelled.
+-- `greatest()` and `least()` are NULL when any argument is, and `xs[i]` when
+-- `xs` is. A sum or avg of non-null values is non-null (overflow raises).
 -- VARCHAR compares by code point: Trino has no collations. A TIMESTAMP WITH
 -- TIME ZONE keeps its zone, so equal instants differ as text. Trino has no key
 -- constraints (its CREATE TABLE rejects them), so a key written in Trino SQL
@@ -136,3 +138,13 @@ SELECT x FROM a /**ASSERT NOT NULL ELEMENTS(x)**/  --~ UNKNOWN
 SELECT CAST(r AS ARRAY(VARCHAR)) <> CAST(s AS ARRAY(VARCHAR)) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 --~ composite-comparison "compares CAST(r AS ARRAY(VARCHAR))"
 --~ composite-comparison "compares CAST(s AS ARRAY(VARCHAR))"
+
+-- case: a_sum_of_non_null_values_is_non_null
+SELECT n, sum(n) AS s, avg(n) AS a FROM t GROUP BY n /**ASSERT NOT NULL(s, a)**/  --~ PROVED
+
+-- case: greatest_rejects_a_null_argument
+SELECT m FROM t WHERE greatest(m, 1) > 0 AND least(m, n) < 9 /**ASSERT NOT NULL(m)**/  --~ PROVED
+
+-- case: a_subscript_is_null_for_a_null_array
+CREATE TABLE a (id INTEGER NOT NULL, xs ARRAY(INTEGER));
+SELECT id, xs FROM a WHERE xs[1] = 5 /**ASSERT NOT NULL(xs)**/  --~ PROVED

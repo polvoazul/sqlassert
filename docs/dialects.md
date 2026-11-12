@@ -35,14 +35,15 @@ before dialects were listed; see "Not done").
 |---|---|---|---|---|---|---|---|---|
 | `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | yes (ANSI mode) | yes | yes |
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | Databricks yes; Spark no (its docs: `div` by zero is NULL) | yes | yes |
+| `sum`, `avg` of non-null values never NULL (`checked_sum`) | yes | yes | yes (an integer sum is an exact DECIMAL; no infinity or NaN) | no (not documented) | yes | Spark yes; Databricks no (NaN not documented) | no (not documented) | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | Databricks yes; Spark no (not documented) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | OR | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
-| `greatest()`, `least()` | skip NULL | skip NULL | not modelled | not modelled | not modelled | not modelled | not modelled | not modelled |
-| `xs[i]` NULL for a NULL `xs` (`subscript_strict`) | yes | yes | no (not modelled) | no | no | no | no | no |
+| `greatest()`, `least()` | skip NULL | skip NULL | strict | not modelled | not modelled | Spark skip NULL; Databricks not modelled | not modelled | strict |
+| `xs[i]` NULL for a NULL `xs` (`subscript_strict`) | yes | yes | no (no subscripts) | no | no | Spark yes; Databricks no | no | yes |
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | `EXCEPT ALL`, `INTERSECT ALL` (`set_operations_all`) | yes | yes | yes (8.0.31) | no | no | yes | no | yes |
@@ -80,16 +81,27 @@ An operand is composite when declared or cast so, or built by `ARRAY[...]`,
 types may be composite.
 `NOT NULL ELEMENTS` declares its elements non-null, and a comparison of a
 composite column or CAST without one warns (`composite-comparison`).
-`greatest()` and `least()` skip NULLs in DuckDB and PostgreSQL: NULL only
-when every argument is, so non-null when any argument is (`skips_null`).
-Elsewhere they are not modelled: MySQL's, Snowflake's and BigQuery's are
-documented NULL for any NULL argument, Spark's skip NULLs, and none of those
-is certified on an engine yet. A subscript (`xs[i]`, a list, array, map or
-struct element) is strict in its container in DuckDB and PostgreSQL, and may
-be NULL for a non-null one (an index out of range, a NULL element); it is
-not modelled elsewhere (ClickHouse returns a default value out of range, and
-its arrays are never NULL). Both facts are certified on DuckDB and
-PostgreSQL.
+`greatest()` and `least()` skip NULLs in DuckDB, PostgreSQL and Spark: NULL only
+when every argument is, so non-null when any argument is (`skips_null`). In
+MySQL and Trino they are strict: NULL when any argument is (`greatest =
+"strict"`); they may be NULL for non-null arguments there too, which is not
+modelled. Elsewhere they are not modelled: Snowflake's and BigQuery's are
+documented NULL for any NULL argument, and neither is certified on an engine
+yet; Databricks is Spark, but only Apache Spark is certified. A subscript
+(`xs[i]`, a list, array, map or struct element) is strict in its container
+in DuckDB, PostgreSQL, Trino and Spark,
+and may be NULL for a non-null one (an index out of range, a NULL element;
+Trino raises out of range); MySQL has no subscript, and it is not modelled
+elsewhere (ClickHouse returns a default value out of range, and its arrays
+are never NULL). Both facts are certified on each engine they are claimed for.
+
+`sum()` and `avg()` of non-null values are non-null (`Accumulation`) only
+where `checked_sum` holds: an overflow raises or widens the type rather than
+returning NULL, and NaN or an infinity is a value. DuckDB, PostgreSQL, MySQL
+Trino and Spark are certified; BigQuery's docs say so. SQLite's sum of `9e999` and
+`-9e999` is NULL (its NaN is NULL), so it is off there; Snowflake's and
+Redshift's docs do not say, and Databricks's do not mention NaN.
+MySQL's DOUBLE sum that overflows returns 0, not an error: wrong, but not NULL.
 `concat_ws()` is modelled only where it is listed: a NULL separator makes it
 NULL everywhere, but whether a NULL value is skipped differs.
 
@@ -263,12 +275,15 @@ version or date}` otherwise. A weak setting (unchecked arithmetic, text not
 compared by identity, unenforced keys) claims nothing and has none.
 `tests/test_dialect_certification.py` checks that every fact has one, that
 every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse, Trino)
-is certified on an engine, and reruns the DuckDB and SQLite probes.
+is certified on an engine, which Spark facts are (the rest of Spark's are
+`doc`), and reruns the DuckDB and SQLite probes.
 
 `scripts/certify_dialects.py` (not part of the package) generates one probe
 per fact from the fact itself: the Builtin called with a typed NULL (strict),
 with overflowing, zero-dividing and badly cast arguments (total, injective),
-with every argument NULL but one (skips_null),
+with every argument NULL but one (skips_null), `sum` and `avg` of
+overflowing BIGINTs and DOUBLEs, infinities and NaN (`checked_sum`; vacuous
+where a DOUBLE holds no infinity or NaN),
 or tables whose constraint violations it attempts (keys, text identity, ENUMs).
 SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is
@@ -281,7 +296,8 @@ under each passing fact's `engine` versions and each vacuous fact's
 `undefined` ones, and removes it from each failing one; it never adds a fact
 or strengthens one. An undefined fact claims nothing on that version, so
 when a later version supports the construct its probe runs there and
-decides. `--list` prints the probes without a connection. A probe that expects an error
+decides. `--list` prints the probes without a connection; `--only` probes
+and records the facts it names, leaving the others' provenance as it is. A probe that expects an error
 (overflow, a failed cast, division by zero) declares the message it accepts as
 a regex; any other error fails, and so does a returned value that is not the
 exact result. An `injective` probe passes on the declared overflow error or on
@@ -306,17 +322,28 @@ python scripts/certify_dialects.py clickhouse --driver clickhouse_connect.dbapi 
 docker run -d --rm --name sqlassert-trino -p 58080:8080 trinodb/trino
 python scripts/certify_dialects.py trino --driver trino.dbapi \
     --connect '{"host": "127.0.0.1", "port": 58080, "user": "probe", "catalog": "memory", "schema": "default"}'
+docker run -d --rm --name sqlassert-spark -p 50000:10000 -e SPARK_NO_DAEMONIZE=true apache/spark \
+    /opt/spark/sbin/start-thriftserver.sh --master 'local[2]' --hiveconf hive.server2.authentication=NOSASL \
+    --conf spark.sql.warehouse.dir=/tmp/wh --conf spark.driver.extraJavaOptions=-Dderby.system.home=/tmp/derby
+python scripts/certify_dialects.py spark --driver pyhive.hive \
+    --only 'checked_sum,skips_null(greatest),skips_null(least),strict([])' \
+    --connect '{"host": "127.0.0.1", "port": 50000, "auth": "NOSASL", "username": "probe"}'
 ```
 
 `tests/test_trino_catalog.py` runs the Trino fetcher against the same
 server when `SQLASSERT_TRINO` holds its connect arguments
 (`{"host": "127.0.0.1", "port": 58080, "user": "probe"}`).
 
-The drivers (`psycopg[binary]`, `pymysql`, `clickhouse-connect`, `trino`) are not
+The drivers (`psycopg[binary]`, `pymysql`, `clickhouse-connect`, `trino`,
+`pyhive[hive_pure_sasl]`) are not
 dependencies; install them where the script runs (MySQL is reached at its
 port, so MySQL server 8.4 and 9 images work the same way; 8.0 is not supported). Wait for a
-container to accept connections before probing. Not certified on an engine:
-Spark and Databricks (a local Spark needs Java and a DB-API bridge), Hive,
+container to accept connections before probing. Spark (4.3, ANSI mode on by
+default) runs through its Thrift server and PyHive; only the facts named
+are certified there, the rest of Spark's stay `doc` (a full run reaches
+most, but cannot spell a CAST that SQLGlot parses back as one, and the zoned
+timestamp probe's INSERT of text into a TIMESTAMP is rejected under ANSI
+store assignment). Not certified on an engine: Databricks, Hive,
 Oracle, MySQL's NDB engine, and the cloud warehouses, whose probes exist for
 when credentials do.
 
