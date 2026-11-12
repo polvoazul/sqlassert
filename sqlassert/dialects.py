@@ -95,11 +95,6 @@ class DialectSemantics:
     # it is no soundness claim and is not certified: a wrong True suggests SQL
     # the engine rejects, never a wrong proof.
     set_operations_all: bool = False
-    # An integer or decimal compared with a float is compared exactly (SQLite,
-    # ClickHouse), not converted to the float type first. Only gates the
-    # lossy-comparison hazard, so it is no soundness claim and is not
-    # certified: a wrong value misses or adds a hazard, never a wrong proof.
-    exact_float_comparison: bool = False
 
     @property
     def rely(self) -> bool:
@@ -224,10 +219,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         # Only an INTEGER PRIMARY KEY (the rowid) is never NULL.
         primary_key_not_null=False,
-        exact_float_comparison=True,  # 9007199254740993 = 9007199254740992.0 is false.
     ),
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
-    "clickhouse": DialectSemantics(concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced", exact_float_comparison=True),
+    "clickhouse": DialectSemantics(concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced"),
     "oracle": DialectSemantics(empty_string_is_null=True),
     # Trino has no constraint but NOT NULL: its CREATE TABLE rejects a key, so
     # one in the SQL describes a table some other engine holds.

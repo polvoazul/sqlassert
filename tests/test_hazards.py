@@ -223,60 +223,88 @@ def test_a_join_equality_without_an_implicit_cast_is_not_a_hazard(on: str):
     assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").hazards == ()
 
 
-# Lossy comparison ----------------------------------------------------------------
+# Float equality -------------------------------------------------------------------
 
-LOSSY = """
+FLOATS = """
 CREATE TABLE a (id BIGINT PRIMARY KEY, i INTEGER, s SMALLINT, d DECIMAL(10, 2), w DECIMAL(18, 3));
-CREATE TABLE d (x DOUBLE, y DOUBLE, r REAL, b BIGINT);
+CREATE TABLE d (x DOUBLE, y DOUBLE, r REAL, b BIGINT, e DECIMAL(10, 2));
 """
 
 
-def lossy(sql: str, dialect: str = "duckdb") -> list[str]:
-    return [hazard.message for hazard in suggest(LOSSY + sql, dialect=dialect).hazards if hazard.concern is Concern.LOSSY_COMPARISON]
+def float_equality(sql: str, dialect: str = "duckdb") -> list[str]:
+    return [hazard.message for hazard in suggest(FLOATS + sql, dialect=dialect).hazards if hazard.concern is Concern.FLOAT_EQUALITY]
 
 
-def test_a_join_equality_of_a_bigint_and_a_double_is_a_hazard_and_matches_two_ids_on_data():
+def test_a_join_equality_with_a_double_is_a_hazard_and_matches_two_ids_on_data():
     sql = "SELECT * FROM a JOIN d ON a.id = d.x"
-    hazard, = suggest(LOSSY + sql).hazards
-    assert hazard.concern is Concern.LOSSY_COMPARISON
+    hazard, = suggest(FLOATS + sql).hazards
+    assert hazard.concern is Concern.FLOAT_EQUALITY
     assert hazard.site.label == "JOIN d"
     assert hazard.message == (
-        "a.id = d.x compares BIGINT with DOUBLE, which rounds above 2^53, so one 'x' can match several 'id': compare in one type"
+        "a.id = d.x compares a floating-point value for exact equality; compare within a tolerance or use an exact type"
     )
     connection = duckdb.connect()
-    connection.execute(LOSSY + "INSERT INTO a (id) VALUES (9007199254740992), (9007199254740993); INSERT INTO d (x) VALUES (9007199254740992);")
+    connection.execute(FLOATS + "INSERT INTO a (id) VALUES (9007199254740992), (9007199254740993); INSERT INTO d (x) VALUES (9007199254740992);")
     assert connection.execute("SELECT count(*) FROM a JOIN d ON a.id = d.x").fetchone() == (2,)
 
 
-@pytest.mark.parametrize(("sql", "message"), [
-    ("SELECT a.id FROM a, d WHERE d.x = a.id", "d.x = a.id compares BIGINT with DOUBLE"),
-    ("SELECT id FROM a WHERE id IN (SELECT x FROM d)", "compares BIGINT with DOUBLE"),
-    ("SELECT id FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.x = a.id)", "d.x = a.id compares BIGINT with DOUBLE"),
-    ("SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM d WHERE d.x IS NOT DISTINCT FROM a.id)", "compares BIGINT with DOUBLE"),
-    ("SELECT a.id FROM a LEFT JOIN d ON d.r = a.i", "d.r = a.i compares INT with REAL, which rounds above 2^24"),
-    ("SELECT a.id FROM a JOIN d ON a.w = d.x", "a.w = d.x compares DECIMAL(18, 3) with DOUBLE, which rounds past 15 significant digits"),
+def test_a_double_equal_to_a_decimal_literal_is_a_hazard_and_misses_on_data():
+    sql = "SELECT x FROM d WHERE x = 0.3"
+    found, = float_equality(sql)
+    assert found.startswith("x = 0.3 compares a floating-point value for exact equality")
+    connection = duckdb.connect()
+    connection.execute(FLOATS + "INSERT INTO d (x) VALUES (0.1::DOUBLE + 0.2::DOUBLE);")
+    assert connection.execute(sql).fetchall() == []
+
+
+@pytest.mark.parametrize(("sql", "written"), [
+    # Any equality with an operand of a known floating type, in any dialect.
+    ("SELECT d.x FROM d WHERE d.x = d.y", "d.x = d.y"),
+    ("SELECT a.id FROM a JOIN d ON a.i = d.r", "a.i = d.r"),
+    ("SELECT a.id FROM a JOIN d ON a.s = d.r", "a.s = d.r"),
+    ("SELECT a.id FROM a JOIN d ON a.d = d.x", "a.d = d.x"),
+    ("SELECT x FROM d WHERE x = 0.1", "x = 0.1"),
+    ("SELECT x FROM d WHERE 1 = r", "1 = r"),
+    ("SELECT x FROM d WHERE x <> y", "x <> y"),
+    ("SELECT x FROM d WHERE x != 1", "x <> 1"),
+    ("SELECT x FROM d WHERE x IS DISTINCT FROM y", "x IS DISTINCT FROM y"),
+    ("SELECT x FROM d WHERE x IS NOT DISTINCT FROM b", "x IS NOT DISTINCT FROM b"),
+    ("SELECT x FROM d WHERE x IN (1, 2.5)", "x IN (1, 2.5)"),
+    ("SELECT x FROM d WHERE x NOT IN (1, 2.5)", "x IN (1, 2.5)"),
+    ("SELECT b FROM d WHERE b IN (1, x)", "b IN (1, x)"),
+    ("SELECT x FROM d WHERE b > 0 AND (x = 1 OR y = 2)", "x = 1"),
+    # In a subquery's correlation, IN or EXISTS, and in HAVING.
+    ("SELECT id FROM a WHERE id IN (SELECT x FROM d)", "id IN (SELECT x FROM d)"),
+    ("SELECT id FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.x = a.id)", "d.x = a.id"),
+    ("SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM d WHERE d.x IS NOT DISTINCT FROM a.id)", "d.x IS NOT DISTINCT FROM a.id"),
+    ("SELECT x FROM d GROUP BY x HAVING x = 1", "x = 1"),
 ])
-def test_a_lossy_comparison_in_where_on_or_a_subquery_correlation_is_a_hazard(sql: str, message: str):
-    found, = lossy(sql)
-    assert message in found
+def test_an_equality_with_a_float_operand_is_a_hazard(sql: str, written: str):
+    found = float_equality(sql)
+    assert f"{written} compares a floating-point value for exact equality; compare within a tolerance or use an exact type" in found
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "sqlite", "clickhouse", "mysql"])
+def test_float_equality_is_a_hazard_in_every_dialect(dialect: str):
+    assert len(float_equality("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect=dialect)) == 1
+
+
+def test_each_float_equality_in_a_condition_is_one_hazard():
+    assert len(float_equality("SELECT x FROM d WHERE x = 1 OR y = 2")) == 2
 
 
 @pytest.mark.parametrize("sql", [
-    "SELECT a.id FROM a JOIN d ON a.id = d.b",  # BIGINT = BIGINT
-    "SELECT d.x FROM d WHERE d.x = d.y",  # DOUBLE = DOUBLE
-    "SELECT a.id FROM a JOIN d ON a.i = d.x",  # an INTEGER is exact in a DOUBLE
-    "SELECT a.id FROM a JOIN d ON a.s = d.r",  # a SMALLINT is exact in a REAL
-    "SELECT a.id FROM a JOIN d ON a.d = d.x",  # 10 digits are exact in a DOUBLE
-    "SELECT a.id FROM a JOIN e ON a.id = e.x",  # e's types are unknown
-    "SELECT a.id FROM a JOIN d ON a.id = CAST(d.x AS BIGINT)",  # compared in one type
+    "SELECT a.id FROM a JOIN d ON a.i = d.b",  # INTEGER = BIGINT
+    "SELECT a.id FROM a JOIN d ON a.d = d.e",  # DECIMAL = DECIMAL
+    "SELECT a.id FROM a WHERE a.d = 0.1",  # DECIMAL = a decimal literal
+    "SELECT d.x FROM d WHERE d.x < d.y",  # an ordering, not an equality
+    "SELECT d.x FROM d WHERE d.x >= 0.1",
+    "SELECT a.id FROM a JOIN f ON a.id = f.x",  # f's types are unknown
+    "SELECT a.id FROM a WHERE a.i = 1e0",  # a literal's type is the dialect's: not guessed
+    "SELECT a.id FROM a JOIN d ON a.id = CAST(d.x AS BIGINT)",  # compared in an exact type
 ])
-def test_a_comparison_not_known_to_round_is_not_a_lossy_comparison(sql: str):
-    assert lossy(sql) == []
-
-
-def test_a_dialect_that_compares_integers_and_floats_exactly_has_no_lossy_comparison():
-    assert lossy("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect="sqlite") == []
-    assert len(lossy("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect="postgres")) == 1
+def test_a_comparison_with_no_known_float_operand_or_no_equality_is_not_a_hazard(sql: str):
+    assert float_equality(sql) == []
 
 
 # Always empty -----------------------------------------------------------------

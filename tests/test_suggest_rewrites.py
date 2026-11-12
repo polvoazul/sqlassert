@@ -343,19 +343,91 @@ def test_a_one_row_aggregate_is_a_rewrite_with_caveat_when_its_type_changes(item
     assert (before[0][2], after[0][2]) == types
 
 
-@pytest.mark.parametrize("item", [
-    # A narrower type inside an expression may overflow where the aggregate did not.
-    "sum(i) + 1",
-    "count(*) + 2147483647",
-    "avg(i) / 2",
-    # avg of a BIGINT or DECIMAL is a DOUBLE that may round it: not the same value.
-    "avg(b)",
-    "avg(d)",
-    # sum of a BOOLEAN counts it; of an expression, its type is unknown.
-    "sum(bo)",
-    "sum(i + 1)",
+@pytest.mark.parametrize(("item", "replacement", "caveat", "types"), [
+    # A narrower type inside an expression may overflow (or, for a float,
+    # round) where the aggregate's did not: DuckDB's i + 1 overflows here
+    # (None), its type pinned per typeof().
+    (
+        "sum(i) + 1", "i + 1",
+        "'v' runs its arithmetic in the type of i, not sum's result type, and may overflow where the aggregate's did not; "
+        "cast it if later arithmetic needs the wider type",
+        ("HUGEINT", None),
+    ),
+    (
+        "count(*) + 2147483647", "1 + 2147483647",
+        "'v' runs its arithmetic in an integer literal's type, not count's result type, and may overflow where the aggregate's did not; "
+        "cast it if later arithmetic needs the wider type",
+        ("BIGINT", None),
+    ),
+    (
+        "sum(r) + 1", "r + 1",
+        "'v' runs its arithmetic in the type of r, not sum's result type, and may lose precision where the aggregate's did not; "
+        "cast it if later arithmetic needs the wider type",
+        ("DOUBLE", "FLOAT"),
+    ),
+    # avg of a BIGINT, HUGEINT, UBIGINT or DECIMAL is a DOUBLE in some
+    # dialects, which may round it: the argument is the exact average.
+    (
+        "avg(b)", "b",
+        "'v' takes b's exact value and type, where avg converts to DOUBLE in some dialects and may lose precision "
+        "(avg(9007199254740993) is 9007199254740992.0)",
+        ("DOUBLE", "BIGINT"),
+    ),
+    (
+        "avg(d)", "d",
+        "'v' takes d's exact value and type, where avg converts to DOUBLE in some dialects and may lose precision "
+        "(avg(9007199254740993) is 9007199254740992.0)",
+        ("DOUBLE", "DECIMAL(10,2)"),
+    ),
+    (
+        "avg(h)", "h",
+        "'v' takes h's exact value and type, where avg converts to DOUBLE in some dialects and may lose precision "
+        "(avg(9007199254740993) is 9007199254740992.0)",
+        ("DOUBLE", "HUGEINT"),
+    ),
+    (
+        "avg(u)", "u",
+        "'v' takes u's exact value and type, where avg converts to DOUBLE in some dialects and may lose precision "
+        "(avg(9007199254740993) is 9007199254740992.0)",
+        ("DOUBLE", "UBIGINT"),
+    ),
+    (
+        "avg(d) * 2", "d * 2",
+        "'v' takes d's exact value and type, where avg converts to DOUBLE in some dialects and may lose precision "
+        "(avg(9007199254740993) is 9007199254740992.0); "
+        "'v' runs its arithmetic in the type of d, not avg's result type, and may overflow where the aggregate's did not; "
+        "cast it if later arithmetic needs the wider type",
+        ("DOUBLE", "DECIMAL(18,2)"),
+    ),
 ])
-def test_a_one_row_aggregate_whose_value_or_success_may_change_is_not_rewritten(item: str):
+def test_a_one_row_aggregate_whose_precision_or_type_may_change_is_a_rewrite_with_caveat(item, replacement, caveat, types):
+    schema = ONE_ROW_SCHEMA.replace("s VARCHAR", "s VARCHAR, h HUGEINT, u UBIGINT")
+    query = f"SELECT id, {item} AS v FROM t GROUP BY id"
+    rewrite, = suggest(schema + query, dialect="duckdb").rewrites
+    assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.GROUPING_PROJECTION, SuggestType.REWRITE_WITH_CAVEAT)
+    assert rewrite.message.endswith(f"drop GROUP BY and write SELECT id, {replacement} AS v. Caveat: {caveat}")
+    with duckdb.connect() as con:
+        con.execute(schema + ONE_ROW_VALUES.replace("'a')", "'a', 9007199254740993, 9007199254740993)"))
+        (_, before), = con.execute(f"SELECT v, typeof(v) FROM ({query})").fetchall()
+        try:
+            (_, after), = con.execute(f"SELECT {replacement}, typeof({replacement}) FROM t").fetchall()
+        except duckdb.OutOfRangeException:
+            after = None
+    assert (before, after) == types
+
+
+@pytest.mark.parametrize("item", [
+    # avg of an integer inside an expression: an integer division truncates
+    # (i / 2 in PostgreSQL or SQLite) where avg's did not.
+    "avg(i) / 2",
+    # sum of a BOOLEAN counts it; bool_and of an integer is not its value.
+    "sum(bo)",
+    "bool_and(i)",
+    # Of an expression, the argument's type is unknown.
+    "sum(i + 1)",
+    "avg(i + 1)",
+])
+def test_a_one_row_aggregate_whose_value_may_change_or_whose_type_is_unknown_is_not_rewritten(item: str):
     assert not suggest(ONE_ROW_SCHEMA + f"SELECT id, {item} AS v FROM t GROUP BY id").rewrites
 
 

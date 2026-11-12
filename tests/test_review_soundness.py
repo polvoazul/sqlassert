@@ -6,6 +6,7 @@ import duckdb
 import pytest
 
 from sqlassert import Outcome, analyze, analyze_database, suggest
+from sqlassert.suggest import SuggestType
 from sqlassert.discovery.duckdb import DuckDBKnowledgeFetcher
 
 
@@ -86,11 +87,20 @@ def test_approximate_comparison_does_not_make_integer_values_equal():
     assert not suggest(sql).rewrites
 
 
-@pytest.mark.parametrize("expression", ["sum(b)+1", "count(*)+2147483647", "avg(b)/2"])
-def test_a_single_row_aggregate_is_not_narrowed_inside_an_expression(expression):
-    # b + 1 overflows an INT where sum(b) + 1 does not: no rewrite, caveat or not.
+@pytest.mark.parametrize("expression", ["sum(b)+1", "count(*)+2147483647"])
+def test_a_single_row_aggregate_narrowed_inside_an_expression_is_caveated(expression):
+    # b + 1 overflows an INT where sum(b) + 1 does not: a rewrite with caveat that says so.
     ddl = "CREATE TABLE t(a INT PRIMARY KEY,b INT); "
-    assert not suggest(ddl + f"SELECT a,{expression} AS s FROM t GROUP BY a").rewrites
+    rewrite, = suggest(ddl + f"SELECT a,{expression} AS s FROM t GROUP BY a").rewrites
+    assert rewrite.suggest_type is SuggestType.REWRITE_WITH_CAVEAT
+    assert "'s' runs its arithmetic in " in rewrite.message
+    assert "may overflow where the aggregate's did not" in rewrite.message
+
+
+def test_an_average_of_an_integer_is_not_narrowed_inside_an_expression():
+    # b / 2 truncates in PostgreSQL where avg(b) / 2 does not.
+    ddl = "CREATE TABLE t(a INT PRIMARY KEY,b INT); "
+    assert not suggest(ddl + "SELECT a,avg(b)/2 AS s FROM t GROUP BY a").rewrites
 
 
 def test_except_all_with_a_duplicate_can_return_rows():
