@@ -43,6 +43,18 @@ off), and no meaning for SQL the standard rejects but a flavor tolerates
   gitignored and never committed.
 - Architecture decisions: `docs/adr/`.
 
+## Testing workflow
+
+- **On each commit:** run only the focused tests for what changed (the
+  `.sqltest` files and test modules it touches) and `ty check sqlassert
+  tests`. No full suite, no oracle.
+- **At push time:** whoever pushes runs the full suite and
+  `pytest --soundness-oracle` on everything not yet pushed
+  (`git log @{upstream}..HEAD`), fixes any failure with that context,
+  commits the fix, runs the checks below, pushes, then updates the local
+  issue tracker (`tmp/issue_tracker.yaml`, rebuilt with
+  `tmp/build_issue_tracker.py`).
+
 ## Before pushing
 
 The repository is public. Before every push, check that nothing private

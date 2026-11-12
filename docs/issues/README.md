@@ -31,7 +31,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 ## Order
 
 Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45, 70. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
-`pytest --soundness-oracle` before merging any rules change.
+`pytest --soundness-oracle` and the full suite before every push (AGENTS.md, "Testing workflow").
 
 Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds the
 reasoning; its **Theme** and **Blocked by** bullets place it on the local tracker):
