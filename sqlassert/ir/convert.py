@@ -3142,7 +3142,7 @@ _IS_DISTINCT_FROM = ir.Builtin(name="IS DISTINCT FROM", strict=(False, False), t
 _EXISTS = ir.Builtin(name="EXISTS", strict=(False,), total=(False,), injective=False)
 _ORDER_COMPARISONS = {"<>", ">", ">=", "<", "<=", "BETWEEN"}
 # Never NULL: `NULL IS TRUE` is FALSE, so never TRUE where the operand is NULL.
-_IS_TRUE = ir.Builtin(name="IS TRUE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
+_IS_TRUE = ir.Builtin(name="IS TRUE", strict=(False,), total=(False,), injective=False, true_only_if_argument=True)
 _IS_FALSE = ir.Builtin(name="IS FALSE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
 
 

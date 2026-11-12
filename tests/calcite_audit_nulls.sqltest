@@ -205,6 +205,24 @@ FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
 WHERE (e.sal > 0) IS TRUE
 /**ASSERT NOT NULL(empno)**/  --~ PROVED
 
+-- case: strong_is_true_of_a_rejecting_operand
+-- p IS TRUE is TRUE only where p is, so it rejects what p rejects: a NULL sal
+-- makes sal > ANY (...) never TRUE, and sal IS NOT NULL FALSE.
+SELECT empno, sal, comm FROM emp_nullables
+WHERE (sal > ANY (SELECT comm FROM emp)) IS TRUE AND (comm IS NOT NULL) IS TRUE
+/**ASSERT NOT NULL(sal, comm)**/  --~ PROVED
+
+-- case: strong_is_true_of_a_rejecting_operand_rejects_a_padded_side
+SELECT d.deptno, e.empno
+FROM dept AS d LEFT JOIN emp_nullables AS e ON e.deptno = d.deptno
+WHERE (e.sal > ANY (SELECT comm FROM emp)) IS TRUE
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
+
+-- case: strong_is_not_true_of_a_rejecting_operand_rejects_nothing
+-- (NULL > ANY (...)) IS NOT TRUE is TRUE.
+SELECT empno, sal FROM emp_nullables WHERE (sal > ANY (SELECT comm FROM emp)) IS NOT TRUE
+/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+
 -- case: strong_nondeterministic_conjunct_still_rejects
 -- inspired by RelMetadataTest.testGetPredicatesForFilter (retainDeterministic drops it)
 SELECT empno, sal FROM emp_nullables WHERE sal = random()
