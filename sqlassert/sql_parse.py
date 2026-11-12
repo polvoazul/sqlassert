@@ -18,9 +18,7 @@ from typing import Literal, NamedTuple
 import enum
 import re
 
-import sqlglot
 from sqlglot import Expr, exp
-from sqlglot import tokens as sqlglot_tokens
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError, SqlglotError
 from sqlglot.tokens import Token, TokenType
@@ -40,11 +38,15 @@ _JOIN_MARKER_KIND = "sqlassert.join_marker_kind"
 _MARKER_SHAPED = re.compile(r"/\*\*(?!/).*?\*/", re.DOTALL)
 
 
-def _marker_shapes(sql: str) -> list[re.Match[str]]:
+def _marker_shapes(sql: str, tokens: list[Token] | None = None) -> list[re.Match[str]]:
     """Every `/**...*/` span written as SQL: not inside a `--` comment or a
     quoted string or identifier. A `--` comment is how an author switches a
     marker off; text in quotes is data. Offsets are those of `sql`."""
     masked = list(sql)
+    for token in tokens or ():
+        if token.token_type in (TokenType.HEREDOC_STRING, TokenType.RAW_STRING):
+            masked[token.start:token.end + 1] = (" " if char != "\n" else char for char in sql[token.start:token.end + 1])
+    sql = "".join(masked)
     index, quote = 0, None
     while index < len(sql):
         char = sql[index]
@@ -414,28 +416,8 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # every concrete dialect sets its own, so the base class's static type
     # cannot know they exist. This is exactly the private-API coupling
     # documented below, not a type worth narrowing further.
-    #
-    # `SQLASSERT_UNIQUE` is deliberately not a `TokenType` (see above). Before
-    # SQLGlot 30, the optional Rust tokenizer indexed every `KEYWORDS` value
-    # against `TokenType` while building the class and KeyErrored on ours. Those
-    # versions expose a private switch which lets this dialect consistently use
-    # the Python tokenizer. SQLGlot 30 removed both that switch and the matching
-    # constructor argument; its tokenizer core accepts our Enum directly.
-    if hasattr(sqlglot_tokens, "USE_RS_TOKENIZER"):
-        previous_use_rs_tokenizer = getattr(sqlglot_tokens, "USE_RS_TOKENIZER")
-        setattr(sqlglot_tokens, "USE_RS_TOKENIZER", False)
-        try:
-            class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
-                KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
-
-                def __init__(self, *args, **kwargs) -> None:
-                    kwargs.setdefault("use_rs_tokenizer", False)
-                    super().__init__(*args, **kwargs)
-        finally:
-            setattr(sqlglot_tokens, "USE_RS_TOKENIZER", previous_use_rs_tokenizer)
-    else:
-        class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
-            KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
+    class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
+        KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
 
     # This hooks SQLGlot's private API: `Tokenizer.KEYWORDS`, `_parse_join`,
     # `_match`, `_prev`, `_curr`. It is the best seam available — SQLGlot exposes
@@ -654,12 +636,17 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             if isinstance(this, exp.Select) and _MARKER_POSITION not in this.meta and self._prev is not None:
                 this.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
 
+        def _marker_identifier(self, identifier: exp.Identifier, span: Span) -> str:
+            if base == "postgres" and identifier.quoted and identifier.name != identifier.name.lower():
+                raise UnattachedMarker("case-sensitive quoted PostgreSQL identifiers are not supported", span, self._prev.text)
+            return identifier.name
+
         def _parse_marker_columns(self, kind: ColumnMarkerKind, span: Span) -> tuple[str, ...]:
             """A marker's column list after its opening parenthesis, through the closing one."""
             columns = self._parse_csv(self._parse_id_var)
             if not columns:
                 raise UnattachedMarker(f"the {MARKER_NOUNS[kind]} on line {span.line} names no columns", span, self._prev.text)
-            names = tuple(column.name for column in columns)
+            names = tuple(self._marker_identifier(column, span) for column in columns)
             if len({name.lower() for name in names}) != len(names):
                 raise UnattachedMarker(
                     f"the {MARKER_NOUNS[kind]} on line {span.line} names the same column more than once",
@@ -676,7 +663,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
 
         def _parse_marker_dependency(self, kind: ColumnMarkerKind, span: Span) -> tuple[tuple[str, ...], tuple[str, ...]]:
             """`determinant -> dependent`, each a column list, through the closing parenthesis."""
-            determinant = tuple(column.name for column in self._parse_csv(self._parse_id_var))
+            determinant = tuple(self._marker_identifier(column, span) for column in self._parse_csv(self._parse_id_var))
             if not determinant or not self._match(TokenType.ARROW):
                 raise UnattachedMarker(
                     f"the {MARKER_NOUNS[kind]} on line {span.line} must list columns, then ->, then the columns they determine",
@@ -719,7 +706,7 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 if value in values:
                     raise malformed(f"lists {value.sql()} more than once")
                 values.append(value)
-            return (column.name,), tuple(values)
+            return (self._marker_identifier(column, span),), tuple(values)
 
         def _parse_marker_reference(self, kind: ColumnMarkerKind, span: Span, count: int) -> tuple[str, tuple[str, ...]]:
             """`REFERENCES relation(col, ...)`, pairing `count` columns by position."""
@@ -735,7 +722,10 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 parts.append(self._parse_id_var(any_token=False))
             if None in parts or not self._match(TokenType.L_PAREN):
                 raise missing
-            relation = ".".join(part.name for part in parts if part is not None)
+            names = [self._marker_identifier(part, span) for part in parts if part is not None]
+            if any("." in name for name in names):
+                raise UnattachedMarker("dots inside quoted relation identifiers are not supported", span, self._prev.text)
+            relation = ".".join(names)
             columns = self._parse_marker_columns(kind, span)
             if len(columns) != count:
                 raise UnattachedMarker(
@@ -778,10 +768,15 @@ class SqlParser:
     def parse(self, sql: str) -> ParsedProgram:
         # Reported first, and on every path: a mistyped marker is invisible to
         # the grammar, so nothing later in parsing can notice it.
-        diagnostics = _unrecognized_markers(sql)
-
+        dialect = self.dialect_class()
         try:
-            statements = [ statement for statement in sqlglot.parse(sql, read=self.dialect_class) if statement ]
+            tokens = dialect.tokenize(sql)
+        except SqlglotError as error:
+            return ParsedProgram(diagnostics=(*_unrecognized_markers(sql, _marker_shapes(sql)), self._unparseable(sql, error)))
+        shapes = _marker_shapes(sql, tokens)
+        diagnostics = _unrecognized_markers(sql, shapes)
+        try:
+            statements = [statement for statement in dialect.parser().parse(tokens, sql) if statement]
         except UnattachedMarker as error:
             return ParsedProgram(diagnostics=(*diagnostics, self._unattached(error)))
         except SqlglotError as error:
@@ -805,7 +800,7 @@ class SqlParser:
 
         # A marker only becomes an assertion if the dialect recognised it, so
         # reconcile what the source contains against what parsing produced.
-        diagnostics.extend(_unresolved_markers(sql, statements))
+        diagnostics.extend(_unresolved_markers(sql, statements, shapes))
         diagnostics.extend(
             Diagnostic(
                 diag.UNSUPPORTED_NATURAL_JOIN, "NATURAL JOIN is unsupported and an anti-pattern; write an explicit JOIN with ON or USING",
@@ -871,7 +866,7 @@ def _is_recognized_marker(text: str) -> bool:
     return upper.endswith("**/") and any(upper.startswith(open_) for open_ in _COLUMN_MARKER_OPENS)
 
 
-def _unrecognized_markers(sql: str) -> list[Diagnostic]:
+def _unrecognized_markers(sql: str, shapes: list[re.Match[str]]) -> list[Diagnostic]:
     """Comments shaped like a marker that are not one.
 
     `/**…*/` is assertion syntax, so a comment written that way and left
@@ -894,7 +889,7 @@ def _unrecognized_markers(sql: str) -> list[Diagnostic]:
             f"{_marker_hint(match.group(0))}the markers are {recognized}",
             Origin.marked(match.group(0), span),
         )
-        for match in _marker_shapes(sql)
+        for match in shapes
         if not _is_recognized_marker(match.group(0))
         for span in (Span.of(sql, match.start(), match.end()),)
     ]
@@ -918,7 +913,7 @@ def _marker_hint(text: str) -> str:
     return ""
 
 
-def _unresolved_markers(sql: str, statements: list[Expr]) -> list[Diagnostic]:
+def _unresolved_markers(sql: str, statements: list[Expr], shapes: list[re.Match[str]]) -> list[Diagnostic]:
     """Recognized markers that did not become assertions.
 
     Every marker in the source should have reached a join, a Select, or a CASE, or
@@ -926,7 +921,7 @@ def _unresolved_markers(sql: str, statements: list[Expr]) -> list[Diagnostic]:
     recognising it — and the alternative to reporting that is a program whose
     assertions were never checked reporting as proved.
     """
-    written = [match for match in _marker_shapes(sql) if _is_recognized_marker(match.group(0))]
+    written = [match for match in shapes if _is_recognized_marker(match.group(0))]
     resolved = sum(
         1
         for statement in statements

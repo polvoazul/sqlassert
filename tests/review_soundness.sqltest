@@ -1,0 +1,80 @@
+-- case: a_cte_renames_outputs_by_position
+CREATE TABLE t(a INT PRIMARY KEY, b INT);
+WITH c(b, a) AS (SELECT a, b FROM t)
+SELECT a, b FROM c
+/**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+/**ASSERT UNIQUE(b)**/ --~ PROVED
+
+-- case: a_table_alias_renames_outputs_by_position
+CREATE TABLE t(a INT PRIMARY KEY, b INT);
+SELECT a, b FROM t AS c(b, a)
+/**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+/**ASSERT UNIQUE(b)**/ --~ PROVED
+
+-- case: a_subquery_alias_renames_outputs_by_position
+CREATE TABLE t(a INT PRIMARY KEY, b INT);
+SELECT a, b FROM (SELECT a, b FROM t) AS c(b, a)
+/**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+/**ASSERT UNIQUE(b)**/ --~ PROVED
+
+-- case: a_view_renames_outputs_by_position
+CREATE TABLE t(a INT PRIMARY KEY, b INT);
+CREATE VIEW v(b, a) AS SELECT a, b FROM t;
+SELECT a, b FROM v
+/**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+/**ASSERT UNIQUE(b)**/ --~ PROVED
+
+-- case: a_later_cte_does_not_shadow_an_earlier_definition
+CREATE TABLE t(a INT);
+WITH c AS (SELECT a FROM t), t AS (SELECT 1 AS a)
+SELECT a FROM c /**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+
+-- case: unpivot_can_repeat_an_input_key
+CREATE TABLE t(a INT PRIMARY KEY, b INT, c INT);
+SELECT a FROM t UNPIVOT(val FOR name IN (b,c)) /**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+--~ unsupported-construct "FROM modifier"
+
+-- case: sampling_can_remove_a_foreign_key_target
+CREATE TABLE p(id INT PRIMARY KEY);
+CREATE TABLE c(id INT NOT NULL REFERENCES p(id));
+SELECT c.id FROM c /**ASSERT EXACTLY ONE**/ JOIN p TABLESAMPLE BERNOULLI(0 PERCENT) ON p.id = c.id --~ UNKNOWN
+--~ unsupported-construct "FROM modifier"
+
+-- case: union_by_name_includes_right_only_outputs
+CREATE TABLE t(a INT, b INT);
+SELECT a FROM t UNION ALL BY NAME SELECT b FROM t /**ASSERT UNIQUE(b)**/ --~ UNKNOWN
+
+-- case: separate_sequence_calls_can_produce_different_values
+CREATE TABLE t(a INT);
+SELECT nextval('s') AS n, count(*) FROM t HAVING nextval('s') = 1 /**ASSERT ENUM(n IN (1))**/ --~ UNKNOWN
+
+-- case: mixed_comparison_can_match_two_bigint_keys
+CREATE TABLE l(k DOUBLE NOT NULL);
+CREATE TABLE r(k BIGINT PRIMARY KEY);
+SELECT r.k FROM l /**ASSERT MANY TO ONE**/ JOIN r ON l.k = r.k --~ UNKNOWN
+
+-- case: except_all_can_cast_distinct_keys_to_the_same_value
+CREATE TABLE l(k DOUBLE NOT NULL);
+CREATE TABLE r(k BIGINT PRIMARY KEY);
+SELECT k FROM r EXCEPT ALL SELECT k FROM l /**ASSERT UNIQUE(k)**/ --~ UNKNOWN
+
+-- case: intersect_all_can_cast_distinct_keys_to_the_same_value
+CREATE TABLE l(k DOUBLE NOT NULL);
+CREATE TABLE r(k BIGINT PRIMARY KEY);
+SELECT k FROM r INTERSECT ALL SELECT k FROM l /**ASSERT UNIQUE(k)**/ --~ UNKNOWN
+
+-- case: union_with_unknown_width_does_not_supply_coverage
+CREATE TABLE t(id INT PRIMARY KEY);
+WITH u AS (SELECT id FROM t UNION ALL SELECT * FROM x)
+--~ undeclared-table "table x"
+SELECT t.id FROM t /**ASSERT EXACTLY ONE**/ JOIN u ON u.id = t.id --~ UNKNOWN
+
+-- case: a_fresh_alias_keeps_the_key_of_its_position
+CREATE TABLE t(a INT PRIMARY KEY, b INT);
+WITH c(k) AS (SELECT * FROM t)
+SELECT d.id FROM c AS d(id) /**ASSERT UNIQUE(id)**/ --~ PROVED
+
+-- case: duckdb_recursive_keyword_does_not_expose_later_ctes
+CREATE TABLE t(a INT);
+WITH RECURSIVE c AS (SELECT a FROM t), t AS (SELECT 1 AS a)
+SELECT a FROM c /**ASSERT UNIQUE(a)**/ --~ UNKNOWN

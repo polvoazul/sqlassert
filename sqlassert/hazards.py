@@ -201,7 +201,7 @@ def _every_row_matches(join: ir.Join, arena: Arena) -> Result[bool]:
 def _empty_except(site: AttachmentSite, operation: ir.SetOperation, arena: Arena) -> list[Hazard]:
     """`A EXCEPT B` where every row of A, non-null, appears in B."""
     left, right = operation.left.output_columns, operation.right.output_columns
-    if operation.by_name or len(left) != len(right):
+    if not operation.distinct or operation.by_name or len(left) != len(right):
         return []
     proof = arena.prove(ReferentialCoverage(columns=left, referenced_columns=right)) & arena.prove(NonNullColumns(columns=frozenset(left)))
     if not proof.value:

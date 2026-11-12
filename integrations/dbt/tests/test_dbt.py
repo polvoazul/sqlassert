@@ -633,3 +633,18 @@ def test_a_model_that_does_not_parse_is_left_out_alone(tmp_path):
     assert ("broken", "dbt-unknown-columns") in by_model
     suggested = suggest_models(project, ["models"], trust_upstream_tests=True)
     assert any(item.model == "customer_orders" for item in suggested.suggestions)
+
+
+@pytest.mark.parametrize("command", ["build", "test"])
+def test_build_and_test_analyze_the_forwarded_target_path(copy_project, monkeypatch, capsys, command):
+    project = copy_project()
+    manifest = project / "target" / "manifest.json"
+    alternate = project / "alternate"
+    alternate.mkdir()
+    manifest.rename(alternate / "manifest.json")
+    manifest.write_text("stale manifest")
+    calls = fake_dbt(monkeypatch)
+
+    assert main([command, str(project), "--", "--target-path", "alternate"]) == 1
+    assert "UNKNOWN /**ASSERT NOT NULL(first_name)**/" in capsys.readouterr().out
+    assert [call[0] for call in calls] == ["compile", command]

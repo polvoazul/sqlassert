@@ -322,6 +322,8 @@ def _conjunct_bound(conjunct: ir.ScalarExpr, source: ir.OutputColumn) -> Result[
 
 def _bound_domain(column: ir.OutputColumn, expression: ir.ScalarExpr) -> Result[Domain]:
     match expression:
+        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)) if "e" in text.lower():
+            return Result(None, "An approximate numeric comparison may collapse distinct values", (expression,))
         case ir.Constant() | ir.NullLiteral():
             return _expression_domain(expression)
         case ir.ColumnRef(column=source) if _same_type(column, source):

@@ -134,7 +134,8 @@ def main(argv: list[str] | None = None) -> int:
     if compiled != 0:
         return compiled
     selecting = any(argument.split("=")[0] in SELECTION_FLAGS for argument in passed)
-    report = _analyze(project, None, arguments.dialect, not selecting, arguments, passed)
+    target = _option(passed, "--target-path") or os.environ.get("DBT_TARGET_PATH") or "target"
+    report = _analyze(project, str(project / target / "manifest.json"), arguments.dialect, not selecting, arguments, passed)
     if report is None:
         return EXIT_USAGE
     sys.stdout.write(format_text(report, explain=arguments.explain, warning_limit=arguments.warning_limit))

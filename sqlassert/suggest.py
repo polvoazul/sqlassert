@@ -175,14 +175,19 @@ class Suggester:
     def __enter__(self) -> Suggester:
         self._session = Engine().session(self.program, self.conversion.knowledge)
         self._arena = self._session.__enter__()
-        if not self.blocked:
-            self._rewrites = rewrites(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
-            self._hazards = hazards(self.ast, self.program, self._arena, wanted=self.sites)
+        try:
+            if not self.blocked:
+                self._rewrites = rewrites(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
+                self._hazards = hazards(self.ast, self.program, self._arena, wanted=self.sites)
+        except BaseException as error:
+            self.__exit__(type(error), error, error.__traceback__)
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
         assert self._session is not None
         self._session.__exit__(*exc)  # ty: ignore[invalid-argument-type]
+        self._arena = None
 
     def suggest(self, sites: Callable[[AttachmentSite], bool] | None = None) -> SuggestionReport:
         """What is found at the sites both `sites` and the Suggester's accept."""

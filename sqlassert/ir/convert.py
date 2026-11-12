@@ -8,6 +8,7 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
@@ -47,6 +48,7 @@ class _Symbol:
     origin: Origin
     body: exp.Query | None = None
     statement: exp.Create | None = None
+    column_aliases: tuple[str, ...] = ()
     required_columns: set[str] = field(default_factory=set)
     # Table-level constraints added after CREATE TABLE (ALTER TABLE, CREATE
     # UNIQUE INDEX), shaped like the CREATE TABLE's own, and columns set NOT NULL.
@@ -160,6 +162,17 @@ class IrParser:
         return semantics(self.dialect)
 
     def parse(self, ast: ParsedProgram) -> IrConversionResult:
+        for statement in (*ast.create_statements, ast.root_select):
+            if statement is None:
+                continue
+            for node in statement.find_all(exp.Identifier):
+                if self.dialect == "postgres" and node.quoted and node.name != node.name.lower() and node.find_ancestor(exp.Collate, exp.CollateColumnConstraint) is None:
+                    diagnostic = Diagnostic(diag.UNSUPPORTED_CONSTRUCT, "case-sensitive quoted PostgreSQL identifiers are not supported", self._origin(node))
+                    return IrConversionResult(ir.Program(), (), (diagnostic,))
+            for table in statement.find_all(exp.Table):
+                if any("." in part.name for part in table.parts if isinstance(part, exp.Identifier)):
+                    diagnostic = Diagnostic(diag.UNSUPPORTED_CONSTRUCT, "dots inside quoted relation identifiers are not supported", self._origin(table))
+                    return IrConversionResult(ir.Program(), (), (diagnostic,))
         for statement in ast.create_statements:
             match statement:
                 case exp.Create(kind="INDEX"):
@@ -241,7 +254,8 @@ class IrParser:
         role = ir.RelationRole.TABLE if kind == "TABLE" else ir.RelationRole.VIEW
         body = statement.args.get("expression")
         query = _unwrap_query(body)
-        symbol = _Symbol(name=name, role=role, origin=origin, body=query, statement=statement)
+        aliases = tuple(column.name for column in statement.this.expressions) if role is ir.RelationRole.VIEW and isinstance(statement.this, exp.Schema) else ()
+        symbol = _Symbol(name=name, role=role, origin=origin, body=query, statement=statement, column_aliases=aliases)
         self._global_symbols[key] = symbol
         self._symbols.append(symbol)
 
@@ -346,16 +360,35 @@ class IrParser:
         scope = dict(inherited_scope)
         with_clause = _arg(query, "with")
         if with_clause is not None:
+            bodies = []
+            recursive = bool(with_clause.args.get("recursive"))
+            forward = recursive and self.dialect != "duckdb"
             for cte in with_clause.expressions:
                 body = _unwrap_query(cte.this)
+                duckdb_recursive = recursive and not forward and isinstance(body, exp.Union)
+                if not forward:
+                    if duckdb_recursive and isinstance(body, exp.Union):
+                        # The seed is outside the recursive name's scope.
+                        seed = _unwrap_query(body.this)
+                        if seed is not None and _arg(body, "with") is None:
+                            self._discover_query(seed, scope)
+                    elif body is not None:
+                        self._discover_query(body, scope)
                 symbol = _Symbol(
                     name=cte.alias,
                     role=ir.RelationRole.CTE,
                     origin=Origin(SQL, cte.sql(dialect=self.dialect)),
                     body=body,
+                    column_aliases=_column_aliases(cte),
                 )
                 scope[cte.alias.lower()] = symbol
                 self._symbols.append(symbol)
+                if forward and body is not None:
+                    bodies.append(body)
+                elif duckdb_recursive and body is not None:
+                    self._discover_query(body, scope)
+            for body in bodies:
+                self._discover_query(body, scope)
 
         self._query_scopes[id(query)] = scope
         if isinstance(query, exp.SetOperation):
@@ -417,12 +450,6 @@ class IrParser:
                 if isinstance(subquery.this, exp.Select):
                     self._discover_query(subquery.this, scope)
 
-        if with_clause is not None:
-            for cte in with_clause.expressions:
-                body = _unwrap_query(cte.this)
-                if body is not None:
-                    self._discover_query(body, scope)
-
     def _symbol_for_table(self, table: exp.Table, scope: dict[str, _Symbol]) -> _Symbol:
         symbol = self._symbol_for_name(_qualified_name(table), scope, Origin(SQL, table.sql(dialect=self.dialect)))
         if symbol.first_line is None:
@@ -463,7 +490,7 @@ class IrParser:
 
     def _require(self, source: Expr, column: str) -> None:
         self._source_required.setdefault(id(source), set()).add(column)
-        if _is_named_table(source):
+        if _is_named_table(source) and column.lower() not in {name.lower() for name in _column_aliases(source)}:
             self._table_symbols[id(source)].required_columns.add(column)
 
     def _propagate_required_columns(self) -> None:
@@ -475,16 +502,20 @@ class IrParser:
                 if isinstance(symbol.body, exp.Select) and _star_only(symbol.body):
                     sources = _direct_sources(symbol.body)
                     if len(sources) == 1:
+                        aliases = {name.lower() for name in symbol.column_aliases}
                         for column in symbol.required_columns:
-                            self._require(sources[0], column)
+                            if column.lower() not in aliases:
+                                self._require(sources[0], column)
             for source_id, columns in tuple(self._source_required.items()):
                 source = self._source_expressions[source_id]
                 body = _unwrap_query(source) if isinstance(source, exp.Subquery) else None
                 if isinstance(body, exp.Select) and _star_only(body):
                     nested_sources = _direct_sources(body)
                     if len(nested_sources) == 1:
+                        aliases = {name.lower() for name in _column_aliases(source)}
                         for column in columns:
-                            self._require(nested_sources[0], column)
+                            if column.lower() not in aliases:
+                                self._require(nested_sources[0], column)
             after = sum(len(symbol.required_columns) for symbol in self._symbols) + sum(len(columns) for columns in self._source_required.values())
             changed = after != before
 
@@ -503,11 +534,19 @@ class IrParser:
                 left = self._opaque_relation(query.this)
             if right is None:
                 right = self._opaque_relation(query.expression)
-            output_columns = _pass_output_columns(left.output_columns, self._origin(query))
+            origin = self._origin(query)
+            by_name = bool(query.args.get("by_name"))
+            if by_name:
+                names: dict[str, str] = {}
+                for column in (*left.output_columns, *right.output_columns):
+                    names.setdefault(column.name.lower(), column.name)
+                output_columns = self._opaque_output_columns(names.values(), origin)
+            else:
+                output_columns = _pass_output_columns(left.output_columns, origin)
             relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=_SET_OPERATORS[type(query)], left=left, right=right, distinct=bool(query.args.get("distinct")),
-                by_name=bool(query.args.get("by_name")),
+                by_name=by_name,
             )
             last = _last_select(query.this)
             position = marker_position(last) if last is not None else None
@@ -571,6 +610,10 @@ class IrParser:
         return ir.Limit(origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin), is_schema_complete=relation.is_schema_complete, input=relation, count=count)
 
     def _lower_source(self, source: Expr) -> _Lowered:
+        if any(source.args.get(key) for key in ("pivots", "sample", "version", "changes")):
+            relation = self._opaque_relation(source, self._source_required.get(id(source), set()))
+            self._unsupported.append((relation, "a FROM modifier that changes the input rows"))
+            return self._alias(relation, source.alias_or_name, self._origin(source))
         if _is_named_table(source):
             symbol = self._table_symbols[id(source)]
             alias_name = source.alias or source.name
@@ -581,7 +624,7 @@ class IrParser:
                     self._report_cycle(symbol, source)
                 recursive = self._recursive_relation(symbol, source)
                 return self._alias(recursive, alias_name, self._origin(source), schema)
-            return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema)
+            return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema, _column_aliases(source))
 
         nested = _nested_join(source)
         if nested is not None:
@@ -596,7 +639,7 @@ class IrParser:
             if relation is not None:
                 # DuckDB allows an unaliased FROM subquery; nothing can qualify
                 # a column by its name, so a placeholder serves.
-                return self._alias(relation, source.alias or "subquery", self._origin(source))
+                return self._alias(relation, source.alias or "subquery", self._origin(source), column_aliases=_column_aliases(source))
 
         if isinstance(source, exp.Values):
             values = self._lower_values(source)
@@ -681,7 +724,7 @@ class IrParser:
             self._resolving.discard(symbol)
         if body is None:
             body = self._opaque_relation(symbol.body or exp.Table(this=symbol.name), symbol.required_columns)
-        output_columns = _pass_output_columns(body.output_columns, symbol.origin)
+        output_columns = self._aliased_outputs(body, symbol.origin, symbol.column_aliases)
         named = ir.NamedRelation(
             origin=symbol.origin,
             output_columns=output_columns,
@@ -794,8 +837,17 @@ class IrParser:
         self._unsupported.append((relation, "a recursive CTE or view"))
         return relation
 
-    def _alias(self, source: ir.RelationExpr, name: str, origin: Origin, schema: str = "") -> _Lowered:
-        output_columns = _pass_output_columns(source.output_columns, origin)
+    def _aliased_outputs(self, source: ir.RelationExpr, origin: Origin, names: tuple[str, ...]) -> tuple[ir.OutputColumn, ...]:
+        if names and not source.is_schema_complete:
+            # Guessed source columns have no reliable positions.
+            return self._opaque_output_columns(names, origin)
+        return tuple(
+            ir.OutputColumn(origin=origin, name=names[index] if index < len(names) else column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
+            for index, column in enumerate(source.output_columns)
+        )
+
+    def _alias(self, source: ir.RelationExpr, name: str, origin: Origin, schema: str = "", column_aliases: tuple[str, ...] = ()) -> _Lowered:
+        output_columns = self._aliased_outputs(source, origin, column_aliases)
         alias = ir.Alias(origin=origin, output_columns=output_columns, is_schema_complete=source.is_schema_complete, source=source, name=name)
         return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output, schema) for output in output_columns))
 
@@ -960,6 +1012,13 @@ class IrParser:
         return self._lower_expression(conjunct, bindings, schema_complete=schema_complete, line=_source_line(conjunct))
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
+        if any(
+            isinstance(star, exp.Star) and any(star.args.values())
+            for item in select.expressions for star in (item.this if isinstance(item, exp.Column) else item,)
+        ):
+            opaque = self._opaque_relation(select)
+            self._unsupported.append((opaque, "a modified star projection"))
+            return opaque
         keys = grouping(select)
         calls = [call for item in select.expressions for call in _set_returning_calls(item, self.dialect)]
         if calls:
@@ -1395,18 +1454,7 @@ class IrParser:
         return _Lowered(relation, tuple(replace(binding, column=remapped[binding.column]) for binding in left.bindings))
 
     def _project(self, lowered: _Lowered, items: list[Expr], origin: Origin) -> ir.Project:
-        output_columns = tuple(
-            ir.OutputColumn(
-                origin=self._origin(item),
-                name=item.alias_or_name,
-                scalar_expr=self._lower_expression(
-                    item.this if isinstance(item, exp.Alias) else item,
-                    lowered.bindings,
-                    schema_complete=lowered.relation.is_schema_complete,
-                ),
-            )
-            for item in items
-        )
+        output_columns = self._selected_output_columns(items, lowered)
         return ir.Project(origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation)
 
     def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.RelationExpr | None:
@@ -1474,7 +1522,14 @@ class IrParser:
         written: dict[str, int] = {}
         for index, item in enumerate(items):
             expression = item.this if isinstance(item, exp.Alias) else item
-            if not isinstance(expression, exp.Literal):
+            # Repeated SQL text need not denote the same evaluation. Only
+            # modeled pure expressions and aggregates over pure inputs qualify.
+            if not isinstance(expression, exp.Literal) and all(
+                not isinstance(node, _NOT_A_FUNCTION_OF_ITS_COLUMNS)
+                and (not isinstance(node, exp.Func) or type(node) in dialect_builtins(self.semantics))
+                or isinstance(node, exp.Count | exp.Sum | exp.Min | exp.Max | exp.Avg | exp.Star)
+                for node in expression.walk()
+            ):
                 written.setdefault(expression.sql(dialect=self.dialect), index)
 
         def selected(node: Expr) -> Expr:
@@ -1574,18 +1629,23 @@ class IrParser:
         )
 
     def _selected_output_columns(self, items: list[Expr], lowered: _Lowered) -> tuple[ir.OutputColumn, ...]:
-        return tuple(
-            ir.OutputColumn(
-                origin=self._origin(item),
-                name=item.alias_or_name,
-                scalar_expr=self._lower_expression(
-                    item.this if isinstance(item, exp.Alias) else item,
-                    lowered.bindings,
-                    schema_complete=lowered.relation.is_schema_complete,
-                ),
-            )
-            for item in items
-        )
+        columns = []
+        for item in items:
+            expression = item.this if isinstance(item, exp.Alias) else item
+            value = self._lower_expression(expression, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
+            comparison_type = None
+            if isinstance(expression, exp.Cast):
+                kind = expression.to
+                if kind.this not in exp.DataType.TEXT_TYPES or (
+                    isinstance(value, ir.Call) and (source := self._declared_type(value.arguments[0])) is not None
+                    and source.this in exp.DataType.NUMERIC_TYPES
+                ):
+                    comparison_type = self._comparison_type(exp.ColumnDef(kind=kind))
+            column = ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=value, comparison_type=comparison_type)
+            if isinstance(expression, exp.Cast):
+                self._declared_types[column] = expression.to
+            columns.append(column)
+        return tuple(columns)
 
     def _aggregate_output_columns(self, items: list[Expr], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
         output_columns: list[ir.OutputColumn] = []
@@ -1834,8 +1894,7 @@ class IrParser:
         return warnings
 
     def _is_composite(self, node: Expr, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
-        """Whether `node`'s value is known to be an ARRAY, ROW or MAP. A column
-        of unknown type is taken to be a scalar: composites are rare."""
+        """Whether the operand may be composite, including unknown column types."""
         match node:
             case exp.Paren() | exp.Nullif():
                 return self._is_composite(node.this, lower)
@@ -1843,7 +1902,7 @@ class IrParser:
                 return node.to.this in _COMPOSITE_TYPES
             case exp.Column():
                 kind = self._declared_type(lower(node))
-                return kind is not None and kind.this in _COMPOSITE_TYPES
+                return self.dialect in {"trino", "postgres"} if kind is None else kind.this in _COMPOSITE_TYPES
             case exp.Array() | exp.Struct() | exp.Map() | exp.VarMap():
                 return True
             case exp.Coalesce():
@@ -1859,8 +1918,7 @@ class IrParser:
                 return False
 
     def _is_json(self, node: Expr, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
-        """Whether `node`'s value is known to be JSON (or a VARIANT), whose
-        `null` a CAST turns into NULL. A column of unknown type is taken not to be."""
+        """Whether the operand may be JSON or VARIANT, whose null can cast to SQL NULL."""
         match node:
             case exp.Paren() | exp.Nullif():
                 return self._is_json(node.this, lower)
@@ -1868,7 +1926,7 @@ class IrParser:
                 return node.to.this in _JSON_TYPES
             case exp.Column():
                 kind = self._declared_type(lower(node))
-                return kind is not None and kind.this in _JSON_TYPES
+                return kind is None or kind.this in _JSON_TYPES
             case exp.ParseJSON() | exp.JSONExtract() | exp.JSONBExtract() | exp.JSONObject() | exp.JSONArray() | exp.JSONObjectAgg() | exp.JSONArrayAgg():
                 return True
             case exp.Coalesce():
@@ -1931,10 +1989,17 @@ class IrParser:
 
     def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Query) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
+        ambiguous = {name for name, count in Counter(output.name.lower() for output in relation.output_columns).items() if count > 1}
         for marker in column_markers(select):
             kind, columns, line = marker.kind, marker.columns, marker.span.line
             self._handled_column_markers.add(id(marker))
             origin = Origin.marked(select.sql(dialect=self.dialect), marker.span)
+            duplicates = [column for column in (*columns, *marker.dependent) if column.lower() in ambiguous]
+            if duplicates:
+                self._diagnostics.append(Diagnostic(
+                    diag.UNRESOLVED_ASSERTED_COLUMN, f"output names {quoted_all(duplicates)} are ambiguous; use distinct aliases", origin,
+                ))
+                continue
             unknown = [column for column in (*columns, *marker.dependent) if column.lower() not in by_name]
             if unknown and relation.is_schema_complete:
                 self._diagnostics.append(
@@ -2644,6 +2709,11 @@ def _is_named_table(source: Expr) -> TypeGuard[exp.Table]:
     return isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier)
 
 
+def _column_aliases(source: Expr) -> tuple[str, ...]:
+    alias = source.args.get("alias")
+    return tuple(column.name for column in alias.columns) if isinstance(alias, exp.TableAlias) else ()
+
+
 def _qualified_name(table: exp.Table) -> str:
     return ".".join(part for part in (table.catalog, table.db, table.name) if part)
 
@@ -2790,7 +2860,7 @@ def _schema_path(node: exp.Table | exp.Column) -> str:
 
 
 def _star_only(select: exp.Select) -> bool:
-    return len(select.expressions) == 1 and isinstance(select.expressions[0], exp.Star)
+    return len(select.expressions) == 1 and isinstance(select.expressions[0], exp.Star) and not any(select.expressions[0].args.values())
 
 
 def _selected_output_names(select: exp.Select) -> tuple[str, ...]:
@@ -2932,7 +3002,8 @@ def _any_comparison(node: type[Expr]) -> ir.Builtin:
     """`x op ANY (...)`, in every dialect: FALSE over no values, even for a
     NULL `x`, else NULL where `x` is, so never TRUE where `x` is NULL. Not
     `ALL`, which is TRUE over no values."""
-    name = {exp.EQ: "=", exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<="}[node]
+    names: dict[type[Expr], str] = {exp.EQ: "=", exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<="}
+    name = names[node]
     return ir.Builtin(name=f"{name} ANY", strict=(False, False), total=None, injective=False, rejecting=(True, False))
 
 # Comparisons, whose operands a zoned timestamp's text may be.

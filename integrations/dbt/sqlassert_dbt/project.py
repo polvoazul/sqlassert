@@ -139,7 +139,7 @@ def _analysis(
     except ManifestError as error:
         raise ProjectError(f"{error}; run `dbt compile` (or `dbt build`) first") from error
     # The catalog `dbt docs generate` writes is read whenever it is there.
-    default = project_dir / "target" / "catalog.json"
+    default = path.with_name("catalog.json")
     catalog_path = catalog_path or (default if default.is_file() else None)
     if not read_catalog or fetcher is not None:
         catalog_path = None

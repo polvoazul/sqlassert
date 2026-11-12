@@ -10,7 +10,7 @@ from sqlassert.sql_parse import (
     ParsedProgram,
     SqlParser,
     SqlassertToken,
-    _unresolved_markers,
+    _marker_shapes, _unresolved_markers,
     sqlassert_dialect,
     column_markers,
     exhaustive_span,
@@ -131,7 +131,7 @@ def test_a_marker_the_dialect_did_not_recognize_is_reported():
     sql = "CREATE TABLE u (id INTEGER PRIMARY KEY);\nSELECT * FROM s /**ASSERT MANY TO ONE**/ JOIN u ON s.id = u.id"
     unrecognized = [statement for statement in sqlglot.parse(sql, read="duckdb") if statement]
 
-    diagnostics = _unresolved_markers(sql, unrecognized)
+    diagnostics = _unresolved_markers(sql, unrecognized, _marker_shapes(sql))
 
     assert [diagnostic.code for diagnostic in diagnostics] == ["unrecognized-marker"]
     origin = diagnostics[0].origin
@@ -144,7 +144,7 @@ def test_recognized_markers_leave_the_reconciliation_quiet():
     parser = SqlParser("duckdb")
     statements = [statement for statement in sqlglot.parse(sql, read=parser.dialect_class) if statement]
 
-    assert _unresolved_markers(sql, statements) == []
+    assert _unresolved_markers(sql, statements, _marker_shapes(sql)) == []
 
 
 # Unique Set Assertion markers -- `/**ASSERT UNIQUE(...)**/` and
@@ -188,7 +188,7 @@ def test_a_primary_key_flavored_marker_is_recognized():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)
     assert markers == (ColumnMarker("key", ("id",), Span(1, 18, 1, 46)),)
 
 
@@ -199,7 +199,7 @@ def test_stacked_unique_set_assertion_markers_are_all_recognized():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)
     assert markers == (
         ColumnMarker("unique", ("a",), at(sql, "/**ASSERT UNIQUE(a)**/")),
         ColumnMarker("key", ("a", "b"), at(sql, "/**ASSERT PRIMARY KEY(a, b)**/")),
@@ -234,7 +234,7 @@ def test_a_declaration_marker_is_recognized_as_a_declared_kind():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)
     assert markers == (
         ColumnMarker("declared-unique", ("a",), at(sql, "/**DECLARE UNIQUE(a)**/")),
         ColumnMarker("unique", ("a", "b"), at(sql, "/**ASSERT UNIQUE(a, b)**/")),
@@ -263,7 +263,7 @@ def test_a_foreign_key_marker_records_its_referenced_relation_and_columns():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)
     assert markers == (
         ColumnMarker("foreign-key", ("a", "b"), at(sql, asserted), "app.u", ("x", "y")),
         ColumnMarker("declared-foreign-key", ("a",), at(sql, declared), "u", ("x",)),
@@ -292,7 +292,7 @@ def test_an_enum_marker_records_its_column_and_typed_literals():
 
     assert program.diagnostics == ()
     assert program.root_select is not None
-    markers = column_markers(program.root_select)  # ty: ignore[invalid-argument-type]
+    markers = column_markers(program.root_select)
     assert [(m.kind, m.columns, m.values) for m in markers] == [
         (
             "enum",

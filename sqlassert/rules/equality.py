@@ -21,8 +21,9 @@ never does.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import assert_never
+import re
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, analysis, current_arena
@@ -130,8 +131,10 @@ def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
         if left.value is not None and left.value == right.value:
             return Result(left.value, "Both inputs of the set operation share the comparison type", (column,), [left, right])
     match column.scalar_expr:
-        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
+        case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)) if not isinstance(relation, ir.SetOperation):
             return _comparison_type(source)
+        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)) if _small_integer(text):
+            return Result("INT", "Integer literal", (column,))
         case _:
             return Result(column.comparison_type, "Declared comparison type", (column,))
 
@@ -164,16 +167,7 @@ def _both_inputs(
 
 
 def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
-    """Whether `column = value` leaves `column` one value for each value of
-    `value`, whatever casts the comparison adds.
-
-    A column of a non-text type whose equal values are identical is: the
-    other side is cast to its type, or it is cast to a wider type, which
-    loses nothing. Text compared by identity is only when the other side is
-    such text too, or a string literal: compared with a number it is cast to
-    the number (`'01'` and `'1'` both equal 1). Anything else is not: a
-    collation or a float equates different values, and of an unknown type
-    nothing is known."""
+    """Whether equality can pin the column without a lossy coercion."""
     if _binary_text(column).value:
         match value:
             case ir.Constant(value=ir.LiteralValue(type="string")):
@@ -182,7 +176,49 @@ def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
                 return _binary_text(other).value
             case _:
                 return False
-    return _identity_comparison(column).value or _exact_arithmetic(column)
+    if not (_identity_comparison(column).value or _signed_integer(column)):
+        return False
+    match value:
+        case ir.ColumnRef(column=other):
+            return _same_type(column, other) or (
+                _signed_integer(column) and _signed_integer(other)
+            )
+        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)):
+            return "e" not in text.lower() and (exact_numeric(column).value or _exact_arithmetic(column))
+        case ir.Constant(value=ir.LiteralValue(type="boolean")):
+            return _comparison_type(column).value == "BOOLEAN"
+        case _:
+            return False
+
+
+_SIGNED_INTEGERS = {"TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT", "HUGEINT", "INT128"}
+
+
+def _small_integer(text: str) -> bool:
+    return re.fullmatch(r"-?[0-9]{1,10}", text) is not None and -(2**31) <= int(text) < 2**31
+
+
+def _signed_integer(column: ir.OutputColumn) -> bool:
+    if _comparison_type(column).value in _SIGNED_INTEGERS:
+        return True
+    program = current_arena().program
+    while isinstance(column.scalar_expr, ir.ColumnRef) and not isinstance(column.get_relation(program), ir.SetOperation):
+        column = column.scalar_expr.column
+    if isinstance(column.scalar_expr, ir.Count):
+        return True
+    if not isinstance(column.scalar_expr, ir.Call):
+        return False
+    argument = column.scalar_expr.injective_argument
+    return isinstance(argument, ir.ColumnRef) and _comparison_type(argument.column).value in _SIGNED_INTEGERS and all(
+        node is argument or isinstance(node, ir.Constant) and node.value is not None
+        and node.value.type == "numeric" and _small_integer(node.value.text)
+        for node in column.scalar_expr.arguments
+    )
+
+
+def _same_set_types(operation: ir.SetOperation, columns: Iterable[ir.OutputColumn]) -> bool:
+    """Whether set output columns retain the same types as their inputs."""
+    return all((arms := operation.arms(column)) is not None and _same_type(*arms) for column in columns)
 
 
 def _exact_arithmetic(column: ir.OutputColumn) -> bool:

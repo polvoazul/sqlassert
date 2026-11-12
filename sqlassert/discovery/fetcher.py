@@ -180,13 +180,15 @@ class DatabaseKnowledgeFetcher(ABC):
                     _origin(metadata),
                 ))
 
-        tables = {
-            metadata.identity.lower(): (relation, metadata)
-            for relation in program.named_relations
+        tables = [
+            (relation, metadata) for relation in program.named_relations
             if relation.role is ir.RelationRole.TABLE and (metadata := hydration.tables.get(relation.name.lower())) is not None
-        }
+        ]
+        by_identity: dict[str, list[tuple[ir.NamedRelation, DatabaseRelationMetadata]]] = {}
+        for relation, metadata in tables:
+            by_identity.setdefault(metadata.identity.lower(), []).append((relation, metadata))
         keys_enforced = meaning.unique_keys == "enforced"
-        for relation, metadata in tables.values():
+        for relation, metadata in tables:
             columns = {column.name.lower(): column for column in relation.output_columns}
             non_null = sorted({column.name.lower() for column in metadata.columns if not column.nullable})
             knowledge.extend(NonNullColumn(column=columns[name]) for name in non_null if name in columns)
@@ -197,16 +199,14 @@ class DatabaseKnowledgeFetcher(ABC):
                     facts.extend(NonNullColumn(column=columns[name.lower()]) for name in unique_set if name.lower() not in non_null)
                 place(facts, keys_enforced, "primary key" if primary else "unique key", unique_set, metadata)
             for foreign_key in metadata.foreign_keys:
-                if foreign_key.referenced.lower() not in tables:
-                    continue
-                target, target_metadata = tables[foreign_key.referenced.lower()]
-                if _incomplete_reference(foreign_key, target_metadata):
-                    continue  # Never seen from a consistent catalog; no fact is safer than a wrong one.
-                referenced = {column.name.lower(): column for column in target.output_columns}
-                place([ReferentialCoverage(
-                    columns=tuple(columns[name.lower()] for name in foreign_key.columns),
-                    referenced_columns=tuple(referenced[name.lower()] for name in foreign_key.referenced_columns),
-                )], meaning.foreign_keys == "enforced", "foreign key", foreign_key.columns, metadata)
+                for target, target_metadata in by_identity.get(foreign_key.referenced.lower(), ()):
+                    if _incomplete_reference(foreign_key, target_metadata):
+                        continue  # Never seen from a consistent catalog; no fact is safer than a wrong one.
+                    referenced = {column.name.lower(): column for column in target.output_columns}
+                    place([ReferentialCoverage(
+                        columns=tuple(columns[name.lower()] for name in foreign_key.columns),
+                        referenced_columns=tuple(referenced[name.lower()] for name in foreign_key.referenced_columns),
+                    )], meaning.foreign_keys == "enforced", "foreign key", foreign_key.columns, metadata)
         return CatalogFacts(tuple(knowledge), tuple(declarations), tuple(dict.fromkeys(warnings)))
 
     @abstractmethod

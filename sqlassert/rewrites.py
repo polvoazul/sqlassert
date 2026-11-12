@@ -44,7 +44,7 @@ from sqlassert import ir
 from sqlassert.dialects import semantics
 from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet
 from sqlassert.rules.domain import _domain
-from sqlassert.rules.equality import _comparison_type, _identity_comparison, _same_type
+from sqlassert.rules.equality import _comparison_type, _identity_comparison, _pins, _same_set_types, _same_type
 from sqlassert.rules.exactly_one import _cross_equalities
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
@@ -423,9 +423,14 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
     evidence = _reaches_row_identity(_closure(aggregate.input, keys, frozenset()))
     if not evidence.value:
         return None
+    types = {
+        call.description: _comparison_type(argument.column).value
+        for call in aggregate.calls
+        if len(call.arguments) == 1 and isinstance(argument := call.arguments[0], ir.ColumnRef)
+    }
     items = []
     for item in node.expressions:
-        rewritten = _one_row(item.copy(), dialect)
+        rewritten = _one_row(item.copy(), dialect, types)
         if rewritten is None:
             return None
         items.append(rewritten)
@@ -434,34 +439,15 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
         f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
         f"drop GROUP BY and write SELECT {', '.join(items)}"
     )
-    converted = [call.description for call in aggregate.calls if _converts(call)]
-    if converted:
-        message += (
-            f"; {', '.join(converted)} over one row is its argument converted to avg's result type "
-            "(DOUBLE or DECIMAL), not an integer: cast it where that matters, as in a division"
-        )
     return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence)
 
 
-def _converts(call: ir.AggregateCall) -> bool:
-    """Whether an avg's one-row value may differ from its argument's: an
-    integer argument averages to a DOUBLE or DECIMAL (`avg(i) / 2` is 0.5,
-    `i / 2` may be 0). Not when the argument is declared a float or decimal."""
-    if not call.description.lower().startswith("avg("):
-        return False
-    match call.arguments:
-        case (ir.ColumnRef(column=column),):
-            declared = _comparison_type(column).value
-            return declared is None or exp.DataType.build(declared).this not in exp.DataType.REAL_TYPES
-        case _:
-            return True
-
-
-def _one_row(item: Expr, dialect: str) -> str | None:
+def _one_row(item: Expr, dialect: str, types: dict[str, str | None]) -> str | None:
     """`item` with each aggregate in it replaced by its value over one row,
     or None when an aggregate has no such form here: count(*) is 1, count(x)
-    is 1 unless x is NULL, sum, avg, min, max, any_value, bool_and and bool_or
-    are x. With or without DISTINCT, IGNORE or RESPECT NULLS; never with
+    is 1 unless x is NULL, and the other supported aggregates take the
+    argument's value with any required conversion to the aggregate's result
+    type. With or without DISTINCT, IGNORE or RESPECT NULLS; never with
     FILTER, nor a count of several values. None too when an aggregate sits in
     a subquery: it may be the subquery's own or, reading only outer columns,
     the outer query's."""
@@ -483,9 +469,23 @@ def _one_row(item: Expr, dialect: str) -> str | None:
                 value: Expr = exp.Literal.number(1)
             case exp.Count():
                 value = exp.Case(ifs=[exp.If(this=exp.Is(this=argument.copy(), expression=exp.null()), true=exp.Literal.number(0))], default=exp.Literal.number(1))
-            case exp.Sum() | exp.Avg() | exp.Min() | exp.Max() | exp.AnyValue() | exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
+            case exp.Sum() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
+                if dialect != "duckdb" or types.get(call.sql(dialect=dialect)) not in {"TINYINT", "SMALLINT", "INT", "BIGINT"}:
+                    return None
+                value = exp.cast(argument.copy(), "HUGEINT", dialect=dialect)
+            case exp.Avg() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
+                kind = types.get(call.sql(dialect=dialect))
+                if dialect != "duckdb" or kind is None or exp.DataType.build(kind).this not in exp.DataType.NUMERIC_TYPES:
+                    return None
+                value = argument.copy() if kind == "DOUBLE" else exp.cast(argument.copy(), "DOUBLE", dialect=dialect)
+            case exp.Min() | exp.Max() | exp.AnyValue() | exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
                 value = argument.copy()
             case _:
+                return None
+        if isinstance(call, exp.Count):
+            if dialect == "duckdb":
+                value = exp.cast(value, "BIGINT", dialect=dialect)
+            elif target is not item and not (isinstance(item, exp.Alias) and target is item.this):
                 return None
         if target is item:
             item = value
@@ -846,7 +846,7 @@ def _pinned(column: ir.OutputColumn, others: list[ir.ScalarExpr]) -> ir.LiteralV
     """The one value another conjunct, or the column's domain, holds it to."""
     for other in others:
         match other:
-            case ir.Equality(left=ir.ColumnRef(column=pinned), right=ir.Constant(value=value)) | ir.Equality(left=ir.Constant(value=value), right=ir.ColumnRef(column=pinned)) if pinned is column and value is not None:
+            case ir.Equality(left=ir.ColumnRef(column=pinned), right=ir.Constant(value=value) as literal) | ir.Equality(left=ir.Constant(value=value) as literal, right=ir.ColumnRef(column=pinned)) if pinned is column and value is not None and _pins(column, literal):
                 return value
             case _:
                 pass
@@ -886,7 +886,7 @@ def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Rewr
     NULL equal to NULL as a set operation compares them, both keep each such
     row once. `INTERSECT ALL` keeps a row as often as the input with fewer of
     it, so a duplicate-free input on either side suffices."""
-    if not operation.distinct or operation.operator == "union":
+    if not operation.distinct or operation.operator == "union" or not _same_set_types(operation, operation.output_columns):
         return None
     keyword = operation.operator.upper()
     sides = [("left", operation.left)] + ([("right", operation.right)] if operation.operator == "intersect" else [])

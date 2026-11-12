@@ -171,7 +171,8 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   NULL, which text compares by identity, what `||`, `concat()`, `greatest()`
   and subscripts do with NULL, and which keys
   are enforced, keys and CHECK constraints alike. Only `ir/convert.py` reads it, and `discovery/` for catalog
-  keys; the rules see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
+  keys. `rewrites.py` also reads which set operations the dialect can write.
+  Analysis Functions see its effect in the IR. A flag claims only what holds under every setting of the dialect, and a
   dialect not listed gets cautious defaults. An unenforced key is never
   Knowledge: `RELY` (where the dialect has it) or `trust_unenforced_keys`
   (on by default) makes it a Property Declaration, otherwise an `unenforced-constraint`

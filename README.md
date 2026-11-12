@@ -216,9 +216,9 @@ with tagged as (select id, tags, old_tags from posts /**DECLARE NOT NULL ELEMENT
 select id, tags <> old_tags as retagged from tagged /**ASSERT NOT NULL(retagged)**/
 ```
 
-A column of unknown type is taken to be a scalar, not a composite. A
-constructor (`ARRAY[...]`, `ROW(...)`) is not modelled, so a comparison with
-one is never proved non-null.
+If an operand's type is unknown, a comparison may require evidence that
+its elements are non-null. Declare the source type or supply a catalog
+connection to resolve it.
 
 ### Foreign Key
 
