@@ -33,10 +33,10 @@ type PipesMeaning = Literal["strict", "lenient"] | None
 # skips it, so the result is never NULL ("skips-null"); None when not modelled.
 type ConcatMeaning = Literal["strict", "skips-null"] | None
 
-# What `greatest(a, ...)` and `least(a, ...)` do with NULL: skip it, so the
-# result is NULL only when every argument is ("skips-null"); None when not
-# modelled.
-type GreatestMeaning = Literal["skips-null"] | None
+# What `greatest(a, ...)` and `least(a, ...)` do with NULL: make the result
+# NULL ("strict"), or skip it, so the result is NULL only when every argument
+# is ("skips-null"); None when not modelled.
+type GreatestMeaning = Literal["strict", "skips-null"] | None
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,10 @@ class DialectSemantics:
     checked_arithmetic: bool = False
     # `/`, integer division and `%` by zero raise an error rather than return NULL.
     checked_division: bool = False
+    # `sum` and `avg` of non-null values are never NULL: an overflow raises
+    # (or widens the type) rather than returning NULL, and NaN or infinity is
+    # a value, not NULL (SQLite turns NaN into NULL).
+    checked_sum: bool = False
     # An implicit cast that fails raises an error, so a comparison, LIKE,
     # BETWEEN, NOT or bitwise operator of non-null operands is never NULL.
     casts_raise: bool = True
@@ -119,6 +123,7 @@ _SPARK = DialectSemantics(
 _SEMANTICS: dict[str, DialectSemantics] = {
     "duckdb": DialectSemantics(
         checked_arithmetic=True,
+        checked_sum=True,
         text_is_binary=True,
         zoned_timestamp_is_instant=True,
         pipes="strict",
@@ -131,6 +136,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "postgres": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
+        checked_sum=True,
         text_is_binary=True,
         unscaled_decimal=True,
         zoned_timestamp_is_instant=True,
@@ -146,11 +152,16 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # a comparison of non-null operands is non-null. Not `checked_arithmetic`:
         # `-x` of the least BIGINT is an exact DECIMAL rather than an error, and
         # division by zero is NULL in any mode.
+        # `sum` of integers is an exact DECIMAL, and a DOUBLE holds no
+        # infinity or NaN (a DOUBLE sum that overflows is 0).
+        checked_sum=True,
         # Not `text_is_binary`: the default collations ignore case (and
         # accents, and some trailing spaces).
         zoned_timestamp_is_instant=True,  # TIMESTAMP is converted to UTC.
         concat="strict",
         concat_ws="skips-null",
+        greatest="strict",
+        # Not `subscript_strict`: MySQL has no `xs[i]`.
         inline_references=False,
         foreign_key_engines=frozenset({"innodb", "ndb", "ndbcluster"}),
         enum_strips_trailing_spaces=True,
@@ -169,6 +180,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
+        # Its docs: overflow raises, and NaN or an infinity makes NaN or an infinity.
+        checked_sum=True,
         zoned_timestamp_is_instant=True,
         pipes="strict",
         concat="strict",
@@ -179,6 +192,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "redshift": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
+        # Not `checked_sum`: its docs say nothing of a sum that overflows or meets NaN.
         zoned_timestamp_is_instant=True,
         pipes="strict",
         unique_keys="unenforced",
@@ -206,6 +220,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "trino": DialectSemantics(
         checked_arithmetic=True,
         checked_division=True,
+        checked_sum=True,
         # VARCHAR compares by code point and Trino has no collations.
         text_is_binary=True,
         # Not `zoned_timestamp_is_instant`: a TIMESTAMP WITH TIME ZONE keeps
@@ -213,6 +228,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Unlike Postgres, a NULL array or element operand makes `||` NULL too.
         pipes="strict",
         concat="strict",
+        greatest="strict",
+        # NULL for a NULL array or map; an index out of range raises.
+        subscript_strict=True,
         # Not modelled: it skips a NULL VARCHAR, but its ARRAY(VARCHAR)
         # overload is NULL for a NULL array, and SQLGlot parses both alike.
         unique_keys="unenforced",

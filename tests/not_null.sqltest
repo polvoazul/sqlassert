@@ -236,13 +236,21 @@ SELECT sum(user_id) AS n, min(user_id) AS m FROM sessions
 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 /**ASSERT NOT NULL(m)**/  --~ UNKNOWN
 
--- case: not_null_is_not_guessed__sum_without_checked_arithmetic
+-- case: not_null_is_not_guessed__sum_without_checked_sum
 -- dialect: snowflake
 -- Snowflake does not document that a sum that overflows raises.
 SELECT user_id, sum(user_id) AS n
 FROM sessions
 GROUP BY user_id
 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: not_null_is_not_guessed__sum_where_nan_is_null
+-- dialect: sqlite
+-- SQLite's sum and avg of 9e999 and -9e999 are NULL: NaN is NULL there.
+SELECT user_id, sum(user_id) AS n, avg(user_id) AS a
+FROM sessions
+GROUP BY user_id
+/**ASSERT NOT NULL(n, a)**/  --~ UNKNOWN
 
 -- case: one_assertion_covers_its_whole_column_list
 SELECT id, nickname FROM users /**ASSERT NOT NULL(id, nickname)**/  --~ UNKNOWN

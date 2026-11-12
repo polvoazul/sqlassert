@@ -35,14 +35,15 @@ before dialects were listed; see "Not done").
 |---|---|---|---|---|---|---|---|---|
 | `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | yes (ANSI mode) | yes | yes |
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | Databricks yes; Spark no (its docs: `div` by zero is NULL) | yes | yes |
+| `sum`, `avg` of non-null values never NULL (`checked_sum`) | yes | yes | yes (an integer sum is an exact DECIMAL; no infinity or NaN) | no (not documented) | yes | no (not yet certified) | no (not documented) | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | Databricks yes; Spark no (not documented) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | OR | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
-| `greatest()`, `least()` | skip NULL | skip NULL | not modelled | not modelled | not modelled | not modelled | not modelled | not modelled |
-| `xs[i]` NULL for a NULL `xs` (`subscript_strict`) | yes | yes | no (not modelled) | no | no | no | no | no |
+| `greatest()`, `least()` | skip NULL | skip NULL | strict | not modelled | not modelled | not modelled | not modelled | strict |
+| `xs[i]` NULL for a NULL `xs` (`subscript_strict`) | yes | yes | no (no subscripts) | no | no | no | no | yes |
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | `EXCEPT ALL`, `INTERSECT ALL` (`set_operations_all`) | yes | yes | yes (8.0.31) | no | no | yes | no | yes |
@@ -81,15 +82,25 @@ types may be composite.
 `NOT NULL ELEMENTS` declares its elements non-null, and a comparison of a
 composite column or CAST without one warns (`composite-comparison`).
 `greatest()` and `least()` skip NULLs in DuckDB and PostgreSQL: NULL only
-when every argument is, so non-null when any argument is (`skips_null`).
-Elsewhere they are not modelled: MySQL's, Snowflake's and BigQuery's are
+when every argument is, so non-null when any argument is (`skips_null`). In
+MySQL and Trino they are strict: NULL when any argument is (`greatest =
+"strict"`); they may be NULL for non-null arguments there too, which is not
+modelled. Elsewhere they are not modelled: Snowflake's and BigQuery's are
 documented NULL for any NULL argument, Spark's skip NULLs, and none of those
 is certified on an engine yet. A subscript (`xs[i]`, a list, array, map or
-struct element) is strict in its container in DuckDB and PostgreSQL, and may
-be NULL for a non-null one (an index out of range, a NULL element); it is
-not modelled elsewhere (ClickHouse returns a default value out of range, and
-its arrays are never NULL). Both facts are certified on DuckDB and
-PostgreSQL.
+struct element) is strict in its container in DuckDB, PostgreSQL and Trino,
+and may be NULL for a non-null one (an index out of range, a NULL element;
+Trino raises out of range); MySQL has no subscript, and it is not modelled
+elsewhere (ClickHouse returns a default value out of range, and its arrays
+are never NULL). Both facts are certified on each engine they are claimed for.
+
+`sum()` and `avg()` of non-null values are non-null (`Accumulation`) only
+where `checked_sum` holds: an overflow raises or widens the type rather than
+returning NULL, and NaN or an infinity is a value. DuckDB, PostgreSQL, MySQL
+and Trino are certified; BigQuery's docs say so. SQLite's sum of `9e999` and
+`-9e999` is NULL (its NaN is NULL), so it is off there; Snowflake's and
+Redshift's docs do not say, and Spark's and Databricks's do not mention NaN.
+MySQL's DOUBLE sum that overflows returns 0, not an error: wrong, but not NULL.
 `concat_ws()` is modelled only where it is listed: a NULL separator makes it
 NULL everywhere, but whether a NULL value is skipped differs.
 
@@ -268,7 +279,9 @@ is certified on an engine, and reruns the DuckDB and SQLite probes.
 `scripts/certify_dialects.py` (not part of the package) generates one probe
 per fact from the fact itself: the Builtin called with a typed NULL (strict),
 with overflowing, zero-dividing and badly cast arguments (total, injective),
-with every argument NULL but one (skips_null),
+with every argument NULL but one (skips_null), `sum` and `avg` of
+overflowing BIGINTs and DOUBLEs, infinities and NaN (`checked_sum`; vacuous
+where a DOUBLE holds no infinity or NaN),
 or tables whose constraint violations it attempts (keys, text identity, ENUMs).
 SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is

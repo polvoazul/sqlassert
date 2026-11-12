@@ -1755,8 +1755,8 @@ class IrParser:
         """The value of an aggregate `call` over a group of `source`'s rows,
         or None when it is not modelled. `min`, `max` and `any_value` pick a
         value of their argument (AnyAggregate), `sum` and `avg` accumulate
-        its non-null values where arithmetic raises rather than returning
-        NULL (Accumulation), and `count` is never NULL. One with FILTER may
+        its non-null values where that is never NULL (Accumulation,
+        `checked_sum`), and `count` is never NULL. One with FILTER may
         see none of the group's rows: NULL, but for count."""
         if isinstance(call, exp.Filter):
             call, empty = call.this, True
@@ -1770,8 +1770,8 @@ class IrParser:
         if (argument := _picked_argument(call)) is not None:
             # One of its argument's values on some row of the group.
             return ir.AnyAggregate(origin=origin, input=lower(argument), empty=empty)
-        if (argument := _aggregate_argument(call, (exp.Sum, exp.Avg), distinct=True)) is not None and self.semantics.checked_arithmetic:
-            # NULL over non-null values only where arithmetic does not raise (overflow, NaN).
+        if (argument := _aggregate_argument(call, (exp.Sum, exp.Avg), distinct=True)) is not None and self.semantics.checked_sum:
+            # Elsewhere an overflow or NaN over non-null values may be NULL.
             return ir.Accumulation(origin=origin, input=lower(argument), empty=empty)
         return None
 
@@ -2604,6 +2604,13 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
                     ir.BuiltinVariadic(
                         name=name, strict=(False,), total=None, injective=False, repeated_strict=False, repeated_total=False, skips_null=True,
                     ),
+                    ("this", "expressions"),
+                )
+        case "strict":
+            # NULL when any argument is: `greatest(NULL, 1)` is NULL.
+            for node, name in {exp.Greatest: "greatest", exp.Least: "least"}.items():
+                builtins[node] = (
+                    ir.BuiltinVariadic(name=name, strict=(True,), total=None, injective=False, repeated_strict=True, repeated_total=False),
                     ("this", "expressions"),
                 )
         case None:

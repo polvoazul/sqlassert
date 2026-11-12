@@ -124,7 +124,7 @@ def candidate_facts(dialect: str) -> tuple[Fact, ...]:
     """The facts the strong reading of each weak flag would add: probed only to report."""
     meaning = semantics(dialect)
     strong = replace(
-        meaning, checked_arithmetic=True, checked_division=True, casts_raise=True, text_is_binary=True, unscaled_decimal=False,
+        meaning, checked_arithmetic=True, checked_division=True, checked_sum=True, casts_raise=True, text_is_binary=True, unscaled_decimal=False,
         zoned_timestamp_is_instant=True,
     )
     claimed = {fact.name for fact in facts(dialect, meaning)}
@@ -271,7 +271,8 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
         strict_positions = [i for i, flag in enumerate(strict) if flag]
         if strict_positions:
             checks = tuple(check for i in strict_positions for check in probe(null_at(ordinary, [i]), "true"))
-            yield Fact(f"strict({label})", f"make {label} non-strict in ir/convert.dialect_builtins", checks)
+            weaken = "greatest=None" if label in ("greatest", "least") else f"make {label} non-strict in ir/convert.dialect_builtins"
+            yield Fact(f"strict({label})", weaken, checks)
         if total is not None:
             free = [i for i, flag in enumerate(total) if not flag]
             cases = [ordinary, *(case + ordinary[len(case):] for case in (*shape.overflow, *shape.bad))]
@@ -396,7 +397,40 @@ def _not_null_key_check(dialect: str, columns: str, attempts: tuple[str, ...]) -
     )
 
 
+# A DOUBLE infinity and NaN, as SQL that SQLGlot writes in the dialect; None
+# where a DOUBLE cannot hold one: MySQL has neither, SQLite's NaN is NULL
+# (and `CAST('Infinity' AS DOUBLE)` is 0 in both).
+_INFINITY: dict[str, str | None] = {"sqlite": "9e999", "mysql": None}
+_NAN: dict[str, str | None] = {"sqlite": None, "mysql": None}
+
+
+def _sum_checks(dialect: str) -> Iterable[Check]:
+    """`sum` and `avg` of non-null values that overflow (BIGINT, DOUBLE) or
+    meet infinities and NaN raise an overflow error or return a non-null
+    value: a widened type, the overflowed sum, an infinity, NaN. A NULL fails."""
+    infinity = _INFINITY.get(dialect, "CAST('Infinity' AS DOUBLE)")
+    nan = _NAN.get(dialect, "CAST('NaN' AS DOUBLE)")
+    summed = (
+        ("CAST('9223372036854775807' AS BIGINT)",) * 2,
+        ("CAST('1e308' AS DOUBLE)",) * 2,
+        (infinity, f"-{infinity}") if infinity else f"{dialect} has no DOUBLE infinity",
+        (nan, "CAST('1' AS DOUBLE)") if nan else f"{dialect} has no DOUBLE NaN",
+    )
+    for function in ("sum", "avg"):
+        for values in summed:
+            if isinstance(values, str):
+                yield Check("", "error or true", problem=values)
+                continue
+            rows = " UNION ALL ".join(f"SELECT {value} AS x" for value in values)
+            yield Check(
+                _query(f"SELECT CASE WHEN {function}(x) IS NULL THEN 0 ELSE 1 END FROM ({rows}) AS t", dialect), "error or true",
+                guard=(_query(f"SELECT {values[0]}", dialect),), accepted_error=_OVERFLOW_ERROR,
+            )
+
+
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
+    if meaning.checked_sum:
+        yield Fact("checked_sum", "checked_sum=False", tuple(_sum_checks(dialect)))
     if meaning.text_is_binary:
         yield Fact("text_is_binary", "text_is_binary=False", (_identity_check(dialect, "VARCHAR(10)"),))
     if not meaning.unscaled_decimal:
