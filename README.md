@@ -544,7 +544,7 @@ From Python, `suggest(sql)` returns the same suggestions, each with its `site`, 
 
 #### Rewrites
 
-Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row. One that may change an output column's type is a `rewrite with caveat`, listed after the others: its message ends with a `Caveat:` naming the column and the change (sqlassert has no result-type model per dialect, so a rewrite that may change a type is caveated). A rewrite never turns a query that runs into one that fails.
+Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row. One that may change an output column's type or precision, or overflow where the original did not, is a `rewrite with caveat`, listed after the others: its message ends with a `Caveat:` naming the column and the risk (sqlassert has no result-type model per dialect, so precision and type differences are caveated, never refused). A plain `rewrite` never turns a query that runs into one that fails.
 
 ```bash
 $ sqlassert suggest orders.sql
@@ -564,7 +564,7 @@ marker   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY O
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
 | Redundant ORDER BY key | The ORDER BY keys before it determine it, NULL equal to NULL: it never breaks a tie. Silent when a key is an expression or a name sqlassert cannot map to one column. |
 | Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
-| GROUP BY of one row per group | No two input rows agree on the grouping columns, NULL equal to NULL: every group is one row, so `GROUP BY` goes and each aggregate is its value over that row (`count(*)` is 1, `count(x)` a `CASE`, `sum`, `avg`, `min`, `max`, `any_value`, `bool_and`, `bool_or` of x are x). A rewrite with caveat when a type changes: `sum(x)` of an INTEGER is a HUGEINT in DuckDB, `x` an INTEGER. Only where the value is the same (no `avg` of a BIGINT or DECIMAL, which a DOUBLE may round) and, inside an expression, only an aggregate whose type is kept: `sum(x) + 1` may overflow as `x + 1`. |
+| GROUP BY of one row per group | No two input rows agree on the grouping columns, NULL equal to NULL: every group is one row, so `GROUP BY` goes and each aggregate is its value over that row (`count(*)` is 1, `count(x)` a `CASE`, `sum`, `avg`, `min`, `max`, `any_value`, `bool_and`, `bool_or` of x are x). A rewrite with caveat when a type or precision changes: `sum(x)` of an INTEGER is a HUGEINT in DuckDB, `x` an INTEGER; `sum(x) + 1` may overflow as `x + 1`; `avg(x)` of a BIGINT, HUGEINT, UBIGINT or DECIMAL is `x`, its exact value, where avg's DOUBLE may round it. None where the value may differ otherwise (`sum` of a BOOLEAN, `avg` of an integer inside an expression, which may divide as an integer) or the argument's type is unknown. |
 | Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 

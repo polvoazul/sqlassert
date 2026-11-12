@@ -205,10 +205,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   checks SQL; `__main__.py` only parses arguments. A path that matches no file
   is a usage error, since a check of nothing would pass.
 - `rewrites.py` holds `suggest`'s Rewrites: result-preserving changes to
-  the SQL. A Rewrite that may change an output column's type is a Rewrite
+  the SQL. A Rewrite that may change an output column's type or precision,
+  or overflow, is a Rewrite
   with Caveat (`SuggestType.REWRITE_WITH_CAVEAT`, set per Rewrite, not per
   `RewriteKind`): there is no result-type model per dialect, so the type
-  change is named, never cast away. None of their facts is a Property, so it reads rule
+  change is named, never cast away nor refused. None of their facts is a Property, so it reads rule
   internals in the same arena -- null sources and null-rejected conjuncts
   for an outer join that cannot pad, the strict (`definite = ∅`) closure for
   `DISTINCT` and grouping columns, Enumerated Domains (`_domain`) and the

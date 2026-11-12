@@ -2,7 +2,7 @@
 
 Four types of suggestion (`SuggestType`). Rewrites: changes to the SQL
 itself that a proof shows leave its result unchanged (`rewrites.py`), with
-a caveat when a column's type changes. Markers: what is provable but not asserted, to lock in. Hazards: places
+a caveat when a column's type or precision may change. Markers: what is provable but not asserted, to lock in. Hazards: places
 whose result the SQL leaves unspecified (`hazards.py`).
 
 Marker candidates are generated mechanically from the Program IR, one

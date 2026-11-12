@@ -252,20 +252,24 @@ A rewrite of the SQL itself, at one Attachment Site, that a Proof shows leaves
 the program's result unchanged as a multiset: an outer join that cannot keep a
 padded row written as an inner join, a join that is redundant or only filters,
 a redundant `DISTINCT` or grouping column, an unused CTE. It guarantees the
-same rows; a column's type may change, which makes it a Rewrite with Caveat.
+same rows; a column's type or precision may change, or its arithmetic
+overflow, which makes it a Rewrite with Caveat.
 Otherwise (same rows, same column types, no new error) it is a plain
 Rewrite, suggestion type `rewrite`. `suggest` ranks Rewrites before Rewrites
 with Caveat, those before markers to paste, and those before Hazards.
 _Avoid_: Improvement, optimization, lint, hint
 
 **Rewrite with Caveat**:
-A Rewrite that keeps the rows but may change an output column's type, its
-message naming the column and the change (suggestion type `rewrite with
-caveat`): a `GROUP BY` whose groups are single rows, written as a projection,
-replaces `sum(x)` by `x` (DuckDB's HUGEINT sum becomes x's INTEGER) and
-`count(*)` by `1`. sqlassert has no result-type model per dialect, so a
-Rewrite that may change a type is caveated. One that could turn a successful
-query into an error (a narrower type inside `sum(x) + 1`) is no Rewrite.
+A Rewrite that keeps the rows but may change an output column's type,
+precision or overflow, its message naming the column and the risk
+(suggestion type `rewrite with caveat`): a `GROUP BY` whose groups are
+single rows, written as a projection, replaces `sum(x)` by `x` (DuckDB's
+HUGEINT sum becomes x's INTEGER, and `sum(x) + 1` as `x + 1` may overflow)
+and `avg(b)` of a BIGINT by `b` (exact, where avg's DOUBLE may round).
+sqlassert has no result-type model per dialect, so precision and type
+differences are always a caveat, never a refusal. A replacement whose value
+differs otherwise (`sum` of a BOOLEAN counts it) or whose type is unknown is
+no Rewrite.
 _Avoid_: Unsafe rewrite, approximate rewrite, lossy rewrite (the rows are
 the same)
 
