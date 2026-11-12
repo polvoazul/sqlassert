@@ -80,10 +80,27 @@ SELECT empno, sal FROM emp_nullables WHERE sal IN (1, NULL)
 
 -- case: strong_is_not_distinct_from_a_literal
 -- inspired by RexUtil.predicateConstants (IS_NOT_DISTINCT_FROM gathers a constant)
--- Missing proofs: NULL IS NOT DISTINCT FROM 1 is FALSE, so sal is 1.
+-- NULL IS NOT DISTINCT FROM 1 is FALSE, so sal is 1.
 SELECT empno, sal FROM emp_nullables WHERE sal IS NOT DISTINCT FROM 1
 /**ASSERT NOT NULL(sal)**/  --~ PROVED
 /**ASSERT ENUM(sal IN (1))**/  --~ PROVED
+
+-- case: strong_is_not_distinct_from_a_non_null_column
+-- inspired by RexUtil.predicateConstants, as above, against a column
+SELECT e.empno, e.sal FROM emp_nullables AS e JOIN dept AS d ON e.sal IS NOT DISTINCT FROM d.deptno
+/**ASSERT NOT NULL(sal)**/  --~ PROVED
+
+-- case: strong_is_not_distinct_from_a_nullable_column
+-- NULL IS NOT DISTINCT FROM NULL is TRUE.
+SELECT empno, sal, comm FROM emp_nullables WHERE sal IS NOT DISTINCT FROM comm
+/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(sal -> comm)**/  --~ PROVED
+
+-- case: strong_is_not_distinct_from_a_literal_without_ansi
+-- dialect: spark
+-- Without ANSI mode a failed cast is NULL: sal <=> 'x' is sal IS NULL.
+SELECT empno, sal FROM emp_nullables WHERE sal <=> 1
+/**ASSERT NOT NULL(sal)**/  --~ UNKNOWN
 
 -- case: strong_nullif_first_argument
 -- inspired by RexProgramTest.testStrong, NULLIF(null, X) is null
@@ -139,7 +156,7 @@ WHERE q.ms > 0
 
 -- case: nullability_of_comparisons_and_is_family
 -- inspired by RelMetadataTest.testPullUpPredicatesFromProject3 and Strong NOT_NULL policies
--- Missing proofs: a, c, d are never NULL; b is non-null for non-null inputs, like e.
+-- a, c, d are never NULL; b is non-null for non-null inputs, like e.
 SELECT sal IS NULL AS a, sal = comm AS b, mgr IS DISTINCT FROM sal AS c, EXISTS (SELECT 1 FROM dept) AS d, sal > comm AS e
 FROM emp
 /**ASSERT NOT NULL(a)**/  --~ PROVED
@@ -147,6 +164,19 @@ FROM emp
 /**ASSERT NOT NULL(c)**/  --~ PROVED
 /**ASSERT NOT NULL(d)**/  --~ PROVED
 /**ASSERT NOT NULL(e)**/  --~ PROVED
+
+-- case: nullability_of_an_equality_with_a_nullable_side
+-- inspired by Strong.createPolicyMap (EQUALS is Policy.ANY)
+SELECT mgr = sal AS b, mgr IS NOT DISTINCT FROM sal AS c FROM emp
+/**ASSERT NOT NULL(b)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+
+-- case: nullability_of_an_equality_without_ansi
+-- dialect: spark
+-- Without ANSI mode a failed implicit cast is NULL: 1 = 'x' is NULL.
+SELECT sal = comm AS b, sal <=> comm AS c FROM emp
+/**ASSERT NOT NULL(b)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
 
 -- case: nullability_of_concat_operator
 -- inspired by SqlStdOperatorTable.CONCAT (nullable only if an operand is)
@@ -173,7 +203,7 @@ SELECT greatest(mgr, 1) AS g FROM emp
 
 -- case: nullability_of_grouped_max_and_sum
 -- inspired by RelMetadataTest.testPullUpPredicatesFromAggregation and ReturnTypes.ARG0_NULLABLE_IF_EMPTY
--- Missing proofs: a group is never empty, b is a non-null 2, so max(b) is 2 and non-null.
+-- A group is never empty, b is a non-null 2, so max(b) is 2 and non-null, like sum(b).
 SELECT a, max(b) AS mb, sum(b) AS sb
 FROM (SELECT 1 AS a, 2 AS b FROM emp) AS subq
 GROUP BY a
@@ -183,7 +213,7 @@ GROUP BY a
 
 -- case: nullability_of_scalar_max
 -- inspired by RelMdPredicates.getPredicates(Aggregate), "GROUP BY () can convert an empty relation"
--- NOT NULL is false (no input rows); ENUM holds, NULL being outside it: a missing proof.
+-- NOT NULL is false (no input rows); ENUM holds, NULL being outside it.
 SELECT max(sal) AS m FROM emp WHERE sal = 5
 /**ASSERT NOT NULL(m)**/  --~ UNKNOWN
 /**ASSERT ENUM(m IN (5))**/  --~ PROVED

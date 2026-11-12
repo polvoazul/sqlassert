@@ -55,10 +55,10 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
    join pads, proves that join matched. Compute rejection per padding, not
    only per column. `nulls: strong_or_of_two_padded_columns`,
    `strong_or_of_is_not_null_on_padded_columns`, `strong_coalesce_of_padded_columns`.
-10. **Comparisons and the IS family in a select list**: `x IS NULL`,
+10. ~~**Comparisons and the IS family in a select list**:~~ Done: the IS family (`IS NOT DISTINCT FROM` included) is never NULL, `IS DISTINCT FROM` and `EXISTS` are never-null Calls, and `a = b` is non-null when its sides are where a failed cast raises and neither side is a composite (`nullability._expression_sources`, `Equality.total`, `convert._checked_comparison`). Was: `x IS NULL`,
     `x IS DISTINCT FROM y` and `EXISTS (...)` are never NULL; `a = b` is
     non-null when `a` and `b` are. `nulls: nullability_of_comparisons_and_is_family`.
-11. **IS NOT DISTINCT FROM**: against a literal it rejects NULL and pins a
+11. ~~**IS NOT DISTINCT FROM**~~ Done: an `ir.NullSafeEquality`, which bounds a domain and pins a constant like `=` (`domain._conjunct_bound`, `uniqueness._equality_dependencies`), merges Equality Groups and gives dependencies both ways between columns, rejects one side when the other is non-null where a failed cast raises (`nullability._null_rejected`), and binds join columns that are definite only where proved non-null (`join_cardinality._bound_columns`). Was: against a literal it rejects NULL and pins a
     constant; between two columns it is a strict equality both ways (an
     Equality Group, FDs); as a join key it reaches a Non-Null Unique Set, and
     never a nullable one. `nulls: strong_is_not_distinct_from_a_literal`,
@@ -74,7 +74,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
     greatest/least are non-null when any argument is in DuckDB and Postgres.
     `nulls: strong_nullif_first_argument`, `strong_trim_and_floor`,
     `strong_item_of_a_list`, `nullability_of_concat_operator`, `nullability_of_greatest_duckdb`.
-14. **Grouped MIN/MAX/SUM of a non-null argument** are non-null (no FILTER);
+14. ~~**Grouped MIN/MAX/SUM of a non-null argument**~~ Done for a select item that is the bare call: MIN/MAX are an `AnyAggregate` of their argument, SUM an `ir.Accumulation` where arithmetic is checked, both `empty` (NULL over no rows) when grouped by nothing; the scalar bare column is one too (`convert._aggregate_output_columns`). Was: are non-null (no FILTER);
     MIN/MAX keep the argument's domain. A scalar one stays nullable.
     `nulls: nullability_of_grouped_max_and_sum`, `nullability_of_scalar_max` (boundary),
     `iq: grouped_sum_of_a_non_null_column_is_non_null`.
@@ -88,7 +88,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 
 ### Dependencies and keys
 
-18. **One input column projected twice**: `SELECT deptno, deptno AS deptno2`
+18. ~~**One input column projected twice**~~ Done: an input attribute maps back to every output carrying it (`uniqueness._inverse`). Was: `SELECT deptno, deptno AS deptno2`
     proves `deptno2 -> deptno`. `_row_preserving` and `_grouped` keep one
     output per input column (`back`). `keys: fd_identical_expressions`.
 19. **MIN/MAX/ANY_VALUE of a one-column Unique Set** grouped by anything is
@@ -108,7 +108,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
     (`d.deptno = e.mgr AND d.deptno = 10`); two left columns equal to one
     right column are equal. `nulls: pullup_semi_join_from_exists_on_constant`,
     `pullup_semi_join_equates_two_left_columns`.
-24. **EXACTLY ONE onto a scalar aggregate** with ON TRUE or CROSS JOIN.
+24. ~~**EXACTLY ONE onto a scalar aggregate** with ON TRUE or CROSS JOIN.~~ Done: an ON always TRUE matches a right input that always has a row, an aggregate grouped by nothing through Aliases, Projects and DISTINCT, not HAVING (`exactly_one._has_a_row`).
     `iq: left_join_on_true_to_a_scalar_aggregate_matches_exactly_once`.
 
 Consider a warning Diagnostic when a construct lowers opaque silently

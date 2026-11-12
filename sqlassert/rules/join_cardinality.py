@@ -3,18 +3,21 @@
 A row of one input appears once per matching row of the other, or once padded,
 whatever the join kind. Matching rows satisfy ON, so they agree on every
 column an ON equality binds to the first row's column or to a constant, all
-non-null. When those columns reach the matched input's Row Identity, a row
-matches at most one row and is never repeated. A cross join is an ON with no
+non-null. IS NOT DISTINCT FROM binds them too, but matches NULL to NULL, so
+those columns are non-null only where proved. When those columns reach the
+matched input's Row Identity, a row matches at most one row and is never
+repeated. A cross join is an ON with no
 conjuncts: the other input must have at most one row. A semi or anti join
 keeps or drops left rows whole and outputs no right row; its left rows are
 never repeated (`many_to_one_join`), and no cardinality marker applies to it.
 """
 
+from dataclasses import dataclass, field
 from typing import Literal, assert_never
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, any_of, analysis
-from sqlassert.rules.column_set import ColumnSet
+from sqlassert.rules.column_set import Attribute, ColumnSet
 from sqlassert.rules.equality import _pins
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 
@@ -49,18 +52,29 @@ def _at_most_one_match(join: ir.Join, matched: Side) -> Result[bool]:
     relation = join.right if matched == "right" else join.left
     cols = _bound_columns(join, matched)
     bound = frozenset(cols.value.columns)
-    reached = _reaches_row_identity(_closure(relation, bound, bound))
+    reached = _reaches_row_identity(_closure(relation, bound, frozenset(cols.value.definite)))
     reason = "Right columns bound for each left row" if matched == "right" else "Left columns bound for each right row"
     return all_of((Result(True, reason, (join,), list(cols.members.values())), reached))
 
 
+@dataclass(eq=False)
+class BoundColumns(ColumnSet):
+    """`columns` bound for each row of the other input; `definite` those of
+    them non-null on every matched row: bound by `=`, not only by IS NOT
+    DISTINCT FROM, which also matches NULL to NULL."""
+
+    definite: set[Attribute] = field(default_factory=set)
+
+
 @analysis(Stratum.UNIQUE_JOIN)
-def _bound_columns(join: ir.Join, matched: Side) -> Result[ColumnSet]:
-    """The columns of `matched` an ON equality binds to the other input's column or to a constant."""
+def _bound_columns(join: ir.Join, matched: Side) -> Result[BoundColumns]:
+    """The columns of `matched` an ON equality (or IS NOT DISTINCT FROM)
+    binds to the other input's column or to a constant."""
     relation, other = (join.right, join.left) if matched == "right" else (join.left, join.right)
     members = {}
+    definite = set()
     for equality in join.conjuncts:
-        if not isinstance(equality, ir.Equality):
+        if not isinstance(equality, ir.Equality | ir.NullSafeEquality):
             continue
         for bound, value in ((equality.left, equality.right), (equality.right, equality.left)):
             if bound is value:
@@ -70,7 +84,7 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[ColumnSet]:
                 case ir.ColumnRef(column=column):
                     if column not in relation.output_columns:
                         continue
-                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Elements() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Accumulation() | ir.Elements() | ir.Equality() | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
                     assert_never(bound)
@@ -83,12 +97,14 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[ColumnSet]:
                 case ir.ColumnRef(column=other_column):
                     if other_column not in other.output_columns or not _pins(column, value):
                         continue
-                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Elements() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Accumulation() | ir.Elements() | ir.Equality() | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
                     continue
                 case _:
                     assert_never(value)
 
             evidence = Result(True, "Equality fixes the matched column for each row of the other input", (equality, column, value))
             members[column] = members[column] | evidence if column in members else evidence
+            if isinstance(equality, ir.Equality):
+                definite.add(column)
 
-    return Result(ColumnSet(relation, set(members)), "Bound columns", members=members)
+    return Result(BoundColumns(relation, set(members), definite), "Bound columns", members=members)

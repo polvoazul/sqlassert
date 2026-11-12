@@ -163,9 +163,10 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
             if closure is None:
                 continue
             inputs[delegation.input] = closure
-            for source, attribute in delegation.back.items():
-                if source in closure.value.columns and attribute not in reached:
-                    reach(attribute, Result(True, delegation.reason, (relation, attribute), [closure.members[source]]))
+            for source, attributes in delegation.back.items():
+                for attribute in attributes if source in closure.value.columns else ():
+                    if attribute not in reached:
+                        reach(attribute, Result(True, delegation.reason, (relation, attribute), [closure.members[source]]))
             for attribute, sources in delegation.computed.items():
                 if sources <= closure.value.columns and attribute not in reached:
                     reason = "A deterministic function of determined input columns"
@@ -203,15 +204,16 @@ class _Delegation:
     """How rows of a relation map onto rows of one input, for taking closure there.
 
     `down` maps the relation's attributes to the input's; `back` maps input
-    attributes reached there back up, and `computed` maps each of the
-    relation's columns computed from input attributes to them: reaching all of
-    them reaches it. `valid` says whether two rows agreeing on the reached
+    attributes reached there back up, each to every attribute carrying it
+    (`SELECT deptno, deptno AS deptno2` passes one input column twice), and
+    `computed` maps each of the relation's columns computed from input
+    attributes to them: reaching all of them reaches it. `valid` says whether two rows agreeing on the reached
     attributes may be compared as input rows at all.
     """
 
     input: ir.RelationExpr
     down: dict[Attribute, Attribute]
-    back: dict[Attribute, Attribute]
+    back: dict[Attribute, tuple[Attribute, ...]]
     reason: str
     valid: Callable[[dict[Attribute, Result[bool]], Callable[[Attribute], bool]], bool] | None = None
     computed: dict[Attribute, frozenset[Attribute]] = field(default_factory=dict)
@@ -269,7 +271,15 @@ def _one_to_one(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[ir.O
         upstream = ir.injective_input(column.scalar_expr)
         if column not in passed and upstream in source.output_columns and exact_numeric(upstream).value:
             mapping[column] = upstream
-    return mapping | passed  # Last, so mapping back prefers a pass-through.
+    return mapping | passed
+
+
+def _inverse(down: dict[Attribute, Attribute]) -> dict[Attribute, tuple[Attribute, ...]]:
+    """Each input attribute `down` reaches, with every attribute mapped onto it."""
+    back: dict[Attribute, tuple[Attribute, ...]] = {}
+    for own, upstream in down.items():
+        back[upstream] = (*back.get(upstream, ()), own)
+    return back
 
 
 def _row_preserving(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
@@ -277,7 +287,7 @@ def _row_preserving(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Dele
     down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _one_to_one(relation, source).items()}
     down[RowIdentity(relation)] = RowIdentity(source)
     return _Delegation(
-        source, down, {upstream: own for own, upstream in down.items()}, "Determined in the input",
+        source, down, _inverse(down), "Determined in the input",
         computed=_computed(relation, source),
     )
 
@@ -293,8 +303,8 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
     input row belongs to one output row.
     """
     down: dict[Attribute, Attribute] = {own: upstream for own, upstream in _one_to_one(relation, source).items()}
-    back: dict[Attribute, Attribute] = {upstream: own for own, upstream in down.items()}
-    back[RowIdentity(source)] = RowIdentity(relation)
+    back = _inverse(down)
+    back[RowIdentity(source)] = (RowIdentity(relation),)
     if isinstance(relation, ir.Aggregate):
         grouping = frozenset(down[column] for column in relation.grouping_outputs if column in down)
         constant = _closure(source, grouping, frozenset()).value.columns
@@ -302,7 +312,7 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
         for column in relation.output_columns:
             match column.scalar_expr:
                 case ir.AnyAggregate(input=ir.ColumnRef(column=upstream)) if upstream in constant:
-                    back[upstream] = column
+                    back[upstream] = (*back.get(upstream, ()), column)
                 case _:
                     pass  # Count-sensitive and opaque aggregates are new values.
     # A computed column of an Aggregate that is not a grouping item wraps its
@@ -341,7 +351,7 @@ def _join_side(join: ir.Join, left: bool) -> _Delegation:
         own: upstream for own, upstream in zip(join.output_columns[offset:offset + len(side.output_columns)], side.output_columns)
     }
     down[RowIdentity(side)] = RowIdentity(side)
-    back = {upstream: own for own, upstream in down.items()}
+    back = _inverse(down)
     if left not in _padded_sides(join):
         return _Delegation(side, down, back, "Determined in the joined input")
 
@@ -460,20 +470,30 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
 
 
 def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[ir.OutputColumn, ir.OutputColumn], clause: str):
-    """Dependencies of conjuncts that hold on every row: `a = b` both ways,
-    `a = literal` and `a IS NULL` from the empty set, and `b = f(x...)` from
+    """Dependencies of conjuncts that hold on every row: `a = b` and
+    `a IS NOT DISTINCT FROM b` both ways, `a = literal` (or IS NOT DISTINCT
+    FROM it) and `a IS NULL` from the empty set, and `b = f(x...)` from
     `x...` (Paulley Claim 20) when f is pure and they compare by identity."""
     for conjunct in conjuncts:
         evidence = Result(True, f"{clause} conjunct", (conjunct,))
         match conjunct:
             # An equality that casts, or compares under a collation, relates
             # values that differ: it gives no dependency.
-            case ir.Equality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right) if first in outputs and second in outputs:
+            # IS NOT DISTINCT FROM equates NULLs too, so NULL agrees with NULL.
+            case (
+                ir.Equality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right)
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right)
+            ) if first in outputs and second in outputs:
                 if _pins(second, left):
                     yield (outputs[first],), outputs[second], evidence
                 if _pins(first, right):
                     yield (outputs[second],), outputs[first], evidence
-            case ir.Equality(left=ir.ColumnRef(column=column), right=ir.Constant() as constant) | ir.Equality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column)) if column in outputs:
+            case (
+                ir.Equality(left=ir.ColumnRef(column=column), right=ir.Constant() as constant)
+                | ir.Equality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column))
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=column), right=ir.Constant() as constant)
+                | ir.NullSafeEquality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column))
+            ) if column in outputs:
                 if _pins(column, constant):
                     yield (), outputs[column], evidence
             case ir.IsNull(operand=ir.ColumnRef(column=column)) if column in outputs:

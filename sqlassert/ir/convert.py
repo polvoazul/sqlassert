@@ -1560,14 +1560,20 @@ class IrParser:
         for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
             lowered = self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
+            # Grouped by nothing (no grouped items), the one row exists even
+            # over no input rows, where an aggregate of its values is NULL.
+            empty = not grouped_items
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
-                # Grouped by nothing (no grouped items), the one row exists even
-                # over no input rows, so a bare column, where a dialect allows
-                # one, may be NULL.
-                lowered = (
-                    ir.AnyAggregate(origin=self._origin(expression), input=lowered) if grouped_items
-                    else ir.OpaqueExpression(origin=self._origin(expression), description=expression.sql(dialect=self.dialect))
-                )
+                # A bare column, where a dialect allows one.
+                lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered, empty=empty)
+            elif (argument := _aggregate_argument(expression, (exp.Min, exp.Max))) is not None:
+                # One of its argument's non-null values.
+                value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
+                lowered = ir.AnyAggregate(origin=self._origin(expression), input=value, empty=empty)
+            elif (argument := _aggregate_argument(expression, (exp.Sum,))) is not None and self.semantics.checked_arithmetic:
+                # NULL over non-null values only where arithmetic does not raise (overflow, NaN).
+                value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
+                lowered = ir.Accumulation(origin=self._origin(expression), input=value, empty=empty)
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
 
@@ -1658,7 +1664,20 @@ class IrParser:
                     for branch in _disjuncts(expression)
                 ))
             case exp.EQ() if not quantified:
-                return ir.Equality(origin=origin, left=lower(expression.this), right=lower(expression.expression))
+                return ir.Equality(
+                    origin=origin, left=lower(expression.this), right=lower(expression.expression),
+                    total=self._checked_comparison(expression, lower),
+                )
+            case exp.NullSafeEQ() if not quantified:
+                return ir.NullSafeEquality(
+                    origin=origin, left=lower(expression.this), right=lower(expression.expression),
+                    rejects=self._checked_comparison(expression, lower),
+                )
+            case exp.NullSafeNEQ() if not quantified:
+                return ir.Call(origin=origin, function=_IS_DISTINCT_FROM, arguments=(lower(expression.this), lower(expression.expression)), description=description)
+            case exp.Exists():
+                subquery = ir.OpaqueExpression(origin=origin, description=description)
+                return ir.Call(origin=origin, function=_EXISTS, arguments=(subquery,), description=description)
             case exp.Is(expression=exp.Null()):
                 return ir.IsNull(origin=origin, operand=lower(expression.this))
             case exp.Not(this=exp.Is(expression=exp.Null()) as test):
@@ -1698,6 +1717,14 @@ class IrParser:
                 self._unsupported.append((opaque, "a window function (other than QUALIFY row_number() ... = 1)"))
             return opaque
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
+
+    def _checked_comparison(self, comparison: exp.Binary, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
+        """Whether `comparison` compares its operands' values as they are:
+        where a failed implicit cast raises, and neither is a composite, which
+        may hold a NULL element."""
+        return self.semantics.casts_raise and not any(
+            self._is_composite(operand, lower) for operand in (comparison.this, comparison.expression)
+        )
 
     def _check_zoned_text(self, comparison: Expr, lower: Callable[[Expr], ir.ScalarExpr], origin: Origin) -> None:
         """Warn of a comparison with a CAST of a zoned timestamp, where it keeps
@@ -2697,6 +2724,16 @@ def _matching_grouping_output(group_expression: Expr, items: list[Expr]) -> Expr
     return _matching_output(group_expression, items)
 
 
+def _aggregate_argument(expression: Expr, kinds: tuple[type[exp.AggFunc], ...]) -> Expr | None:
+    """The one argument of a plain call of one of `kinds`: no DISTINCT, FILTER,
+    window, or other argument (DuckDB's `max(x, 3)` is a list)."""
+    if type(expression) not in kinds or isinstance(expression.this, (exp.Distinct, exp.Star)) or expression.this is None:
+        return None
+    if any(value for key, value in expression.args.items() if key != "this"):
+        return None
+    return expression.this
+
+
 def _is_bare_aggregate_expression(expression: Expr) -> bool:
     return any(isinstance(node, exp.Column) for node in expression.walk()) and not any(
         isinstance(node, exp.AggFunc) for node in expression.walk()
@@ -2753,6 +2790,10 @@ _JSON_TYPES = {exp.DataType.Type.JSON, exp.DataType.Type.JSONB, exp.DataType.Typ
 _COMPOSITE_TYPES = {exp.DataType.Type.ARRAY, exp.DataType.Type.LIST, exp.DataType.Type.STRUCT, exp.DataType.Type.MAP, exp.DataType.Type.NESTED}
 
 # The Builtins that compare two values, which compare composites element by element.
+# Never NULL, in every dialect: a NULL operand is a value they compare.
+_IS_DISTINCT_FROM = ir.Builtin(name="IS DISTINCT FROM", strict=(False, False), total=(False, False), injective=False)
+# Never NULL: TRUE or FALSE, whatever its subquery returns.
+_EXISTS = ir.Builtin(name="EXISTS", strict=(False,), total=(False,), injective=False)
 _ORDER_COMPARISONS = {"<>", ">", ">=", "<", "<=", "BETWEEN"}
 
 # Comparisons, whose operands a zoned timestamp's text may be.

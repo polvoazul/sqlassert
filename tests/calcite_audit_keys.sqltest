@@ -55,7 +55,7 @@ SELECT empno, deptno, random() AS r1, random() AS r2 FROM emp
 
 -- case: fd_identical_expressions
 -- inspired by RelMetadataTest.testFunctionalDependencyWithIdenticalExpressions
--- deptno2 -> deptno: missing proof (one input column passed through twice).
+-- deptno2 -> deptno: one input column passed through twice maps back to both.
 SELECT deptno, deptno AS deptno2, deptno + 1 AS deptno3 FROM emp
 /**ASSERT DETERMINES(deptno2 -> deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(deptno2 -> deptno3)**/  --~ PROVED
@@ -152,8 +152,8 @@ SELECT e.empno, e.deptno, d.name FROM emp AS e FULL JOIN dept AS d ON e.deptno =
 
 -- case: fd_equality_conditions
 -- inspired by RelMetadataTest.testFunctionalDependencyFilterEqualityCondition
--- mgr IS NOT DISTINCT FROM deptno with deptno NOT NULL is mgr = deptno:
--- missing proofs (IS NOT DISTINCT FROM gives no dependency).
+-- mgr IS NOT DISTINCT FROM deptno equates them, NULLs included: a dependency
+-- each way.
 SELECT e1.empno, e1.sal, e2.mgr, e2.deptno
 FROM emp AS e1
 JOIN emp AS e2
@@ -243,7 +243,8 @@ SELECT l.k1, l.k2 FROM ck AS l LEFT JOIN (SELECT 5 AS c) AS s ON l.k1 = s.c
 
 -- case: uk_null_safe_join_on_key
 -- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (IS NOT DISTINCT FROM onto a non-null key)
--- Each left row matches at most one s row: missing proof.
+-- Each left row matches at most one s row: k is a Non-Null Unique Set, so a
+-- NULL x matches none.
 SELECT l.k FROM r AS l JOIN r AS s ON l.x IS NOT DISTINCT FROM s.k
 /**ASSERT UNIQUE(k)**/  --~ PROVED
 

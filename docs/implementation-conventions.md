@@ -136,7 +136,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   `tests/test_ir_unions.py` fails until the unions name it. A wildcard is for
   shape-pickers only, where it means "not this shape".
 - `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
-  `Join.conjuncts`: `=`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
+  `Join.conjuncts`: `=`, `IS NOT DISTINCT FROM`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
   any other conjunct is kept as an ordinary (usually opaque) scalar expression,
   so the tuple is always the whole condition.
 - `discovery/` hydrates a SQL Program from a database catalog before the

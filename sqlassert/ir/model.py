@@ -164,7 +164,7 @@ class Call(ScalarExpr):
 class OpaquePureFunction(ScalarExpr):
     """A built-in function or operator whose behaviour is not modelled: a pure
     function of its arguments, and nothing else is known about it. Searched
-    CASE, `concat`, `||`, `greatest`, `IS DISTINCT FROM`, and the like."""
+    CASE, `concat`, `||`, `greatest`, and the like."""
 
     arguments: tuple[ScalarExpr, ...]
     description: str
@@ -235,9 +235,24 @@ class SimpleCase(ScalarExpr):
 
 
 class AnyAggregate(ScalarExpr):
-    """An arbitrary value selected from the input rows of an aggregate group."""
+    """An arbitrary value selected from the input rows of an aggregate group:
+    a bare column, or `min` and `max`, which take one of its non-null values.
+
+    `empty` marks a group that may have no rows, where the value is NULL: an
+    aggregate grouped by nothing has one row even over no input rows."""
 
     input: ScalarExpr
+    empty: bool = False
+
+
+class Accumulation(ScalarExpr):
+    """An aggregate of a group's values of `input` that skips NULLs: `sum`
+    where arithmetic raises rather than returning NULL. NULL only when no
+    value is non-null, or when the group is `empty` (see AnyAggregate); its
+    value is otherwise opaque."""
+
+    input: ScalarExpr
+    empty: bool = False
 
 
 class Elements(ScalarExpr):
@@ -257,10 +272,30 @@ class ColumnRef(ScalarExpr):
 
 
 class Equality(ScalarExpr):
-    """`left = right`. As a conjunct it holds only on rows where both sides are non-null."""
+    """`left = right`. As a conjunct it holds only on rows where both sides are non-null.
+
+    `total` marks one that is non-null whenever both sides are: where a failed
+    implicit cast raises (`DialectSemantics.casts_raise`) and neither side is
+    a composite, which may hold a NULL element (`ROW(1, NULL) = ROW(1, NULL)`
+    is NULL)."""
 
     left: ScalarExpr
     right: ScalarExpr
+    total: bool = False
+
+
+class NullSafeEquality(ScalarExpr):
+    """`left IS NOT DISTINCT FROM right`: never NULL, TRUE when both sides
+    are equal or both NULL.
+
+    `rejects` marks one where a non-null side stays non-null as it is
+    compared, so a TRUE comparison makes the other side non-null too: where a
+    failed implicit cast raises (in Spark without ANSI mode `n <=> 'x'` is
+    `n IS NULL`) and neither side is a composite."""
+
+    left: ScalarExpr
+    right: ScalarExpr
+    rejects: bool = False
 
 
 class InList(ScalarExpr):
@@ -313,9 +348,12 @@ def determinants(expression: ScalarExpr) -> tuple[OutputColumn, ...] | None:
     match expression:
         case ColumnRef(column=column):
             return (column,)
-        case OpaqueExpression() | Count() | AnyAggregate():
+        case OpaqueExpression() | Count() | AnyAggregate() | Accumulation():
             return None
-        case Constant() | NullLiteral() | Call() | OpaquePureFunction() | Coalesce() | SimpleCase() | Elements() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or():
+        case (
+            Constant() | NullLiteral() | Call() | OpaquePureFunction() | Coalesce() | SimpleCase() | Elements() | Equality()
+            | NullSafeEquality() | InList() | IsNull() | IsNotNull() | And() | Or()
+        ):
             found: dict[OutputColumn, None] = {}
             for child in children(expression):
                 assert isinstance(child, ScalarExpr)
@@ -340,7 +378,7 @@ def injective_input(expression: ScalarExpr) -> OutputColumn | None:
             return injective_input(argument)
         case (
             Call() | Constant() | NullLiteral() | Coalesce() | SimpleCase() | OpaquePureFunction() | OpaqueExpression()
-            | Count() | AnyAggregate() | Elements() | Equality() | InList() | IsNull() | IsNotNull() | And() | Or()
+            | Count() | AnyAggregate() | Accumulation() | Elements() | Equality() | NullSafeEquality() | InList() | IsNull() | IsNotNull() | And() | Or()
         ):
             return None
         case _:
@@ -358,21 +396,23 @@ def _exact_literal(expression: ScalarExpr) -> bool:
 
 def total(expression: ScalarExpr) -> bool:
     """Whether `expression` is non-null whenever every column it reads is: a
-    column, a literal, `count(...)`, a Builtin total in its arguments over
-    total ones, or a coalesce with one total argument. NULL, CASE (a missed
-    WHEN), the IS family and comparisons (not inferred), and unmodelled
-    functions may be NULL on non-null columns."""
+    column, a literal, `count(...)`, the IS family, a Builtin total in its
+    arguments over total ones, a total equality of total sides, or a coalesce
+    with one total argument. NULL, CASE (a missed WHEN), IN, AND, OR (not
+    inferred), and unmodelled functions may be NULL on non-null columns."""
     expression = expression.closed
     match expression:
-        case ColumnRef() | Constant() | Count():
+        case ColumnRef() | Constant() | Count() | IsNull() | IsNotNull() | NullSafeEquality():
             return True
         case Call(total_arguments=tuple() as arguments):
             return all(total(argument) for argument in arguments)
+        case Equality(total=True, left=left, right=right):
+            return total(left) and total(right)
         case Coalesce(arguments=arguments):
             return any(total(argument) for argument in arguments)
         case (
-            Call() | NullLiteral() | SimpleCase() | OpaquePureFunction() | OpaqueExpression() | AnyAggregate() | Elements()
-            | Equality() | InList() | IsNull() | IsNotNull() | And() | Or()
+            Call() | NullLiteral() | SimpleCase() | OpaquePureFunction() | OpaqueExpression() | AnyAggregate() | Accumulation() | Elements()
+            | Equality() | InList() | And() | Or()
         ):
             return False
         case _:
@@ -384,7 +424,8 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
 
     A Builtin passes on its strict arguments'; `=` both sides'; `IN (...)` its
     operand's (`1 IN (1, NULL)` is TRUE); AND and OR only a column every part
-    is strict in (`NULL OR TRUE` is TRUE). Coalesce, CASE, the IS family and
+    is strict in (`NULL OR TRUE` is TRUE). Coalesce, CASE, the IS family
+    (IS NOT DISTINCT FROM included) and
     unmodelled functions may turn NULL into a value; a literal, `count(...)`,
     an opaque expression or an aggregate's value has no column of its own."""
     expression = expression.closed
@@ -402,7 +443,7 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
             return tuple(column for column in strict_inputs(first) if all(column in columns for columns in rest))
         case (
             And() | Or() | Constant() | NullLiteral() | Coalesce() | SimpleCase() | OpaquePureFunction() | OpaqueExpression()
-            | Count() | AnyAggregate() | Elements() | IsNull() | IsNotNull()
+            | Count() | AnyAggregate() | Accumulation() | Elements() | IsNull() | IsNotNull() | NullSafeEquality()
         ):
             return ()
         case _:
@@ -416,7 +457,7 @@ def strict_inputs(expression: ScalarExpr) -> tuple[OutputColumn, ...]:
 # which makes `ScalarExpr.closed` and `RelationExpr.closed` sound.
 type AnyScalar = (
     ColumnRef | Constant | NullLiteral | Coalesce | SimpleCase | Call | OpaquePureFunction | OpaqueExpression
-    | Count | AnyAggregate | Elements | Equality | InList | IsNull | IsNotNull | And | Or
+    | Count | AnyAggregate | Accumulation | Elements | Equality | NullSafeEquality | InList | IsNull | IsNotNull | And | Or
 )
 
 
@@ -490,8 +531,8 @@ class Alias(RelationExpr):
 class Join(RelationExpr):
     """A join and its ON (or USING) condition; None for a cross join.
 
-    A condition is `And` and `Or` over the recognized `Equality`, `InList`,
-    `IsNull`, and `IsNotNull`; anything else is an opaque scalar expression, so
+    A condition is `And` and `Or` over the recognized `Equality`,
+    `NullSafeEquality`, `InList`, `IsNull`, and `IsNotNull`; anything else is an opaque scalar expression, so
     the predicate is the whole condition.
     """
 

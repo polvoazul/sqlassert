@@ -190,7 +190,7 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(domain.value for domain in domains if domain.value is not None))
             return Result(value, "Coalesce takes one of its arguments' values", (expression,), domains)
         case ir.AnyAggregate(input=value):
-            # Groups are never empty, so the value comes from some input row.
+            # The value comes from some input row, or is NULL (an empty group).
             return _expression_domain(value)
         case ir.SimpleCase(thens=thens, default=default):
             arms = [_expression_domain(then) for then in thens]
@@ -202,7 +202,10 @@ def _expression_domain(expression: ir.ScalarExpr) -> Result[Domain]:
             value = frozenset().union(*(arm.value for arm in arms if arm.value is not None))
             premises = [*arms, unreachable] if unreachable.value else arms
             return Result(value, "A CASE takes one of its arms' values", (expression,), premises)
-        case ir.Constant() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.Elements() | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
+        case (
+            ir.Constant() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.Accumulation() | ir.Elements() | ir.Equality()
+            | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
+        ):
             return Result(None, "Values of this expression are not enumerated", (expression,))
         case _:
             assert_never(expression)
@@ -245,9 +248,10 @@ def _conjunct_bound(conjunct: ir.ScalarExpr, source: ir.OutputColumn) -> Result[
     unknown domain.
     """
     match conjunct:
-        case ir.Equality(left=ir.ColumnRef(column=first), right=other) if first is source:
+        # A TRUE IS NOT DISTINCT FROM leaves a non-null side equal to the other.
+        case ir.Equality(left=ir.ColumnRef(column=first), right=other) | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=other) if first is source:
             bounds = [_bound_domain(source, other)]
-        case ir.Equality(left=other, right=ir.ColumnRef(column=second)) if second is source:
+        case ir.Equality(left=other, right=ir.ColumnRef(column=second)) | ir.NullSafeEquality(left=other, right=ir.ColumnRef(column=second)) if second is source:
             bounds = [_bound_domain(source, other)]
         case ir.InList(operand=ir.ColumnRef(column=operand), values=values) if operand is source:
             bounds = [_bound_domain(source, value) for value in values]

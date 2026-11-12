@@ -146,8 +146,11 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
                 evidence = [evidence for sources, _ in arguments_sources for evidence in sources.values()]
                 result[ORGANIC] = Result(False, "Every coalesce argument may be NULL", (expression,), evidence, kind="unknown")
             return result, []
-        case ir.AnyAggregate(input=value):
-            # Groups are never empty, so the value comes from some input row.
+        case ir.AnyAggregate(empty=True) | ir.Accumulation(empty=True):
+            return {ORGANIC: unknown("An aggregate grouped by nothing is NULL over no rows", expression)}, []
+        case ir.AnyAggregate(input=value) | ir.Accumulation(input=value):
+            # Groups are never empty, so the value comes from some input row,
+            # NULL only when the rows' values are.
             return _expression_sources(value)
         case ir.Call(total_arguments=tuple() as arguments, description=description):
             # NULL only when an argument it is total in is, so only through
@@ -173,7 +176,21 @@ def _expression_sources(expression: ir.ScalarExpr) -> tuple[_Sources, list[Resul
             if elements.value:
                 return {}, [Result(True, "No element is NULL", (expression,), [elements])]
             return {ORGANIC: Result(False, "An element may be NULL", (expression,), [elements], kind="unknown")}, []
-        case ir.Equality() | ir.IsNull() | ir.IsNotNull() | ir.InList() | ir.And() | ir.Or():
+        case ir.IsNull() | ir.IsNotNull() | ir.NullSafeEquality():
+            return {}, [Result(True, "The IS family is never NULL", (expression,))]
+        case ir.Equality(total=True, left=left, right=right):
+            # NULL exactly when a side is: strict and total in both.
+            result: _Sources = {}
+            premises: list[Result] = []
+            for side in (left, right):
+                sources, side_premises = _expression_sources(side)
+                for source, evidence in sources.items():
+                    result[source] = result[source] | evidence if source in result else evidence
+                premises.extend(side_premises)
+            if result:
+                return result, []
+            return {}, [Result(True, "= is non-null when its operands are", (expression,), premises)]
+        case ir.Equality() | ir.InList() | ir.And() | ir.Or():
             return {ORGANIC: unknown("Nullability of a comparison is not inferred", expression)}, []
         case ir.SimpleCase():
             return _case_sources(expression)
@@ -222,8 +239,8 @@ def _expression_elements(expression: ir.ScalarExpr) -> Result[bool]:
         case ir.SimpleCase(thens=thens, default=default):
             return all_of(_expression_elements(arm) for arm in (*thens, default))
         case (
-            ir.Constant() | ir.Count() | ir.Call() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Elements()
-            | ir.Equality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
+            ir.Constant() | ir.Count() | ir.Accumulation() | ir.Call() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Elements()
+            | ir.Equality() | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or()
         ):
             return unknown("Its elements may be NULL", expression)
         case _:
@@ -367,7 +384,8 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
 
     A conjunct cannot be TRUE while it is NULL, so it rejects every column it
     is strict in; `IS NOT NULL` rejects those of its operand (Paulley §3.2.4,
-    footnote 9). An OR rejects the columns each of its parts rejects.
+    footnote 9), and `IS NOT DISTINCT FROM` a non-null value those of its
+    other side. An OR rejects the columns each of its parts rejects.
     """
     rejected: dict[ir.OutputColumn, ir.ScalarExpr] = {}
     for conjunct in conjuncts:
@@ -377,6 +395,12 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
                 columns = tuple(column for column in first if all(column in other for other in others))
             case ir.IsNotNull(operand=operand):
                 columns = ir.strict_inputs(operand)
+            case ir.NullSafeEquality(left=left, right=right, rejects=True):
+                # Equal to a non-null side, the other is non-null too.
+                columns = tuple(dict.fromkeys(
+                    column for side, other in ((left, right), (right, left)) if not _expression_sources(other)[0]
+                    for column in ir.strict_inputs(side)
+                ))
             case _:
                 columns = ir.strict_inputs(conjunct)
         for column in columns:

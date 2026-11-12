@@ -119,8 +119,7 @@ FROM emp AS e
 /**ASSERT DETERMINES(empno -> ono)**/  --~ PROVED
 
 -- A scalar aggregate has exactly one row, so ON TRUE matches every left row
--- exactly once; Calcite removes the join. Missing proof: EXACTLY ONE wants
--- equalities onto Referential Coverage.
+-- exactly once; Calcite removes the join.
 -- case: left_join_on_true_to_a_scalar_aggregate_matches_exactly_once
 -- inspired by misc.iq, "left join (select count(*) from \"hr\".\"depts\") on true"
 SELECT e.deptno
@@ -230,7 +229,7 @@ SELECT deptno FROM emp WHERE deptno IS NOT NULL GROUP BY ROLLUP (deptno)
 --~ unsupported-construct "ROLLUP"
 
 -- SUM over a non-null column is non-null in every (non-empty) group; Calcite
--- types it NOT NULL. Missing proof.
+-- types it NOT NULL.
 -- case: grouped_sum_of_a_non_null_column_is_non_null
 -- inspired by agg.iq, "select sum(deptno) as deptno from dept group by dname" (CALCITE-6557)
 SELECT dname, sum(deptno) AS s FROM dept GROUP BY dname

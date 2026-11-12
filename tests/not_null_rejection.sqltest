@@ -100,7 +100,7 @@ SELECT n, m FROM t WHERE n IS NULL /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 SELECT n, m FROM t WHERE n IS DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 
 -- case: a_null_safe_equality_to_a_literal_is_not_inferred
--- NULL IS NOT DISTINCT FROM 1 is FALSE, so this rejects n: a missing proof (issue 45).
+-- NULL IS NOT DISTINCT FROM 1 is FALSE, so this rejects n.
 SELECT n, m FROM t WHERE n IS NOT DISTINCT FROM 1 /**ASSERT NOT NULL(n)**/  --~ PROVED
 
 -- case: a_conjunct_true_on_a_null_rejects_nothing__not_n_is_not_null

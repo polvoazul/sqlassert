@@ -215,7 +215,7 @@ database enum type, though a catalog's enum type could supply it as Knowledge.
 _Avoid_: Enum type, value set, check constraint
 
 **Equality Group**:
-An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE` and inner-join `ON` `a = b`) between known matching comparison types, never by an outer join's `ON`. Implicit casts and collations do not establish value identity. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
+An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE` and inner-join `ON` `a = b`, or `a IS NOT DISTINCT FROM b`, NULL then being a shared value) between known matching comparison types, never by an outer join's `ON`. Implicit casts and collations do not establish value identity. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
 _Avoid_: Equivalence class, alias set
 
 **Null Source**:

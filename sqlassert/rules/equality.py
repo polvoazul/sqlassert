@@ -1,12 +1,14 @@
 """Equality groups: the output columns of a relation that carry one value.
 
 A strict equality -- a `WHERE` or inner-join `ON` conjunct `a = b` -- keeps
-only rows on which `a` and `b` are non-null and equal. Equality groups are a
+only rows on which `a` and `b` are non-null and equal; `a IS NOT DISTINCT
+FROM b` those on which they are equal or both NULL. Equality groups are a
 union-find over those equalities, per relation, over its output columns: an
 input's groups pass through every column that passes an input column through,
 then the relation's own strict equalities merge them. On every row a group's
-members are equal, or all NULL where an outer join padded them (padding nulls
-a whole side). An outer join's ON never merges: it holds on matched rows only,
+members are equal, or all NULL (an outer join padded them, padding nulling a
+whole side, or IS NOT DISTINCT FROM equated NULLs): where one is non-null,
+every one equals it. An outer join's ON never merges: it holds on matched rows only,
 and a padded row keeps the preserved side's value.
 
 A functional dependency `a ↔ b` also holds for an injective `a = f(b)`, whose
@@ -80,7 +82,10 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
     conjuncts, clause = _strict_conjuncts(relation)
     for conjunct in conjuncts:
         match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)) if first in outputs and second in outputs and _same_type(first, second):
+            case (
+                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+            ) if first in outputs and second in outputs and _same_type(first, second):
                 merge([*outputs[first], *outputs[second]], Result(True, f"{clause} equality", (conjunct,)))
             case _:
                 pass  # Other conjuncts only remove rows.

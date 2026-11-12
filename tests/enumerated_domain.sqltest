@@ -341,9 +341,17 @@ SELECT status FROM orders WHERE status NOT IN ('a') /**ASSERT ENUM(status IN ('b
 
 -- case: enum_is_not_guessed__aggregate
 WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
-SELECT max(status) AS m
+SELECT string_agg(status, ',') AS m
 FROM o
 /**ASSERT ENUM(m IN ('new', 'paid'))**/  --~ UNKNOWN
+
+-- case: enum_of_min_and_max_is_their_arguments
+-- Each is one of its argument's values, or NULL (no rows).
+WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
+SELECT min(status) AS l, max(status) AS m
+FROM o
+/**ASSERT ENUM(l IN ('new', 'paid'))**/  --~ PROVED
+/**ASSERT ENUM(m IN ('new', 'paid'))**/  --~ PROVED
 
 -- case: a_declaration_does_not_claim_its_values_occur_or_that_the_column_is_non_null
 WITH o AS (SELECT * FROM orders /**DECLARE ENUM(status IN ('new', 'paid'))**/)
