@@ -63,14 +63,39 @@ JOIN ((emp AS e /**ASSERT EXACTLY ONE**/ JOIN dept AS d2 ON d2.deptno = e.deptno
     ON d.deptno = d3.deptno
 /**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
 
--- With an alias the parentheses are a relation of their own, whose repeated
--- names each dialect resolves differently: not analyzed.
--- case: an_aliased_nested_join_is_opaque
-SELECT j.deptno
+-- With an alias the parentheses are a relation of their own: its sources'
+-- names are hidden, and it has each of their columns under its own name when
+-- no two share one.
+-- case: an_aliased_nested_join_with_distinct_names
+CREATE TABLE region (region_id INTEGER PRIMARY KEY, rname VARCHAR NOT NULL);
+CREATE TABLE office (office_id INTEGER PRIMARY KEY, office_region INTEGER NOT NULL REFERENCES region (region_id));
+SELECT d.deptno, j.office_id, j.rname
 FROM dept AS d
-JOIN (emp AS e /**ASSERT MANY TO ONE**/ JOIN dept AS d2 ON d2.deptno = e.deptno) AS j
---~ unanalyzed-assertion
-    ON d.deptno = j.deptno
+/**ASSERT MANY TO ONE**/ LEFT JOIN (  --~ PROVED
+    office AS o
+    /**ASSERT EXACTLY ONE**/ JOIN region AS r ON r.region_id = o.office_region  --~ PROVED
+) AS j ON j.office_id = d.deptno
+/**ASSERT NOT NULL UNIQUE(deptno)**/  --~ PROVED
+/**ASSERT UNIQUE(office_id)**/  --~ PROVED
+
+-- case: an_aliased_nested_join_renames_its_columns
+CREATE TABLE region (region_id INTEGER PRIMARY KEY, rname VARCHAR NOT NULL);
+CREATE TABLE office (office_id INTEGER PRIMARY KEY, office_region INTEGER NOT NULL REFERENCES region (region_id));
+SELECT j.a, j.d FROM (office AS o JOIN region AS r ON r.region_id = o.office_region) AS j (a, b, c, d)
+/**ASSERT NOT NULL UNIQUE(a)**/  --~ PROVED
+/**ASSERT NOT NULL(d)**/  --~ PROVED
+
+-- Repeated names each dialect resolves differently (DuckDB renames the
+-- second deptno deptno_1): a repeated name is opaque, the others are not.
+-- The ON still rejects a NULL j.deptno, whatever its value.
+-- case: an_aliased_nested_join_with_repeated_names
+SELECT j.deptno, j.empno
+FROM dept AS d
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN
+    emp AS e /**ASSERT MANY TO ONE**/ JOIN dept AS d2 ON d2.deptno = e.deptno  --~ PROVED
+) AS j ON d.deptno = j.deptno
+/**ASSERT NOT NULL(deptno)**/  --~ PROVED
+/**ASSERT NOT NULL(empno)**/  --~ PROVED
 
 -- case: a_natural_join_inside_the_parentheses_makes_the_select_opaque
 SELECT d.deptno
@@ -79,3 +104,10 @@ JOIN (emp AS e NATURAL JOIN dept AS d2)
 --~ unsupported-natural-join
     ON d.deptno = e.deptno
 /**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+
+-- Columns of a table with no CREATE may repeat any name: every column is opaque.
+-- case: an_aliased_nested_join_over_an_undeclared_table
+CREATE TABLE office (office_id INTEGER PRIMARY KEY, x INTEGER NOT NULL);
+SELECT j.office_id FROM (office AS o JOIN other AS t ON t.k = o.x) AS j
+--~ undeclared-table "other"
+/**ASSERT NOT NULL UNIQUE(office_id)**/  --~ UNKNOWN

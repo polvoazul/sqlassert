@@ -84,8 +84,12 @@ class Builtin:
 
     A `rejecting` parameter makes the value never TRUE (FALSE or NULL)
     whenever its argument is NULL, though perhaps not NULL: `x > ANY (...)`
-    is FALSE over no rows, `p IS TRUE` is FALSE. A strict parameter is one
-    too, so only one that is not strict needs the flag; `()` when none does.
+    is FALSE over no rows. A strict parameter is one too, so only one that
+    is not strict needs the flag; `()` when none does.
+
+    With `true_only_if_argument` the value is TRUE only where its one
+    argument is TRUE (`p IS TRUE`), so as a condition it rejects whatever
+    that argument would.
 
     With `skips_null` the value is non-null whenever any argument is
     (`greatest` where it ignores NULLs), and `total` is None.
@@ -97,11 +101,13 @@ class Builtin:
     injective: bool
     rejecting: tuple[bool, ...] = field(default=(), kw_only=True)
     skips_null: bool = field(default=False, kw_only=True)
+    true_only_if_argument: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         assert self.total is None or len(self.total) == len(self.strict), f"{self.name}: one total flag per parameter"
         assert not self.rejecting or len(self.rejecting) == len(self.strict), f"{self.name}: one rejecting flag per parameter"
         assert not self.skips_null or self.total is None, f"{self.name}: skipping NULLs, it is not total in each argument"
+        assert not self.true_only_if_argument or len(self.strict) == 1, f"{self.name}: TRUE only if its one argument is"
         assert self.total is None or all(total for strict, total in zip(self.strict, self.total) if strict), (
             f"{self.name}: a strict parameter is total"
         )
@@ -260,7 +266,8 @@ class AnyAggregate(ScalarExpr):
     across the group), or `min` and `max`, which take one of its non-null values.
 
     `empty` marks a group that may have no rows, where the value is NULL: an
-    aggregate grouped by nothing has one row even over no input rows."""
+    aggregate grouped by nothing has one row even over no input rows, and one
+    with FILTER may see none of its group's rows."""
 
     input: ScalarExpr
     empty: bool = False
@@ -268,9 +275,9 @@ class AnyAggregate(ScalarExpr):
 
 class Accumulation(ScalarExpr):
     """An aggregate of a group's values of `input` that skips NULLs: `sum`
-    where arithmetic raises rather than returning NULL. NULL only when no
-    value is non-null, or when the group is `empty` (see AnyAggregate); its
-    value is otherwise opaque."""
+    and `avg` where arithmetic raises rather than returning NULL. NULL only
+    when no value is non-null, or when the group is `empty` (see
+    AnyAggregate); its value is otherwise opaque."""
 
     input: ScalarExpr
     empty: bool = False

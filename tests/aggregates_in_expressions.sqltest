@@ -1,0 +1,66 @@
+-- Aggregates inside expressions of a grouped select, and in HAVING: each
+-- call is the value it is as a whole select item (AnyAggregate, Accumulation,
+-- Count), and a column the grouping determines outside every aggregate is one
+-- value per group, so the rules read through the operators around them.
+
+CREATE TABLE emp (
+    empno INTEGER PRIMARY KEY, deptno INTEGER NOT NULL, sal INTEGER NOT NULL, comm INTEGER,
+    job VARCHAR NOT NULL CHECK (job IN ('a', 'b'))
+);
+
+-- case: an_aggregate_inside_an_expression_is_non_null
+SELECT deptno, max(sal) + 1 AS m, sum(sal) * 2 AS s, count(*) + 1 AS c, avg(sal) AS a, deptno + min(sal) AS t
+FROM emp GROUP BY deptno
+/**ASSERT NOT NULL(m, s, c, a, t)**/  --~ PROVED
+
+-- case: an_aggregate_of_a_nullable_argument_may_be_null
+SELECT deptno, max(comm) + 1 AS m, avg(comm) AS a FROM emp GROUP BY deptno
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(a)**/  --~ UNKNOWN
+
+-- case: an_aggregate_inside_an_expression_keeps_its_domain
+SELECT deptno, coalesce(max(job), 'c') AS j FROM emp GROUP BY deptno
+/**ASSERT ENUM(j IN ('a', 'b', 'c'))**/  --~ PROVED
+/**ASSERT ENUM(j IN ('a', 'b'))**/  --~ UNKNOWN
+
+-- Grouped by nothing, the one row exists over no rows, where each aggregate
+-- but count is NULL.
+-- case: a_scalar_aggregate_inside_an_expression_may_be_null
+SELECT max(sal) + 1 AS m, avg(sal) AS a, count(*) + 1 AS c FROM emp
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(a)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+
+-- A FILTER may leave a group's aggregate no rows: NULL, but for count.
+-- case: a_filtered_aggregate_may_see_no_rows
+SELECT
+    deptno, max(sal) FILTER (WHERE false) + 1 AS m, count(*) FILTER (WHERE false) AS c,
+    max(job) FILTER (WHERE sal > 0) AS j
+FROM emp GROUP BY deptno
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ PROVED
+/**ASSERT ENUM(j IN ('a', 'b'))**/  --~ PROVED
+
+-- max and min of distinct values are those of all the values.
+-- case: max_of_distinct_values
+SELECT deptno, max(DISTINCT sal) + 1 AS m, min(DISTINCT job) AS j FROM emp GROUP BY deptno
+/**ASSERT NOT NULL(m)**/  --~ PROVED
+/**ASSERT ENUM(j IN ('a', 'b'))**/  --~ PROVED
+
+-- case: a_window_aggregate_stays_opaque
+SELECT deptno, max(deptno) OVER () + 1 AS m FROM emp GROUP BY deptno
+/**ASSERT NOT NULL(m)**/  --~ UNKNOWN
+--~ unsupported-construct "a window function"
+
+-- An aggregate HAVING reads, selected or not, is a value of the group.
+-- case: having_compares_an_unselected_aggregate
+SELECT comm FROM emp GROUP BY comm HAVING max(sal) = comm
+/**ASSERT NOT NULL(comm)**/  --~ PROVED
+
+-- case: having_on_an_unselected_aggregate_rejects_none_of_the_selected
+SELECT comm FROM emp GROUP BY comm HAVING max(sal) > 5
+/**ASSERT NOT NULL(comm)**/  --~ UNKNOWN
+
+-- case: having_on_a_selected_aggregate_inside_an_expression
+SELECT deptno, max(comm) + 1 AS m FROM emp GROUP BY deptno HAVING max(comm) + 1 > 5
+/**ASSERT NOT NULL(m)**/  --~ PROVED

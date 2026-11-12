@@ -130,6 +130,9 @@ class IrParser:
     # Each scalar subquery lowered as a join, by id, and the qualifier of the
     # binding that holds its value.
     _scalar_values: dict[int, str] = field(default_factory=dict)
+    # Each aggregate call and grouping-determined column of the grouped
+    # select item being lowered, by id, and its value per group (`_lower_grouped`).
+    _grouped_values: dict[int, ir.ScalarExpr] = field(default_factory=dict)
     # Each set-returning call of a select list, by id, and the qualifier of the
     # binding that holds the values it returns.
     _set_returning_values: dict[int, str] = field(default_factory=dict)
@@ -404,7 +407,7 @@ class IrParser:
 
         sources = _direct_sources(query)
         by_qualifier: dict[str, list[Expr]] = {}
-        for source in sources:
+        for source in [*sources, *(hidden for source in sources for hidden in _hidden_sources(source))]:
             self._source_required.setdefault(id(source), set())
             self._source_expressions[id(source)] = source
             qualifier = source.alias_or_name.lower()
@@ -626,13 +629,13 @@ class IrParser:
                 return self._alias(recursive, alias_name, self._origin(source), schema)
             return self._alias(self._resolve_symbol(symbol), alias_name, self._origin(source), schema, _column_aliases(source))
 
-        nested = _nested_join(source)
+        nested = _nested_join(source) or _aliased_join(source)
         if nested is not None:
             first, joins = nested
             lowered = self._lower_source(first)
             for join in joins:
                 lowered = self._lower_join(lowered, join)
-            return lowered
+            return lowered if source.alias == "" else self._alias_join(lowered.relation, source)
 
         if isinstance(source, exp.Subquery):
             relation = self._lower_query(source)
@@ -651,6 +654,32 @@ class IrParser:
         if construct is not None:
             self._unsupported.append((opaque, construct))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
+
+    def _alias_join(self, join: ir.RelationExpr, source: Expr) -> _Lowered:
+        """`(a JOIN b ...) AS x`: a relation of its own, which hides the names
+        of a and b and has each of their columns under its own name. A name
+        two columns share each dialect resolves differently (DuckDB renames
+        the second `x_1`, others reject reading it), so its columns are
+        opaque, the first one readable by that name; every name is, when a
+        source's columns are not all known."""
+        origin = self._origin(source)
+        counts = Counter(column.name.lower() for column in join.output_columns)
+        relation = join
+        if not join.is_schema_complete or any(count > 1 for count in counts.values()):
+            outputs = tuple(
+                ir.OutputColumn(
+                    origin=origin, name=column.name,
+                    scalar_expr=ir.ColumnRef(origin=origin, column=column) if join.is_schema_complete and counts[column.name.lower()] == 1
+                    else ir.OpaqueExpression(origin=origin, description=f"{source.alias}.{column.name}"),
+                )
+                for column in join.output_columns
+            )
+            relation = ir.Project(origin=origin, output_columns=outputs, is_schema_complete=join.is_schema_complete, input=join)
+        lowered = self._alias(relation, source.alias, origin, column_aliases=_column_aliases(source))
+        bindings: dict[str, _Binding] = {}
+        for binding in lowered.bindings:
+            bindings.setdefault(binding.name, binding)
+        return _Lowered(lowered.relation, tuple(bindings.values()))
 
     def _lower_values(self, values: exp.Values) -> ir.OpaqueRelation | None:
         """`(VALUES (...), ...) AS t (a, ...)`: rows of literals, stated as
@@ -1460,8 +1489,9 @@ class IrParser:
     def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.RelationExpr | None:
         """`select` grouped by `keys`; [] is one group, one row however many
         rows its input has. HAVING filters the groups (`_lower_having`). A
-        key not selected is a hidden output of the Aggregate, which a Project
-        then drops: it still splits the groups, and HAVING may read it."""
+        key not selected, or an aggregate only HAVING reads, is a hidden
+        output of the Aggregate, which a Project then drops: a key still
+        splits the groups, and HAVING may read either."""
         if _unsupported_grouping(select) is not None:
             return None
         if select.args.get("where") is not None:
@@ -1483,6 +1513,16 @@ class IrParser:
                 items.append(item)
             grouped_items.add(id(item))
             matched.append(item)
+        having = select.args.get("having")
+        if having is not None:
+            # An aggregate HAVING reads that no item writes: a hidden output,
+            # like a grouping key not selected, that `_lower_having` reads.
+            written = {_unaliased(item).sql(dialect=self.dialect) for item in items}
+            for call in _outermost_aggregate_calls(having.this):
+                text = call.sql(dialect=self.dialect)
+                if text not in written and self._repeatable(call):
+                    written.add(text)
+                    items.append(exp.alias_(call.copy(), f"{HIDDEN_AGGREGATE}{len(items)}"))
 
         output_columns = self._aggregate_output_columns(items, lowered, grouped_items)
         grouping_outputs = [output_columns[next(index for index, item in enumerate(items) if item is match)] for match in matched]
@@ -1501,7 +1541,6 @@ class IrParser:
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             grouping_outputs=tuple(grouping_outputs), calls=calls,
         )
-        having = select.args.get("having")
         relation: ir.RelationExpr = aggregate if having is None else self._lower_having(aggregate, items, having)
         if len(items) == len(select.expressions):
             return relation
@@ -1513,23 +1552,18 @@ class IrParser:
         """HAVING as a Filter of the grouped rows. A condition reads the
         aggregate's output columns, so each part of it written as a select
         item is that item's column (`count(*) > 1` beside `count(*) AS c` is
-        `c > 1`). A conjunct still reading anything else (an aggregate or
-        column not selected, a subquery) is opaque: it removes groups for a
-        reason not known, which keeps every fact that holds of the groups,
-        and states nothing of its own: no selected column can show it."""
+        `c > 1`), and so is each aggregate no item writes, a hidden item
+        (`_lower_aggregate`). A conjunct still reading anything else (a column
+        neither grouped nor aggregated, an aggregate whose repeated text may
+        differ, a subquery) is opaque: it removes groups for a reason not
+        known, which keeps every fact that holds of the groups, and states
+        nothing of its own: no selected column can show it."""
         qualifier = "__having"
         bindings = tuple(_Binding(qualifier, f"c{index}", column) for index, column in enumerate(aggregate.output_columns))
         written: dict[str, int] = {}
         for index, item in enumerate(items):
-            expression = item.this if isinstance(item, exp.Alias) else item
-            # Repeated SQL text need not denote the same evaluation. Only
-            # modeled pure expressions and aggregates over pure inputs qualify.
-            if not isinstance(expression, exp.Literal) and all(
-                not isinstance(node, _NOT_A_FUNCTION_OF_ITS_COLUMNS)
-                and (not isinstance(node, exp.Func) or type(node) in dialect_builtins(self.semantics))
-                or isinstance(node, exp.Count | exp.Sum | exp.Min | exp.Max | exp.Avg | exp.Star)
-                for node in expression.walk()
-            ):
+            expression = _unaliased(item)
+            if self._repeatable(expression):
                 written.setdefault(expression.sql(dialect=self.dialect), index)
 
         def selected(node: Expr) -> Expr:
@@ -1550,6 +1584,18 @@ class IrParser:
         return ir.Filter(
             origin=origin, output_columns=_pass_output_columns(aggregate.output_columns, origin), is_schema_complete=True,
             input=aggregate, predicate=_and(tuple(parts), origin),
+        )
+
+    def _repeatable(self, expression: Expr) -> bool:
+        """Whether every occurrence of `expression`'s SQL text in one grouped
+        select has one value per group. Repeated text need not denote the same
+        evaluation: only modelled pure expressions and aggregates over pure
+        inputs qualify, not a literal (which a name may shadow)."""
+        return not isinstance(expression, exp.Literal) and all(
+            not isinstance(node, _NOT_A_FUNCTION_OF_ITS_COLUMNS)
+            and (not isinstance(node, exp.Func) or type(node) in dialect_builtins(self.semantics))
+            or isinstance(node, exp.Count | exp.Sum | exp.Min | exp.Max | exp.Avg | exp.Star)
+            for node in expression.walk()
         )
 
     def _lower_distinct(self, lowered: _Lowered, select: exp.Select) -> ir.Distinct | None:
@@ -1651,38 +1697,83 @@ class IrParser:
         """Each item of a grouped select. A column outside every aggregate must
         be one the grouping determines (`_grouping_determined`): any other
         (SQLite's bare column) makes its item opaque (ADR 0006)."""
-        output_columns: list[ir.OutputColumn] = []
-        lowered_items = [
-            self._lower_expression(
+        grouped = {
+            id(item): self._lower_expression(
                 item.this if isinstance(item, exp.Alias) else item, source.bindings, schema_complete=source.relation.is_schema_complete,
             )
-            for item in items
-        ]
+            for item in items if id(item) in grouped_items
+        }
         determined = self._grouping_determined({
-            lowered.column for item, lowered in zip(items, lowered_items)
-            if id(item) in grouped_items and isinstance(lowered, ir.ColumnRef)
+            lowered.column for lowered in grouped.values() if isinstance(lowered, ir.ColumnRef)
         }, source.relation)
-        for item, lowered in zip(items, lowered_items):
+        # Grouped by nothing (no grouped items), the one row exists even
+        # over no input rows, where an aggregate of its values is NULL.
+        empty = not grouped_items
+        output_columns: list[ir.OutputColumn] = []
+        for item in items:
             expression = item.this if isinstance(item, exp.Alias) else item
-            # Grouped by nothing (no grouped items), the one row exists even
-            # over no input rows, where an aggregate of its values is NULL.
-            empty = not grouped_items
+            lowered = grouped[id(item)] if id(item) in grouped else self._lower_grouped(expression, source, determined, empty=empty)
             if id(item) not in grouped_items and _reads_ungrouped_column(lowered, determined):
                 lowered = ir.OpaqueExpression(origin=self._origin(expression), description=expression.sql(dialect=self.dialect))
                 self._unsupported.append((lowered, "a column neither grouped nor inside an aggregate"))
-            elif id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
-                # A function of columns the grouping determines: one value per group.
-                lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered, empty=empty)
-            elif (argument := _picked_argument(expression)) is not None:
-                # One of its argument's values on some row of the group.
-                value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
-                lowered = ir.AnyAggregate(origin=self._origin(expression), input=value, empty=empty)
-            elif (argument := _aggregate_argument(expression, (exp.Sum,))) is not None and self.semantics.checked_arithmetic:
-                # NULL over non-null values only where arithmetic does not raise (overflow, NaN).
-                value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
-                lowered = ir.Accumulation(origin=self._origin(expression), input=value, empty=empty)
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
+
+    def _lower_grouped(
+        self, expression: Expr, source: _Lowered, determined: Callable[[ir.OutputColumn], bool], *, empty: bool,
+    ) -> ir.ScalarExpr:
+        """`expression`, computed once per group of `source`'s rows: each
+        aggregate call is its value (`_aggregate_value`), and each column
+        outside them the grouping determines is one value per group, an
+        AnyAggregate. Any other column is left as it is, for the caller to
+        reject; windows and subqueries are not entered."""
+        values: dict[int, ir.ScalarExpr] = {}
+        pending: list[Expr] = [expression]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, exp.Window | exp.Query | exp.Subquery):
+                continue
+            if _is_aggregate_call(node):
+                value = self._aggregate_value(node, source, empty=empty)
+                if value is not None:
+                    values[id(node)] = value
+                continue
+            if isinstance(node, exp.Column):
+                column = self._lower_expression(node, source.bindings, schema_complete=source.relation.is_schema_complete)
+                if isinstance(column, ir.ColumnRef) and determined(column.column):
+                    values[id(node)] = ir.AnyAggregate(origin=column.origin, input=column, empty=empty)
+                continue
+            pending.extend(node.iter_expressions())
+        self._grouped_values.update(values)
+        try:
+            return self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
+        finally:
+            for key in values:
+                del self._grouped_values[key]
+
+    def _aggregate_value(self, call: Expr, source: _Lowered, *, empty: bool) -> ir.ScalarExpr | None:
+        """The value of an aggregate `call` over a group of `source`'s rows,
+        or None when it is not modelled. `min`, `max` and `any_value` pick a
+        value of their argument (AnyAggregate), `sum` and `avg` accumulate
+        its non-null values where arithmetic raises rather than returning
+        NULL (Accumulation), and `count` is never NULL. One with FILTER may
+        see none of the group's rows: NULL, but for count."""
+        if isinstance(call, exp.Filter):
+            call, empty = call.this, True
+        origin = self._origin(call)
+
+        def lower(argument: Expr) -> ir.ScalarExpr:
+            return self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
+
+        if isinstance(call, exp.Count):
+            return ir.Count(origin=origin, description=call.sql(dialect=self.dialect))
+        if (argument := _picked_argument(call)) is not None:
+            # One of its argument's values on some row of the group.
+            return ir.AnyAggregate(origin=origin, input=lower(argument), empty=empty)
+        if (argument := _aggregate_argument(call, (exp.Sum, exp.Avg), distinct=True)) is not None and self.semantics.checked_arithmetic:
+            # NULL over non-null values only where arithmetic does not raise (overflow, NaN).
+            return ir.Accumulation(origin=origin, input=lower(argument), empty=empty)
+        return None
 
     def _grouping_determined(self, grouping: set[ir.OutputColumn], relation: ir.RelationExpr) -> Callable[[ir.OutputColumn], bool]:
         """Whether its `grouping` columns determine a column of `relation`: one of those,
@@ -1727,6 +1818,8 @@ class IrParser:
         OpaquePureFunction of its lowered arguments, unless its value is not a
         function of them (`_NOT_A_FUNCTION_OF_ITS_COLUMNS`)."""
         origin = self._origin(expression, line)
+        if (grouped := self._grouped_values.get(id(expression))) is not None:
+            return grouped
 
         def lower(node: Expr) -> ir.ScalarExpr:
             return self._lower_expression(node, bindings, schema_complete=schema_complete)
@@ -2598,7 +2691,8 @@ def _join_levels(select: exp.Select) -> list[tuple[list[exp.Join], list[Expr]]]:
     levels: list[tuple[list[exp.Join], list[Expr]]] = [(list(select.args.get("joins") or ()), _direct_sources(select))]
     pending: list[Expr | None] = [source, *(join.this for join in select.args.get("joins") or ())]
     while pending:
-        nested = _nested_join(pending.pop())
+        source = pending.pop()
+        nested = _nested_join(source) or _aliased_join(source)
         if nested is not None:
             first, joins = nested
             levels.append((joins, _flattened([first, *(join.this for join in joins)])))
@@ -2618,6 +2712,29 @@ def _nested_join(source: Expr | None) -> tuple[Expr, list[exp.Join]] | None:
     if not isinstance(first, exp.Table | exp.Subquery) or not first.args.get("joins"):
         return None
     return first, list(first.args["joins"])
+
+
+def _aliased_join(source: Expr | None) -> tuple[Expr, list[exp.Join]] | None:
+    """A parenthesized join with an alias, `(a JOIN b ON ...) AS x`, perhaps
+    naming its columns: its first source and its joins, as `_nested_join`."""
+    if not isinstance(source, exp.Subquery) or not source.alias or any(
+        value for key, value in source.args.items() if key not in {"this", "alias"}
+    ):
+        return None
+    first = source.this
+    if not isinstance(first, exp.Table | exp.Subquery) or not first.args.get("joins"):
+        return None
+    return first, list(first.args["joins"])
+
+
+def _hidden_sources(source: Expr) -> list[Expr]:
+    """The sources inside an aliased parenthesized join, at any depth: their
+    names are visible only inside it."""
+    nested = _aliased_join(source)
+    if nested is None:
+        return []
+    inner = _flattened([nested[0], *(join.this for join in nested[1])])
+    return [*inner, *(hidden for source in inner for hidden in _hidden_sources(source))]
 
 
 def _asserted_joins(ast: ParsedProgram) -> list[exp.Join]:
@@ -2808,6 +2925,9 @@ _VALUES_DOMAIN_ROWS = 100
 # A grouping key not selected, kept as a hidden Aggregate output: no SQL name can match it.
 HIDDEN_GROUPING = "\0grouping"
 
+# An aggregate HAVING reads that no item writes, a hidden Aggregate output too.
+HIDDEN_AGGREGATE = "\0aggregate"
+
 # A USING column's merged binding (`_merge_using`): no qualifier can name it.
 _USING_QUALIFIER = "\0using"
 
@@ -2947,32 +3067,62 @@ def _matching_grouping_output(group_expression: Expr, items: list[Expr]) -> Expr
     return _matching_output(group_expression, items)
 
 
-def _aggregate_argument(expression: Expr, kinds: tuple[type[exp.AggFunc], ...]) -> Expr | None:
-    """The one argument of a plain call of one of `kinds`: no DISTINCT, FILTER,
-    window, or other argument (DuckDB's `max(x, 3)` is a list)."""
-    if type(expression) not in kinds or isinstance(expression.this, (exp.Distinct, exp.Star)) or expression.this is None:
+def _aggregate_argument(expression: Expr, kinds: tuple[type[exp.AggFunc], ...], *, distinct: bool = False) -> Expr | None:
+    """The one argument of a plain call of one of `kinds`: no FILTER, window,
+    or other argument (DuckDB's `max(x, 3)` is a list), and no DISTINCT
+    unless `distinct` allows one argument's."""
+    if type(expression) not in kinds or isinstance(expression.this, exp.Star) or expression.this is None:
         return None
     if any(value for key, value in expression.args.items() if key != "this"):
         return None
+    if isinstance(expression.this, exp.Distinct):
+        arguments = expression.this.expressions
+        return arguments[0] if distinct and len(arguments) == 1 and not expression.this.args.get("on") else None
     return expression.this
 
 
 def _picked_argument(expression: Expr) -> Expr | None:
     """The argument of an aggregate whose value is the argument's value on
-    some row of the group: `min` and `max` (a non-null one when there is one)
-    and `any_value`, whatever its NULL treatment (DuckDB parses its own as
-    IGNORE NULLS). Not BigQuery's `any_value(x HAVING MAX y)`, opaque."""
+    some row of the group: `min` and `max` (a non-null one when there is one;
+    of distinct values or not, the same) and `any_value`, whatever its NULL
+    treatment (DuckDB parses its own as IGNORE NULLS). Not BigQuery's
+    `any_value(x HAVING MAX y)`, opaque."""
     if isinstance(expression, (exp.IgnoreNulls, exp.RespectNulls)):
         expression = expression.this
-    argument = _aggregate_argument(expression, (exp.Min, exp.Max, exp.AnyValue))
+    argument = _aggregate_argument(expression, (exp.Min, exp.Max), distinct=True) or _aggregate_argument(expression, (exp.AnyValue,))
     return None if isinstance(argument, exp.HavingMax) else argument
+
+
+def _outermost_aggregate_calls(expression: Expr) -> list[Expr]:
+    """The aggregate calls of `expression` not inside another, a window or a
+    subquery, with the FILTER or NULL treatment written on them."""
+    calls: list[Expr] = []
+    pending: list[Expr] = [expression]
+    while pending:
+        node = pending.pop()
+        if _is_aggregate_call(node):
+            calls.append(node)
+        elif not isinstance(node, exp.Window | exp.Query | exp.Subquery):
+            pending.extend(node.iter_expressions())
+    return calls
+
+
+def _unaliased(item: Expr) -> Expr:
+    return item.this if isinstance(item, exp.Alias) else item
+
+
+def _is_aggregate_call(node: Expr) -> bool:
+    """An aggregate call, with the FILTER or NULL treatment written on it."""
+    while isinstance(node, exp.Filter | exp.IgnoreNulls | exp.RespectNulls | exp.WithinGroup):
+        node = node.this
+    return isinstance(node, exp.AggFunc)
 
 
 def _reads_ungrouped_column(lowered: ir.ScalarExpr, determined: Callable[[ir.OutputColumn], bool]) -> bool:
     """Whether `lowered`, an item of a grouped select, reads a column outside
     every aggregate that the grouping columns do not determine (`determined`).
-    Aggregates, windows and subqueries lower opaque, so every column
-    `lowered` reads is outside them."""
+    Windows and subqueries lower opaque, and an aggregate's argument is read
+    per row, so every other column `lowered` reads is outside them."""
     pending: list[ir.ScalarExpr] = [lowered]
     while pending:
         node = pending.pop()
@@ -2980,14 +3130,10 @@ def _reads_ungrouped_column(lowered: ir.ScalarExpr, determined: Callable[[ir.Out
             if not determined(node.column):
                 return True
             continue
+        if isinstance(node, ir.AnyAggregate | ir.Accumulation | ir.Count):
+            continue
         pending.extend(child for child in ir.children(node) if isinstance(child, ir.ScalarExpr))
     return False
-
-
-def _is_bare_aggregate_expression(expression: Expr) -> bool:
-    return any(isinstance(node, exp.Column) for node in expression.walk()) and not any(
-        isinstance(node, exp.AggFunc) for node in expression.walk()
-    )
 
 
 def _row_number_equals_one(predicate: Expr) -> exp.Window | None:
@@ -3046,7 +3192,7 @@ _IS_DISTINCT_FROM = ir.Builtin(name="IS DISTINCT FROM", strict=(False, False), t
 _EXISTS = ir.Builtin(name="EXISTS", strict=(False,), total=(False,), injective=False)
 _ORDER_COMPARISONS = {"<>", ">", ">=", "<", "<=", "BETWEEN"}
 # Never NULL: `NULL IS TRUE` is FALSE, so never TRUE where the operand is NULL.
-_IS_TRUE = ir.Builtin(name="IS TRUE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
+_IS_TRUE = ir.Builtin(name="IS TRUE", strict=(False,), total=(False,), injective=False, true_only_if_argument=True)
 _IS_FALSE = ir.Builtin(name="IS FALSE", strict=(False,), total=(False,), injective=False, rejecting=(True,))
 
 

@@ -367,6 +367,38 @@ SELECT e2.empno AS g, max(e.empno) AS max_emp FROM emp AS e JOIN emp AS e2 ON e.
 SELECT d.deptno, max(e.empno) AS max_emp FROM emp AS e JOIN dept AS d ON e.deptno = d.deptno GROUP BY d.deptno
 /**ASSERT UNIQUE(max_emp)**/  --~ PROVED
 
+-- case: uk_pass_through_aggregate_through_injective_arithmetic
+-- Integer arithmetic with a literal is one-to-one where it raises on
+-- overflow, inside the aggregate or around it: max(empno + 1) is empno + 1 of
+-- the row it picks. deptno is no key, and % is not one-to-one.
+SELECT
+    sal, max(empno + 1) AS inside, max(empno) - 1 AS around, -min(empno) AS negated,
+    max(deptno) + 1 AS max_dept, max(empno) % 2 AS parity
+FROM emp GROUP BY sal
+/**ASSERT UNIQUE(inside)**/  --~ PROVED
+/**ASSERT UNIQUE(around)**/  --~ PROVED
+/**ASSERT UNIQUE(negated)**/  --~ PROVED
+/**ASSERT UNIQUE(max_dept)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(parity)**/  --~ UNKNOWN
+
+-- case: uk_grouping_column_through_injective_arithmetic
+-- deptno + 1, not itself a grouping item, is one value per group, one-to-one in deptno.
+SELECT deptno + 1 AS next_dept, count(*) AS n FROM emp GROUP BY deptno
+/**ASSERT UNIQUE(next_dept)**/  --~ PROVED
+
+-- case: uk_pass_through_aggregate_of_a_double_key
+-- A DOUBLE's + 1 is not one-to-one (1e16 + 1 = 1e16).
+CREATE TABLE measure (f DOUBLE PRIMARY KEY, g INTEGER NOT NULL);
+SELECT g, max(f) AS max_f, max(f) + 1 AS next_f FROM measure GROUP BY g
+/**ASSERT UNIQUE(max_f)**/  --~ PROVED
+/**ASSERT UNIQUE(next_f)**/  --~ UNKNOWN
+
+-- case: uk_pass_through_aggregate_where_arithmetic_wraps
+-- dialect: sqlite
+SELECT sal, max(empno) AS max_emp, max(empno) + 1 AS next_emp FROM emp GROUP BY sal
+/**ASSERT UNIQUE(max_emp)**/  --~ PROVED
+/**ASSERT UNIQUE(next_emp)**/  --~ UNKNOWN
+
 -- case: uk_grouping_sets
 -- inspired by RelMetadataTest.testUniqueKeysWithConfOnAggregateWithGroupingSets
 -- A Unique Set (subtotal rows have job NULL, data rows never do), but

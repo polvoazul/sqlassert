@@ -105,8 +105,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   so one `_table_constraints` view feeds Unique Sets, primary keys, and
   `REFERENCES` alike. A parenthesized join without an alias, `a JOIN (b JOIN
   c ON ...) ON ...`, is a join input whose sources keep their names
-  (`_nested_join`); with an alias it stays opaque, since DuckDB renames its
-  repeated column names and other dialects leave them ambiguous.
+  (`_nested_join`). With an alias, `(b JOIN c ON ...) AS x`, it is a relation
+  of its own that hides b and c and has each of their columns under its own
+  name (`_alias_join`); a name two columns share is opaque, since DuckDB
+  renames the second and other dialects leave it ambiguous, and so is every
+  name when a source's columns are not all known.
 - Table columns carry a plain `comparison_type` when their declared type has
   value equality without collation. Equality Groups merge only known matching
   types, followed through pass-through columns; unknown and mixed types do not

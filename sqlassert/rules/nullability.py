@@ -445,7 +445,8 @@ def _rejected_paddings(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[Padding, ir
 
     A padded row is NULL in every column its join pads, all at once: a
     conjunct NULL there (`_null_with`) is never TRUE, nor is a Builtin with a
-    `rejecting` argument NULL there, `IS NOT NULL` of such an expression is
+    `rejecting` argument NULL there or `p IS TRUE` where p is never TRUE,
+    `IS NOT NULL` of such an expression is
     FALSE, and an OR rejects the paddings every part rejects:
     `e.sal > 0 OR e.comm > 0` and `coalesce(e.sal, e.comm) > 0` reject the
     join that pads both (Calcite's whole-side `Strong`).
@@ -473,6 +474,9 @@ def _conjunct_paddings(conjunct: ir.ScalarExpr) -> frozenset[Padding]:
                 padding for side, other in ((left, right), (right, left)) if not _expression_sources(other)[0]
                 for padding in _null_with(side)
             )
+        case ir.Call(function=ir.Builtin(true_only_if_argument=True), arguments=(argument,)):
+            # TRUE only where its argument is: `p IS TRUE` rejects what p does.
+            return _conjunct_paddings(argument)
         case ir.Call(rejecting_arguments=arguments):
             # Never TRUE where a rejecting argument is NULL, though perhaps not NULL.
             return frozenset(padding for argument in arguments for padding in _null_with(argument))
@@ -519,8 +523,8 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
     footnote 9), and `IS NOT DISTINCT FROM` a non-null value those of its
     other side. A Builtin never TRUE on a NULL argument rejects that
     argument's, though it may not be NULL there (Calcite's `Strong.isNotTrue`):
-    `x > ANY (...)` and `(x > 0) IS TRUE` reject x. An OR rejects the columns
-    each of its parts rejects.
+    `x > ANY (...)` rejects x. `p IS TRUE` rejects whatever p does. An OR
+    rejects the columns each of its parts rejects.
     """
     rejected: dict[ir.OutputColumn, ir.ScalarExpr] = {}
     for conjunct in conjuncts:
@@ -536,8 +540,11 @@ def _null_rejected(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn
                     column for side, other in ((left, right), (right, left)) if not _expression_sources(other)[0]
                     for column in ir.strict_inputs(side)
                 ))
+            case ir.Call(function=ir.Builtin(true_only_if_argument=True), arguments=(argument,)):
+                # TRUE only where its argument is: `p IS TRUE` rejects what p does.
+                columns = tuple(_null_rejected((argument,)))
             case ir.Call(rejecting_arguments=arguments):
-                # Never TRUE where a rejecting argument is NULL: `x > ANY (...)`, `p IS TRUE`.
+                # Never TRUE where a rejecting argument is NULL: `x > ANY (...)`.
                 columns = tuple(dict.fromkeys(column for argument in arguments for column in ir.strict_inputs(argument)))
             case _:
                 columns = ir.strict_inputs(conjunct)

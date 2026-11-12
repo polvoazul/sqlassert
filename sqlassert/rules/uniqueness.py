@@ -327,11 +327,10 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
         constant = _closure(source, grouping, frozenset()).value.columns
         down = {column: upstream for column, upstream in down.items() if column in relation.grouping_outputs}
         for column in relation.output_columns:
-            match column.scalar_expr:
-                case ir.AnyAggregate(input=ir.ColumnRef(column=upstream)) if upstream in constant:
-                    back[upstream] = (*back.get(upstream, ()), column)
-                case _:
-                    pass  # Count-sensitive and opaque aggregates are new values.
+            # Count-sensitive and opaque aggregates are new values.
+            upstream = _picked_input(column.scalar_expr)
+            if upstream is not None and upstream in constant:
+                back[upstream] = (*back.get(upstream, ()), column)
     # A computed column of an Aggregate that is not a grouping item wraps its
     # value in AnyAggregate, so only grouping items and DISTINCT values remain.
     return _Delegation(source, down, back, "Determined in the input rows", computed=_computed(relation, source))
@@ -348,17 +347,34 @@ def _picked(aggregate: ir.Aggregate, base: _Delegation) -> list[_Delegation]:
     source = base.input
     delegations = []
     for column in aggregate.output_columns:
-        match column.scalar_expr:
-            case ir.AnyAggregate(input=ir.ColumnRef(column=upstream)) if upstream in source.output_columns:
-                back = dict(base.back)
-                back[upstream] = tuple(dict.fromkeys((*back.get(upstream, ()), column)))
-                delegations.append(_Delegation(
-                    source, base.down | {column: upstream}, back, "Determined in the row the aggregate picks",
-                    lambda reached, is_definite, column=column: column in reached, base.computed,
-                ))
-            case _:
-                pass  # Other aggregates are no one row's value.
+        upstream = _picked_input(column.scalar_expr)
+        if upstream is None or upstream not in source.output_columns:
+            continue  # Other aggregates are no one row's value.
+        back = dict(base.back)
+        back[upstream] = tuple(dict.fromkeys((*back.get(upstream, ()), column)))
+        delegations.append(_Delegation(
+            source, base.down | {column: upstream}, back, "Determined in the row the aggregate picks",
+            lambda reached, is_definite, column=column: column in reached, base.computed,
+        ))
     return delegations
+
+
+def _picked_input(expression: ir.ScalarExpr) -> ir.OutputColumn | None:
+    """The input column whose value on the row an AnyAggregate picks
+    `expression` is a one-to-one function of: the AnyAggregate of that
+    column, or one with an injective Builtin inside it or around it
+    (`max(empno + 1)`, `max(empno) + 1`) when the column is an integer or
+    decimal (`ir.injective_input`)."""
+    match expression.closed:
+        case ir.AnyAggregate(input=ir.ColumnRef(column=column)):
+            return column
+        case ir.AnyAggregate(input=value):
+            column = ir.injective_input(value)
+        case ir.Call(injective_argument=ir.ScalarExpr() as argument):
+            column = _picked_input(argument)
+        case _:
+            return None
+    return column if column is not None and exact_numeric(column).value else None
 
 
 def _computed(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[Attribute, frozenset[Attribute]]:
