@@ -178,7 +178,7 @@ class Suggester:
         try:
             if not self.blocked:
                 self._rewrites = rewrites(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
-                self._hazards = hazards(self.ast, self.program, self._arena, wanted=self.sites)
+                self._hazards = hazards(self.ast, self.program, self._arena, self.dialect, wanted=self.sites)
         except BaseException as error:
             self.__exit__(type(error), error, error.__traceback__)
             raise

@@ -223,6 +223,62 @@ def test_a_join_equality_without_an_implicit_cast_is_not_a_hazard(on: str):
     assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").hazards == ()
 
 
+# Lossy comparison ----------------------------------------------------------------
+
+LOSSY = """
+CREATE TABLE a (id BIGINT PRIMARY KEY, i INTEGER, s SMALLINT, d DECIMAL(10, 2), w DECIMAL(18, 3));
+CREATE TABLE d (x DOUBLE, y DOUBLE, r REAL, b BIGINT);
+"""
+
+
+def lossy(sql: str, dialect: str = "duckdb") -> list[str]:
+    return [hazard.message for hazard in suggest(LOSSY + sql, dialect=dialect).hazards if hazard.concern is Concern.LOSSY_COMPARISON]
+
+
+def test_a_join_equality_of_a_bigint_and_a_double_is_a_hazard_and_matches_two_ids_on_data():
+    sql = "SELECT * FROM a JOIN d ON a.id = d.x"
+    hazard, = suggest(LOSSY + sql).hazards
+    assert hazard.concern is Concern.LOSSY_COMPARISON
+    assert hazard.site.label == "JOIN d"
+    assert hazard.message == (
+        "a.id = d.x compares BIGINT with DOUBLE, which rounds above 2^53, so one 'x' can match several 'id': compare in one type"
+    )
+    connection = duckdb.connect()
+    connection.execute(LOSSY + "INSERT INTO a (id) VALUES (9007199254740992), (9007199254740993); INSERT INTO d (x) VALUES (9007199254740992);")
+    assert connection.execute("SELECT count(*) FROM a JOIN d ON a.id = d.x").fetchone() == (2,)
+
+
+@pytest.mark.parametrize(("sql", "message"), [
+    ("SELECT a.id FROM a, d WHERE d.x = a.id", "d.x = a.id compares BIGINT with DOUBLE"),
+    ("SELECT id FROM a WHERE id IN (SELECT x FROM d)", "compares BIGINT with DOUBLE"),
+    ("SELECT id FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.x = a.id)", "d.x = a.id compares BIGINT with DOUBLE"),
+    ("SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM d WHERE d.x IS NOT DISTINCT FROM a.id)", "compares BIGINT with DOUBLE"),
+    ("SELECT a.id FROM a LEFT JOIN d ON d.r = a.i", "d.r = a.i compares INT with REAL, which rounds above 2^24"),
+    ("SELECT a.id FROM a JOIN d ON a.w = d.x", "a.w = d.x compares DECIMAL(18, 3) with DOUBLE, which rounds past 15 significant digits"),
+])
+def test_a_lossy_comparison_in_where_on_or_a_subquery_correlation_is_a_hazard(sql: str, message: str):
+    found, = lossy(sql)
+    assert message in found
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT a.id FROM a JOIN d ON a.id = d.b",  # BIGINT = BIGINT
+    "SELECT d.x FROM d WHERE d.x = d.y",  # DOUBLE = DOUBLE
+    "SELECT a.id FROM a JOIN d ON a.i = d.x",  # an INTEGER is exact in a DOUBLE
+    "SELECT a.id FROM a JOIN d ON a.s = d.r",  # a SMALLINT is exact in a REAL
+    "SELECT a.id FROM a JOIN d ON a.d = d.x",  # 10 digits are exact in a DOUBLE
+    "SELECT a.id FROM a JOIN e ON a.id = e.x",  # e's types are unknown
+    "SELECT a.id FROM a JOIN d ON a.id = CAST(d.x AS BIGINT)",  # compared in one type
+])
+def test_a_comparison_not_known_to_round_is_not_a_lossy_comparison(sql: str):
+    assert lossy(sql) == []
+
+
+def test_a_dialect_that_compares_integers_and_floats_exactly_has_no_lossy_comparison():
+    assert lossy("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect="sqlite") == []
+    assert len(lossy("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect="postgres")) == 1
+
+
 # Always empty -----------------------------------------------------------------
 
 EMPTY_SCHEMA = """
