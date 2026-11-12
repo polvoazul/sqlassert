@@ -1,8 +1,8 @@
 # 46. Certify dialect facts against real engines
 
 - **State:** open
-- **Priority:** P3 (open): Open for local Spark (needs Java or a Spark image and
-  a DB-API bridge).
+- **Priority:** P3 (open): Open for the rest of Spark's facts (its CAST probes
+  and the zoned-timestamp probe).
 - **Theme:** soundness
 - **Labels:** dialects, soundness
 - **Created:** 2026-11-08
@@ -61,8 +61,13 @@ DuckDB's text is not compared by identity without a COLLATE
 ClickHouse, absent from BigQuery, Redshift, Hive, Oracle and unlisted
 dialects.
 
-Left: the local engine Spark (Databricks, `spark`) keeps `doc`
-provenance: certifying it needs Java or a Spark image and a DB-API bridge.
+Spark 4.3.0 runs locally (`apache/spark` Thrift server and PyHive, see
+dialects.md); `checked_sum`, `skips_null(greatest/least)` and `strict([])`
+are certified on it (`--only`). Left: its other facts keep `doc`
+provenance, because the certifier cannot spell a Spark CAST that SQLGlot
+parses back (`strict(CAST)`, `total(CAST)` come out VACUOUS) and ANSI store
+assignment rejects the zoned-timestamp probe's text insert. Databricks stays
+`doc`.
 MySQL's NDB engine facts are `doc` (no NDB locally). Hive and Oracle are
 `doc`.
 

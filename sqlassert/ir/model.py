@@ -275,7 +275,8 @@ class AnyAggregate(ScalarExpr):
 
 class Accumulation(ScalarExpr):
     """An aggregate of a group's values of `input` that skips NULLs: `sum`
-    and `avg` where arithmetic raises rather than returning NULL. NULL only
+    and `avg` where the dialect's `checked_sum` holds (never NULL over non-null
+    values: overflow raises, NaN and infinities are not NULL). NULL only
     when no value is non-null, or when the group is `empty` (see
     AnyAggregate); its value is otherwise opaque."""
 
