@@ -16,7 +16,7 @@ only against scripted fakes (`tests/test_warehouse_catalogs.py`). A wrong
 fact is a false proof. This needs an account with credentials.
 
 - [ ] Certify the facts: `python scripts/certify_dialects.py databricks --driver ...
-  --connect ...` under the defaults and the `PERMISSIVE` settings. A failing
+  --connect ...` under the engine's defaults (ADR 0006). A failing
   probe weakens its fact in `sqlassert/dialects.py`, with a `.sqltest` case.
 - [ ] A live catalog test, as `tests/test_postgres_catalog.py`: create
   tables with keys, NOT NULL, Foreign Keys and a view; fetch; check the
@@ -25,7 +25,7 @@ fact is a false proof. This needs an account with credentials.
 - [ ] Document the setup (driver, connect arguments, env var) in
   `docs/dialects.md`, "Certifying facts".
 - [ ] Check `RELY` on Unity Catalog keys and that NOT NULL and CHECK are enforced.
-- [ ] Decide whether ANSI mode, on by default on recent Databricks runtimes, can earn stronger facts (`checked_arithmetic`) per version or setting; today `_SPARK` assumes it off. Local Spark (`spark`, `spark2`) stays in 46.
+- [ ] Confirm on the engine the ANSI-mode facts issue 70 took from the docs (`checked_arithmetic`, `checked_division`, `casts_raise`; ANSI mode is the default, ADR 0006). Local Spark (`spark`) stays in 46.
 
 ## Done when
 

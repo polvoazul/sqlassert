@@ -16,7 +16,7 @@ only against scripted fakes (`tests/test_warehouse_catalogs.py`). A wrong
 fact is a false proof. This needs an account with credentials.
 
 - [ ] Certify the facts: `python scripts/certify_dialects.py bigquery --driver ...
-  --connect ...` under the defaults and the `PERMISSIVE` settings. A failing
+  --connect ...` under the engine's defaults (ADR 0006). A failing
   probe weakens its fact in `sqlassert/dialects.py`, with a `.sqltest` case.
 - [ ] A live catalog test, as `tests/test_postgres_catalog.py`: create
   tables with keys, NOT NULL, Foreign Keys and a view; fetch; check the

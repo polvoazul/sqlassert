@@ -256,7 +256,8 @@ class SimpleCase(ScalarExpr):
 
 class AnyAggregate(ScalarExpr):
     """An arbitrary value selected from the input rows of an aggregate group:
-    a bare column, or `min` and `max`, which take one of its non-null values.
+    a column outside every aggregate that the grouping determines (constant
+    across the group), or `min` and `max`, which take one of its non-null values.
 
     `empty` marks a group that may have no rows, where the value is NULL: an
     aggregate grouped by nothing has one row even over no input rows."""
@@ -310,7 +311,7 @@ class NullSafeEquality(ScalarExpr):
 
     `rejects` marks one where a non-null side stays non-null as it is
     compared, so a TRUE comparison makes the other side non-null too: where a
-    failed implicit cast raises (in Spark without ANSI mode `n <=> 'x'` is
+    failed implicit cast raises (in Hive `n <=> 'x'` is
     `n IS NULL`) and neither side is a composite."""
 
     left: ScalarExpr

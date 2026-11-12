@@ -9,17 +9,23 @@ for dialects the oracle does not run.
 
 ## The rule for every flag
 
-Superseded by [ADR 0006](adr/0006-model-only-current-strict-engines.md) (latest release, default settings, strict modes; cleanup in [issue 70](issues/0070-drop-legacy-and-permissive-dialect-support.md)). Until then:
-A flag may only claim what holds under *all* of the dialect's settings,
-because the SQL alone does not say which are in force (ADR 0005). Where a
-setting decides (Spark's ANSI mode), the flag takes the
-weaker reading: the analysis loses a proof, never gains a wrong one. Two
-exceptions. MySQL is modelled under its default strict `sql_mode`, in versions
-8.4 and later only: a looser `sql_mode`, `INSERT IGNORE` and older versions are
-out of scope. And the default collation: text without a `COLLATE` is taken to
-compare under the engine's shipped default, and a setting that changes it
-(DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`, Oracle's
-`NLS_COMP`) is out of scope, like MySQL's `foreign_key_checks = 0`. A dialect not listed gets `DialectSemantics()`:
+A flag claims what the dialect's latest release does under its default
+settings, with strict modes on ([ADR 0006](adr/0006-model-only-current-strict-engines.md)).
+Where a setting decides a fact, the default decides it: Spark and Databricks
+under ANSI mode, MySQL (8.4 and later) under its default strict `sql_mode`,
+so `||` is OR. Older versions and settings that loosen what the engine checks
+or accepts are out of scope: a looser `sql_mode`, `PIPES_AS_CONCAT`,
+`ONLY_FULL_GROUP_BY` off, `INSERT IGNORE`, Spark with ANSI mode off, Spark 2,
+MySQL's `foreign_key_checks = 0`. So is a setting that changes the default
+collation (DuckDB's `default_collation`, Snowflake's `DEFAULT_DDL_COLLATION`,
+Oracle's `NLS_COMP`): text without a `COLLATE` compares under the engine's
+shipped default. On a legacy version or a permissive setting a result may not
+be sound. SQL that standard SQL rejects is not given a meaning because a
+flavor accepts it (SQLite's column neither grouped nor inside an aggregate):
+it is opaque and warns `unsupported-construct`. A flag stays weak where the
+default behaviour is not established (not certified on the engine, nor stated
+in its docs): the analysis then loses a proof, never gains a wrong one. A
+dialect not listed gets `DialectSemantics()`:
 cautious arithmetic, collation and `||`, and enforced keys (the behaviour
 before dialects were listed; see "Not done").
 
@@ -27,12 +33,12 @@ before dialects were listed; see "Not done").
 
 | | DuckDB | Postgres | MySQL | Snowflake | BigQuery | Databricks / Spark | Redshift | Trino |
 |---|---|---|---|---|---|---|---|---|
-| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | no (ANSI off) | yes | yes |
-| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | no | yes | yes |
-| comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | no (`1 < 'x'` is NULL) | yes | yes (no implicit casts) |
+| `+ - * CAST` never NULL (`checked_arithmetic`) | yes | yes | no (`-x` of the least BIGINT is an exact DECIMAL, not an error) | no (overflow not documented to raise) | yes | yes (ANSI mode) | yes | yes |
+| `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | Databricks yes; Spark no (its docs: `div` by zero is NULL) | yes | yes |
+| comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | Databricks yes; Spark no (not documented) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
-| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
+| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | OR | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
 | `greatest()`, `least()` | skip NULL | skip NULL | not modelled | not modelled | not modelled | not modelled | not modelled | not modelled |
@@ -127,16 +133,9 @@ Its comparisons follow the column's
 collation, so `e = 'A'` keeps the member `'a'`; ENUM narrowing never treats
 distinct strings as distinct values there.
 
-MySQL `||` is OR unless `sql_mode` has `PIPES_AS_CONCAT`, under which it is
-concatenation *and binds tighter than any comparison*: `a = 1 AND b || c` is
-`(a = 1 AND b) OR c`, or `a = 1 AND (b || c)`. sqlassert parses it as OR (as
-SQLGlot does), marks the node (`sql_parse.is_ambiguous_pipes`), and lowers it
-as an `OpaquePureFunction` of its operands, with an `ambiguous-operator`
-warning. That is sound for both readings: as OR, `||` has the lowest
-precedence, so its node's span is delimited by parentheses, a function's
-arguments or a clause; under either reading the expression over that span is
-a pure function of the columns in it. An OR around it, at the same level,
-splits identically in both readings.
+MySQL `||` is OR, as SQLGlot parses it: the default `sql_mode` has no
+`PIPES_AS_CONCAT` (ADR 0006), so `a = 1 AND b || c` is `(a = 1 AND b) OR c`.
+MySQL 8.4 deprecates `||` as OR; a deprecation is no reason to warn.
 
 ## Unenforced keys (decision)
 
@@ -242,8 +241,10 @@ DuckDB oracle. A dialect changes only the inputs the rules read, through the
 flags above, so a dialect's analysis is sound when (a) the rules are, which
 the oracle checks, and (b) each flag it sets is true of that dialect. (b) is
 certified fact by fact (next section): on the engine where one runs locally,
-from vendor documentation otherwise (BigQuery and Redshift
-`checked_arithmetic`, and Snowflake, BigQuery and Redshift `checked_division`: overflow and division by zero raise;
+from vendor documentation otherwise (BigQuery, Redshift, Spark and Databricks
+`checked_arithmetic`, and Snowflake, BigQuery, Redshift and Databricks
+`checked_division`: overflow and division by zero raise, in Spark and
+Databricks under ANSI mode, their default;
 `TRY_`, `SAFE_` and `DIV0` variants are separate functions SQLGlot parses
 apart).
 
@@ -272,12 +273,10 @@ or tables whose constraint violations it attempts (keys, text identity, ENUMs).
 SQL a dialect writes differently comes from SQLGlot, and is kept only when
 sqlassert parses it back to the same node; a construct the engine rejects is
 VACUOUS for that engine (`^` in SQLite, an ENUM column in PostgreSQL). Each
-fact runs under the engine's defaults and again after the dialect's
-permissive settings (`PERMISSIVE`: Spark ANSI off; MySQL's strict `sql_mode`
-is assumed, and a setting that changes the default collation is out of scope). It prints PASS, FAIL (with
-the weaker setting to apply by hand), ERROR (the probe could not run) or
-VACUOUS per fact, and STRONGER for a weak setting the engine would also
-satisfy (never acted on). Unless `--dry-run`, it files the engine version
+fact runs under the engine's default settings (ADR 0006). It prints PASS,
+FAIL (with the weaker setting to apply by hand), ERROR (the probe could not
+run) or VACUOUS per fact, and STRONGER for a weak setting the engine would
+also satisfy, to strengthen by hand when the engine is the latest release. Unless `--dry-run`, it files the engine version
 under each passing fact's `engine` versions and each vacuous fact's
 `undefined` ones, and removes it from each failing one; it never adds a fact
 or strengthens one. An undefined fact claims nothing on that version, so

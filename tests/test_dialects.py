@@ -9,7 +9,7 @@ from sqlglot import exp
 
 from sqlassert import Outcome, analyze, suggest
 from sqlassert.dialects import DialectSemantics, semantics
-from sqlassert.sql_parse import is_ambiguous_pipes, sqlassert_dialect
+from sqlassert.sql_parse import sqlassert_dialect
 
 BIGQUERY = """
 CREATE TABLE t (id INT64 NOT NULL, PRIMARY KEY (id) NOT ENFORCED);
@@ -46,13 +46,11 @@ def test_suggest_trusts_unenforced_keys_only_when_asked():
     assert "/**ASSERT MANY TO ONE**/" in markers(True)
 
 
-def test_mysql_pipes_parse_as_a_marked_or():
+def test_mysql_pipes_parse_as_or():
     select = sqlglot.parse_one("SELECT a || b, a OR b FROM t", read=sqlassert_dialect("mysql"))
 
     pipes, disjunction = select.expressions
-    assert isinstance(pipes, exp.Or) and is_ambiguous_pipes(pipes)
-    assert isinstance(disjunction, exp.Or) and not is_ambiguous_pipes(disjunction)
-    assert pipes == disjunction  # The same tree; only the marking differs.
+    assert isinstance(pipes, exp.Or) and pipes == disjunction
 
 
 def test_pipes_are_concatenation_elsewhere():
@@ -63,5 +61,6 @@ def test_pipes_are_concatenation_elsewhere():
 
 def test_a_dialect_not_listed_gets_cautious_semantics_and_enforced_keys():
     assert semantics("tsql") == DialectSemantics()
+    assert semantics("spark2") == DialectSemantics()  # Older versions are not modelled (ADR 0006).
     assert not DialectSemantics().checked_arithmetic and not DialectSemantics().text_is_binary
     assert DialectSemantics().pipes is None and DialectSemantics().unique_keys == "enforced"

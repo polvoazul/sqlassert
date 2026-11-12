@@ -26,12 +26,11 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [59. User-defined functions and table functions (Postgres, Spark, Hive)](0059-postgres-user-defined-functions.md) — not planned (P4: a SETOF UDF or a UDTF in a select list repeats rows; read CREATE FUNCTION and the catalog)
 - [69. Real-world SQL corpora, run through the oracle as they are](0069-real-world-sql-corpora.md) — open (P3, deferred: DuckDB logic tests, TPC-H/TPC-DS, public dbt projects, VeriEQL's LeetCode pairs; unblocks 11 and 27 Part 2)
 - [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
-- [70. Drop legacy and permissive dialect support](0070-drop-legacy-and-permissive-dialect-support.md) — open (P2, ADR 0006: bare grouped columns, Spark ANSI off, spark2, MySQL `||`)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse certified; Spark left)
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45, 70. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
 Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds the
@@ -39,8 +38,7 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
 
 - **P1:** none open. #41 and #38 are done.
 - **P2:** #37 (Paulley audit's missing rules, now also the FULL join and
-  disjoint UNION ALL FDs from #45); #70 (drop legacy and permissive dialect
-  support, ADR 0006; its item 1 comes before aggregates inside expressions).
+  disjoint UNION ALL FDs from #45).
 - **P3, needs downloaded corpora:** #69 (DuckDB logic tests, TPC-H/TPC-DS,
   public dbt projects, VeriEQL's LeetCode pairs, run through the oracle
   unchanged), which unblocks #11
@@ -104,3 +102,4 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
 - [50. dbt: read `catalog.json`](done/0050-dbt-catalog-json.md)
 - [55. Run `sqlassert-dbt suggest` on dbt model files](done/0055-dbt-suggest-model-files.md)
 - [56. dbt: read the live warehouse catalog in the plugin's commands](done/0056-dbt-live-connection.md)
+- [70. Drop legacy and permissive dialect support](done/0070-drop-legacy-and-permissive-dialect-support.md)

@@ -6,8 +6,8 @@ Disproof and never an inference: it says that analysis stopped short, and why.
 A warning is a Diagnostic too, reported apart (`Report.warnings`): the program
 is supported, but a fact a connection would supply is missing, so analysis
 treats it as unknown (ADR 0005). So are a constraint the dialect does not
-enforce, and, about the SQL itself (`SQL_WARNINGS`), an operator whose
-meaning a setting decides, a comparison that depends on something the
+enforce, and, about the SQL itself (`SQL_WARNINGS`), a CHECK constraint
+that states no Enumerated Domain, a comparison that depends on something the
 values do not show, like a zoned timestamp's zone (`dialects.py`), and a
 comparison of composites whose elements may be NULL.
 Warnings never make a Report fail.
@@ -31,7 +31,6 @@ def quoted_all(names: Iterable[str]) -> str:
 
 CATALOG_METADATA_UNAVAILABLE = "catalog-metadata-unavailable"
 AMBIGUOUS_COLUMN = "ambiguous-column"
-AMBIGUOUS_OPERATOR = "ambiguous-operator"
 CARDINALITY_ON_FILTERING_JOIN = "cardinality-on-filtering-join"
 CATALOG_RELATION_NOT_FOUND = "catalog-relation-not-found"
 COMPOSITE_COMPARISON = "composite-comparison"
@@ -66,4 +65,4 @@ class Diagnostic:
 
 
 # Warnings about the SQL itself, which no connection answers: `analyze_database` keeps them.
-SQL_WARNINGS = frozenset({AMBIGUOUS_OPERATOR, COMPOSITE_COMPARISON, IGNORED_CHECK_CONSTRAINT, ZONED_TIMESTAMP_CAST})
+SQL_WARNINGS = frozenset({COMPOSITE_COMPARISON, IGNORED_CHECK_CONSTRAINT, ZONED_TIMESTAMP_CAST})

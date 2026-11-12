@@ -7,11 +7,9 @@ subscripts do with NULL, and which constraints the database enforces. A dialect 
 `DialectSemantics()`, whose arithmetic, collation and `||` are the cautious
 choice; only its keys are taken as enforced, as before dialects were listed.
 
-Every flag is a claim that holds under all of that dialect's settings, since
-the SQL alone does not say which are in force (ADR 0005): MySQL's `||` is OR
-or concatenation depending on `sql_mode`, so it is neither; Spark's
-arithmetic raises or returns NULL depending on ANSI mode, so it may return
-NULL. `docs/dialects.md` argues each entry and says how soundness is judged
+Every flag is a claim about the dialect's latest release under its default
+settings, strict modes on (ADR 0006): MySQL's `||` is OR, since the default
+`sql_mode` has no PIPES_AS_CONCAT; Spark is modelled with ANSI mode on. `docs/dialects.md` argues each entry and says how soundness is judged
 without DuckDB; `docs/dialect-provenance.json` records, per fact, the engine
 versions it was certified on or the vendor doc it rests on
 (`scripts/certify_dialects.py`).
@@ -19,7 +17,7 @@ versions it was certified on or the vendor doc it rests on
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 # How a dialect treats a declared key (PRIMARY KEY, UNIQUE) or foreign key:
@@ -27,10 +25,9 @@ from typing import Literal
 type KeyTrust = Literal["enforced", "rely", "unenforced"]
 
 # What `a || b` is: concatenation whose NULL operand makes it NULL ("strict"),
-# concatenation that may skip a NULL operand ("lenient", Postgres arrays), or
-# something whose meaning a setting decides ("ambiguous", MySQL); None when
-# it is not modelled.
-type PipesMeaning = Literal["strict", "lenient", "ambiguous"] | None
+# or concatenation that may skip a NULL operand ("lenient", Postgres arrays);
+# None when it is not modelled (MySQL, where it is OR).
+type PipesMeaning = Literal["strict", "lenient"] | None
 
 # What `concat(a, ...)` does with NULL: makes the result NULL ("strict"), or
 # skips it, so the result is never NULL ("skips-null"); None when not modelled.
@@ -101,9 +98,12 @@ class DialectSemantics:
         return "rely" in (self.unique_keys, self.foreign_keys)
 
 
+# Spark 4 and Databricks under ANSI mode, their default (ADR 0006): overflow
+# and a bad CAST raise. Apache Spark's docs say `div` by zero is NULL and do
+# not say a failed implicit cast in a comparison raises; Databricks's say
+# both raise (docs/dialect-provenance.json).
 _SPARK = DialectSemantics(
-    # ANSI mode decides whether overflow, division by zero and a bad cast
-    # raise or return NULL; it is on by default only in recent versions.
+    checked_arithmetic=True,
     casts_raise=False,
     zoned_timestamp_is_instant=True,
     pipes="strict",
@@ -149,7 +149,6 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Not `text_is_binary`: the default collations ignore case (and
         # accents, and some trailing spaces).
         zoned_timestamp_is_instant=True,  # TIMESTAMP is converted to UTC.
-        pipes="ambiguous",
         concat="strict",
         concat_ws="skips-null",
         inline_references=False,
@@ -186,9 +185,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         check_constraints="unenforced",
     ),
-    "databricks": _SPARK,
+    "databricks": replace(_SPARK, checked_division=True, casts_raise=True),
     "spark": _SPARK,
-    "spark2": _SPARK,
     "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced",
         check_constraints="unenforced",
     ),

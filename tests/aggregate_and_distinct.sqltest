@@ -98,3 +98,37 @@ SELECT NULL AS x /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
 -- case: a_select_without_from_is_one_row__p5
 WITH u AS (SELECT 'a' AS t UNION ALL SELECT 'a') SELECT t FROM u /**ASSERT UNIQUE(t)**/
 --~ UNKNOWN
+
+-- A column outside every aggregate of a grouped select must be grouped, or
+-- determined by a grouped primary key of its table (ADR 0006). Any other is
+-- SQLite's bare column: its item is opaque and warns.
+
+-- case: a_column_neither_grouped_nor_aggregated_is_opaque
+-- dialect: sqlite
+CREATE TABLE t (id INTEGER NOT NULL, x INTEGER NOT NULL);
+SELECT id, x FROM t GROUP BY id
+/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+--~ unsupported-construct "a column neither grouped nor inside an aggregate"
+
+-- case: an_ungrouped_column_beside_an_aggregate_is_opaque
+CREATE TABLE t (id INTEGER NOT NULL, x INTEGER NOT NULL);
+SELECT id, max(x) + x AS y FROM t GROUP BY id
+/**ASSERT NOT NULL(y)**/  --~ UNKNOWN
+--~ unsupported-construct "a column neither grouped nor inside an aggregate"
+
+-- case: a_function_of_a_grouping_column_is_one_value_per_group
+CREATE TABLE t (id INTEGER NOT NULL, x INTEGER NOT NULL);
+SELECT t.id + 1 AS j, count(*) AS n FROM t GROUP BY id
+/**ASSERT NOT NULL(j)**/  --~ PROVED
+
+-- case: a_column_of_a_grouped_primary_key_s_table_is_determined
+CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL);
+SELECT t.id, t.x, count(*) AS n FROM t GROUP BY t.id
+/**ASSERT NOT NULL(x)**/  --~ PROVED
+/**ASSERT DETERMINES(id -> x)**/  --~ PROVED
+
+-- case: another_occurrence_of_a_grouped_primary_key_s_table_is_not
+CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL);
+SELECT a.id, b.x FROM t AS a CROSS JOIN t AS b GROUP BY a.id
+/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+--~ unsupported-construct "a column neither grouped nor inside an aggregate"

@@ -466,15 +466,16 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   cast to different text: there it does not, and comparing a `CAST` of one
   warns (`zoned-timestamp-cast`).
 - **NULL.** Arithmetic and CAST are taken never to return NULL for non-null
-  operands only where they raise instead (DuckDB, PostgreSQL, Snowflake,
-  BigQuery, Redshift, Trino); division likewise, except in DuckDB. Spark
-  (outside ANSI mode) may return NULL even from a comparison. MySQL is modelled
+  operands only where they raise instead (DuckDB, PostgreSQL, BigQuery,
+  Redshift, Trino, and Spark and Databricks under ANSI mode, their default);
+  division likewise in PostgreSQL, Snowflake, BigQuery, Redshift, Trino and
+  Databricks. Spark and Hive may return NULL even from a comparison (a failed
+  implicit cast). Each engine is modelled at its latest release under its
+  default settings (ADR 0006). MySQL is modelled
   under its default strict `sql_mode`, in 8.4 and later: a comparison of
   non-null operands is non-null, arithmetic is not taken as checked. A CAST from JSON may be NULL everywhere (JSON `null`). `||` and
   `concat()` follow each dialect's NULL handling.
-- **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
-  which also groups its operands differently, so it is an unknown function of
-  its operands, with an `ambiguous-operator` warning: write `OR` or `CONCAT()`.
+- **MySQL `||`** is OR, as under the default `sql_mode` (no `PIPES_AS_CONCAT`).
 
 ### Checking in CI
 

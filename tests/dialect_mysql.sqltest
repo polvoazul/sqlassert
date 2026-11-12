@@ -3,9 +3,8 @@
 -- before 8.4 are out of scope.
 --
 -- The default collations ignore case, so distinct strings may compare equal;
--- only a NO PAD binary collation compares text by identity. `||` is OR, or
--- concatenation under sql_mode PIPES_AS_CONCAT, which also groups its
--- operands differently: it is an unknown function, with a warning. A
+-- only a NO PAD binary collation compares text by identity. `||` is OR: the
+-- default sql_mode has no PIPES_AS_CONCAT (ADR 0006). A
 -- comparison of non-null operands is non-null; arithmetic is not modelled as
 -- checked (`-x` of the least BIGINT is an exact DECIMAL), and division by zero
 -- is NULL in any mode. An ENUM column
@@ -16,14 +15,13 @@
 -- dialect: mysql
 CREATE TABLE t (id INT PRIMARY KEY, n INT NOT NULL, m INT, s VARCHAR(10), b VARCHAR(10) COLLATE utf8mb4_0900_bin, e ENUM('a', 'b ') NOT NULL);
 
--- case: pipes_are_an_unknown_function
-SELECT n || m AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
---~ ambiguous-operator "n || m is an unknown function"
+-- case: pipes_are_or
+SELECT m FROM t WHERE m = 1 || m = 2 /**ASSERT NOT NULL(m)**/  --~ PROVED
 
--- case: pipes_hide_the_conjuncts_around_them
--- `id = 1 AND n || m` is `(id = 1 AND n) OR m`, or `id = 1 AND (n || m)`.
-SELECT n FROM t WHERE id = 1 AND n || m /**ASSERT UNIQUE(n)**/  --~ UNKNOWN
---~ ambiguous-operator
+-- case: pipes_bind_as_loosely_as_or
+-- `m = 1 AND n = 1 || m = 2` is `(m = 1 AND n = 1) OR m = 2`.
+SELECT m FROM t WHERE m = 1 AND n = 1 || m = 2 /**ASSERT NOT NULL(m)**/  --~ PROVED
+/**ASSERT ENUM(m IN (1, 2))**/  --~ PROVED
 
 -- case: or_is_or
 SELECT n FROM t WHERE id = 1 AND (n = 1 OR m = 2) /**ASSERT UNIQUE(n)**/  --~ PROVED
