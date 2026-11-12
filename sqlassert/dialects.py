@@ -8,9 +8,8 @@ subscripts do with NULL, and which constraints the database enforces. A dialect 
 choice; only its keys are taken as enforced, as before dialects were listed.
 
 Every flag is a claim about the dialect's latest release under its default
-settings, strict modes on (ADR 0006): MySQL's `||` is OR or concatenation
-depending on `sql_mode`, so it is neither; Spark is modelled with ANSI mode
-on. `docs/dialects.md` argues each entry and says how soundness is judged
+settings, strict modes on (ADR 0006): MySQL's `||` is OR, since the default
+`sql_mode` has no PIPES_AS_CONCAT; Spark is modelled with ANSI mode on. `docs/dialects.md` argues each entry and says how soundness is judged
 without DuckDB; `docs/dialect-provenance.json` records, per fact, the engine
 versions it was certified on or the vendor doc it rests on
 (`scripts/certify_dialects.py`).
@@ -26,10 +25,9 @@ from typing import Literal
 type KeyTrust = Literal["enforced", "rely", "unenforced"]
 
 # What `a || b` is: concatenation whose NULL operand makes it NULL ("strict"),
-# concatenation that may skip a NULL operand ("lenient", Postgres arrays), or
-# something whose meaning a setting decides ("ambiguous", MySQL); None when
-# it is not modelled.
-type PipesMeaning = Literal["strict", "lenient", "ambiguous"] | None
+# or concatenation that may skip a NULL operand ("lenient", Postgres arrays);
+# None when it is not modelled (MySQL, where it is OR).
+type PipesMeaning = Literal["strict", "lenient"] | None
 
 # What `concat(a, ...)` does with NULL: makes the result NULL ("strict"), or
 # skips it, so the result is never NULL ("skips-null"); None when not modelled.
@@ -151,7 +149,6 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Not `text_is_binary`: the default collations ignore case (and
         # accents, and some trailing spaces).
         zoned_timestamp_is_instant=True,  # TIMESTAMP is converted to UTC.
-        pipes="ambiguous",
         concat="strict",
         concat_ws="skips-null",
         inline_references=False,

@@ -32,7 +32,7 @@ before dialects were listed; see "Not done").
 | comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | Databricks yes; Spark no (not documented) | yes | yes (no implicit casts) |
 | text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
-| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | ambiguous | strict | strict | strict | strict | strict (arrays too) |
+| `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | OR | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
 | `concat_ws()` | skips NULL | skips NULL | skips NULL | strict | none | skips NULL | none | not modelled (array overload) |
 | `greatest()`, `least()` | skip NULL | skip NULL | not modelled | not modelled | not modelled | not modelled | not modelled | not modelled |
@@ -127,16 +127,9 @@ Its comparisons follow the column's
 collation, so `e = 'A'` keeps the member `'a'`; ENUM narrowing never treats
 distinct strings as distinct values there.
 
-MySQL `||` is OR unless `sql_mode` has `PIPES_AS_CONCAT`, under which it is
-concatenation *and binds tighter than any comparison*: `a = 1 AND b || c` is
-`(a = 1 AND b) OR c`, or `a = 1 AND (b || c)`. sqlassert parses it as OR (as
-SQLGlot does), marks the node (`sql_parse.is_ambiguous_pipes`), and lowers it
-as an `OpaquePureFunction` of its operands, with an `ambiguous-operator`
-warning. That is sound for both readings: as OR, `||` has the lowest
-precedence, so its node's span is delimited by parentheses, a function's
-arguments or a clause; under either reading the expression over that span is
-a pure function of the columns in it. An OR around it, at the same level,
-splits identically in both readings.
+MySQL `||` is OR, as SQLGlot parses it: the default `sql_mode` has no
+`PIPES_AS_CONCAT` (ADR 0006), so `a = 1 AND b || c` is `(a = 1 AND b) OR c`.
+MySQL 8.4 deprecates `||` as OR; a deprecation is no reason to warn.
 
 ## Unenforced keys (decision)
 

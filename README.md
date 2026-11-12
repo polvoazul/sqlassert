@@ -472,9 +472,7 @@ Pass `dialect=` (a SQLGlot dialect name) to `analyze`, `analyze_database` and
   under its default strict `sql_mode`, in 8.4 and later: a comparison of
   non-null operands is non-null, arithmetic is not taken as checked. A CAST from JSON may be NULL everywhere (JSON `null`). `||` and
   `concat()` follow each dialect's NULL handling.
-- **MySQL `||`** is OR, or concatenation under `sql_mode` `PIPES_AS_CONCAT`,
-  which also groups its operands differently, so it is an unknown function of
-  its operands, with an `ambiguous-operator` warning: write `OR` or `CONCAT()`.
+- **MySQL `||`** is OR, as under the default `sql_mode` (no `PIPES_AS_CONCAT`).
 
 ### Checking in CI
 

@@ -27,7 +27,7 @@ from sqlassert.properties import (
 from sqlassert.provenance import AttachmentSite, Origin, SQL
 from sqlassert.sql_parse import (
     JOIN_MARKER_NOUNS, MARKER_NOUNS, ColumnMarker, ParsedProgram, assertion_span, column_markers,
-    exhaustive_span, grouping, is_ambiguous_pipes, join_marker_kind, join_origin, literal_value, marker_position,
+    exhaustive_span, grouping, join_marker_kind, join_origin, literal_value, marker_position,
     written_sql,
 )
 
@@ -1728,15 +1728,6 @@ class IrParser:
                 return self._lower_case(expression, bindings, schema_complete=schema_complete)
             case exp.And():
                 return self._lower_condition(expression, _conjuncts(expression), bindings, schema_complete=schema_complete)
-            case exp.Or() if is_ambiguous_pipes(expression):
-                pipes = f"{expression.this.sql(dialect=self.dialect)} || {expression.expression.sql(dialect=self.dialect)}"
-                self._warnings.append(Diagnostic(
-                    diag.AMBIGUOUS_OPERATOR,
-                    f"`||` is OR in {self.dialect}, or concatenation under sql_mode PIPES_AS_CONCAT, which also groups "
-                    f"its operands differently, so {pipes} is an unknown function of its columns: write OR or CONCAT()",
-                    self._origin(expression, line or _source_line(expression)),
-                ))
-                return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=pipes)
             case exp.Or():
                 return ir.Or(origin=origin, parts=tuple(
                     self._lower_condition(branch, _conjuncts(branch), bindings, schema_complete=schema_complete)
@@ -2387,8 +2378,7 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     A CAST from JSON is not total anywhere (`convert._is_json`): JSON `null`
     is a value that casts to NULL. `+`, `-` and negation are injective where exact arithmetic overflows into
     an error. `||`, `concat()`, `concat_ws()`, `greatest()`, `least()` and
-    subscripts (`xs[1]`) as each dialect treats NULL; `||` not at all where a
-    setting decides what it means (MySQL: OR, or concatenation)."""
+    subscripts (`xs[1]`) as each dialect treats NULL (MySQL's `||` is OR)."""
     checked = meaning.checked_arithmetic
     casts = meaning.casts_raise
 
@@ -2430,7 +2420,7 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
             builtins[exp.DPipe] = (builtin("||", 2), ("this", "expression"))
         case "lenient":
             builtins[exp.DPipe] = (ir.Builtin(name="||", strict=(False, False), total=(True, True), injective=False), ("this", "expression"))
-        case "ambiguous" | None:
+        case None:
             pass
         case _:
             assert_never(meaning.pipes)
@@ -2492,7 +2482,7 @@ def _disjuncts(predicate: Expr) -> list[Expr]:
     """The operands of a predicate's top-level ORs, parentheses removed."""
     while isinstance(predicate, exp.Paren):
         predicate = predicate.this
-    if isinstance(predicate, exp.Or) and not is_ambiguous_pipes(predicate):
+    if isinstance(predicate, exp.Or):
         return _disjuncts(predicate.this) + _disjuncts(predicate.expression)
     return [predicate]
 
