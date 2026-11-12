@@ -7,6 +7,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
+- [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: COLLATE is unsupported and warns today)
 - [60. Audit inference against CockroachDB's FD library](0060-audit-inference-against-cockroachdb.md) — open (like 40; same lax FD definition as ours, `fd:` test corpus; TiDB optional)
 - [61. Symbolic soundness oracle with VeriEQL](0061-symbolic-oracle-with-verieql.md) — open (needs design; every Property as a bounded equivalence; replaces 27's z3 alternative)
 - [62. Cross-check `suggest` rewrites with SQL equivalence checkers](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md) — open (SQLSolver, VeriEQL, QED, Cosette on every Rewrite)
@@ -29,7 +30,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45, 70. Closed: 25 (its targets were deleted by 24; the oracle covers soundness), 49 (won't do: COLLATE is unsupported and warns). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45, 70. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` and the full suite before every push (AGENTS.md, "Testing workflow").
 
 Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds the
@@ -98,7 +99,6 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
 - [45. Close the Calcite audit's missing proofs](done/0045-close-the-calcite-audit-missing-proofs.md)
 - [47. Discovery: one base fetcher, a subclass per dialect](done/0047-discovery-base-class.md)
 - [48. dbt plugin as its own package](done/0048-dbt-plugin-package.md)
-- [49. Collation-aware Properties](done/0049-collation-aware-properties.md)
 - [50. dbt: read `catalog.json`](done/0050-dbt-catalog-json.md)
 - [55. Run `sqlassert-dbt suggest` on dbt model files](done/0055-dbt-suggest-model-files.md)
 - [56. dbt: read the live warehouse catalog in the plugin's commands](done/0056-dbt-live-connection.md)

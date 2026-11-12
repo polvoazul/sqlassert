@@ -44,4 +44,4 @@ is proved through it, and a marker inside it is reported
   reporting SQL; an assertion that needs one says it is not supported yet.
 - [x] **Collated text**: won't do. sqlassert supports each dialect's
   default collation only; a `COLLATE` is opaque and warns
-  ([49](done/0049-collation-aware-properties.md), closed).
+  ([49](0049-collation-aware-properties.md), not planned).
