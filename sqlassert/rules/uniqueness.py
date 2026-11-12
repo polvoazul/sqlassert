@@ -339,7 +339,7 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
 
 def _picked(aggregate: ir.Aggregate, base: _Delegation) -> list[_Delegation]:
     """Each output row of an aggregate, seen through one AnyAggregate of an
-    input column (min, max, any_value, a bare column): its value is that
+    input column (min, max, any_value, a column the grouping determines): its value is that
     column's value on one row of the group, NULL only if the group has a NULL
     there. Groups are disjoint, so two output rows' picked rows are distinct
     input rows, and a one-column Unique Set of the input makes the picked

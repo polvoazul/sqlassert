@@ -1588,15 +1588,30 @@ class IrParser:
         )
 
     def _aggregate_output_columns(self, items: list[Expr], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
+        """Each item of a grouped select. A column outside every aggregate must
+        be one the grouping determines (`_grouping_determined`): any other
+        (SQLite's bare column) makes its item opaque (ADR 0006)."""
         output_columns: list[ir.OutputColumn] = []
-        for item in items:
+        lowered_items = [
+            self._lower_expression(
+                item.this if isinstance(item, exp.Alias) else item, source.bindings, schema_complete=source.relation.is_schema_complete,
+            )
+            for item in items
+        ]
+        determined = self._grouping_determined({
+            lowered.column for item, lowered in zip(items, lowered_items)
+            if id(item) in grouped_items and isinstance(lowered, ir.ColumnRef)
+        }, source.relation)
+        for item, lowered in zip(items, lowered_items):
             expression = item.this if isinstance(item, exp.Alias) else item
-            lowered = self._lower_expression(expression, source.bindings, schema_complete=source.relation.is_schema_complete)
             # Grouped by nothing (no grouped items), the one row exists even
             # over no input rows, where an aggregate of its values is NULL.
             empty = not grouped_items
-            if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
-                # A bare column, where a dialect allows one.
+            if id(item) not in grouped_items and _reads_ungrouped_column(lowered, determined):
+                lowered = ir.OpaqueExpression(origin=self._origin(expression), description=expression.sql(dialect=self.dialect))
+                self._unsupported.append((lowered, "a column neither grouped nor inside an aggregate"))
+            elif id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
+                # A function of columns the grouping determines: one value per group.
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered, empty=empty)
             elif (argument := _picked_argument(expression)) is not None:
                 # One of its argument's values on some row of the group.
@@ -1608,6 +1623,38 @@ class IrParser:
                 lowered = ir.Accumulation(origin=self._origin(expression), input=value, empty=empty)
             output_columns.append(ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=lowered))
         return tuple(output_columns)
+
+    def _grouping_determined(self, grouping: set[ir.OutputColumn], relation: ir.RelationExpr) -> Callable[[ir.OutputColumn], bool]:
+        """Whether its `grouping` columns determine a column of `relation`: one of those,
+        and every column of a table occurrence whose primary key, declared in
+        the SQL, they include (SQL's functional dependence on a key, which
+        PostgreSQL and MySQL accept)."""
+        occurrences: dict[ir.OutputColumn, ir.Alias] = {}
+        pending: list[ir.RelationExpr] = [relation]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ir.Alias):
+                occurrences.update((output, node) for output in node.output_columns)
+            else:
+                pending.extend(child for child in ir.children(node) if isinstance(child, ir.RelationExpr))
+
+        def occurrence(column: ir.OutputColumn) -> tuple[ir.Alias | None, ir.OutputColumn]:
+            while column not in occurrences and isinstance(column.scalar_expr, ir.ColumnRef):
+                column = column.scalar_expr.column
+            return occurrences.get(column), column
+
+        keyed: set[ir.Alias] = set()
+        grouped_names: dict[ir.Alias, set[str]] = {}
+        for column in grouping:
+            alias, output = occurrence(column)
+            if alias is not None:
+                grouped_names.setdefault(alias, set()).add(output.name.lower())
+        for alias, names in grouped_names.items():
+            symbol = next((symbol for symbol, named in self._named_relations.items() if named is alias.source), None)
+            key = None if symbol is None or symbol.role is not ir.RelationRole.TABLE or symbol.statement is None else _primary_key(symbol)
+            if key and {name.lower() for name in key} <= names:
+                keyed.add(alias)
+        return lambda column: column in grouping or occurrence(column)[0] in keyed
 
     def _lower_expression(
         self, expression: Expr, bindings: tuple[_Binding, ...], *, schema_complete: bool = False, line: int | None = None
@@ -2861,6 +2908,22 @@ def _picked_argument(expression: Expr) -> Expr | None:
     return None if isinstance(argument, exp.HavingMax) else argument
 
 
+def _reads_ungrouped_column(lowered: ir.ScalarExpr, determined: Callable[[ir.OutputColumn], bool]) -> bool:
+    """Whether `lowered`, an item of a grouped select, reads a column outside
+    every aggregate that the grouping columns do not determine (`determined`).
+    Aggregates, windows and subqueries lower opaque, so every column
+    `lowered` reads is outside them."""
+    pending: list[ir.ScalarExpr] = [lowered]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ir.ColumnRef):
+            if not determined(node.column):
+                return True
+            continue
+        pending.extend(child for child in ir.children(node) if isinstance(child, ir.ScalarExpr))
+    return False
+
+
 def _is_bare_aggregate_expression(expression: Expr) -> bool:
     return any(isinstance(node, exp.Column) for node in expression.walk()) and not any(
         isinstance(node, exp.AggFunc) for node in expression.walk()
@@ -2970,7 +3033,7 @@ _PLAIN_INTEGER = re.compile(r"0|[1-9][0-9]{0,18}")
 _ONE_ARGUMENT_BUILTINS = (exp.Lower, exp.Upper, exp.Length, exp.Trim, exp.Abs, exp.Floor, exp.Ceil)
 
 _NOT_A_FUNCTION_OF_ITS_COLUMNS = (
-    exp.Anonymous, exp.Rand, exp.Randn, exp.Uuid, exp.AggFunc, exp.Window, exp.Query, exp.Subquery,
+    exp.Anonymous, exp.Rand, exp.Randn, exp.Uuid, exp.AggFunc, exp.Filter, exp.WithinGroup, exp.Window, exp.Query, exp.Subquery,
     exp.CurrentDate, exp.CurrentDatetime, exp.CurrentTime, exp.CurrentTimestamp, exp.Placeholder, exp.Parameter, exp.Star,
 )
 

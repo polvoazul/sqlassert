@@ -256,7 +256,8 @@ class SimpleCase(ScalarExpr):
 
 class AnyAggregate(ScalarExpr):
     """An arbitrary value selected from the input rows of an aggregate group:
-    a bare column, or `min` and `max`, which take one of its non-null values.
+    a column outside every aggregate that the grouping determines (constant
+    across the group), or `min` and `max`, which take one of its non-null values.
 
     `empty` marks a group that may have no rows, where the value is NULL: an
     aggregate grouped by nothing has one row even over no input rows."""

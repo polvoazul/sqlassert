@@ -21,6 +21,6 @@ SELECT sum(x) AS s FROM t /**ASSERT NOT NULL(s)**/  --~ UNKNOWN
 -- case: a_scalar_aggregate_is_one_row__p4
 SELECT x, sum(id) OVER () AS s FROM t /**ASSERT UNIQUE(x)**/  --~ UNKNOWN
 
--- case: a_bare_column_of_a_scalar_aggregate_may_be_null
--- dialect: mysql
-SELECT x, count(*) AS n FROM t /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+-- case: a_picked_value_of_a_scalar_aggregate_may_be_null
+-- Its one row exists over no rows of t.
+SELECT max(x) AS m FROM t /**ASSERT NOT NULL(m)**/  --~ UNKNOWN
