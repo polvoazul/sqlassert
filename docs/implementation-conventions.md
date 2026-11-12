@@ -92,7 +92,12 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   SQLGlot's keyword sets; a plain member equals nothing but itself, which is
   also why no rule but ours can consume it. Tests assert that ordinary SQL
   parses identically with and without the customisation.
-- `ir/model.py` contains the immutable semantic model.
+- `ir/model.py` contains the immutable semantic model. `Program` checks two
+  invariants when it is built, raising `ValueError`: every Output Column has
+  one parent relation, and apart from Named Relations the relations form a
+  tree (a subquery is read once; a Named Relation only through an Alias, one
+  per occurrence). Analyses rely on the second to tell rows apart
+  (`nullability._row_lineage`).
 - `ir.Limit` retains a subset of its input rows, after the Select's other
   operations or a set operation. Its optional `count` records a known hard
   bound; percentages, ties, and unknown bounds supply none. OFFSET needs no
