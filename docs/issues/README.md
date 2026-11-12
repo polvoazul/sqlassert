@@ -11,7 +11,6 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [60. Audit inference against CockroachDB's FD library](0060-audit-inference-against-cockroachdb.md) — open (like 40; same lax FD definition as ours, `fd:` test corpus; TiDB optional)
 - [61. Symbolic soundness oracle with VeriEQL](0061-symbolic-oracle-with-verieql.md) — open (needs design; every Property as a bounded equivalence; replaces 27's z3 alternative)
 - [62. Cross-check `suggest` rewrites with SQL equivalence checkers](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md) — open (SQLSolver, VeriEQL, QED, Cosette on every Rewrite)
-- [71. Rewrites carry exact edits](0071-rewrites-carry-exact-edits.md) — open (split from 62: token-placed edits, CLI diff, tests apply them)
 - [63. Generate random programs for the soundness oracle](0063-generate-random-programs-for-the-oracle.md) — open (needs design; SQLancer-style generator, ParSEval instances; feeds 27 Part 2)
 - [64. Triage WeTune's discovered rewrite rules](0064-triage-wetune-rewrite-rules.md) — open (research; like 15's Kossmann triage)
 - [65. Triage SQLCheck's anti-pattern catalog](0065-triage-sqlcheck-anti-patterns.md) — open (research; hazards for 15)
@@ -31,7 +30,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 ## Order
 
-Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45, 70. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
+Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23, 45, 70, 71. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` and the full suite before every push (AGENTS.md, "Testing workflow").
 
 Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds the
@@ -104,3 +103,4 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
 - [55. Run `sqlassert-dbt suggest` on dbt model files](done/0055-dbt-suggest-model-files.md)
 - [56. dbt: read the live warehouse catalog in the plugin's commands](done/0056-dbt-live-connection.md)
 - [70. Drop legacy and permissive dialect support](done/0070-drop-legacy-and-permissive-dialect-support.md)
+- [71. Rewrites carry exact edits](done/0071-rewrites-carry-exact-edits.md)
