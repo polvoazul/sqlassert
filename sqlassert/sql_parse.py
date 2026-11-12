@@ -259,6 +259,13 @@ _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 # CASE. `suggest` pastes markers there.
 _MARKER_POSITION = "sqlassert.marker_position"
 
+# Where a Join, Select, query clause (WHERE, GROUP BY, HAVING, ORDER BY,
+# LIMIT, ...), function call or plain DISTINCT is written: its `(start, end)` source offsets,
+# from its first token to its last (a Select's start only, recorded as
+# `(start, start)`: its end is its marker position). Rewrites place their
+# edits from these and the token stream (`edits.py`).
+_SPAN = "sqlassert.span"
+
 # Tokens that end a set operation's operand but not the query: another
 # operator, or the parenthesis around the operand.
 _OPERAND_END_TOKENS = {TokenType.UNION, TokenType.INTERSECT, TokenType.EXCEPT, TokenType.R_PAREN}
@@ -428,6 +435,25 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             **parent.Parser.PRIMARY_PARSERS,  # ty: ignore[unresolved-attribute]
             SqlassertToken.SQLASSERT_EXHAUSTIVE: lambda self, token: self._parse_exhaustive_case(token),
         }
+        # Each query clause records where it is written (`_SPAN`).
+        QUERY_MODIFIER_PARSERS = {
+            token_type: _spanned_modifier(parse)
+            for token_type, parse in parent.Parser.QUERY_MODIFIER_PARSERS.items()  # ty: ignore[unresolved-attribute]
+        }
+
+        def reset(self) -> None:
+            super().reset()
+            # The first token of each Select being parsed, innermost last.
+            self._query_starts: list[Token | None] = []
+
+        def expression(self, instance, token=None, comments=None):
+            # A plain DISTINCT is built right after its keyword is consumed.
+            if (
+                isinstance(instance, exp.Distinct) and instance.args.get("on") is None and self._prev is not None
+                and self._prev.token_type in self.DISTINCT_TOKENS
+            ):
+                instance.meta[_SPAN] = (self._prev.start, self._prev.end + 1)
+            return super().expression(instance, token, comments)
         def _span(self, token: Token) -> Span:
             """Where `token` is written in the SQL being parsed."""
             return Span.of(self.sql, token.start, token.end + 1)
@@ -492,6 +518,8 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 # A comma join has no JOIN keyword a marker could precede.
                 if join is not None and start is not None and start.token_type is not TokenType.COMMA:
                     join.meta[_MARKER_POSITION] = (start.start, start.line)
+                    if self._prev is not None:
+                        join.meta[_SPAN] = (start.start, self._prev.end + 1)
                 return join
 
             kind = JOIN_MARKER_KINDS[self._curr.token_type]
@@ -526,6 +554,13 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             into an `exp.Subquery`, which has no trailing marker of its own to
             consume.
             """
+            self._query_starts.append(self._curr)
+            try:
+                return self._parse_select_query_markers(*args, **kwargs)
+            finally:
+                self._query_starts.pop()
+
+        def _parse_select_query_markers(self, *args, **kwargs):
             result = super()._parse_select_query(*args, **kwargs)
             if not isinstance(result, exp.Select):
                 return result
@@ -612,6 +647,27 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
         def _record_marker_position(self, this) -> None:
             if isinstance(this, exp.Select) and _MARKER_POSITION not in this.meta and self._prev is not None:
                 this.meta[_MARKER_POSITION] = (self._prev.end + 1, self._prev.line)
+                # Still inside the call that parsed it: its first token is on top.
+                start = self._query_starts[-1] if self._query_starts else None
+                if start is not None:
+                    this.meta[_SPAN] = (start.start, start.start)
+
+        def _parse_function(self, *args, **kwargs):
+            start = self._curr
+            function = super()._parse_function(*args, **kwargs)
+            # A call written with parentheses: from its name to its `)`, or
+            # to the IGNORE or RESPECT NULLS after it.
+            if isinstance(function, Expr) and start is not None and self._prev is not None and self._prev is not start:
+                function.meta[_SPAN] = (start.start, self._prev.end + 1)
+            return function
+
+        def _spanned(self, parse):
+            """`parse(self)`'s `(key, clause)`, the clause's `_SPAN` recorded."""
+            start = self._curr
+            key, clause = parse(self)
+            if isinstance(clause, Expr) and start is not None and self._prev is not None:
+                clause.meta[_SPAN] = (start.start, self._prev.end + 1)
+            return key, clause
 
         def _marker_identifier(self, identifier: exp.Identifier, span: Span) -> str:
             if base == "postgres" and identifier.quoted and identifier.name != identifier.name.lower():
@@ -729,10 +785,14 @@ class ParsedProgram:
     create_statements: tuple[Expr, ...] = ()
     root_select: exp.Query | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
+    # The SQL text and its tokens, from which Rewrites place their edits.
+    sql: str = ""
+    tokens: tuple[Token, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "create_statements", tuple(self.create_statements))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        object.__setattr__(self, "tokens", tuple(self.tokens))
 
 
 class SqlParser:
@@ -793,9 +853,9 @@ class SqlParser:
                     f"a SQL program allows at most one root select, found {len(selects)}",
                 )
             )
-            return ParsedProgram(tuple(creates), None, tuple(diagnostics))
+            return ParsedProgram(tuple(creates), None, tuple(diagnostics), sql, tuple(tokens))
 
-        return ParsedProgram(tuple(creates), selects[0] if selects else None, tuple(diagnostics))
+        return ParsedProgram(tuple(creates), selects[0] if selects else None, tuple(diagnostics), sql, tuple(tokens))
 
     def _unattached(self, error: UnattachedMarker) -> Diagnostic:
         return Diagnostic(diag.UNATTACHED_MARKER, str(error), Origin.marked(error.text, error.span))
@@ -953,6 +1013,17 @@ def exhaustive_span(case: exp.Case) -> Span | None:
 
 def _is_alter_table(statement: Expr) -> bool:
     return isinstance(statement, exp.Alter) and (statement.args.get("kind") or "").upper() == "TABLE"
+
+
+def _spanned_modifier(parse):
+    return lambda self: self._spanned(parse)
+
+
+def span(node: Expr) -> tuple[int, int] | None:
+    """The `(start, end)` source offsets where a Join, query clause, function
+    call or plain DISTINCT is written; for a Select, `(start, start)`: where
+    it starts."""
+    return node.meta.get(_SPAN)
 
 
 def column_markers(query: exp.Query) -> tuple[ColumnMarker, ...]:

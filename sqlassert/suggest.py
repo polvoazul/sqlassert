@@ -1,8 +1,9 @@
 """Suggest the Property Markers sqlassert can prove for a SQL Program.
 
 Four types of suggestion (`SuggestType`). Rewrites: changes to the SQL
-itself that a proof shows leave its result unchanged (`rewrites.py`), with
-a caveat when a column's type or precision may change. Markers: what is provable but not asserted, to lock in. Hazards: places
+itself that a proof shows leave its result unchanged (`rewrites.py`), each
+made by exact edits (`edits.py`), with a caveat when a column's type or
+precision may change. Markers: what is provable but not asserted, to lock in. Hazards: places
 whose result the SQL leaves unspecified (`hazards.py`).
 
 Marker candidates are generated mechanically from the Program IR, one
@@ -28,6 +29,7 @@ from sqlglot import exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.diagnostics import Diagnostic
+from sqlassert.edits import Edit
 from sqlassert.rewrites import Rewrite, SuggestType, RewriteKind, rewrites
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.hazards import Concern, Hazard, hazards
@@ -49,7 +51,7 @@ DEFAULT_MAX_SIZE = 3
 MAX_ENUM_VALUES = 10
 
 __all__ = [
-    "Candidate", "Concern", "Rewrite", "SuggestType", "RewriteKind", "Hazard", "Suggester", "Suggestion", "SuggestionReport",
+    "Candidate", "Concern", "Edit", "Rewrite", "SuggestType", "RewriteKind", "Hazard", "Suggester", "Suggestion", "SuggestionReport",
     "annotate", "candidates", "suggest", "suggest_parsed",
 ]
 

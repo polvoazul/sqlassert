@@ -24,6 +24,12 @@ query equivalence under keys and NOT NULL, and can be run on our pairs:
 
 ## What to do
 
+The exact rewritten SQL each Rewrite proposes (edits on the original, and
+tests that run exactly that SQL) was split out as
+[issue 71](0071-rewrites-carry-exact-edits.md); the triple export below
+reads it from there.
+
+
 1. Emit every Rewrite in the suite as a `(DDL, original, rewritten)`
    triple (a pytest hook, like the oracle's recording).
 2. Run SQLSolver and VeriEQL on each triple; QED if the authors share it.

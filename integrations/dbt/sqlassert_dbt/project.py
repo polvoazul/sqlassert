@@ -541,7 +541,7 @@ def _combined(relation: Relation, results: list[SuggestResult], *, complete: boo
             relation.name,
             Location(relation.original_file_path, raw_line) if raw_line is not None
             else Location(relation.compiled_path or relation.original_file_path, item.line),
-            item.suggest_type.value, item.label, item.kind, item.text, item.explanation,
+            item.suggest_type.value, item.label, item.kind, item.text, item.explanation, item.diff,
         )
         for item, raw_line in placed
     ]

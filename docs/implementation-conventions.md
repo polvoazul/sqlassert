@@ -16,7 +16,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   join rule consumes it, so the grammar is what requires a marker to sit
   immediately before its join. The marker's `Span` (`provenance.py`: first
   and last line and column, from the tokens' source offsets) and kind are
-  recorded in the node's `meta`, and nothing downstream re-reads SQL text.
+  recorded in the node's `meta`, and nothing downstream re-reads SQL text
+  but Rewrite Edits (`edits.py`), placed from the token stream that
+  `ParsedProgram` keeps and the spans the parser records (`span`: Joins,
+  a Select's start, query clauses, function calls, a plain DISTINCT).
   Every Origin of an Assertion, and of a Diagnostic about a marker, carries
   that span, so `check` annotates the marker itself.
 
@@ -222,6 +225,15 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   its own Select Expression, where nothing looks at a row as a whole.
   Grouping replacements use the selected expression already identified by the
   IR output column, so GROUP BY ordinals never become aggregate constants.
+  Every Rewrite carries its Rewrite Edits (`edits.py`: `Edit`, `Source`),
+  placed from tokens: a clause's or join's recorded span, a list split at
+  its top-level commas, conjuncts lined up with the AST at top-level ANDs
+  (BETWEEN's skipped), an IR conjunct or semi join matched to its syntax by
+  its written text. Moved text (an ON into `WHERE EXISTS`, a self-join's
+  conditions into WHERE) is copied verbatim. Where the syntax cannot be
+  placed so, there is no Rewrite: one without edits is an error. The CLI
+  prints each Rewrite's diff, and the tests run exactly the SQL its edits
+  make.
   NATURAL joins are diagnosed syntactically, including unused bodies, and
   their Select Expressions remain opaque. `suggest` emits no suggestions for
   a program containing one.

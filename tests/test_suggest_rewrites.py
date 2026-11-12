@@ -266,8 +266,11 @@ def test_a_group_by_over_a_key_of_its_input_is_a_projection():
     rewrite, = suggest(sql).rewrites
     assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
     assert rewrite.suggest_type is SuggestType.REWRITE_WITH_CAVEAT
+    assert rewrite.rewritten(sql).endswith(
+        "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, nick AS a FROM users"
+    )
     assert rewrite.message.endswith(
-        "drop GROUP BY and write SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, nick AS a. "
+        "drop GROUP BY and write each aggregate as its value over that row. "
         "Caveat: 'n' changes from count's result type to an integer literal's type; "
         "'c' changes from count's result type to an integer literal's type; "
         "'s' changes from sum's result type to the type of id; cast them if later arithmetic needs the wider types"
@@ -278,7 +281,7 @@ def test_a_group_by_kept_unique_through_a_many_to_one_join_is_a_projection():
     sql = SCHEMA + "SELECT o.id, max(u.name) AS name FROM orders o JOIN users u ON u.id = o.user_id GROUP BY o.id"
     rewrite, = suggest(sql).rewrites
     assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
-    assert rewrite.message.endswith("write SELECT o.id, u.name AS name")
+    assert rewrite.rewritten(sql).endswith("SELECT o.id, u.name AS name FROM orders o JOIN users u ON u.id = o.user_id")
 
 
 @pytest.mark.parametrize("query", [
@@ -325,7 +328,9 @@ def test_a_one_row_aggregate_is_a_rewrite_with_caveat_when_its_type_changes(item
     query = f"SELECT id, {item} AS v FROM t GROUP BY id"
     rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
     assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.GROUPING_PROJECTION, suggest_type)
-    written = f"drop GROUP BY and write SELECT id, {replacement} AS v"
+    rewritten = rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA)
+    assert rewritten == f"SELECT id, {replacement} AS v FROM t"
+    written = "drop GROUP BY and write each aggregate as its value over that row"
     if suggest_type is SuggestType.REWRITE:
         assert rewrite.message.endswith(written)
     else:
@@ -338,7 +343,7 @@ def test_a_one_row_aggregate_is_a_rewrite_with_caveat_when_its_type_changes(item
     with duckdb.connect() as con:
         con.execute(ONE_ROW_SCHEMA + ONE_ROW_VALUES)
         before = con.execute(f"SELECT id, v, typeof(v) FROM ({query})").fetchall()
-        after = con.execute(f"SELECT id, v, typeof(v) FROM (SELECT id, {replacement} AS v FROM t)").fetchall()
+        after = con.execute(f"SELECT id, v, typeof(v) FROM ({rewritten})").fetchall()
     assert [row[:2] for row in before] == [row[:2] for row in after]
     assert (before[0][2], after[0][2]) == types
 
@@ -405,12 +410,14 @@ def test_a_one_row_aggregate_whose_precision_or_type_may_change_is_a_rewrite_wit
     query = f"SELECT id, {item} AS v FROM t GROUP BY id"
     rewrite, = suggest(schema + query, dialect="duckdb").rewrites
     assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.GROUPING_PROJECTION, SuggestType.REWRITE_WITH_CAVEAT)
-    assert rewrite.message.endswith(f"drop GROUP BY and write SELECT id, {replacement} AS v. Caveat: {caveat}")
+    rewritten = rewrite.rewritten(schema + query).removeprefix(schema)
+    assert rewritten == f"SELECT id, {replacement} AS v FROM t"
+    assert rewrite.message.endswith(f"drop GROUP BY and write each aggregate as its value over that row. Caveat: {caveat}")
     with duckdb.connect() as con:
         con.execute(schema + ONE_ROW_VALUES.replace("'a')", "'a', 9007199254740993, 9007199254740993)"))
         (_, before), = con.execute(f"SELECT v, typeof(v) FROM ({query})").fetchall()
         try:
-            (_, after), = con.execute(f"SELECT {replacement}, typeof({replacement}) FROM t").fetchall()
+            (_, after), = con.execute(f"SELECT v, typeof(v) FROM ({rewritten})").fetchall()
         except duckdb.OutOfRangeException:
             after = None
     assert (before, after) == types
@@ -491,21 +498,21 @@ def test_limit_that_may_change_the_rows_is_kept(query: str):
 
 
 @pytest.mark.parametrize(("query", "rewritten"), [
-    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id", "SELECT u.id, u.name FROM users AS u"),
-    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id AND v.nick = 'x'", "SELECT u.id, u.name FROM users AS u WHERE u.nick = 'x'"),
+    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id", "SELECT u.id, u.name FROM users u"),
+    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id AND v.nick = 'x'", "SELECT u.id, u.name FROM users u WHERE u.nick = 'x'"),
     (
         "SELECT u.id, v.name FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
-        "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name FROM users AS u",
+        "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name FROM users u",
     ),
-    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL"),
+    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users u WHERE u.nick IS NOT NULL"),
     (
         "WITH c AS (SELECT id, name, random() AS r FROM users) SELECT a.id, b.name FROM c a JOIN c b ON a.id = b.id",
-        "SELECT a.id, a.name FROM c AS a",
+        "SELECT a.id, a.name FROM c a",
     ),
 ])
 def test_a_self_join_on_a_key_reads_the_same_row(query: str, rewritten: str):
     rewrite = next(i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.SELF_JOIN)
-    assert rewrite.message.endswith(rewritten)
+    assert rewrite.rewritten(SCHEMA + query).endswith(rewritten)
 
 
 def test_a_self_join_that_only_filters_reads_the_same_row_instead_of_exists():
@@ -598,8 +605,18 @@ def test_the_cli_lists_rewrites_before_markers(tmp_path, capsys):
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split()[:6] == ["rewrite", "line", "6", "LEFT", "JOIN", "users"]
     assert "INNER JOIN" in lines[0]
-    assert all(line.startswith("marker") for line in lines[1:])
-    assert len(lines) == 1 + len(suggest(path.read_text()).suggestions)
+    assert lines[1:9] == [
+        f"    --- {path}",
+        f"    +++ {path} (rewritten)",
+        "    @@ -4,4 +4,4 @@",
+        "     CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id), total INTEGER);",
+        "     SELECT u.id, s.ts FROM sessions s",
+        "    -LEFT JOIN users u ON u.id = s.user_id",
+        "    +JOIN users u ON u.id = s.user_id",
+        "     WHERE u.name = 'a'",
+    ]
+    assert all(line.startswith("marker") for line in lines[9:])
+    assert len(lines) == 9 + len(suggest(path.read_text()).suggestions)
 
 
 def test_the_cli_labels_a_rewrite_with_caveat(tmp_path, capsys):
@@ -615,49 +632,31 @@ def test_the_cli_labels_a_rewrite_with_caveat(tmp_path, capsys):
 
 # Rewrites preserve the result ---------------------------------------------------
 
-# (original, rewritten, the rewrite that justifies the rewrite)
+# (original, a kind of Rewrite suggest offers for it): each such Rewrite's
+# edits make the SQL compared with the original.
 EQUIVALENT = [
-    # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
-    (
-        SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
-        SCHEMA + "SELECT o.id FROM orders o",
-        RewriteKind.REDUNDANT_FILTER,
-    ),
-    (
-        SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
-        SCHEMA + "SELECT o.id FROM orders o WHERE o.total = 1",
-        RewriteKind.REDUNDANT_FILTER,
-    ),
     # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
         RewriteKind.INNER_JOIN,
     ),
     # A condition never TRUE on a padded row, through OR or coalesce (issue 45, item 9).
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
         RewriteKind.INNER_JOIN,
     ),
@@ -665,28 +664,16 @@ EQUIVALENT = [
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
         "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
         RewriteKind.INNER_JOIN,
     ),
+    # Both LEFT JOINs: each Rewrite is checked on its own.
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
         "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u LEFT JOIN orders o ON o.user_id = u.id) "
-        "RIGHT JOIN sessions s ON o.total = s.ts",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u JOIN orders o ON o.user_id = u.id) "
         "RIGHT JOIN sessions s ON o.total = s.ts",
         RewriteKind.INNER_JOIN,
     ),
@@ -694,155 +681,186 @@ EQUIVALENT = [
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
         RewriteKind.INNER_JOIN,
     ),
     (
-        SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
-        SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1",
-        RewriteKind.REDUNDANT_GROUPING,
-    ),
-    (
         SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
         "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "LEFT JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT o.total, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
-        SCHEMA + "SELECT o.total, u.name FROM orders o JOIN users u ON u.id = o.user_id",
         RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "AND u.nick = '1' GROUP BY s.ts",
-        SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s GROUP BY s.ts",
         RewriteKind.REDUNDANT_JOIN,
     ),
     (
         SCHEMA + "SELECT o.total FROM orders o JOIN users u ON u.id = o.user_id",
-        SCHEMA + "SELECT o.total FROM orders o",
         RewriteKind.REDUNDANT_JOIN,
     ),
     (
-        SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
-        "LEFT JOIN orders o ON o.total = s.ts",
-        SCHEMA + "SELECT s.ts, o.total FROM sessions s LEFT JOIN orders o ON o.total = s.ts "
-        "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')",
-        RewriteKind.FILTER_JOIN,
-    ),
-    (
         SCHEMA + "SELECT DISTINCT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
-        SCHEMA + "SELECT o.id, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
         RewriteKind.REDUNDANT_DISTINCT,
     ),
     (
         SCHEMA + "SELECT DISTINCT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
         "LEFT JOIN users u ON u.id = s.user_id",
-        SCHEMA + "SELECT s.user_id, u.nick FROM (SELECT DISTINCT user_id FROM sessions) AS s "
-        "LEFT JOIN users u ON u.id = s.user_id",
         RewriteKind.REDUNDANT_DISTINCT,
     ),
     (
         SCHEMA + "SELECT DISTINCT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
-        SCHEMA + "SELECT user_id, total FROM (SELECT DISTINCT user_id, total FROM orders) AS t",
         RewriteKind.REDUNDANT_DISTINCT,
+    ),
+    (
+        SCHEMA + "WITH dead AS (SELECT id FROM users) SELECT user_id FROM sessions",
+        RewriteKind.UNUSED_CTE,
+    ),
+    (
+        SCHEMA + "SELECT id, nick FROM users EXCEPT SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
+        RewriteKind.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT user_id FROM sessions INTERSECT SELECT id FROM users",
+        RewriteKind.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
+        RewriteKind.SET_OPERATION_ALL,
+    ),
+    (
+        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
+        RewriteKind.ONE_ROW,
+    ),
+    # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE o.user_id IN (SELECT id FROM users) AND o.total = 1",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    # With a LIMIT, the rows kept depend on the order: a key that never breaks a tie changes none.
+    (
+        SCHEMA + "SELECT id, name FROM users ORDER BY id, name LIMIT 2",
+        RewriteKind.REDUNDANT_SORT_KEY,
+    ),
+    (
+        SCHEMA + "SELECT o.id, u.name FROM orders o JOIN users u ON u.id = o.user_id ORDER BY o.user_id DESC, u.name, o.id LIMIT 2",
+        RewriteKind.REDUNDANT_SORT_KEY,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o SEMI JOIN users u ON u.id = o.user_id",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o WHERE (o.total BETWEEN 1 AND 2 AND (o.user_id IN (SELECT id FROM users))) AND o.id > 1",
+        RewriteKind.REDUNDANT_FILTER,
+    ),
+    (
+        SCHEMA + "SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id AND o.user_id = o.id AND u.id = o.id",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT id FROM orders WHERE id = 5 AND user_id = 5 AND id = user_id",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT id FROM (SELECT * FROM users WHERE nick = 'x') t WHERE (nick IN ('x', 'y'))",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.id FROM sessions s LEFT JOIN users u ON u.name IS NOT NULL",
+        RewriteKind.IMPLIED_CONDITION,
+    ),
+    (
+        SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
+        RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "SELECT u.id, u.name, count(s.ts) AS n FROM users u LEFT JOIN sessions s ON s.user_id = u.id "
         "GROUP BY u.id, u.name",
-        SCHEMA + "SELECT u.id, any_value(u.name) AS name, count(s.ts) AS n FROM users u "
-        "LEFT JOIN sessions s ON s.user_id = u.id GROUP BY u.id",
         RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "SELECT s.user_id, u.nick, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
         "GROUP BY s.user_id, u.nick",
-        SCHEMA + "SELECT s.user_id, any_value(u.nick) AS nick, count(*) AS n FROM sessions s "
-        "LEFT JOIN users u ON u.id = s.user_id GROUP BY s.user_id",
         RewriteKind.REDUNDANT_GROUPING,
     ),
     (
-        SCHEMA + "WITH dead AS (SELECT id FROM users) SELECT user_id FROM sessions",
-        SCHEMA + "SELECT user_id FROM sessions",
-        RewriteKind.UNUSED_CTE,
+        SCHEMA + "SELECT u.name AS label, u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY (), u.name, u.id",
+        RewriteKind.REDUNDANT_GROUPING,
     ),
     (
         SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, "
         "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
-        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, "
-        "nick AS a, id AS v FROM users WHERE nick IS NULL OR id > 1",
         RewriteKind.GROUPING_PROJECTION,
     ),
     (
         SCHEMA + "SELECT o.id, max(u.nick) AS nick, count(u.nick) AS c FROM orders o LEFT JOIN users u ON u.id = o.user_id "
         "GROUP BY o.id",
-        SCHEMA + "SELECT o.id, u.nick AS nick, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END AS c FROM orders o "
-        "LEFT JOIN users u ON u.id = o.user_id",
         RewriteKind.GROUPING_PROJECTION,
     ),
     (
-        SCHEMA + "SELECT id, nick FROM users EXCEPT SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
-        SCHEMA + "SELECT id, nick FROM users EXCEPT ALL SELECT user_id, CAST(ts AS VARCHAR) FROM sessions",
-        RewriteKind.SET_OPERATION_ALL,
+        SCHEMA + "SELECT o.id, max(u.nick || 'x') || 'y' AS d, min(o.total) * 2 AS t, count(*) + count(o.total) AS c "
+        "FROM orders o LEFT JOIN users u ON u.id = o.user_id GROUP BY o.id",
+        RewriteKind.GROUPING_PROJECTION,
     ),
     (
-        SCHEMA + "SELECT user_id FROM sessions INTERSECT SELECT id FROM users",
-        SCHEMA + "SELECT user_id FROM sessions INTERSECT ALL SELECT id FROM users",
-        RewriteKind.SET_OPERATION_ALL,
+        SCHEMA + "SELECT s.ts, o.total FROM sessions s JOIN users u ON u.id = s.user_id AND u.nick = '1' "
+        "LEFT JOIN orders o ON o.total = s.ts",
+        RewriteKind.FILTER_JOIN,
     ),
     (
-        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT SELECT ts FROM sessions",
-        SCHEMA + "SELECT user_id FROM sessions EXCEPT SELECT id FROM users WHERE nick IS NULL EXCEPT ALL SELECT ts FROM sessions",
-        RewriteKind.SET_OPERATION_ALL,
-    ),
-    (
-        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
-        SCHEMA + "SELECT id, name FROM users WHERE id = 3",
-        RewriteKind.ONE_ROW,
+        SCHEMA + "SELECT s.ts FROM sessions s JOIN users u ON (u.id = s.user_id) WHERE s.ts = 1 OR s.user_id = 2 ORDER BY 1",
+        RewriteKind.FILTER_JOIN,
     ),
     (
         SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
-        SCHEMA + "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email FROM users AS u",
         RewriteKind.SELF_JOIN,
     ),
     (
         SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick AND v.name <> 'a'",
-        SCHEMA + "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL AND u.name <> 'a'",
+        RewriteKind.SELF_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND (v.name <> 'a' OR v.nick = 'b') "
+        "WHERE u.id > 1 OR u.email = 'c'",
         RewriteKind.SELF_JOIN,
     ),
 ]
 
 
+
 def differing_instance(original: str, rewritten: str) -> SearchResult:
-    """Search for an instance on which the two programs differ as multisets."""
+    """Search for an instance on which the two programs differ as multisets.
+    Each runs its Root Select as written: the text after the last `;`."""
     database = _Database(SqlParser("duckdb").parse(original))
     queries = []
     for sql in (original, rewritten):
-        root = SqlParser("duckdb").parse(sql).root_select
-        assert root is not None
-        queries.append(root.sql(dialect="duckdb"))
+        assert SqlParser("duckdb").parse(sql).root_select is not None
+        queries.append(sql.rsplit(";", 1)[-1])
 
     def differs(_) -> bool:
         before = Counter(database.connection.execute(queries[0]).fetchall())
@@ -855,13 +873,167 @@ def differing_instance(original: str, rewritten: str) -> SearchResult:
     return database.search(differs, max_examples=400)
 
 
-@pytest.mark.parametrize(("original", "rewritten", "rewrite"), EQUIVALENT)
-def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: RewriteKind):
-    assert rewrite in rewrites(original)
+def offered(original: str, kind: RewriteKind) -> list[str]:
+    """The SQL of each `kind` Rewrite `suggest` offers for `original`, its edits applied."""
+    report = suggest(original)
+    found = [rewrite.rewritten(report.sql) for rewrite in report.rewrites if rewrite.kind is kind]
+    assert found, f"no {kind.value} rewrite offered"
+    assert original not in found, "a Rewrite whose edits change nothing"
+    return found
 
-    search = differing_instance(original, rewritten)
-    assert search.status == "no-counterexample", search
-    assert search.valid >= 100
+
+@pytest.mark.parametrize(("original", "rewrite"), EQUIVALENT)
+def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewrite: RewriteKind):
+    for rewritten in offered(original, rewrite):
+        search = differing_instance(original, rewritten)
+        assert search.status == "no-counterexample", (rewritten, search)
+        assert search.valid >= 100
+
+
+# One Rewrite of each kind, and the diff its edits make, written by hand.
+EXPECTED_DIFFS = [
+    (
+        RewriteKind.INNER_JOIN,
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s\nLEFT OUTER JOIN users u ON u.id = s.user_id\nWHERE u.nick = 'x'",
+        """\
+@@ -6 +6 @@
+-LEFT OUTER JOIN users u ON u.id = s.user_id
++JOIN users u ON u.id = s.user_id""",
+    ),
+    (
+        RewriteKind.REDUNDANT_JOIN,
+        SCHEMA + "SELECT s.ts FROM sessions s\nLEFT JOIN users u ON u.id = s.user_id\nWHERE s.ts = 1",
+        """\
+@@ -6 +5,0 @@
+-LEFT JOIN users u ON u.id = s.user_id""",
+    ),
+    (
+        RewriteKind.REDUNDANT_DISTINCT,
+        SCHEMA + "SELECT DISTINCT id, nick FROM users",
+        """\
+@@ -5 +5 @@
+-SELECT DISTINCT id, nick FROM users
++SELECT id, nick FROM users""",
+    ),
+    (
+        RewriteKind.SET_OPERATION_ALL,
+        SCHEMA + "SELECT id FROM users\nEXCEPT\nSELECT user_id FROM sessions",
+        """\
+@@ -6 +6 @@
+-EXCEPT
++EXCEPT ALL""",
+    ),
+    (
+        RewriteKind.ONE_ROW,
+        SCHEMA + "SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1",
+        """\
+@@ -5 +5 @@
+-SELECT id, name FROM users WHERE id = 3 ORDER BY name LIMIT 1
++SELECT id, name FROM users WHERE id = 3""",
+    ),
+    (
+        RewriteKind.UNUSED_CTE,
+        SCHEMA + "WITH used AS (SELECT user_id FROM sessions),\ndead AS (SELECT id FROM users)\nSELECT user_id FROM used",
+        """\
+@@ -5,2 +5 @@
+-WITH used AS (SELECT user_id FROM sessions),
+-dead AS (SELECT id FROM users)
++WITH used AS (SELECT user_id FROM sessions)""",
+    ),
+    (
+        RewriteKind.REDUNDANT_FILTER,
+        SCHEMA + "SELECT o.id FROM orders o\nWHERE o.total BETWEEN 1 AND 2\n  AND o.user_id IN (SELECT id FROM users)",
+        """\
+@@ -7 +6,0 @@
+-  AND o.user_id IN (SELECT id FROM users)""",
+    ),
+    (
+        RewriteKind.IMPLIED_CONDITION,
+        SCHEMA + "SELECT u.id, v.nick FROM users u\nJOIN users v ON u.id = v.id AND (u.nick = v.nick)",
+        """\
+@@ -6 +6 @@
+-JOIN users v ON u.id = v.id AND (u.nick = v.nick)
++JOIN users v ON u.id = v.id AND u.nick IS NOT NULL""",
+    ),
+    (
+        RewriteKind.REDUNDANT_SORT_KEY,
+        SCHEMA + "SELECT id, name FROM users\nORDER BY id DESC, name NULLS FIRST\nLIMIT 2",
+        """\
+@@ -6 +6 @@
+-ORDER BY id DESC, name NULLS FIRST
++ORDER BY id DESC""",
+    ),
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        SCHEMA + "SELECT u.id, u.name, count(*) AS n\nFROM users u JOIN sessions s ON s.user_id = u.id\nGROUP BY u.id, u.name",
+        """\
+@@ -5 +5 @@
+-SELECT u.id, u.name, count(*) AS n
++SELECT u.id, any_value(u.name) AS name, count(*) AS n
+@@ -7 +7 @@
+-GROUP BY u.id, u.name
++GROUP BY u.id""",
+    ),
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        SCHEMA + "SELECT o.id, max(u.name) AS name, count(u.nick) + 1 AS c\nFROM orders o JOIN users u ON u.id = o.user_id\nGROUP BY o.id",
+        """\
+@@ -5 +5 @@
+-SELECT o.id, max(u.name) AS name, count(u.nick) + 1 AS c
++SELECT o.id, u.name AS name, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END + 1 AS c
+@@ -7 +6,0 @@
+-GROUP BY o.id""",
+    ),
+    (
+        RewriteKind.FILTER_JOIN,
+        SCHEMA + "SELECT s.ts FROM sessions s\nJOIN users u ON u.id = s.user_id AND u.nick = '1'\nWHERE s.ts = 1",
+        """\
+@@ -6,2 +6 @@
+-JOIN users u ON u.id = s.user_id AND u.nick = '1'
+-WHERE s.ts = 1
++WHERE s.ts = 1 AND EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')""",
+    ),
+    (
+        RewriteKind.SELF_JOIN,
+        SCHEMA + "SELECT u.id, v.name, v.email\nFROM users u\nLEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
+        """\
+@@ -5 +5 @@
+-SELECT u.id, v.name, v.email
++SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email
+@@ -7 +6,0 @@
+-LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
+    ),
+]
+
+
+def test_every_kind_of_rewrite_has_a_diff_written_here_and_an_equivalence_case():
+    assert sorted(kind.name for kind, _, _ in EXPECTED_DIFFS) == sorted(kind.name for kind in RewriteKind)
+    assert {kind for _, kind in EQUIVALENT} == set(RewriteKind)
+
+
+@pytest.mark.parametrize(("kind", "sql", "expected"), EXPECTED_DIFFS, ids=[kind.name for kind, _, _ in EXPECTED_DIFFS])
+def test_each_kind_of_rewrite_makes_the_diff_written_here(kind: RewriteKind, sql: str, expected: str):
+    report = suggest(sql)
+    rewrite, = (item for item in report.rewrites if item.kind is kind)
+    assert rewrite.diff(report.sql, context=0) == "--- original\n+++ original (rewritten)\n" + expected
+
+
+def test_an_edit_keeps_the_property_markers_and_comments_in_a_span_it_deletes():
+    sql = SCHEMA + (
+        "SELECT s.ts FROM sessions s LEFT JOIN users u -- the user\n"
+        "ON u.id = s.user_id AND u.nick = /**ASSERT EXHAUSTIVE**/ CASE u.nick WHEN 'a' THEN 'a' ELSE 'b' END\nWHERE s.ts = 1"
+    )
+    report = suggest(sql)
+    rewrite, = report.rewrites
+    assert rewrite.kind is RewriteKind.REDUNDANT_JOIN
+    assert rewrite.rewritten(sql).endswith("FROM sessions s -- the user\n/**ASSERT EXHAUSTIVE**/\nWHERE s.ts = 1")
+
+
+def test_an_edit_keeps_the_comments_in_its_span():
+    sql = SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT /* outer */ OUTER JOIN users u ON u.id = s.user_id WHERE u.nick = 'x'"
+    report = suggest(sql)
+    rewrite, = report.rewrites
+    assert rewrite.rewritten(report.sql).endswith("FROM sessions s /* outer */ JOIN users u ON u.id = s.user_id WHERE u.nick = 'x'")
 
 
 def test_the_equivalence_check_finds_a_rewrite_that_changes_the_result():

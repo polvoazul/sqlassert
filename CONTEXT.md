@@ -259,8 +259,18 @@ same rows; a column's type or precision may change, or its arithmetic
 overflow, which makes it a Rewrite with Caveat.
 Otherwise (same rows, same column types, no new error) it is a plain
 Rewrite, suggestion type `rewrite`. `suggest` ranks Rewrites before Rewrites
-with Caveat, those before markers to paste, and those before Hazards.
+with Caveat, those before markers to paste, and those before Hazards. Every
+Rewrite is made by its Rewrite Edits, and is offered only with them.
 _Avoid_: Improvement, optimization, lint, hint
+
+**Rewrite Edit**:
+One exact text change a Rewrite makes to the SQL it was found in: replace
+the text between two source offsets with a replacement, placed from the
+SQL's tokens. An edit never deletes a comment or Property Marker in the text
+it replaces: it keeps them. What `suggest` shows of a Rewrite (the rewritten
+SQL, its diff, the dbt diff against the compiled SQL) is derived from its
+edits, and the equivalence tests run exactly the SQL they make.
+_Avoid_: Patch, fix, rewritten query (for the edits themselves)
 
 **Rewrite with Caveat**:
 A Rewrite that keeps the rows but may change an output column's type,

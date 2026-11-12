@@ -70,13 +70,31 @@ limit 10;
 ```console
 $ sqlassert suggest orders.sql
 rewrite  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+    --- orders.sql
+    +++ orders.sql (rewritten)
+    @@ -5,5 +5,5 @@
+     select o.id, u.name
+     from orders o
+    -left join users u on u.id = o.user_id         -- user_id is NOT NULL REFERENCES users(id)
+    +join users u on u.id = o.user_id         -- user_id is NOT NULL REFERENCES users(id)
+     left join coupons c on c.id = o.coupon_id     -- nothing from coupons is used
+     order by u.name
 rewrite  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+    --- orders.sql
+    +++ orders.sql (rewritten)
+    @@ -6,5 +6,5 @@
+     from orders o
+     left join users u on u.id = o.user_id         -- user_id is NOT NULL REFERENCES users(id)
+    -left join coupons c on c.id = o.coupon_id     -- nothing from coupons is used
+    +-- nothing from coupons is used
+     order by u.name
+     limit 10;
 marker   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
 ...
 hazard   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine ('id'), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
 ```
 
-Every rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
+Every rewrite is backed by a proof that it leaves the result unchanged, row for row, and comes with the exact diff that makes it; comments and markers in the text it replaces are kept. `--annotate` pastes the suggested markers into the file.
 
 ### A CASE that forgets the new status
 
@@ -544,23 +562,53 @@ From Python, `suggest(sql)` returns the same suggestions, each with its `site`, 
 
 #### Rewrites
 
-Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row. One that may change an output column's type or precision, or overflow where the original did not, is a `rewrite with caveat`, listed after the others: its message ends with a `Caveat:` naming the column and the risk (sqlassert has no result-type model per dialect, so precision and type differences are caveated, never refused). A plain `rewrite` never turns a query that runs into one that fails.
+Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row, printed as the reason and a unified diff of the exact edits that make it. The edits are placed from the SQL's tokens and change only what the rewrite needs: the rest of the text, comments and markers included, stays as written. One that may change an output column's type or precision, or overflow where the original did not, is a `rewrite with caveat`, listed after the others: its message ends with a `Caveat:` naming the column and the risk (sqlassert has no result-type model per dialect, so precision and type differences are caveated, never refused). A plain `rewrite` never turns a query that runs into one that fails.
+
+```sql
+create table users (id integer primary key, name varchar);
+create table coupons (id integer primary key, code varchar);
+create table orders (id integer primary key, user_id integer not null references users (id), coupon_id integer);
+with big as (select * from orders where user_id > 100)
+select o.id, u.name, u.id as user_id
+from orders o
+left join users u on u.id = o.user_id
+left join coupons c on c.id = o.coupon_id
+group by o.id, u.name, u.id;
+```
 
 ```bash
 $ sqlassert suggest orders.sql
-rewrite  line 4  CTE big                 Unused CTE          CTE big is never referenced, so it never runs and its markers go unchecked: delete it
-rewrite  line 7  LEFT JOIN users AS u    INNER JOIN          every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
-rewrite  line 8  LEFT JOIN coupons AS c  Redundant Join      at most one match per row and no column of coupons AS c is used outside its ON: delete the join
-rewrite  line 9  Root Select             Redundant GROUP BY  (o.id, u.name) determine u.id, NULL equal to NULL: drop u.id from GROUP BY and select any_value(u.id) AS user_id
-marker   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE**/
+rewrite  line 4  CTE big                 Unused CTE                     CTE big is never referenced, so it never runs and its markers go unchecked: delete it
+    --- orders.sql
+    +++ orders.sql (rewritten)
+    @@ -2,5 +2,4 @@
+     create table coupons (id integer primary key, code varchar);
+     create table orders (id integer primary key, user_id integer not null references users (id), coupon_id integer);
+    -with big as (select * from orders where user_id > 100)
+     select o.id, u.name, u.id as user_id
+     from orders o
+rewrite  line 7  LEFT JOIN users AS u    INNER JOIN                     every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+...
+rewrite  line 9  Root Select             GROUP BY of one row per group  no two rows agree on ('o.id', 'u.name', 'u.id'), NULL equal to NULL, so every group is one row: drop GROUP BY and write each aggregate as its value over that row
+    --- orders.sql
+    +++ orders.sql (rewritten)
+    @@ -6,4 +6,3 @@
+     from orders o
+     left join users u on u.id = o.user_id
+    -left join coupons c on c.id = o.coupon_id
+    -group by o.id, u.name, u.id;
+    +left join coupons c on c.id = o.coupon_id;
+marker   line 7  LEFT JOIN users AS u    Exactly One Join               /**ASSERT EXACTLY ONE**/
 ...
 ```
+
+Each diff is of that rewrite alone, against the original SQL.
 
 | Rewrite | When |
 |---|---|
 | `INNER JOIN` | A LEFT (or RIGHT) JOIN that never keeps a padded row: it matches exactly one row, or a later inner join's ON, a `WHERE EXISTS`/`IN` subquery, or the WHERE clause of the same Select rejects NULL in a column it pads, directly or through a later LEFT JOIN whose ON rejects that column (so it pads the same rows). |
 | Redundant Join | No column of the joined relation is used outside its own ON, and the join keeps every left row once: a LEFT JOIN with at most one match, or an Exactly One inner JOIN. |
-| Filter-Only Join | The same for an inner JOIN with at most one match: it only filters, so it can be a `WHERE EXISTS`. Not suggested when a RIGHT or FULL JOIN follows it. |
+| Filter-Only Join | The same for an inner JOIN with at most one match: it only filters, so it moves into the WHERE as `EXISTS (SELECT 1 FROM <relation> WHERE <its ON>)`. Not suggested when a RIGHT or FULL JOIN follows it. |
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
 | Redundant ORDER BY key | The ORDER BY keys before it determine it, NULL equal to NULL: it never breaks a tie. Silent when a key is an expression or a name sqlassert cannot map to one column. |
 | Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
@@ -568,7 +616,7 @@ marker   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY O
 | Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 
-`report.rewrites` holds them, each with its `site`, `kind`, `message`, `evidence`, and `suggest_type` (`SuggestType.REWRITE` or `SuggestType.REWRITE_WITH_CAVEAT`); `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
+`report.rewrites` holds them, each with its `site`, `kind`, `message`, `edits` (each an `Edit(start, end, replacement)` on the original SQL's offsets), `evidence`, and `suggest_type` (`SuggestType.REWRITE` or `SuggestType.REWRITE_WITH_CAVEAT`); `rewrite.rewritten(report.sql)` is the rewritten SQL and `rewrite.diff(report.sql)` its diff. `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
 
 Hazards come last: places whose result the SQL leaves unspecified. `report.hazards` holds them, each with its `site`, `concern`, `message`, and the failed proof as `evidence`.
 

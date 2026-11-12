@@ -1,5 +1,5 @@
 """Command line: `sqlassert check PATH...` checks the assertions in SQL Programs for CI (`check.py`);
-`sqlassert suggest FILE` prints the rewrites and markers sqlassert can prove.
+`sqlassert suggest FILE` prints the rewrites (each with its diff) and markers sqlassert can prove.
 dbt projects are checked by the separate `sqlassert-dbt` package (`integrations/dbt/`)."""
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _suggest(arguments: argparse.Namespace) -> int:
     from sqlassert import check
-    from sqlassert.suggest import SuggestType, suggest
+    from sqlassert.suggest import Rewrite, SuggestType, suggest
 
     try:
         sql = check.read_sql(Path(arguments.file))
@@ -89,8 +89,11 @@ def _suggest(arguments: argparse.Namespace) -> int:
         (s.suggest_type.value, f"line {s.site.line}", s.site.label, s.concern.value, s.message) for s in report.hazards
     ]
     widths = [max((len(row[i]) for row in rows), default=0) for i in range(4)]
+    name = "stdin" if arguments.file == "-" else arguments.file
     for row, item in zip(rows, items):
         print("  ".join(cell.ljust(width) for cell, width in zip(row[:4], widths)) + "  " + row[4])
+        if isinstance(item, Rewrite):
+            print(check.indented(item.diff(report.sql, name=name)))
         if arguments.explain:
             print(check.indented(item.evidence.explain()))
     return 1 if report.diagnostics else 0
