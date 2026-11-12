@@ -1006,6 +1006,11 @@ EXPECTED_DIFFS = [
 ]
 
 
+def test_every_kind_of_rewrite_has_a_diff_written_here_and_an_equivalence_case():
+    assert sorted(kind.name for kind, _, _ in EXPECTED_DIFFS) == sorted(kind.name for kind in RewriteKind)
+    assert {kind for _, kind in EQUIVALENT} == set(RewriteKind)
+
+
 @pytest.mark.parametrize(("kind", "sql", "expected"), EXPECTED_DIFFS, ids=[kind.name for kind, _, _ in EXPECTED_DIFFS])
 def test_each_kind_of_rewrite_makes_the_diff_written_here(kind: RewriteKind, sql: str, expected: str):
     report = suggest(sql)
