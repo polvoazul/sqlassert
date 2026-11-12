@@ -35,6 +35,7 @@ from sqlassert_dbt.jinja import Rendered, Unrenderable, align, has_incremental_b
 from sqlassert_dbt.manifest import Column, Relation
 from sqlassert.diagnostics import Diagnostic
 from sqlassert.discovery import DatabaseKnowledgeFetcher
+from sqlassert.edits import unified_diff
 from sqlassert.rewrites import Rewrite, SuggestType
 from sqlassert.ir.convert import IrConversionResult, IrParser
 from sqlassert.ir.model import LiteralValue
@@ -294,9 +295,10 @@ class BranchResult:
 
 @dataclass(frozen=True)
 class Suggested:
-    """An Rewrite, marker or Hazard `sqlassert suggest` finds in a model's
+    """A Rewrite, marker or Hazard `sqlassert suggest` finds in a model's
     SQL: `line` in its body, `raw_line` in its file when known; `kind` the
-    rewrite, Property or concern; `text` the marker to paste or the message."""
+    rewrite, Property or concern; `text` the marker to paste or the message;
+    `diff` a Rewrite's diff against the body, its compiled SQL."""
 
     suggest_type: SuggestType
     line: int
@@ -306,6 +308,16 @@ class Suggested:
     text: str
     explanation: str
     trailing: bool = False
+    diff: str = ""
+
+
+def _compiled_diff(rewrite: Rewrite, statement: Statement) -> str | None:
+    """The Rewrite's diff against the body it is in, the model's compiled
+    SQL; None when an edit falls outside it."""
+    edits = [replace(edit, start=edit.start - statement.first_offset, end=edit.end - statement.first_offset) for edit in rewrite.edits]
+    if any(edit.start < 0 or edit.end > len(statement.body.text) for edit in edits):
+        return None
+    return unified_diff(statement.body.text, edits, name="compiled SQL")
 
 
 @dataclass(frozen=True)
@@ -752,9 +764,14 @@ class Builder:
                     anchor -= 1
                 if body.in_injected(anchor):
                     continue
+                diff = ""
                 match item:
                     case Rewrite():
                         kind, text = item.kind.value, item.message
+                        compiled = _compiled_diff(item, statement)
+                        if compiled is None:
+                            continue
+                        diff = compiled
                     case Suggestion():
                         kind, text = "Not Null" if cut else item.kind, item.marker
                     case Hazard():
@@ -762,6 +779,7 @@ class Builder:
                 found.append(Suggested(
                     item.suggest_type, line, _site_line(body, line, anchor, site.trailing),
                     "Root Select" if site.label.lower() == root else site.label, kind, text, item.evidence.explain(), site.trailing,
+                    diff,
                 ))
             results.append(SuggestResult(
                 tuple(found),

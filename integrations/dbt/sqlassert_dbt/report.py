@@ -113,7 +113,8 @@ class ModelSuggestion:
     rewrite a proof justifies (with a caveat when a column's type changes), a marker that will be PROVED, or a hazard: a
     result the SQL leaves unspecified. `location` is the model file's line when
     known, else the compiled file's; `kind` names the rewrite, Property or
-    concern; `text` is the marker to paste or the message."""
+    concern; `text` is the marker to paste or the message; `diff` is a
+    rewrite's unified diff against the model's compiled SQL."""
 
     model: str
     location: Location
@@ -122,6 +123,7 @@ class ModelSuggestion:
     kind: str
     text: str
     explanation: str = ""
+    diff: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,9 +177,10 @@ def format_suggestions(report: SuggestReport, *, explain: bool = False) -> str:
 
 
 def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False, limit: WarningLimit | None = None) -> str:
-    """One block per model, each suggestion one aligned row, then the report's
-    warnings and errors; each block ends in a blank line, so blocks printed as
-    models finish read as one listing."""
+    """One block per model, each suggestion one aligned row (a rewrite's diff
+    against the compiled SQL under it), then the report's warnings and
+    errors; each block ends in a blank line, so blocks printed as models
+    finish read as one listing."""
     lines: list[str] = []
     for model in report.models:
         items = [item for item in report.suggestions if item.model == model]
@@ -189,6 +192,7 @@ def format_suggestion_blocks(report: SuggestReport, *, explain: bool = False, li
         lines.append(f"{model}:")
         for row, item in zip(rows, items):
             lines.append("  " + "  ".join(cell.ljust(width) for cell, width in zip(row[:4], widths)) + "  " + row[4])
+            lines.extend("      " + line for line in item.diff.splitlines())
             if explain and item.explanation:
                 lines.extend("      " + line for line in item.explanation.splitlines())
     limit = limit or WarningLimit(0)

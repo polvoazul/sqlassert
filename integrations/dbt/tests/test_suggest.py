@@ -12,7 +12,7 @@ from dbt.cli.main import dbtRunner
 from dbt_runs import copy_source, dbt
 
 from sqlassert_dbt import ProjectError, SuggestReport, analyze_project, suggest_models
-from sqlassert_dbt.report import Location, Problem, WarningLimit
+from sqlassert_dbt.report import Location, ModelSuggestion, Problem, WarningLimit, format_suggestion_blocks
 from sqlassert_dbt import __main__ as dbt_command
 from sqlassert_dbt.__main__ import main
 from sqlassert.reporting import Outcome
@@ -257,6 +257,23 @@ def test_each_model_is_reported_as_soon_as_it_is_analyzed(compiled):
     assert "dbt-unknown-columns" in {problem.code for problem in parts[-1].problems}
     assert report.models == ("stg_orders", "customer_orders")
     assert report.suggestions == parts[0].suggestions + parts[1].suggestions
+
+
+def test_a_rewrite_is_listed_with_its_diff_against_the_compiled_sql():
+    diff = "--- compiled SQL\n+++ compiled SQL (rewritten)\n@@ -1 +1 @@\n-select distinct id from t\n+select id from t"
+    report = SuggestReport("duckdb", ("m",), (
+        ModelSuggestion("m", Location("models/m.sql", 3), "rewrite", "Root Select", "Redundant DISTINCT", "delete DISTINCT", diff=diff),
+    ))
+    assert format_suggestion_blocks(report).splitlines() == [
+        "m:",
+        "  models/m.sql:3  rewrite  Root Select  Redundant DISTINCT  delete DISTINCT",
+        "      --- compiled SQL",
+        "      +++ compiled SQL (rewritten)",
+        "      @@ -1 +1 @@",
+        "      -select distinct id from t",
+        "      +select id from t",
+        "",
+    ]
 
 
 def test_warnings_past_the_limit_of_their_code_are_suppressed_and_counted():
