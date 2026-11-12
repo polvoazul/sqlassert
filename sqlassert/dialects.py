@@ -113,6 +113,10 @@ _SPARK = DialectSemantics(
     pipes="strict",
     concat="strict",
     concat_ws="skips-null",
+    # Certified on Spark 4.3, not Databricks (`databricks` below drops them).
+    checked_sum=True,
+    greatest="skips-null",
+    subscript_strict=True,
     unique_keys="rely",
     foreign_keys="rely",
     # Delta tables check them, other tables cannot declare them.
@@ -199,7 +203,11 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         check_constraints="unenforced",
     ),
-    "databricks": replace(_SPARK, checked_division=True, casts_raise=True),
+    "databricks": replace(
+        _SPARK, checked_division=True, casts_raise=True,
+        # Certified on Apache Spark only; Databricks's docs do not say a sum meets NaN as a value.
+        checked_sum=False, greatest=None, subscript_strict=False,
+    ),
     "spark": _SPARK,
     "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced",
         check_constraints="unenforced",

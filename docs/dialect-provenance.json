@@ -678,11 +678,14 @@
     "unscaled_decimal=False": {"doc": "https://docs.snowflake.com/en/sql-reference/intro-summary-data-types", "read": "cited 2026-11-08, not fetched"}
   },
   "spark": {
+    "checked_sum": {"engine": ["spark 4.3.0"]},
     "empty_string_is_null=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "enum_members_only": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"},
     "injective(+)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html", "read": "Spark 4.3.0, ANSI mode (default since 4.0)"},
     "injective(-)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html", "read": "Spark 4.3.0, ANSI mode (default since 4.0)"},
     "injective(unary -)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html", "read": "Spark 4.3.0, ANSI mode (default since 4.0)"},
+    "skips_null(greatest)": {"engine": ["spark 4.3.0"]},
+    "skips_null(least)": {"engine": ["spark 4.3.0"]},
     "strict(%)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(&)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(*)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
@@ -702,6 +705,7 @@
     "strict(ILIKE)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(LIKE)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(NOT)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
+    "strict([])": {"engine": ["spark 4.3.0"]},
     "strict(^)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "strict(abs)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-functions-builtin.html", "read": "cited 2026-11-11, not fetched"},
     "strict(ceil)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-functions-builtin.html", "read": "cited 2026-11-11, not fetched"},

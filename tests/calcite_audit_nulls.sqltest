@@ -166,8 +166,8 @@ SELECT id, xs[1] AS x FROM lists
 /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
 
 -- case: strong_item_of_a_list_not_modelled
--- dialect: spark
--- Subscripts are modelled only where certified.
+-- dialect: databricks
+-- Subscripts are modelled only where certified (Apache Spark, not Databricks).
 CREATE TABLE lists (id INTEGER PRIMARY KEY, xs ARRAY<INT>);
 SELECT id, xs FROM lists WHERE xs[1] = 5
 /**ASSERT NOT NULL(xs)**/  --~ UNKNOWN

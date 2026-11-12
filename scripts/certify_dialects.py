@@ -26,6 +26,8 @@ to strengthen by hand when that engine is the latest release.
         --connect 'host=127.0.0.1 port=55432 user=postgres password=probe'
     python scripts/certify_dialects.py mysql --driver pymysql \\
         --connect '{"host": "127.0.0.1", "port": 53306, "user": "root", "password": "probe", "database": "probe"}'
+    python scripts/certify_dialects.py spark --driver pyhive.hive --only 'checked_sum,strict([])' \\
+        --connect '{"host": "127.0.0.1", "port": 50000, "auth": "NOSASL", "username": "probe"}'
     python scripts/certify_dialects.py snowflake --list   # the probes, no connection
 
 `docs/dialects.md` ("Certifying facts") has the docker setup.
@@ -605,15 +607,17 @@ def write_provenance(provenance: dict[str, dict[str, dict[str, Any]]], path: Pat
     path.write_text("\n".join(lines) + "\n")
 
 
-def record(provenance: dict[str, dict[str, dict[str, Any]]], dialect: str, version: str, results: Sequence[Result]) -> list[str]:
+def record(
+    provenance: dict[str, dict[str, dict[str, Any]]], dialect: str, version: str, results: Sequence[Result], *, every_fact: bool = True,
+) -> list[str]:
     """File `version` under each passing fact's `engine` versions and each
     vacuous fact's `undefined` ones (replacing a doc provenance), and remove it
-    from each failing fact's; drop facts the dialect no longer has. An ERROR
-    changes nothing. Returns what changed."""
+    from each failing fact's; when the results cover `every_fact`, drop facts
+    the dialect no longer has. An ERROR changes nothing. Returns what changed."""
     entries = provenance.setdefault(dialect, {})
     changes: list[str] = []
     current = {result.fact.name for result in results}
-    for name in sorted(set(entries) - current):
+    for name in sorted(set(entries) - current if every_fact else ()):
         del entries[name]
         changes.append(f"dropped {name}: no longer a fact")
     for result in results:
@@ -670,9 +674,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--connect", help="its connect() argument, or a JSON object of keyword arguments")
     parser.add_argument("--dry-run", action="store_true", help="probe, but record nothing")
     parser.add_argument("--list", action="store_true", help="print each fact and its probe; connect to nothing")
+    parser.add_argument("--only", help="comma-separated fact names: probe and record those alone (the others keep their provenance)")
     options = parser.parse_args(argv)
     dialect = options.dialect
     probed = facts(dialect)
+    if options.only:
+        only = set(options.only.split(","))
+        if unknown := only - {fact.name for fact in probed}:
+            raise SystemExit(f"{dialect} has no fact {', '.join(sorted(unknown))}")
+        probed = tuple(fact for fact in probed if fact.name in only)
     if options.list:
         for fact in probed:
             print(f"{fact.name}  (fails: {fact.weaken})")
@@ -689,13 +699,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     for result in results:
         hint = f"  -> set {result.fact.weaken}" if result.outcome == "FAIL" else ""
         print(f"{result.outcome:7} {result.fact.name}{hint}{'  ' + result.detail if result.detail else ''}")
-    for result in run(cursor, dialect, candidate_facts(dialect)):
+    for result in () if options.only else run(cursor, dialect, candidate_facts(dialect)):
         if result.outcome == "PASS":
             print(f"STRONGER {result.fact.name}: holds on {version} too (not claimed: strengthen it by hand if {version} is the latest release)")
     failed = [result for result in results if result.outcome in ("FAIL", "ERROR")]
     if not options.dry_run:
         provenance = load_provenance()
-        changes = record(provenance, dialect, version, results)
+        changes = record(provenance, dialect, version, results, every_fact=not options.only)
         write_provenance(provenance)
         print(*(f"recorded: {change}" for change in changes), sep="\n")
     print(f"{len(results) - len(failed)} of {len(results)} facts hold on {version}")

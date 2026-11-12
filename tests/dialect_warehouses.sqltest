@@ -113,6 +113,28 @@ SELECT n / 2 AS v, n % 2 AS w FROM t
 CREATE TABLE t (n INT NOT NULL);
 SELECT n > 0 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
 
+-- case: spark_a_sum_of_non_null_values_is_non_null
+-- Certified on Spark 4.3, as greatest() skipping NULLs and xs[i] NULL for a NULL xs.
+-- dialect: spark
+CREATE TABLE t (n INT NOT NULL);
+SELECT n, sum(n) AS s FROM t GROUP BY n /**ASSERT NOT NULL(s)**/  --~ PROVED
+
+-- case: spark_greatest_skips_nulls
+-- dialect: spark
+CREATE TABLE t (n INT NOT NULL, m INT);
+SELECT greatest(m, n) AS g FROM t /**ASSERT NOT NULL(g)**/  --~ PROVED
+
+-- case: spark_a_subscript_is_null_for_a_null_array
+-- dialect: spark
+CREATE TABLE t (xs ARRAY<INT>);
+SELECT xs FROM t WHERE xs[0] = 5 /**ASSERT NOT NULL(xs)**/  --~ PROVED
+
+-- case: databricks_sum_is_not_certified
+-- Neither is greatest() nor xs[i]: they are certified on Apache Spark only.
+-- dialect: databricks
+CREATE TABLE t (n INT NOT NULL);
+SELECT n, sum(n) AS s FROM t GROUP BY n /**ASSERT NOT NULL(s)**/  --~ UNKNOWN
+
 -- case: spark_arithmetic_raises
 -- dialect: spark
 CREATE TABLE t (n INT NOT NULL);
