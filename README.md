@@ -69,11 +69,11 @@ limit 10;
 
 ```console
 $ sqlassert suggest orders.sql
-high  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
-high  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
-mid   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
+rewrite  line 7   LEFT JOIN users AS u    INNER JOIN       every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+rewrite  line 8   LEFT JOIN coupons AS c  Redundant Join   at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+marker   line 7   LEFT JOIN users AS u    Exactly One Join /**ASSERT EXACTLY ONE**/
 ...
-low   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine ('id'), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
+hazard   line 10  Root Select             Arbitrary LIMIT  the ORDER BY does not determine ('id'), so rows tied on it come in an arbitrary order and LIMIT may keep different rows on each run: order by a key as well
 ```
 
 Every rewrite is backed by a proof that it leaves the result unchanged, row for row. `--annotate` pastes the suggested markers into the file.
@@ -544,15 +544,15 @@ From Python, `suggest(sql)` returns the same suggestions, each with its `site`, 
 
 #### Rewrites
 
-Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row:
+Before any marker, `suggest` lists rewrites to the SQL itself (type `rewrite`; markers are `marker`). Each is a rewrite a proof shows leaves the result unchanged, row for row. One that may change an output column's type is a `rewrite with caveat`, listed after the others: its message ends with a `Caveat:` naming the column and the change (sqlassert has no result-type model per dialect, so a rewrite that may change a type is caveated). A rewrite never turns a query that runs into one that fails.
 
 ```bash
 $ sqlassert suggest orders.sql
-high  line 4  CTE big                 Unused CTE          CTE big is never referenced, so it never runs and its markers go unchecked: delete it
-high  line 7  LEFT JOIN users AS u    INNER JOIN          every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
-high  line 8  LEFT JOIN coupons AS c  Redundant Join      at most one match per row and no column of coupons AS c is used outside its ON: delete the join
-high  line 9  Root Select             Redundant GROUP BY  (o.id, u.name) determine u.id, NULL equal to NULL: drop u.id from GROUP BY and select any_value(u.id) AS user_id
-mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE**/
+rewrite  line 4  CTE big                 Unused CTE          CTE big is never referenced, so it never runs and its markers go unchecked: delete it
+rewrite  line 7  LEFT JOIN users AS u    INNER JOIN          every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+rewrite  line 8  LEFT JOIN coupons AS c  Redundant Join      at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+rewrite  line 9  Root Select             Redundant GROUP BY  (o.id, u.name) determine u.id, NULL equal to NULL: drop u.id from GROUP BY and select any_value(u.id) AS user_id
+marker   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE**/
 ...
 ```
 
@@ -564,10 +564,11 @@ mid   line 7  LEFT JOIN users AS u    Exactly One Join    /**ASSERT EXACTLY ONE*
 | Redundant DISTINCT | No two rows agree on the selected columns, NULL equal to NULL. |
 | Redundant ORDER BY key | The ORDER BY keys before it determine it, NULL equal to NULL: it never breaks a tie. Silent when a key is an expression or a name sqlassert cannot map to one column. |
 | Redundant GROUP BY | The remaining grouping columns determine this one, NULL equal to NULL. One grouping column always stays. |
+| GROUP BY of one row per group | No two input rows agree on the grouping columns, NULL equal to NULL: every group is one row, so `GROUP BY` goes and each aggregate is its value over that row (`count(*)` is 1, `count(x)` a `CASE`, `sum`, `avg`, `min`, `max`, `any_value`, `bool_and`, `bool_or` of x are x). A rewrite with caveat when a type changes: `sum(x)` of an INTEGER is a HUGEINT in DuckDB, `x` an INTEGER. Only where the value is the same (no `avg` of a BIGINT or DECIMAL, which a DOUBLE may round) and, inside an expression, only an aggregate whose type is kept: `sum(x) + 1` may overflow as `x + 1`. |
 | Redundant EXISTS | A `WHERE EXISTS`, `IN` subquery or SEMI JOIN every row passes: each row matches exactly one row of it (a non-null Foreign Key onto a key, and an ON of column equalities only). |
 | Unused CTE | Nothing in its WITH reaches it, directly or through another CTE. Its markers are never checked either. |
 
-`report.rewrites` holds them, each with its `site`, `rewrite`, `message`, and `evidence`; `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
+`report.rewrites` holds them, each with its `site`, `kind`, `message`, `evidence`, and `suggest_type` (`SuggestType.REWRITE` or `SuggestType.REWRITE_WITH_CAVEAT`); `--explain` prints the proofs. Padding is only followed within the join's own Select Expression: past it, a LIMIT, window, or aggregate may see the padded rows before a filter removes them.
 
 Hazards come last: places whose result the SQL leaves unspecified. `report.hazards` holds them, each with its `site`, `concern`, `message`, and the failed proof as `evidence`.
 
@@ -576,6 +577,7 @@ Hazards come last: places whose result the SQL leaves unspecified. `report.hazar
 | Arbitrary LIMIT | A `LIMIT` or `OFFSET` whose `ORDER BY` (if any) does not determine every selected column, NULL equal to NULL: rows tied on the sort keys may come in any order, so which rows are kept can change between runs. Silent when an `ORDER BY` key is an expression or a name sqlassert cannot map to one column. |
 | Scalar subquery | A scalar subquery not proved to return at most one row, a runtime error when it returns more: uncorrelated, its body is not proved to have at most one row; correlated, the columns its WHERE binds to the outer row are not proved a Unique Set. |
 | Implicit Cast | A join equality between a text column and a column of another declared type: the text is cast, so different strings may match one value (`'01'` and `'1'` both equal 1). No cardinality is proved across it either: cast explicitly, and the proof stays `UNKNOWN`, which is correct. |
+| Lossy comparison | An equality (`=`, `IS NOT DISTINCT FROM`, an `IN` subquery's) of two columns, an integer or decimal and a DOUBLE or REAL that cannot hold all its values: `a.id = d.x` of a BIGINT and a DOUBLE converts `a.id` to DOUBLE, which rounds above 2^53, so one `x` can match several ids. An INTEGER is exact in a DOUBLE, a SMALLINT in a REAL, a DECIMAL of up to 15 digits in a DOUBLE. In a join's ON, a WHERE or HAVING, and an `IN` or `EXISTS` correlation; only when both declared types are known, and not in SQLite or ClickHouse, which compare the two exactly. Compare in one type. |
 | Fan Trap | An aggregate over a join that is not proved to repeat rows of only one input, when its argument (or, for `count(*)`, either input) comes from rows the join may repeat: `sum(p.amount)` over `orders JOIN payments USING (customer_id)`. |
 | Chasm Trap | An aggregate over a one-to-many join whose argument is on the side with one row per key: `sum(c.credit)` over `customers JOIN orders`. Every aggregate counts, `min` and `max` included. Silent when the repeated input has no known Unique Set, or the argument reads both inputs. |
 | Many-to-many join | A join with no join marker that is not proved to repeat rows of only one input, both inputs having a known Unique Set: `orders JOIN payments USING (customer_id)` repeats each order once per payment and each payment once per order. A many-to-many join is rarely meant. Silent for an explicit `CROSS JOIN`, a semi or anti join, a join in the FROM of a Select whose `DISTINCT` or `GROUP BY` merges the repeats (an aggregate's trap says what they do to it), and a join whose ON equates every column of a known key of one input, when only an unknown column type or an expression keeps the proof from binding it. Write the join marker you expect (`/**ASSERT MANY TO ONE**/`, ...) and `check` proves it or says why not. |

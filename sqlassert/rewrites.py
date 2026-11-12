@@ -17,7 +17,9 @@ as a multiset, and the evidence that it does:
 - A `WHERE EXISTS` or `IN` subquery (or a SEMI JOIN) every row passes: its
   semi join is proved Exactly One, so it keeps every row once.
 - A `GROUP BY` whose grouping columns are a key of its input, NULL equal to
-  NULL: each group is one row, so it is a projection.
+  NULL: each group is one row, so it is a projection. A Rewrite with
+  Caveat when an aggregate's one-row value has another type (`sum(x)` is
+  x's type, not sum's).
 - An `EXCEPT` whose left input, or an `INTERSECT` either of whose inputs,
   has no two rows alike: `EXCEPT ALL` and `INTERSECT ALL` give the same rows
   without removing duplicates, where the dialect has them.
@@ -35,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar, assert_never
+from typing import assert_never
 
 from sqlglot import Expr, exp
 
@@ -57,10 +59,13 @@ from sqlassert.sql_parse import ParsedProgram, grouping, marker_position, writte
 
 
 class SuggestType(Enum):
-    """What a suggestion is: a rewrite of the SQL, a marker to paste, or a
-    hazard in its result; listed in that order."""
+    """What a suggestion is, listed in this order: a rewrite of the SQL that
+    keeps its rows and every column's type and adds no error; a rewrite with
+    caveat, which keeps its rows but changes a column's type, as its message
+    says; a marker to paste; a hazard in its result."""
 
     REWRITE = "rewrite"
+    REWRITE_WITH_CAVEAT = "rewrite with caveat"
     MARKER = "marker"
     HAZARD = "hazard"
 
@@ -83,13 +88,16 @@ class RewriteKind(Enum):
 
 @dataclass(frozen=True)
 class Rewrite:
-    """A result-preserving rewrite of the SQL at one site, with its proof."""
+    """A result-preserving rewrite of the SQL at one site, with its proof.
+    Its `suggest_type` is REWRITE_WITH_CAVEAT when a column's type changes,
+    which the message names; sqlassert has no result-type model per dialect,
+    so a rewrite that may change one is caveated."""
 
     site: AttachmentSite
     kind: RewriteKind
     message: str
     evidence: Result[bool]
-    suggest_type: ClassVar[SuggestType] = SuggestType.REWRITE
+    suggest_type: SuggestType = SuggestType.REWRITE
 
 
 def rewrites(
@@ -413,7 +421,7 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
     An empty input gives no rows either way. Silent when a grouping
     expression is not a column, or an aggregate has no one-row form here
     (`_one_row`), or is read outside the select list (ORDER BY, QUALIFY, a
-    window over it)."""
+    window over it). A rewrite with caveat when an item's type changes."""
     expressions = grouping(node) or []
     outputs = aggregate.grouping_outputs
     if not outputs or len(expressions) != len(outputs) or not all(isinstance(column.scalar_expr, ir.ColumnRef) for column in outputs):
@@ -432,31 +440,58 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
         for call in aggregate.calls
         if len(call.arguments) == 1 and isinstance(argument := call.arguments[0], ir.ColumnRef)
     }
-    items = []
+    items, caveats = [], []
     for item in node.expressions:
+        name = item.alias if isinstance(item, exp.Alias) else written_sql(item, dialect)
         rewritten = _one_row(item.copy(), dialect, types)
         if rewritten is None:
             return None
-        items.append(rewritten)
+        written, changes = rewritten
+        items.append(written)
+        caveats.extend(f"{quoted(name)} changes from {change}" for change in changes)
     names = quoted_all(written_sql(expression, dialect) for expression in expressions)
     message = (
         f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
         f"drop GROUP BY and write SELECT {', '.join(items)}"
     )
-    return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence)
+    if not caveats:
+        return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence)
+    cast = "cast it if later arithmetic needs the wider type" if len(caveats) == 1 else "cast them if later arithmetic needs the wider types"
+    message += f". Caveat: {'; '.join(caveats)}; {cast}"
+    return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence, SuggestType.REWRITE_WITH_CAVEAT)
 
 
-def _one_row(item: Expr, dialect: str, types: dict[str, str | None]) -> str | None:
+# Argument types whose sum over one row is the argument's value, and whose
+# average, a DOUBLE in some dialect, holds it exactly (at most 32-bit
+# integers and floats): a BIGINT or DECIMAL average may round.
+_SUMMABLE = (exp.DataType.INTEGER_TYPES | exp.DataType.REAL_TYPES) - {
+    exp.DataType.Type.BIT, exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY,
+}
+_AVERAGED_EXACTLY = {
+    exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.MEDIUMINT, exp.DataType.Type.INT,
+    exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UMEDIUMINT, exp.DataType.Type.UINT,
+    exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE,
+}
+
+
+def _one_row(item: Expr, dialect: str, types: dict[str, str | None]) -> tuple[str, list[str]] | None:
     """`item` with each aggregate in it replaced by its value over one row,
-    or None when an aggregate has no such form here: count(*) is 1, count(x)
-    is 1 unless x is NULL, and the other supported aggregates take the
-    argument's value with any required conversion to the aggregate's result
-    type. With or without DISTINCT, IGNORE or RESPECT NULLS; never with
-    FILTER, nor a count of several values. None too when an aggregate sits in
-    a subquery: it may be the subquery's own or, reading only outer columns,
-    the outer query's."""
+    and the type change each replacement makes ("sum's result type to the
+    type of x"), or None when an aggregate has no such form here.
+
+    count(*) is 1 and count(x) is 1 unless x is NULL, an integer literal's
+    type rather than count's; sum(x) is x for a numeric x, avg(x) for one
+    whose average holds it exactly (`_AVERAGED_EXACTLY`), each x's type
+    unless x is a DOUBLE; min, max, any_value, and bool_and or bool_or of a
+    BOOLEAN are x, of x's type. A replacement that changes the type only
+    stands for a whole item: inside an expression, a narrower type may
+    overflow where the aggregate did not (`sum(x) + 1`). With or without
+    DISTINCT, IGNORE or RESPECT NULLS; never with FILTER, nor a count of
+    several values. None too when an aggregate sits in a subquery: it may be
+    the subquery's own or, reading only outer columns, the outer query's."""
     if any(call.find_ancestor(exp.Select) is not None for call in item.find_all(exp.AggFunc)):
         return None
+    changes: list[str] = []
     for call in list(item.find_all(exp.AggFunc)):
         target: Expr = call
         while isinstance(target.parent, exp.IgnoreNulls | exp.RespectNulls):
@@ -468,34 +503,37 @@ def _one_row(item: Expr, dialect: str, types: dict[str, str | None]) -> str | No
             if len(argument.expressions) != 1:
                 return None
             argument = argument.expressions[0]
+        declared = types.get(call.sql(dialect=dialect))
+        kind = exp.DataType.build(declared, dialect=dialect).this if declared is not None else None
+        change = None
         match call:
             case exp.Count() if argument is None or isinstance(argument, exp.Star):
                 value: Expr = exp.Literal.number(1)
+                change = "count's result type to an integer literal's type"
             case exp.Count():
                 value = exp.Case(ifs=[exp.If(this=exp.Is(this=argument.copy(), expression=exp.null()), true=exp.Literal.number(0))], default=exp.Literal.number(1))
-            case exp.Sum() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
-                if dialect != "duckdb" or types.get(call.sql(dialect=dialect)) not in {"TINYINT", "SMALLINT", "INT", "BIGINT"}:
+                change = "count's result type to an integer literal's type"
+            case exp.Sum() | exp.Avg() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
+                if kind not in (_SUMMABLE if isinstance(call, exp.Sum) else _AVERAGED_EXACTLY):
                     return None
-                value = exp.cast(argument.copy(), "HUGEINT", dialect=dialect)
-            case exp.Avg() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
-                kind = types.get(call.sql(dialect=dialect))
-                if dialect != "duckdb" or kind is None or exp.DataType.build(kind).this not in exp.DataType.NUMERIC_TYPES:
-                    return None
-                value = argument.copy() if kind == "DOUBLE" else exp.cast(argument.copy(), "DOUBLE", dialect=dialect)
-            case exp.Min() | exp.Max() | exp.AnyValue() | exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
+                value = argument.copy()
+                if kind is not exp.DataType.Type.DOUBLE:
+                    change = f"{'sum' if isinstance(call, exp.Sum) else 'avg'}'s result type to the type of {written_sql(argument, dialect)}"
+            case exp.LogicalAnd() | exp.LogicalOr() if isinstance(argument, Expr) and kind is exp.DataType.Type.BOOLEAN:
+                value = argument.copy()
+            case exp.Min() | exp.Max() | exp.AnyValue() if isinstance(argument, Expr) and not isinstance(argument, exp.Star | exp.Order):
                 value = argument.copy()
             case _:
                 return None
-        if isinstance(call, exp.Count):
-            if dialect == "duckdb":
-                value = exp.cast(value, "BIGINT", dialect=dialect)
-            elif target is not item and not (isinstance(item, exp.Alias) and target is item.this):
+        if change is not None:
+            if target is not item and not (isinstance(item, exp.Alias) and target is item.this):
                 return None
+            changes.append(change)
         if target is item:
             item = value
         else:
             target.replace(value)
-    return written_sql(item, dialect)
+    return written_sql(item, dialect), changes
 
 
 def _redundant_grouping(

@@ -508,7 +508,7 @@ def _combined(relation: Relation, results: list[SuggestResult], *, complete: boo
     it; a hazard in any branch is one. The Root Select may end on another line
     in each branch, so a marker after it is matched by its text alone, and
     placed after the latest end."""
-    order = {SuggestType.REWRITE: 0, SuggestType.MARKER: 1, SuggestType.HAZARD: 2}
+    order = {kind: index for index, kind in enumerate(SuggestType)}
     keyed: list[dict[tuple, list[Suggested]]] = []
     for index, result in enumerate(results):
         found: dict[tuple, list[Suggested]] = {}

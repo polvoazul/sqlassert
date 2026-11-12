@@ -86,23 +86,11 @@ def test_approximate_comparison_does_not_make_integer_values_equal():
     assert not suggest(sql).rewrites
 
 
-@pytest.mark.parametrize(("expression", "expected"), [
-    ("sum(b)+1", 2147483648),
-    ("count(*)+2147483647", 2147483648),
-    ("avg(b)/2", 1073741823.5),
-])
-def test_the_suggested_single_row_aggregate_keeps_its_result(expression, expected):
+@pytest.mark.parametrize("expression", ["sum(b)+1", "count(*)+2147483647", "avg(b)/2"])
+def test_a_single_row_aggregate_is_not_narrowed_inside_an_expression(expression):
+    # b + 1 overflows an INT where sum(b) + 1 does not: no rewrite, caveat or not.
     ddl = "CREATE TABLE t(a INT PRIMARY KEY,b INT); "
-    query = f"SELECT a,{expression} AS s FROM t GROUP BY a"
-    rewrite, = suggest(ddl + query).rewrites
-    _, _, replacement = rewrite.message.partition("write SELECT ")
-    assert replacement
-    with duckdb.connect() as con:
-        con.execute(ddl)
-        con.execute("INSERT INTO t VALUES (1,2147483647)")
-        before = con.execute(query).fetchall()
-        after = con.execute("SELECT " + replacement + " FROM t").fetchall()
-    assert before == after == [(1, expected)]
+    assert not suggest(ddl + f"SELECT a,{expression} AS s FROM t GROUP BY a").rewrites
 
 
 def test_except_all_with_a_duplicate_can_return_rows():
