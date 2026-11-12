@@ -40,8 +40,10 @@ from enum import Enum
 from typing import assert_never
 
 from sqlglot import Expr, exp
+from sqlglot.tokens import TokenType
 
 from sqlassert.diagnostics import quoted, quoted_all
+from sqlassert.edits import Edit, Source, apply_edits, unified_diff
 from sqlassert import ir
 from sqlassert.dialects import semantics
 from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet
@@ -90,15 +92,27 @@ class RewriteKind(Enum):
 @dataclass(frozen=True)
 class Rewrite:
     """A result-preserving rewrite of the SQL at one site, with its proof.
-    Its `suggest_type` is REWRITE_WITH_CAVEAT when a column's type or
-    precision may change, which the message names; sqlassert has no
-    result-type model per dialect, so such a change is caveated."""
+    `edits` make it, on the SQL it was found in; `message` says why, and
+    what to do in a word. Its `suggest_type` is REWRITE_WITH_CAVEAT when a
+    column's type or precision may change, which the message names;
+    sqlassert has no result-type model per dialect, so such a change is
+    caveated."""
 
     site: AttachmentSite
     kind: RewriteKind
     message: str
+    edits: tuple[Edit, ...]
     evidence: Result[bool]
     suggest_type: SuggestType = SuggestType.REWRITE
+
+    def rewritten(self, sql: str) -> str:
+        """`sql`, the SQL this Rewrite was found in, rewritten."""
+        return apply_edits(sql, self.edits)
+
+    def diff(self, sql: str, *, name: str = "original", context: int = 2) -> str:
+        """The unified diff from `sql`, the SQL this Rewrite was found in, to
+        its rewrite; `name` labels it."""
+        return unified_diff(sql, self.edits, name=name, context=context)
 
 
 def rewrites(
@@ -108,6 +122,7 @@ def rewrites(
     """Every Rewrite for `program` at a site `wanted` accepts, in source
     order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
+    source = Source(ast.sql, ast.tokens)
     parents: dict[ir.RelationExpr, list[ir.RelationExpr]] = {}
     for relation in program.relations():
         for child in ir.children(relation):
@@ -136,7 +151,7 @@ def rewrites(
             case ir.Join() if isinstance(node, exp.Join):
                 same = _self_join(arena, site, relation, node, program, dialect)
                 removed = None if same else _redundant_join(arena, site, relation, node, dialect)
-                inner = None if removed or same else _inner_join(arena, site, relation, parents)
+                inner = None if removed or same else _inner_join(arena, site, relation, parents, node, source)
                 found.extend(item for item in (removed, same, inner) if item is not None)
                 found.extend(_implied_conjuncts(arena, site, relation, relation.conjuncts, program, "ON"))
             case ir.Distinct():
@@ -172,7 +187,7 @@ def _redundant_subquery_filters(arena: Arena, site: AttachmentSite, relation: ir
                     proof = arena.prove(ExactlyOneJoin(join=relation))
                     if proof.value:
                         message = f"every row matches exactly one row, so {relation.origin.detail} filters nothing: delete it"
-                        found.append(Rewrite(site, RewriteKind.REDUNDANT_FILTER, message, proof))
+                        found.append(Rewrite(site, RewriteKind.REDUNDANT_FILTER, message, (), proof))
                 relation = source
             case _:
                 return found
@@ -188,6 +203,12 @@ def _syntax_at_sites(ast: ParsedProgram) -> dict[tuple[int, bool], exp.Join | ex
     return index
 
 
+def _join_start(node: exp.Join, source: Source) -> int | None:
+    """The join's first token."""
+    position = marker_position(node)
+    return None if position is None else source.at(position[0])
+
+
 def _nodes(ast: ParsedProgram, *types: type[Expr]) -> Iterator:
     for statement in (*ast.create_statements, ast.root_select):
         if statement is not None:
@@ -198,9 +219,11 @@ def _nodes(ast: ParsedProgram, *types: type[Expr]) -> Iterator:
 
 
 def _inner_join(
-    arena: Arena, site: AttachmentSite, join: ir.Join, parents: dict[ir.RelationExpr, list[ir.RelationExpr]]
+    arena: Arena, site: AttachmentSite, join: ir.Join, parents: dict[ir.RelationExpr, list[ir.RelationExpr]],
+    node: exp.Join, source: Source,
 ) -> Rewrite | None:
-    """An outer join none of whose padded rows reaches the result.
+    """An outer join none of whose padded rows reaches the result. Its edit
+    deletes the LEFT or RIGHT keyword, and OUTER.
 
     Only the joins above it in the same FROM and its own WHERE are searched:
     within one Select Expression nothing between them looks at a row as a
@@ -208,12 +231,20 @@ def _inner_join(
     """
     if join.kind not in {"left", "right"}:
         return None
+    side = _join_start(node, source)
+    if not source.is_(side, TokenType.LEFT, TokenType.RIGHT):
+        return None
+    assert side is not None
+    last = side + 1 if source.is_(side + 1, TokenType.OUTER) else side
+    if not source.is_(last + 1, TokenType.JOIN):
+        return None
+    edits = (source.delete(side, last),)
     keyword = f"{join.kind.upper()} JOIN"
     if join.kind == "left":
         exactly_one = arena.prove(ExactlyOneJoin(join=join))
         if exactly_one.value:
             message = f"every left row matches exactly one right row, so the {keyword} pads nothing: write JOIN"
-            return Rewrite(site, RewriteKind.INNER_JOIN, message, exactly_one)
+            return Rewrite(site, RewriteKind.INNER_JOIN, message, edits, exactly_one)
     # Joins that pad every row this one pads, each with why (issue 33): a
     # later LEFT or FULL JOIN whose ON rejects NULL in a column one of them
     # pads finds no match for those rows, so it pads them too.
@@ -250,7 +281,7 @@ def _inner_join(
                     (conjunct, column), [padded],
                 )
                 message = f"{clause} rejects NULL in {quoted(column.name)}, so no padded row survives: write JOIN"
-                return Rewrite(site, RewriteKind.INNER_JOIN, message, evidence)
+                return Rewrite(site, RewriteKind.INNER_JOIN, message, edits, evidence)
         for padding, conjunct in paddings.items():
             # Not TRUE on a row padded as a whole (`a.x > 0 OR a.y > 0`).
             via = (padding.join, padding.left)
@@ -262,7 +293,7 @@ def _inner_join(
                     (conjunct, padding.join), [padded],
                 )
                 message = f"{clause} is never TRUE on a row the {keyword} pads, so no padded row survives: write JOIN"
-                return Rewrite(site, RewriteKind.INNER_JOIN, message, evidence)
+                return Rewrite(site, RewriteKind.INNER_JOIN, message, edits, evidence)
         if isinstance(parent, ir.Join) and parent.kind in {"left", "full"}:
             for column, conjunct in _null_rejected(parent.conjuncts).items():
                 via = padded_by(column)
@@ -305,7 +336,7 @@ def _redundant_sort_keys(
         written = [written_sql(item.this if isinstance(item, exp.Ordered) else item, dialect) for item in items]
         message = f"({quoted_all(written[:position])}) determine {quoted(written[position])}, NULL equal to NULL, so it never breaks a tie: drop it from ORDER BY"
         evidence = Result(True, "The earlier ORDER BY keys determine this one", (key,), [closure.members[key]])
-        found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, evidence))
+        found.append(Rewrite(site, RewriteKind.REDUNDANT_SORT_KEY, message, (), evidence))
     return found
 
 
@@ -321,12 +352,12 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
         unique = arena.prove(ManyToOneJoin(join=join))
         if unique.value:
             message = f"at most one match per row and {unused}: delete the join"
-            return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, unique)
+            return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, (), unique)
         return None
     exactly_one = arena.prove(ExactlyOneJoin(join=join))
     if exactly_one.value:
         message = f"exactly one match per row and {unused}: delete the join"
-        return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, exactly_one)
+        return Rewrite(site, RewriteKind.REDUNDANT_JOIN, message, (), exactly_one)
     unique = arena.prove(ManyToOneJoin(join=join))
     if not unique.value or _right_or_full_join_follows(node):
         # A filter moved to WHERE would act after a later RIGHT or FULL JOIN,
@@ -338,7 +369,7 @@ def _redundant_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp
         f"at most one match per row and {unused}, so it only filters: "
         f"write WHERE EXISTS (SELECT 1 FROM {source}{condition})"
     )
-    return Rewrite(site, RewriteKind.FILTER_JOIN, message, unique)
+    return Rewrite(site, RewriteKind.FILTER_JOIN, message, (), unique)
 
 
 def _right_side_used(join: ir.Join, node: exp.Join) -> bool:
@@ -397,7 +428,7 @@ def _redundant_distinct(site: AttachmentSite, distinct: ir.Distinct) -> list[Rew
     evidence = _reaches_row_identity(_closure(distinct.input, frozenset(key), frozenset()))
     names = quoted_all(selected[column] for column in key)
     message = f"no two rows agree on ({names}), NULL equal to NULL, so DISTINCT removes nothing: delete DISTINCT"
-    return [Rewrite(site, RewriteKind.REDUNDANT_DISTINCT, message, evidence)]
+    return [Rewrite(site, RewriteKind.REDUNDANT_DISTINCT, message, (), evidence)]
 
 
 def _strict_key(relation: ir.RelationExpr, columns: tuple[ir.OutputColumn, ...]) -> tuple[ir.OutputColumn, ...] | None:
@@ -458,12 +489,12 @@ def _grouping_is_projection(site: AttachmentSite, aggregate: ir.Aggregate, node:
         f"drop GROUP BY and write SELECT {', '.join(items)}"
     )
     if not caveats:
-        return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence)
+        return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, (), evidence)
     message += f". Caveat: {'; '.join(caveat.text for caveat in caveats)}"
     castable = len({caveat.column for caveat in caveats if caveat.castable})
     if castable:
         message += "; cast it if later arithmetic needs the wider type" if castable == 1 else "; cast them if later arithmetic needs the wider types"
-    return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, evidence, SuggestType.REWRITE_WITH_CAVEAT)
+    return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, (), evidence, SuggestType.REWRITE_WITH_CAVEAT)
 
 
 @dataclass(frozen=True)
@@ -615,7 +646,7 @@ def _redundant_grouping(
             item = node.expressions[position]
             expression = item.this if isinstance(item, exp.Alias) else item
             message = f"{drop} and select any_value({written_sql(expression, dialect)}) AS {alias}"
-        found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, closure.members[source]))
+        found.append(Rewrite(site, RewriteKind.REDUNDANT_GROUPING, message, (), closure.members[source]))
     return found
 
 
@@ -636,7 +667,7 @@ def _one_row_tail(site: AttachmentSite, relation: ir.RelationExpr, limit: ir.Lim
         return []
     dropped = " and ".join(clause for clause, present in (("ORDER BY", sorted_), ("LIMIT", limited)) if present)
     message = f"this Select returns at most one row, so {dropped} {'change' if sorted_ and limited else 'changes'} nothing: drop {'them' if sorted_ and limited else 'it'}"
-    return [Rewrite(site, RewriteKind.ONE_ROW, message, evidence)]
+    return [Rewrite(site, RewriteKind.ONE_ROW, message, (), evidence)]
 
 
 # Self-joins on a key -----------------------------------------------------------------
@@ -743,7 +774,7 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
         f"each {mine} row matches itself on the key ({quoted_all(sorted(column.name for column in keys.values()))}), "
         f"so {theirs} is {mine}: delete the join and read {mine}'s columns: {written_sql(rewritten, dialect)}"
     )
-    return Rewrite(site, RewriteKind.SELF_JOIN, message, key)
+    return Rewrite(site, RewriteKind.SELF_JOIN, message, (), key)
 
 
 def _syntax_conjuncts(condition: exp.Expression) -> list[exp.Expression]:
@@ -863,7 +894,7 @@ def _implied_conjuncts(
             message = f"{written} is TRUE whenever its columns are non-null ({reason}), so it only removes NULLs: write {check} in {clause}"
         else:
             message = f"{written} is always TRUE here ({reason}): delete it from {clause}"
-        found.append(Rewrite(site, RewriteKind.IMPLIED_CONDITION, message, Result(True, reason, (conjunct,))))
+        found.append(Rewrite(site, RewriteKind.IMPLIED_CONDITION, message, (), Result(True, reason, (conjunct,))))
     return found
 
 
@@ -985,7 +1016,7 @@ def _set_operation_all(site: AttachmentSite, operation: ir.SetOperation) -> Rewr
         evidence = _reaches_row_identity(_closure(relation, frozenset(relation.output_columns), frozenset()))
         if evidence.value:
             message = f"no two rows of the {side} input are alike, NULL equal to NULL, so {keyword} removes no duplicates: write {keyword} ALL"
-            return Rewrite(site, RewriteKind.SET_OPERATION_ALL, message, evidence)
+            return Rewrite(site, RewriteKind.SET_OPERATION_ALL, message, (), evidence)
     return None
 
 
@@ -1018,7 +1049,7 @@ def _unused_ctes(ast: ParsedProgram) -> list[Rewrite]:
             site = AttachmentSite(f"CTE {cte.alias_or_name}", line, offset, True)
             evidence = Result(True, f"No query of its WITH clause references CTE {cte.alias_or_name}")
             message = f"CTE {cte.alias_or_name} is never referenced, so it never runs and its markers go unchecked: delete it"
-            found.append(Rewrite(site, RewriteKind.UNUSED_CTE, message, evidence))
+            found.append(Rewrite(site, RewriteKind.UNUSED_CTE, message, (), evidence))
     return found
 
 

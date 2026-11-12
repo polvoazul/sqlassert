@@ -598,8 +598,18 @@ def test_the_cli_lists_rewrites_before_markers(tmp_path, capsys):
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split()[:6] == ["rewrite", "line", "6", "LEFT", "JOIN", "users"]
     assert "INNER JOIN" in lines[0]
-    assert all(line.startswith("marker") for line in lines[1:])
-    assert len(lines) == 1 + len(suggest(path.read_text()).suggestions)
+    assert lines[1:9] == [
+        f"    --- {path}",
+        f"    +++ {path} (rewritten)",
+        "    @@ -4,4 +4,4 @@",
+        "     CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id), total INTEGER);",
+        "     SELECT u.id, s.ts FROM sessions s",
+        "    -LEFT JOIN users u ON u.id = s.user_id",
+        "    +JOIN users u ON u.id = s.user_id",
+        "     WHERE u.name = 'a'",
+    ]
+    assert all(line.startswith("marker") for line in lines[9:])
+    assert len(lines) == 9 + len(suggest(path.read_text()).suggestions)
 
 
 def test_the_cli_labels_a_rewrite_with_caveat(tmp_path, capsys):
@@ -617,6 +627,82 @@ def test_the_cli_labels_a_rewrite_with_caveat(tmp_path, capsys):
 
 # (original, rewritten, the rewrite that justifies the rewrite)
 EQUIVALENT = [
+    # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
+        RewriteKind.INNER_JOIN,
+    ),
+    # A condition never TRUE on a padded row, through OR or coalesce (issue 45, item 9).
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
+        RewriteKind.INNER_JOIN,
+    ),
+    # A parenthesized join: the ON or WHERE outside rejects its padding.
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
+        RewriteKind.INNER_JOIN,
+    ),
+    # Both LEFT JOINs: each Rewrite is checked on its own.
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
+        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u LEFT JOIN orders o ON o.user_id = u.id) "
+        "RIGHT JOIN sessions s ON o.total = s.ts",
+        RewriteKind.INNER_JOIN,
+    ),
+    # A WHERE EXISTS is a semi join, whose ON rejects NULL like a later inner join's.
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
+        "LEFT JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
+        RewriteKind.INNER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT o.total, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
+        RewriteKind.INNER_JOIN,
+    ),
+]
+
+
+# Kinds whose rewrite has no edits yet: compared with a query written by hand.
+EQUIVALENT_BY_HAND = [
     # A WHERE subquery every row passes (Kossmann IND, Sec. 8.2).
     (
         SCHEMA + "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id)",
@@ -628,111 +714,10 @@ EQUIVALENT = [
         SCHEMA + "SELECT o.id FROM orders o WHERE o.total = 1",
         RewriteKind.REDUNDANT_FILTER,
     ),
-    # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id JOIN users v ON v.id = o.user_id",
-        RewriteKind.INNER_JOIN,
-    ),
-    # A condition never TRUE on a padded row, through OR or coalesce (issue 45, item 9).
-    (
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = 'a' OR u.email = 'b'",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE coalesce(u.nick, u.email) = 'a'",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = u.id WHERE o.total = 1 OR o.id = 2",
-        RewriteKind.INNER_JOIN,
-    ),
-    # A parenthesized join: the ON or WHERE outside rejects its padding.
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u JOIN orders o ON o.user_id = u.id) ON o.total = s.ts",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u LEFT JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s "
-        "LEFT JOIN (users u JOIN orders o ON o.user_id = u.id) ON u.id = s.user_id WHERE o.total = 1",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u LEFT JOIN orders o ON o.user_id = u.id) "
-        "RIGHT JOIN sessions s ON o.total = s.ts",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM (users u JOIN orders o ON o.user_id = u.id) "
-        "RIGHT JOIN sessions s ON o.total = s.ts",
-        RewriteKind.INNER_JOIN,
-    ),
-    # A WHERE EXISTS is a semi join, whose ON rejects NULL like a later inner join's.
-    (
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = s.user_id) AND u.nick = 'x'",
-        RewriteKind.INNER_JOIN,
-    ),
     (
         SCHEMA + "SELECT id, name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1, 2",
         SCHEMA + "SELECT id, any_value(name) AS name, count(*) AS n FROM users JOIN sessions ON sessions.user_id = users.id GROUP BY 1",
         RewriteKind.REDUNDANT_GROUPING,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
-        SCHEMA + "SELECT s.ts, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.nick = '1'",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s JOIN users u ON u.id = s.user_id "
-        "FULL JOIN orders o ON o.total = s.ts WHERE u.name IS NOT NULL",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "LEFT JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
-        SCHEMA + "SELECT s.ts, u.name, o.total FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
-        "JOIN orders o ON o.user_id = s.user_id AND o.total = 1 JOIN orders p ON p.id = o.id",
-        RewriteKind.INNER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT o.total, u.name FROM orders o LEFT JOIN users u ON u.id = o.user_id",
-        SCHEMA + "SELECT o.total, u.name FROM orders o JOIN users u ON u.id = o.user_id",
-        RewriteKind.INNER_JOIN,
     ),
     (
         SCHEMA + "SELECT s.ts, count(*) AS n FROM sessions s LEFT JOIN users u ON u.id = s.user_id "
@@ -855,13 +840,56 @@ def differing_instance(original: str, rewritten: str) -> SearchResult:
     return database.search(differs, max_examples=400)
 
 
-@pytest.mark.parametrize(("original", "rewritten", "rewrite"), EQUIVALENT)
-def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: RewriteKind):
+def offered(original: str, kind: RewriteKind) -> list[str]:
+    """The SQL of each `kind` Rewrite `suggest` offers for `original`, its edits applied."""
+    report = suggest(original)
+    found = [rewrite.rewritten(report.sql) for rewrite in report.rewrites if rewrite.kind is kind]
+    assert found, f"no {kind.value} rewrite offered"
+    return found
+
+
+@pytest.mark.parametrize(("original", "rewrite"), EQUIVALENT)
+def test_each_rewrite_preserves_the_result_on_random_instances(original: str, rewrite: RewriteKind):
+    for rewritten in offered(original, rewrite):
+        search = differing_instance(original, rewritten)
+        assert search.status == "no-counterexample", (rewritten, search)
+        assert search.valid >= 100
+
+
+@pytest.mark.parametrize(("original", "rewritten", "rewrite"), EQUIVALENT_BY_HAND)
+def test_each_rewrite_without_edits_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: RewriteKind):
     assert rewrite in rewrites(original)
 
     search = differing_instance(original, rewritten)
     assert search.status == "no-counterexample", search
     assert search.valid >= 100
+
+
+# One Rewrite of each kind, and the diff its edits make, written by hand.
+EXPECTED_DIFFS = [
+    (
+        RewriteKind.INNER_JOIN,
+        SCHEMA + "SELECT s.ts, u.name FROM sessions s\nLEFT OUTER JOIN users u ON u.id = s.user_id\nWHERE u.nick = 'x'",
+        """\
+@@ -6 +6 @@
+-LEFT OUTER JOIN users u ON u.id = s.user_id
++JOIN users u ON u.id = s.user_id""",
+    ),
+]
+
+
+@pytest.mark.parametrize(("kind", "sql", "expected"), EXPECTED_DIFFS, ids=[kind.name for kind, _, _ in EXPECTED_DIFFS])
+def test_each_kind_of_rewrite_makes_the_diff_written_here(kind: RewriteKind, sql: str, expected: str):
+    report = suggest(sql)
+    rewrite, = (item for item in report.rewrites if item.kind is kind)
+    assert rewrite.diff(report.sql, context=0) == "--- original\n+++ original (rewritten)\n" + expected
+
+
+def test_an_edit_keeps_the_comments_in_its_span():
+    sql = SCHEMA + "SELECT s.ts, u.name FROM sessions s LEFT /* outer */ OUTER JOIN users u ON u.id = s.user_id WHERE u.nick = 'x'"
+    report = suggest(sql)
+    rewrite, = report.rewrites
+    assert rewrite.rewritten(report.sql).endswith("FROM sessions s /* outer */ JOIN users u ON u.id = s.user_id WHERE u.nick = 'x'")
 
 
 def test_the_equivalence_check_finds_a_rewrite_that_changes_the_result():
