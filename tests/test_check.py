@@ -68,6 +68,17 @@ def test_warnings_never_fail_the_check(project, capsys):
     assert out.startswith("w.sql:1: warning undeclared-table: ")
 
 
+def test_every_collate_is_a_warning(project, capsys):
+    (project / "c.sql").write_text("CREATE TABLE t (s VARCHAR COLLATE nocase);\nSELECT s FROM t ORDER BY s COLLATE nocase\n")
+
+    code, out, _ = run(capsys, "c.sql")
+
+    assert code == EXIT_OK
+    assert [": ".join(line.split(": ")[:2]) for line in out.splitlines()[:2]] == [
+        "c.sql:1: warning unsupported-construct", "c.sql:2: warning unsupported-construct",
+    ]
+
+
 def test_a_diagnostic_fails_the_check_without_any_assertion(project, capsys):
     (project / "m.sql").write_text(MISTYPED)
 

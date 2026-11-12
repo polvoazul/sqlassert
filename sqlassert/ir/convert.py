@@ -172,6 +172,15 @@ class IrParser:
                 if self.dialect == "postgres" and node.quoted and node.name != node.name.lower() and node.find_ancestor(exp.Collate, exp.CollateColumnConstraint) is None:
                     diagnostic = Diagnostic(diag.UNSUPPORTED_CONSTRUCT, "case-sensitive quoted PostgreSQL identifiers are not supported", self._origin(node))
                     return IrConversionResult(ir.Program(), (), (diagnostic,))
+            for collate in statement.find_all(exp.Collate, exp.CollateColumnConstraint):
+                # Every COLLATE warns where it is written, whatever reads it.
+                written = collate.find_ancestor(exp.ColumnDef) if isinstance(collate, exp.CollateColumnConstraint) else collate
+                self._warnings.append(Diagnostic(
+                    diag.UNSUPPORTED_CONSTRUCT,
+                    "COLLATE is not supported by sqlassert yet: only the dialect's default collation is, so facts that "
+                    "compare its values are unknown",
+                    self._origin(written or collate, _source_line(written or collate)),
+                ))
             for table in statement.find_all(exp.Table):
                 if any("." in part.name for part in table.parts if isinstance(part, exp.Identifier)):
                     diagnostic = Diagnostic(diag.UNSUPPORTED_CONSTRUCT, "dots inside quoted relation identifiers are not supported", self._origin(table))
@@ -786,11 +795,8 @@ class IrParser:
         if symbol.statement is not None:
             self._absent.update(column for column in columns if column.name not in by_name)
         # A column declared with a COLLATE compares under a collation sqlassert
-        # does not model: it is left untyped, so its values are unknown.
+        # does not model (`parse` warns): it is left untyped, so its values are unknown.
         collated = {name for name, definition in by_name.items() if _collated(definition)}
-        for column in columns:
-            if column.name in collated:
-                self._unsupported.append((column, "COLLATE"))
         by_name = {name: definition for name, definition in by_name.items() if name not in collated}
         typed = tuple(
             replace(
@@ -1924,9 +1930,7 @@ class IrParser:
             case exp.Paren():
                 return self._lower_expression(expression.this, bindings, schema_complete=schema_complete, line=line)
             case exp.Collate():
-                opaque = ir.OpaqueExpression(origin=origin, description=description)
-                self._unsupported.append((opaque, "COLLATE"))
-                return opaque
+                return ir.OpaqueExpression(origin=origin, description=description)  # `parse` warns.
             case exp.Null():
                 return ir.NullLiteral(origin=origin)
             case exp.Count():
