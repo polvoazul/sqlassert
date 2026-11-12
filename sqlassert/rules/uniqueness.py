@@ -30,7 +30,7 @@ from sqlassert.diagnostics import quoted
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
-from sqlassert.rules.equality import _identity_comparison, _pins, exact_numeric
+from sqlassert.rules.equality import _identity_comparison, _pins, _same_set_types, exact_numeric
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -258,8 +258,8 @@ def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
         case ir.Distinct(input=source):
             return [_grouped(relation, source)]
         case ir.SetOperation(operator="intersect" | "except", left=source):
-            # Every output row equals some row of the left input.
-            return [_grouped(relation, source)]
+            # A cast in the set operation may collapse distinct left rows.
+            return [_grouped(relation, source)] if _same_set_types(relation, relation.output_columns) else []
         case ir.Join() | ir.SetOperation() | ir.NamedRelation() | ir.OpaqueRelation():
             return []
         case _:

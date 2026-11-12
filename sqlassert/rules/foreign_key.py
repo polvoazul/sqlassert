@@ -73,8 +73,10 @@ def _targets(referenced_columns: _Columns) -> list[tuple[_Columns, list[Result[b
     assert target is not None
     match target:
         case ir.SetOperation(operator="union"):
-            positions = [target.output_columns.index(column) for column in referenced_columns]
-            upstream = [tuple(branch.output_columns[i] for i in positions) for branch in (target.left, target.right)]
+            arms = [target.arms(column) for column in referenced_columns]
+            if any(pair is None for pair in arms):
+                return [(referenced_columns, [])]
+            upstream = list(zip(*(pair for pair in arms if pair is not None)))
             reason = "A UNION keeps every row of each branch"
         case _:
             kept = [_kept(target, column) for column in referenced_columns]

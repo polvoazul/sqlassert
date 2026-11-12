@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+import duckdb
 import pytest
 
 from soundness_oracle import SearchResult, _Database
@@ -252,7 +253,8 @@ def test_a_group_by_over_a_key_of_its_input_is_a_projection():
     rewrite, = suggest(sql).rewrites
     assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
     assert rewrite.message.endswith(
-        "drop GROUP BY and write SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id + 1 AS s, nick AS a"
+        "drop GROUP BY and write SELECT id, CAST(1 AS BIGINT) AS n, CAST(CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS BIGINT) AS c, "
+        "name AS m, CAST(id AS INT128) + 1 AS s, nick AS a"
     )
 
 
@@ -280,10 +282,10 @@ def test_a_group_by_that_may_merge_rows_or_has_no_one_row_form_is_not_a_projecti
     assert RewriteKind.GROUPING_PROJECTION not in rewrites(SCHEMA + query)
 
 
-def test_an_average_of_an_integer_notes_the_conversion():
+def test_an_average_of_an_integer_preserves_its_conversion():
     schema = "CREATE TABLE t (id INTEGER PRIMARY KEY, i INTEGER, f DOUBLE);"
     [rewrite] = suggest(schema + "SELECT id, avg(i) / 2 AS a FROM t GROUP BY id").rewrites
-    assert "write SELECT id, i / 2 AS a; AVG(i) over one row is its argument converted to avg's result type" in rewrite.message
+    assert rewrite.message.endswith("write SELECT id, CAST(i AS DOUBLE) / 2 AS a")
     [rewrite] = suggest(schema + "SELECT id, avg(f) AS a FROM t GROUP BY id").rewrites
     assert rewrite.message.endswith("write SELECT id, f AS a")
 
@@ -632,8 +634,8 @@ EQUIVALENT = [
     (
         SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) + 1 AS s, "
         "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
-        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id + 1 AS s, "
-        "nick AS a, id AS v FROM users WHERE nick IS NULL OR id > 1",
+        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, CAST(id AS HUGEINT) + 1 AS s, "
+        "nick AS a, CAST(id AS DOUBLE) AS v FROM users WHERE nick IS NULL OR id > 1",
         RewriteKind.GROUPING_PROJECTION,
     ),
     (
@@ -686,7 +688,11 @@ def differing_instance(original: str, rewritten: str) -> SearchResult:
         queries.append(root.sql(dialect="duckdb"))
 
     def differs(_) -> bool:
-        before, after = (Counter(database.connection.execute(query).fetchall()) for query in queries)
+        before = Counter(database.connection.execute(queries[0]).fetchall())
+        try:
+            after = Counter(database.connection.execute(queries[1]).fetchall())
+        except duckdb.Error:
+            return True
         return before != after
 
     return database.search(differs, max_examples=400)
@@ -780,3 +786,10 @@ def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
 )
 def test_an_order_by_key_whose_earlier_keys_may_tie_different_rows_is_kept(sql: str):
     assert not any(item.kind is RewriteKind.REDUNDANT_SORT_KEY for item in suggest(sql).rewrites)
+
+
+def test_the_equivalence_check_catches_errors_in_only_the_rewritten_query():
+    ddl = "CREATE TABLE t(a INT PRIMARY KEY, b INT); "
+    before = ddl + "SELECT a, sum(b)+1 AS s FROM t WHERE b<=2147483647 GROUP BY a"
+    after = ddl + "SELECT a, b+1 AS s FROM t WHERE b<=2147483647"
+    assert differing_instance(before, after).status == "counterexample"

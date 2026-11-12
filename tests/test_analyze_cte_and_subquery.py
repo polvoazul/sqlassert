@@ -208,7 +208,7 @@ def test_a_correlated_subquery_in_a_cte_filter_does_not_block_the_proof(users_an
     assert report.proved
 
 
-def test_a_correlated_subquery_projected_as_a_key_member_is_unsupported_and_never_guessed(users_and_sessions):
+def test_a_correlated_subquery_projected_as_a_key_member_can_preserve_uniqueness(users_and_sessions):
     report = analyze(
         users_and_sessions
         + """
@@ -223,7 +223,7 @@ def test_a_correlated_subquery_projected_as_a_key_member_is_unsupported_and_neve
         """
     )
 
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+    assert [assertion.outcome for assertion in report.assertions] == [Outcome.PROVED]
 
 
 def test_a_self_referencing_cte_without_recursive_does_not_hang_and_is_unknown(users_and_sessions):

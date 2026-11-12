@@ -27,6 +27,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal, assert_never
 
 import duckdb
@@ -806,8 +807,8 @@ def _literals(parsed: ParsedProgram) -> tuple[list[object], list[str]]:
                 case "string":
                     strings.append(value.text)
                 case "numeric":
-                    number = float(value.text)
-                    numbers.append(int(number) if number.is_integer() else number)
+                    number = Decimal(value.text)
+                    numbers.append(int(number) if number == number.to_integral_value() else number)
                     # A text column compared with a number is cast to it.
                     strings.append(value.text)
                 case _:
@@ -824,6 +825,8 @@ def _domain(data_type: str, numbers: list[object], strings: list[str]) -> tuple[
         return ([a, b], [a], [], [a, a])
     if family.is_type(*exp.DataType.NUMERIC_TYPES):
         values: list[object] = [1, 2, *numbers]
+        if family.is_type(exp.DataType.Type.BIGINT, exp.DataType.Type.DOUBLE):
+            values.extend((2**53, 2**53 + 1))
     elif family.is_type(*exp.DataType.TEXT_TYPES):
         values = ["1", "2", *strings]
     elif family.is_type(exp.DataType.Type.BOOLEAN):
