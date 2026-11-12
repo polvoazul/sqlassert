@@ -260,7 +260,8 @@ class AnyAggregate(ScalarExpr):
     across the group), or `min` and `max`, which take one of its non-null values.
 
     `empty` marks a group that may have no rows, where the value is NULL: an
-    aggregate grouped by nothing has one row even over no input rows."""
+    aggregate grouped by nothing has one row even over no input rows, and one
+    with FILTER may see none of its group's rows."""
 
     input: ScalarExpr
     empty: bool = False
@@ -268,9 +269,9 @@ class AnyAggregate(ScalarExpr):
 
 class Accumulation(ScalarExpr):
     """An aggregate of a group's values of `input` that skips NULLs: `sum`
-    where arithmetic raises rather than returning NULL. NULL only when no
-    value is non-null, or when the group is `empty` (see AnyAggregate); its
-    value is otherwise opaque."""
+    and `avg` where arithmetic raises rather than returning NULL. NULL only
+    when no value is non-null, or when the group is `empty` (see
+    AnyAggregate); its value is otherwise opaque."""
 
     input: ScalarExpr
     empty: bool = False
