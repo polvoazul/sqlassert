@@ -427,7 +427,9 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
     only when the two rows cannot be one matched and one padded: some reached
     column of that side is NULL only by padding (η), is requested non-null, or
     the side's identity is reached; or the preserved side's ON columns are
-    reached, which fixes whether both rows matched. A pure ON conjunct is
+    reached, which fixes whether both rows matched. An `=`, `IS NOT DISTINCT
+    FROM`, `IS NULL` or `IS NOT NULL` of columns and literals is fixed by the
+    preserved columns it reads; any other pure ON conjunct is
     fixed by the preserved columns it reads when those compare by identity
     (Lemma 9, L6 below); a volatile or opaque one only by the preserved row.
   - Aggregate, Distinct, INTERSECT / EXCEPT: an output row stands for input
@@ -463,7 +465,8 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
   RowIdentity(R)`. An Exactly One Join needs nothing more: its
   `RowIdentity(out) ↔ RowIdentity(L)` is this plus "an identity determines
   every column".
-- Outer join ON (Paulley Lemma 9): equalities within the padded side stay
+- Outer join ON (Paulley Lemma 9): equalities (`=` or `IS NOT DISTINCT
+  FROM`, whose matched rows are equal or both NULL) within the padded side stay
   strict; the preserved side's ON columns determine every padded column the
   condition binds to them or to a literal (`{t.x, t.y, t.z} → s.d` in Example
   20); a cross-side equality is lax from the padded side. With an
@@ -628,9 +631,8 @@ about one relation's rows at a time.
   constants already does.
 - Lax steps through equalities: a column equal to a definite column is
   definite on the compared rows, which closure does not use yet.
-- `IS NOT DISTINCT FROM`, ranges, `LIKE`, and `OR` are kept as opaque
-  conjuncts: they never bind a column, and ranges and `LIKE` do not yet reject
-  NULL either.
+- Ranges, `LIKE`, and `OR` are kept as opaque conjuncts: they never bind a
+  column, and ranges and `LIKE` do not yet reject NULL either.
 
 ## References
 

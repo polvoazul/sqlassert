@@ -36,6 +36,7 @@ from typing import assert_never
 
 from sqlassert.diagnostics import quoted
 from sqlassert import ir
+from sqlassert import properties as props
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
 from sqlassert.rules.equality import _equal_columns, _same_type
@@ -104,6 +105,33 @@ def _else_unreachable(case: ir.SimpleCase) -> Result[bool]:
         case _:
             present = unknown("Nullability of the CASE operand is not inferred", case.operand)
     return exhaustive_case(case) & present
+
+
+def always_null_columns(property: props.Property) -> tuple[ir.OutputColumn, ...]:
+    """The columns named by `property` that are always NULL (an empty
+    domain) where NULL exempts a row from it, so it holds trivially: an
+    ENUM's or EXHAUSTIVE CASE operand's column, and any column of a Unique
+    Set, a dependency's determinant, Referential Coverage's referencing
+    columns, or NOT NULL ELEMENTS. NULL in a dependent is a value every row
+    agrees on, like a constant; a non-null Property fails on one instead."""
+    match property:
+        case props.EnumeratedDomain(column=column) | props.ExhaustiveCase(case=ir.SimpleCase(operand=ir.ColumnRef(column=column))):
+            columns: frozenset[ir.OutputColumn] = frozenset({column})
+        case props.ExhaustiveCase():
+            columns = frozenset()  # An operand that is no column: only columns are named.
+        case props.NonNullUniqueSet() | props.NonNullColumns() | props.NonNullColumn():
+            columns = frozenset()
+        case props.UniqueSet(columns=columns) | props.NonNullElements(columns=columns):
+            pass
+        case props.FunctionalDependency(determinant=columns):
+            pass
+        case props.ReferentialCoverage(columns=referencing):
+            columns = frozenset(referencing)
+        case props.ManyToOneJoin() | props.OneToManyJoin() | props.OneToOneJoin() | props.UniqueJoin() | props.ExactlyOneJoin():
+            columns = frozenset()
+        case _:
+            raise AssertionError(f"unhandled property {type(property).__name__}")
+    return tuple(sorted((column for column in columns if _domain(column).value == frozenset()), key=lambda column: column.name))
 
 
 @analysis(Stratum.DOMAIN)

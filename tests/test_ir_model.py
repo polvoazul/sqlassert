@@ -49,7 +49,8 @@ def test_assertions_point_directly_into_the_relation_graph():
         scalar_expr=ir.OpaqueExpression(origin=_origin("result.id"), description="result column"),
     )
     empty = ir.OpaqueRelation(origin=_origin("unsupported"), output_columns=(column,), description="unsupported")
-    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=empty, right=empty)
+    other = ir.OpaqueRelation(origin=_origin("unsupported"), output_columns=(), description="unsupported")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=empty, right=other)
     join_property = UniqueJoin(join=join)
     set_property = UniqueSet(columns=frozenset({column}))
     join_assertion = ir.Assertion(origin=_origin("marker"), property=join_property)
@@ -123,3 +124,30 @@ def test_program_rejects_an_output_column_shared_by_two_relations():
 
     with pytest.raises(ValueError, match="belongs to both"):
         ir.Program(root=join)
+
+
+def test_program_rejects_a_relation_read_twice():
+    # Only a Named Relation is shared, each occurrence through its own Alias.
+    subquery = ir.OpaqueRelation(origin=_origin("(SELECT ...)"), output_columns=(), description="subquery")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=subquery, right=subquery)
+
+    with pytest.raises(ValueError, match="OpaqueRelation is read twice, by Join and Join"):
+        ir.Program(root=join)
+
+
+def test_program_rejects_a_named_relation_read_without_an_alias():
+    users = ir.NamedRelation(origin=_origin("users"), output_columns=(), name="users", role=ir.RelationRole.TABLE)
+    other = ir.OpaqueRelation(origin=_origin("other"), output_columns=(), description="other")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=users, right=other)
+
+    with pytest.raises(ValueError, match="named relation users is read by a Join, not an Alias"):
+        ir.Program(named_relations=(users,), root=join)
+
+
+def test_program_accepts_a_named_relation_read_through_one_alias_per_occurrence():
+    users = ir.NamedRelation(origin=_origin("users"), output_columns=(), name="users", role=ir.RelationRole.TABLE)
+    first = ir.Alias(origin=_origin("users AS a"), output_columns=(), source=users, name="a")
+    second = ir.Alias(origin=_origin("users AS b"), output_columns=(), source=users, name="b")
+    join = ir.Join(origin=_origin("JOIN"), output_columns=(), kind="inner", left=first, right=second)
+
+    assert ir.Program(named_relations=(users,), root=join).root is join

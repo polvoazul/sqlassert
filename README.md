@@ -291,7 +291,7 @@ Dependencies come from keys, equalities and constants in `WHERE` and `ON`, group
 
 ### Enum
 
-`/**ASSERT ENUM(status IN ('new', 'paid'))**/` proves that every non-null value of `status` is one of the listed values. NULL is never in the set: `NOT NULL` governs it separately. One marker names one column, and lists distinct, non-null string, numeric, and boolean literals, which may be mixed: `/**ASSERT ENUM(priority IN (1, 2, 3))**/`, `/**DECLARE ENUM(active IN (TRUE))**/`. Anything else -- `NULL`, an empty list, a repeated value, `DATE '2020-01-01'`, a column, an expression -- is reported as a malformed marker.
+`/**ASSERT ENUM(status IN ('new', 'paid'))**/` proves that every non-null value of `status` is one of the listed values. NULL is never in the set: `NOT NULL` governs it separately. So a column that is always NULL, like `CAST(NULL AS INTEGER) + 1`, satisfies every ENUM; the proof then warns `always-null-column`, as does any proved `UNIQUE`, `DETERMINES` determinant, `FOREIGN KEY`, `NOT NULL ELEMENTS` or `EXHAUSTIVE` operand that holds only because a column it names is always NULL. One marker names one column, and lists distinct, non-null string, numeric, and boolean literals, which may be mixed: `/**ASSERT ENUM(priority IN (1, 2, 3))**/`, `/**DECLARE ENUM(active IN (TRUE))**/`. Anything else -- `NULL`, an empty list, a repeated value, `DATE '2020-01-01'`, a column, an expression -- is reported as a malformed marker.
 
 ```sql
 with o as (

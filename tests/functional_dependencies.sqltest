@@ -89,6 +89,26 @@ SELECT t.x, t.y, t.z, s.a, s.b, s.c, s.d
 FROM t LEFT JOIN s ON t.x = s.b AND t.y = s.c AND t.z = 5 AND s.a = s.b AND s.d = 2
 /**ASSERT DETERMINES(x, y, z -> a, b, c, d)**/  --~ PROVED
 
+-- case: an_outer_join_null_safe_on_binds_the_padded_columns
+-- x fixes whether a row matched, a NULL x included (it matches the s rows
+-- whose a is NULL), and a matched row's a is x or both are NULL; b is 5.
+-- Every matched row has b = 5 whatever its x: b fixes nothing.
+SELECT t.x, t.y, s.a, s.b
+FROM t LEFT JOIN s ON t.x IS NOT DISTINCT FROM s.a AND s.b IS NOT DISTINCT FROM 5
+/**ASSERT DETERMINES(x -> a, b)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> x)**/  --~ UNKNOWN
+
+-- case: an_outer_join_null_safe_on_fixes_the_match_by_the_columns_it_reads
+-- -0.0 = 0.0, and IS NOT DISTINCT FROM equates them too: p fixes which rows
+-- match, though its values are not identical. A pure function of p, like
+-- its text, would tell them apart.
+CREATE TABLE m (k INTEGER, p DOUBLE);
+CREATE TABLE n (k INTEGER, p DOUBLE);
+SELECT m.k, m.p, n.k AS nk
+FROM m LEFT JOIN n ON m.k = n.k AND m.p IS NOT DISTINCT FROM n.p
+/**ASSERT DETERMINES(k, p -> nk)**/  --~ PROVED
+/**ASSERT DETERMINES(k -> nk)**/  --~ UNKNOWN
+
 -- case: a_paulley_worked_example_is_proved__example_23_p_193_the_distinct_is_redundant
 SELECT s.vendor_id, p.part_id, p.description
 FROM supply s, part p

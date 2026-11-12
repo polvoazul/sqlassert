@@ -13,7 +13,7 @@ from inspect import signature
 from case_conversion import snake
 
 from sqlassert import ir
-from sqlassert.diagnostics import DUPLICATE_DECLARATION, UNSUPPORTED_CONSTRUCT, Diagnostic
+from sqlassert.diagnostics import ALWAYS_NULL_COLUMN, DUPLICATE_DECLARATION, UNSUPPORTED_CONSTRUCT, Diagnostic, quoted
 from sqlassert.properties import Property
 from sqlassert.reporting import ASSERTED_KINDS, AssertionReport, Outcome, RelationFacts, Report
 
@@ -279,10 +279,12 @@ class Engine:
         self, program: ir.Program, knowledge: tuple[Property, ...] = (), diagnostics: tuple[Diagnostic, ...] = (),
         warnings: tuple[Diagnostic, ...] = (),
     ) -> Report:
+        from sqlassert.rules.domain import always_null_columns
         from sqlassert.rules.uniqueness import minimal_keys
 
         with self.session(program, knowledge) as arena:
             assertions = []
+            always_null: set[ir.OutputColumn] = set()
             for index, assertion in enumerate(program.assertions, 1):
                 evidence = arena.prove(assertion.property)
                 if any(diagnostic.code == DUPLICATE_DECLARATION for diagnostic in diagnostics):
@@ -292,6 +294,16 @@ class Engine:
                     f"assert_{index}", Outcome.PROVED if evidence.value else Outcome.UNKNOWN, assertion.origin,
                     ASSERTED_KINDS[type(assertion.property)], evidence, unsupported,
                 ))
+                if evidence.value:
+                    # NULL is exempt from the Property, so a column that is always NULL satisfies it: say so, once.
+                    kind = ASSERTED_KINDS[type(assertion.property)].upper().replace("-", " ")
+                    for column in always_null_columns(assertion.property):
+                        if column not in always_null:
+                            always_null.add(column)
+                            warnings = (*warnings, Diagnostic(
+                                ALWAYS_NULL_COLUMN, f"{quoted(column.name)} is always NULL, so this {kind} holds trivially: no non-null value of it is possible",
+                                assertion.origin,
+                            ))
                 if unsupported is not None:
                     warnings = (*warnings, Diagnostic(
                         UNSUPPORTED_CONSTRUCT, f"{unsupported} is not supported by sqlassert yet, which may be why this assertion is UNKNOWN",

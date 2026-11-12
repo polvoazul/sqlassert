@@ -7,6 +7,9 @@ left columns, as one tuple, onto the right columns they are paired with: a
 row of the right input carrying every left value then satisfies the whole ON.
 Coverage of each column separately does not give a row matching all of them.
 Any other conjunct may reject the covering row, so matching stays unknown.
+`IS NOT DISTINCT FROM` pairs columns too: with the left columns non-null it
+is `=`, and a NULL left value would match every right row whose column is
+NULL (UNIQUE allows many), so non-null left columns stay required.
 An ON that is always TRUE (none, for a CROSS JOIN) matches every right row,
 so a right input that always has a row (a scalar aggregate) is matched.
 Non-null left columns: a null equals nothing, and `MATCH SIMPLE` exempts a
@@ -92,7 +95,12 @@ def _cross_equalities(
     others: list[ir.ScalarExpr] = []
     for conjunct in join.conjuncts:
         match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)):
+            # IS NOT DISTINCT FROM matches NULL to NULL, but the left columns
+            # must be non-null anyway, and then it is `=`.
+            case (
+                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+            ):
                 pair = next((
                     (left, right) for left, right in ((first, second), (second, first))
                     if left in join.left.output_columns and right in join.right.output_columns

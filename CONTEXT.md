@@ -39,8 +39,9 @@ per key.
 An assertion that every row of a join's left-hand input matches exactly one
 right-hand row, so the join neither multiplies nor removes left rows and a left
 join null-extends none of them. It combines a Many To One Join (at most one match)
-with guaranteed matching (at least one): an ON made only of equalities between
-left and right columns, non-null left columns, and Referential Coverage of the
+with guaranteed matching (at least one): an ON made only of equalities (`=`,
+or `IS NOT DISTINCT FROM`, which is `=` once the left columns are non-null)
+between left and right columns, non-null left columns, and Referential Coverage of the
 left columns, as one tuple, onto the right columns they are paired with.
 _Avoid_: Lookup join, mandatory join, 1:1 join
 
@@ -111,7 +112,7 @@ An explicit report that part of a SQL program could not be analyzed, such as an 
 _Avoid_: Error, warning, validation failure, unknown
 
 **Connection Warning**:
-A Diagnostic reported apart, in `Report.warnings`, when the SQL alone lacks a fact a database connection would supply: a table with no `CREATE`, or an unqualified column more than one undeclared source may own. The affected facts are unknown; the warning names the fix. It never fails a Report, and `analyze_database` emits none ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)). `Report.warnings` also carries the other facts the SQL leaves open: a key or foreign key the dialect does not enforce (`unenforced-constraint`; `RELY` or `trust_unenforced_keys`, on by default, makes it a Property Declaration, never Knowledge, and then no warning is reported), a CHECK constraint whose shape states no Enumerated Domain (`ignored-check-constraint`), a comparison of a `CAST` of a timestamp that keeps its zone (`zoned-timestamp-cast`: Trino's), and a comparison of a composite column or `CAST` whose elements may be NULL (`composite-comparison`). The last three are about the SQL itself, so `analyze_database` keeps them.
+A Diagnostic reported apart, in `Report.warnings`, when the SQL alone lacks a fact a database connection would supply: a table with no `CREATE`, or an unqualified column more than one undeclared source may own. The affected facts are unknown; the warning names the fix. It never fails a Report, and `analyze_database` emits none ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)). `Report.warnings` also carries the other facts the SQL leaves open: a key or foreign key the dialect does not enforce (`unenforced-constraint`; `RELY` or `trust_unenforced_keys`, on by default, makes it a Property Declaration, never Knowledge, and then no warning is reported), a CHECK constraint whose shape states no Enumerated Domain (`ignored-check-constraint`), a comparison of a `CAST` of a timestamp that keeps its zone (`zoned-timestamp-cast`: Trino's), a comparison of a composite column or `CAST` whose elements may be NULL (`composite-comparison`), and a proved Property that holds trivially because a column it names is always NULL (`always-null-column`, once per column: an empty Enumerated Domain satisfies every ENUM and EXHAUSTIVE, and NULL exempts a row from a Unique Set, a dependency's determinant, Referential Coverage and Non-Null Elements). The last four are about the SQL itself, so `analyze_database` keeps them.
 
 **Non-Null Elements**:
 A Property of composite columns (ARRAY, ROW, MAP): no element of a listed

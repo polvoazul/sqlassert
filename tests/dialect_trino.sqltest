@@ -52,6 +52,7 @@ SELECT concat_ws(',', r, s) AS v FROM t /**ASSERT NOT NULL(v)**/  --~ UNKNOWN
 -- No value equals both 'b' and 'B', so no row is kept.
 SELECT r FROM t WHERE r IN ('a', 'b') AND r = 'B' /**ASSERT ENUM(r IN ('a'))**/
 --~ PROVED
+--~ always-null-column "'r' is always NULL"
 
 -- case: char_is_not_compared_by_identity
 -- CHAR ignores trailing spaces when compared.

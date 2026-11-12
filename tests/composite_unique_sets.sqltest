@@ -121,6 +121,16 @@ FROM sessions
 /**ASSERT MANY TO ONE**/ JOIN users  --~ UNKNOWN
     ON sessions.user_code IS NOT DISTINCT FROM users.code
 
+-- case: null_safe_equality_from_a_non_null_column_onto_a_nullable_unique_set_is_many_to_one
+-- A non-null user_code matches only the user whose code equals it.
+CREATE TABLE users (id INTEGER PRIMARY KEY, code INTEGER UNIQUE);
+CREATE TABLE sessions (user_code INTEGER NOT NULL, ts TIMESTAMP);
+
+SELECT *
+FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_code IS NOT DISTINCT FROM users.code
+
 -- case: an_or_predicate_does_not_cover_a_key_member_and_stays_unknown
 CREATE TABLE users (id INTEGER PRIMARY KEY, other_id INTEGER, name VARCHAR);
 CREATE TABLE sessions (user_id INTEGER, ts TIMESTAMP);

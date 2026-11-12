@@ -411,9 +411,9 @@ def _row_lineage(column: ir.OutputColumn, *, pass_through: bool = False, aliases
     each input: not through an aggregate (a group's rows), a set operation
     (its columns name its left input's), or an expression reading columns of
     no direct input (a correlated one). Apart from Named Relations, which
-    each occurrence enters through its own Alias, the IR is a tree, so two
-    columns of one relation reaching one column with the same Aliases reach
-    it on the same row.
+    each occurrence enters through its own Alias, the IR is a tree (`Program`
+    checks it), so two columns of one relation reaching one column with the
+    same Aliases reach it on the same row.
     """
     relation = column.get_relation(current_arena().program).closed
     match relation:

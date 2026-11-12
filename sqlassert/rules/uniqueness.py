@@ -457,7 +457,7 @@ def _match_status(join: ir.Join, padded_left: bool) -> frozenset[Attribute] | No
 def _recognized_operands(conjunct: ir.ScalarExpr) -> tuple[ir.ScalarExpr, ...] | None:
     """A recognized conjunct's operands, when each is a column or a literal."""
     match conjunct:
-        case ir.Equality(left=left, right=right):
+        case ir.Equality(left=left, right=right) | ir.NullSafeEquality(left=left, right=right):
             operands: tuple[ir.ScalarExpr, ...] = (left, right)
         case ir.IsNull(operand=operand) | ir.IsNotNull(operand=operand):
             operands = (operand,)
@@ -650,7 +650,9 @@ def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outp
     the condition, so the preserved side's ON columns determine every column
     of the padded side the condition binds to them or to a literal. Equalities
     within the padded side stay strict (padded rows are NULL on both sides);
-    a cross-side equality is lax from the padded side.
+    a cross-side equality is lax from the padded side. IS NOT DISTINCT FROM
+    binds as `=` does: a matched row's sides are equal or both NULL, and a
+    padded row's padded side is NULL, whatever the preserved side holds.
     """
     padded = join.left if padded_left else join.right
     status = _match_status(join, padded_left)
@@ -658,7 +660,7 @@ def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outp
     for conjunct in join.conjuncts:
         evidence = Result(True, "ON conjunct of an outer join", (conjunct,))
         match conjunct:
-            case ir.Equality(left=first, right=second):
+            case ir.Equality(left=first, right=second) | ir.NullSafeEquality(left=first, right=second):
                 pairs = ((first, second), (second, first))
             case ir.IsNull(operand=ir.ColumnRef(column=column)) if column in padded.output_columns:
                 # NULL on matched rows and on padded rows alike.

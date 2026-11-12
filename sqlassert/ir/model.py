@@ -709,6 +709,30 @@ class Program:
                         f"output column {column.name} belongs to both {type(parent).__name__} and {type(relation).__name__}"
                     )
         object.__setattr__(self, "column_to_parent_relation_index", index)
+        self._check_relations_read_once()
+
+    def _check_relations_read_once(self) -> None:
+        """Apart from Named Relations, the relations form a tree: a subquery
+        or other relation is the input of one relation, read once, and a
+        Named Relation is read only through an Alias, one per occurrence.
+        Analyses rely on it: two columns reaching one column through the
+        same Aliases reach it on the same row (`nullability._row_lineage`)."""
+        readers: dict[RelationExpr, RelationExpr] = {}
+        for relation in self.relations():
+            for child in children(relation):
+                match child:
+                    case NamedRelation() if not isinstance(relation, Alias):
+                        raise ValueError(f"named relation {child.name} is read by a {type(relation).__name__}, not an Alias")
+                    case NamedRelation():
+                        pass  # Each occurrence has its own Alias.
+                    case RelationExpr() if child in readers:
+                        raise ValueError(
+                            f"{type(child).__name__} is read twice, by {type(readers[child]).__name__} and {type(relation).__name__}"
+                        )
+                    case RelationExpr():
+                        readers[child] = relation
+                    case _:
+                        pass  # Scalar expressions and columns hold no relation.
 
     def nodes(self) -> tuple[Node, ...]:
         """Every node reachable from the program, each once."""
