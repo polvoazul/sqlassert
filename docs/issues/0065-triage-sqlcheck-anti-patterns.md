@@ -1,6 +1,8 @@
 # 65. Triage SQLCheck's anti-pattern catalog for `suggest` hazards
 
 - **State:** open
+- **Priority:** P3 (research): Provisional: not prioritized yet.
+- **Theme:** suggestions
 - **Labels:** research
 - **Created:** 2026-11-11
 - **Related:** [15: suggest](done/0015-suggest-provable-properties-for-unannotated-sql.md)

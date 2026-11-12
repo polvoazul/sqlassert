@@ -1,6 +1,8 @@
 # 66. Check our SQL semantics against Guagliardo & Libkin
 
 - **State:** open
+- **Priority:** P3 (research): Provisional: not prioritized yet.
+- **Theme:** soundness
 - **Labels:** research, check
 - **Created:** 2026-11-11
 - **Related:** [46: certify dialect facts](0046-certify-dialect-facts.md)

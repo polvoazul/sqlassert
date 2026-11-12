@@ -1,6 +1,9 @@
 # 43. External integrations
 
 - **State:** open
+- **Priority:** P4 (backlog): Backlog epic, parent of #51-54 and #46: everything
+  not in v1.
+- **Theme:** integrations
 - **Labels:** epic, needs-design (parent of 44, 51-54)
 - **Created:** 2026-11-08
 

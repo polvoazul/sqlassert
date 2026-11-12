@@ -1,6 +1,9 @@
 # 46. Certify dialect facts against real engines
 
 - **State:** open
+- **Priority:** P3 (open): Open for local Spark (needs Java or a Spark image and
+  a DB-API bridge).
+- **Theme:** soundness
 - **Labels:** dialects, soundness
 - **Created:** 2026-11-08
 - **Related:** [44. v1 external integrations](done/0044-v1-external-integrations.md)

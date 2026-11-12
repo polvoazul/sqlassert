@@ -1,6 +1,9 @@
 # 51. Validate Snowflake against a real engine
 
 - **State:** not planned
+- **Priority:** P4 (not planned): Implemented (#44) but checked against docs and
+  scripted fakes only. Needs warehouse credentials.
+- **Theme:** integrations
 - **Labels:** dialects, soundness, P4
 - **Created:** 2026-11-08
 - **Parent:** [43. External integrations](0043-external-integrations.md)

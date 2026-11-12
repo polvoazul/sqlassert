@@ -1,6 +1,8 @@
 # 61. Symbolic soundness oracle with VeriEQL
 
 - **State:** open
+- **Priority:** P3 (needs design): Provisional: not prioritized yet.
+- **Theme:** soundness
 - **Labels:** check, needs-design
 - **Created:** 2026-11-11
 - **Related:** [27: soundness oracle](0027-soundness-oracle-against-duckdb.md) (replaces its "Deferred alternative — symbolic oracle with z3"), [62: cross-check rewrites](0062-cross-check-suggest-rewrites-with-equivalence-checkers.md)

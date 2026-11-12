@@ -1,6 +1,8 @@
 # 63. Generate random programs for the soundness oracle
 
 - **State:** open
+- **Priority:** P3 (needs design): Provisional: not prioritized yet.
+- **Theme:** soundness
 - **Labels:** check, needs-design
 - **Created:** 2026-11-11
 - **Related:** [11: SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md) (Part 2 consumes these programs), [61: VeriEQL oracle](0061-symbolic-oracle-with-verieql.md)

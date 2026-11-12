@@ -1,6 +1,10 @@
 # 59. User-defined functions and table functions (Postgres, Spark, Hive)
 
 - **State:** not planned
+- **Priority:** P4 (not planned): A soundness gap (a SETOF UDF or a UDTF in a
+  select list repeats rows), but it needs CREATE FUNCTION and catalog support
+  first.
+- **Theme:** lowering
 - **Labels:** P4, soundness, lowering, discovery, postgres, spark, hive
 - **Created:** 2026-11-10
 - **Related:** [23. Close IR lowering gaps](done/0023-close-ir-lowering-gaps.md)

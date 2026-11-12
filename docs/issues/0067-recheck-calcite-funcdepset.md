@@ -1,6 +1,8 @@
 # 67. Recheck the Calcite audit against `FuncDepSet` (CALCITE-7205)
 
 - **State:** open (waiting on upstream)
+- **Priority:** P3 (waiting on upstream): Provisional: not prioritized yet.
+- **Theme:** soundness
 - **Labels:** check
 - **Created:** 2026-11-11
 - **Related:** [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [60: CockroachDB audit](0060-audit-inference-against-cockroachdb.md)

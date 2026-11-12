@@ -1,6 +1,8 @@
 # 62. Cross-check `suggest` rewrites with SQL equivalence checkers
 
 - **State:** open
+- **Priority:** P3 (open): Provisional: not prioritized yet.
+- **Theme:** suggestions
 - **Labels:** check
 - **Created:** 2026-11-11
 - **Related:** [15: suggest](done/0015-suggest-provable-properties-for-unannotated-sql.md), [61: VeriEQL oracle](0061-symbolic-oracle-with-verieql.md)

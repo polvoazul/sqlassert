@@ -1,6 +1,9 @@
 # 45. Close the Calcite audit's missing proofs
 
 - **State:** open
+- **Priority:** P2 (ready): With #37: what the #40 audit found missing. None is
+  unsound. Its lowering items lose proofs on common SQL, so do those first.
+- **Theme:** soundness
 - **Labels:** ready-for-agent
 - **Created:** 2026-11-08
 - **Related:** [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [37: Paulley audit gaps](0037-close-the-paulley-audit-missing-rules.md), [42: lowering support v2](0042-lowering-support-v2.md)

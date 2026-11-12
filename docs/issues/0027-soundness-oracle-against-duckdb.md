@@ -1,6 +1,11 @@
 # 27. Soundness oracle against DuckDB
 
 - **State:** open
+- **Priority:** P3 (needs corpora): Part 2 needs downloaded corpora
+  (TPC-H and similar). Valuable as a completeness metric now that the
+  core is broader.
+- **Theme:** soundness
+- **Blocked by:** [69](0069-real-world-sql-corpora.md)
 - **Labels:** ready-for-agent
 - **Created:** 2026-11-01
 - **Split from:** [issue 11](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md)

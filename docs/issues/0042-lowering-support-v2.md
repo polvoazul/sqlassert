@@ -1,6 +1,9 @@
 # 42. Lowering support v2
 
 - **State:** not planned
+- **Priority:** P4 (not planned): Not in Paulley. The rules would be our own
+  design, with no literature to test against.
+- **Theme:** lowering
 - **Labels:** epic, P4
 - **Created:** 2026-11-08
 - **Split from:** [23](done/0023-close-ir-lowering-gaps.md)'s "Not planned" list

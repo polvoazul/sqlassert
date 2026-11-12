@@ -1,6 +1,10 @@
 # 37. Close the Paulley audit's missing rules
 
 - **State:** open
+- **Priority:** P2 (ready): With #45: what the #35 audit found missing. None is
+  unsound; each loses proofs Paulley would make. Do them roughly in the order
+  below.
+- **Theme:** lowering
 - **Created:** 2026-11-06
 - **Split from:** issue 23 ("Found by the Paulley audit")
 

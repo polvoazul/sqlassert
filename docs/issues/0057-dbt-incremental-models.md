@@ -1,6 +1,10 @@
 # 57. dbt: incremental models
 
 - **State:** open
+- **Priority:** P3 (open): The bare minimum is in: readers see a table, each
+  is_incremental() branch is a view, {{ this }} reads a previous-run table
+  without facts. Ideas deferred.
+- **Theme:** integrations
 - **Labels:** dbt, integrations
 - **Created:** 2026-11-10
 - **Related:** [56. Live warehouse catalog](done/0056-dbt-live-connection.md), [50. catalog.json](done/0050-dbt-catalog-json.md)

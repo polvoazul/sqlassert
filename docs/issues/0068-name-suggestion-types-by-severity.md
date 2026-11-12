@@ -1,6 +1,8 @@
 # 68. Name suggestion types by what they mean to the user
 
-- **State:** not planned (P4)
+- **State:** not planned
+- **Priority:** P4 (not planned): Naming only: a hazard reads softer than it is.
+- **Theme:** suggestions
 - **Labels:** naming, ux
 - **Created:** 2026-11-11
 - **Related:** [15: suggest](done/0015-suggest-provable-properties-for-unannotated-sql.md)

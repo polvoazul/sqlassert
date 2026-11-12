@@ -34,7 +34,8 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 Done: 14, 16, 17, 18, 19, 20, 21, 22, 24, 26, 28, 29, 27 Part 1, 30, 31, 32, 33, 34, 35, 36, 38, 40, 41, 44, 47, 48, 50, 55, 56, 15, 23. Closed: 25 (its targets were deleted by 24; the oracle covers soundness). Run
 `pytest --soundness-oracle` before merging any rules change.
 
-Priorities (reasoning per item in `tmp/issue_tracker.html`):
+Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds the
+reasoning; its **Theme** and **Blocked by** bullets place it on the local tracker):
 
 - **P1:** none open. #41 and #38 are done.
 - **P2:** #37 (Paulley audit's missing rules); #45 (Calcite audit's missing
@@ -44,6 +45,7 @@ Priorities (reasoning per item in `tmp/issue_tracker.html`):
   public dbt projects, run through the oracle unchanged), which unblocks #11
   and #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
+- **P3, provisional (not prioritized yet):** #60-67.
 - **Integrations:** #44 (v1: `check` CLI, dialects, dbt) is done; the rest of
   #43 is backlog.
 - **P4, not planned:** #42 (lowering support v2): window functions (and

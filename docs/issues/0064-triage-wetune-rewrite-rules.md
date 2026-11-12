@@ -1,6 +1,8 @@
 # 64. Triage WeTune's discovered rewrite rules
 
 - **State:** open
+- **Priority:** P3 (research): Provisional: not prioritized yet.
+- **Theme:** suggestions
 - **Labels:** research
 - **Created:** 2026-11-11
 - **Related:** [15: suggest](done/0015-suggest-provable-properties-for-unannotated-sql.md) (Kossmann Table 1 triage, same format)

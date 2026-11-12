@@ -1,6 +1,10 @@
 # 49. Collation-aware Properties
 
 - **State:** not planned
+- **Priority:** P4 (not planned): Simplified on 2026-11-08 to text without
+  COLLATE in DuckDB and PostgreSQL compared by identity, any COLLATE not. Too
+  much trouble for little gain until MySQL users or collated keys come up.
+- **Theme:** lowering
 - **Labels:** dialects, P4
 - **Created:** 2026-11-08
 - **Parent:** [42. Lowering support v2](0042-lowering-support-v2.md)

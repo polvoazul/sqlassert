@@ -1,6 +1,8 @@
 # 60. Audit inference against CockroachDB's FD library
 
 - **State:** open
+- **Priority:** P3 (ready): Provisional: not prioritized yet.
+- **Theme:** soundness
 - **Labels:** check, ready-for-agent
 - **Created:** 2026-11-11
 - **Related:** [35: Paulley audit](done/0035-audit-fd-propagation-against-paulley.md), [40: Calcite audit](done/0040-audit-inference-against-calcite.md), [45: Calcite missing proofs](0045-close-the-calcite-audit-missing-proofs.md), [27: soundness oracle](0027-soundness-oracle-against-duckdb.md)

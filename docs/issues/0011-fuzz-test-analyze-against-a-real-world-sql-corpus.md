@@ -1,6 +1,11 @@
 # 11. Fuzz-test analyze against a real-world SQL corpus
 
 - **State:** open
+- **Priority:** P3 (needs corpora): It needs a downloaded SQL
+  corpus. It finds crashes, and a crash on a user-defined column type showed the
+  kind of bug it would catch.
+- **Theme:** soundness
+- **Blocked by:** [69](0069-real-world-sql-corpora.md)
 - **Labels:** ready-for-agent
 - **Created:** 2026-08-25
 - **Migrated from:** https://github.com/polvoazul/sqlassert/issues/11

@@ -1,6 +1,10 @@
 # 58. dbt: test and decide how findings map back to model files
 
 - **State:** open (deferred)
+- **Priority:** P3 (deferred): Deferred until the shared-Program plugin settles:
+  every Jinja, macro, ephemeral and incremental case gets a decided, tested
+  location.
+- **Theme:** integrations
 - **Labels:** dbt, integrations, testing
 - **Created:** 2026-11-10
 

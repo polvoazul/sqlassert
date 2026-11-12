@@ -1,6 +1,9 @@
 # 69. Real-world SQL corpora, run through the oracle as they are
 
-- **State:** open (P3, deferred)
+- **State:** open
+- **Priority:** P3 (needs corpora): Deferred: needs downloaded corpora. Unblocks
+  #11 and #27 Part 2.
+- **Theme:** soundness
 - **Labels:** testing, corpus
 - **Created:** 2026-11-11
 - **Related:** [11: crash fuzzing](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md),

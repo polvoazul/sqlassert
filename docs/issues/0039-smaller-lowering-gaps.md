@@ -1,6 +1,8 @@
 # 39. Smaller lowering gaps
 
 - **State:** open
+- **Priority:** P3 (ready): Each loses a few proofs; none is unsound.
+- **Theme:** lowering
 - **Created:** 2026-11-06
 - **Split from:** issue 23
 
