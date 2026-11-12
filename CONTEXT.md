@@ -39,8 +39,9 @@ per key.
 An assertion that every row of a join's left-hand input matches exactly one
 right-hand row, so the join neither multiplies nor removes left rows and a left
 join null-extends none of them. It combines a Many To One Join (at most one match)
-with guaranteed matching (at least one): an ON made only of equalities between
-left and right columns, non-null left columns, and Referential Coverage of the
+with guaranteed matching (at least one): an ON made only of equalities (`=`,
+or `IS NOT DISTINCT FROM`, which is `=` once the left columns are non-null)
+between left and right columns, non-null left columns, and Referential Coverage of the
 left columns, as one tuple, onto the right columns they are paired with.
 _Avoid_: Lookup join, mandatory join, 1:1 join
 

@@ -4,7 +4,8 @@ A row of one input appears once per matching row of the other, or once padded,
 whatever the join kind. Matching rows satisfy ON, so they agree on every
 column an ON equality binds to the first row's column or to a constant, all
 non-null. IS NOT DISTINCT FROM binds them too, but matches NULL to NULL, so
-those columns are non-null only where proved. When those columns reach the
+those columns are non-null only where proved, or where the other side is a
+literal or a non-null column, which no NULL equals. When those columns reach the
 matched input's Row Identity, a row matches at most one row and is never
 repeated. A cross join is an ON with no
 conjuncts: the other input must have at most one row. A semi or anti join
@@ -19,6 +20,7 @@ from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, any_of, analysis
 from sqlassert.rules.column_set import Attribute, ColumnSet
 from sqlassert.rules.equality import _pins
+from sqlassert.rules.nullability import non_null_column
 from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
 
 type Side = Literal["left", "right"]
@@ -104,7 +106,11 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[BoundColumns]:
 
             evidence = Result(True, "Equality fixes the matched column for each row of the other input", (equality, column, value))
             members[column] = members[column] | evidence if column in members else evidence
-            if isinstance(equality, ir.Equality):
+            # IS NOT DISTINCT FROM a literal or a non-null column is `=`.
+            if isinstance(equality, ir.Equality) or isinstance(value, ir.Constant):
                 definite.add(column)
+            elif non_null_column(value.column).value:
+                definite.add(column)
+                members[column] = members[column] & non_null_column(value.column)
 
     return Result(BoundColumns(relation, set(members), definite), "Bound columns", members=members)

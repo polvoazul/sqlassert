@@ -679,3 +679,38 @@ FROM orders
 /**ASSERT EXACTLY ONE**/ JOIN users
 --~ UNKNOWN "PROVED: At most one match" "UNKNOWN: At least one match" "PROVED: Non-null left columns"
     ON orders.user_id = users.id AND users.name = 'x'
+
+-- case: a_null_safe_exactly_one_join_is_proved__non_null_key
+-- A non-null user_id IS NOT DISTINCT FROM id only where they are equal.
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN users  --~ PROVED
+    ON orders.user_id IS NOT DISTINCT FROM users.id
+
+-- case: a_null_safe_exactly_one_join_is_unknown__nullable_left_column
+-- A NULL buyer matches no id, so its row is dropped.
+SELECT *
+FROM orders
+/**ASSERT EXACTLY ONE**/ JOIN users
+--~ UNKNOWN "PROVED: At most one match" "UNKNOWN: Non-null left columns"
+    ON orders.buyer IS NOT DISTINCT FROM users.id
+
+-- case: a_null_safe_exactly_one_join_is_proved__nullable_unique_right_column
+-- Several codes rows may have a NULL code, but a non-null left code matches
+-- only the one row equal to it.
+CREATE TABLE codes (code INTEGER UNIQUE);
+CREATE TABLE coded (code INTEGER NOT NULL REFERENCES codes(code));
+SELECT *
+FROM coded
+/**ASSERT EXACTLY ONE**/ JOIN codes  --~ PROVED
+    ON coded.code IS NOT DISTINCT FROM codes.code
+
+-- case: a_null_safe_exactly_one_join_is_unknown__nullable_left_onto_nullable_unique
+-- A NULL left code matches every codes row whose code is NULL: none, one or many.
+CREATE TABLE codes (code INTEGER UNIQUE);
+CREATE TABLE coded (code INTEGER REFERENCES codes(code));
+SELECT *
+FROM coded
+/**ASSERT EXACTLY ONE**/ JOIN codes
+--~ UNKNOWN "UNKNOWN: At most one match" "UNKNOWN: Non-null left columns"
+    ON coded.code IS NOT DISTINCT FROM codes.code
