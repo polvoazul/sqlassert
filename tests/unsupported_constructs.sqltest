@@ -24,3 +24,36 @@ SELECT empno, row_number() OVER (ORDER BY sal) AS r FROM emp
 -- case: a_window_function_beside_the_asserted_column_is_not_blamed
 SELECT ename, row_number() OVER (ORDER BY sal) AS r FROM emp
 /**ASSERT UNIQUE(ename)**/  --~ UNKNOWN
+
+-- case: a_collate_expression_lowers_opaque
+-- sqlassert supports each dialect's default collation only.
+SELECT ename, ename COLLATE nocase AS e FROM emp /**ASSERT DETERMINES(ename -> e)**/  --~ UNKNOWN
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+
+-- case: an_expression_without_collate_is_determined
+SELECT ename, upper(ename) AS e FROM emp /**ASSERT DETERMINES(ename -> e)**/  --~ PROVED
+
+-- case: a_column_without_collate_beside_one_is_compared_by_identity
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE nocase NOT NULL);
+SELECT plain FROM coll WHERE plain IN ('x', 'y') AND plain IN ('x', 'z') /**ASSERT ENUM(plain IN ('x'))**/  --~ PROVED
+
+-- case: a_column_declared_with_collate_has_unknown_values
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE c NOT NULL);
+SELECT folded FROM coll WHERE folded IN ('x', 'y') AND folded IN ('x', 'z') /**ASSERT ENUM(folded IN ('x'))**/
+--~ UNKNOWN
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+
+-- case: a_column_declared_with_collate_keeps_its_nullability
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE c NOT NULL);
+SELECT folded FROM coll /**ASSERT NOT NULL(folded)**/  --~ PROVED
+
+-- case: a_nullable_column_declared_with_collate_is_not_proved_non_null
+CREATE TABLE coll (id INTEGER PRIMARY KEY, plain VARCHAR, folded VARCHAR COLLATE c);
+SELECT folded FROM coll /**ASSERT NOT NULL(folded)**/  --~ UNKNOWN
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"
+
+-- case: a_function_of_a_column_declared_with_collate_is_not_determined
+CREATE TABLE coll (id INTEGER PRIMARY KEY, folded VARCHAR COLLATE c);
+SELECT folded, upper(folded) AS u, count(*) AS n FROM coll GROUP BY folded, upper(folded) /**ASSERT UNIQUE(folded)**/
+--~ UNKNOWN
+--~ unsupported-construct "COLLATE is not supported by sqlassert yet"

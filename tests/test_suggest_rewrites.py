@@ -779,10 +779,10 @@ def test_an_order_by_key_that_breaks_ties_is_kept(sql: str):
         "CREATE TABLE q (a INTEGER, b INTEGER);\nSELECT DISTINCT a AS b FROM q ORDER BY q.b, b DESC LIMIT 1",
         # DISTINCT ON's ORDER BY picks which row of each group survives.
         "CREATE TABLE d (id INTEGER, v INTEGER);\nSELECT DISTINCT ON (id) id, v FROM d ORDER BY id, v",
-        # Under NOCASE, 'A' and 'a' tie on name: n orders them.
-        "CREATE TABLE c (name VARCHAR COLLATE NOCASE PRIMARY KEY, n INTEGER);\nSELECT name, n FROM c ORDER BY name, n LIMIT 1",
+        # -0.0 = 0.0, so two rows tie on x: n orders them.
+        "CREATE TABLE c (x DOUBLE PRIMARY KEY, n INTEGER);\nSELECT x, n FROM c ORDER BY x, n LIMIT 1",
     ],
-    ids=["qualified key", "distinct on", "collated key"],
+    ids=["qualified key", "distinct on", "float key"],
 )
 def test_an_order_by_key_whose_earlier_keys_may_tie_different_rows_is_kept(sql: str):
     assert not any(item.kind is RewriteKind.REDUNDANT_SORT_KEY for item in suggest(sql).rewrites)

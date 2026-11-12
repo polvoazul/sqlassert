@@ -7,7 +7,6 @@
 CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, channel VARCHAR, kind VARCHAR);
 CREATE TABLE codes (code VARCHAR, label VARCHAR);
 CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR);
-CREATE TABLE people (name VARCHAR COLLATE NOCASE);
 
 -- case: typed_enum_is_proved__numeric_literal
 SELECT 1 AS n FROM orders /**ASSERT ENUM(n IN (1, 2))**/  --~ PROVED
@@ -128,6 +127,9 @@ WHERE qty = '1'
 /**ASSERT ENUM(qty IN ('2'))**/  --~ UNKNOWN
 
 -- case: typed_enum_is_not_guessed__two_strings_may_equal_under_a_collation
+-- dialect: mysql
+-- MySQL's default collation ignores case: 'a' = 'A'.
+CREATE TABLE people (name VARCHAR(10));
 WITH p AS (SELECT * FROM people /**DECLARE ENUM(name IN ('a'))**/)
 SELECT name
 FROM p
@@ -472,6 +474,8 @@ FROM u
 /**ASSERT ENUM(status IN ('paid'))**/  --~ PROVED
 
 -- case: a_domain_flows_through_set_operations__intersect_under_nocase
+-- dialect: mysql
+CREATE TABLE people (name VARCHAR(10));
 WITH u AS (SELECT name FROM people INTERSECT SELECT 'ann' FROM people)
 SELECT name
 FROM u

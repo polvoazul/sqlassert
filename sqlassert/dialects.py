@@ -53,10 +53,10 @@ class DialectSemantics:
     # An implicit cast that fails raises an error, so a comparison, LIKE,
     # BETWEEN, NOT or bitwise operator of non-null operands is never NULL.
     casts_raise: bool = True
-    # VARCHAR and TEXT with no COLLATE compare by identity under the engine's
-    # shipped default collation. A setting that changes that default (DuckDB's
-    # `default_collation`) is out of scope; text with any COLLATE is never
-    # taken to compare by identity (docs/dialects.md).
+    # VARCHAR and TEXT compare by identity under the engine's shipped default
+    # collation. A setting that changes that default (DuckDB's
+    # `default_collation`) is out of scope, and a COLLATE is unsupported: it
+    # is opaque, and a column declared with one is untyped (docs/dialects.md).
     text_is_binary: bool = False
     # A DECIMAL declared without a scale keeps each value's own scale, so
     # equal values (1.0, 1.00) may differ: neither identity nor exact.

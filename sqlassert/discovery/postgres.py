@@ -13,9 +13,9 @@ columns (not INCLUDE ones), when valid, immediate, with no `WHERE` and no
 expression. A table other tables inherit from returns their rows too, which
 its own keys and NOT NULLs do not cover, so it is columns only, as are
 foreign tables, whose constraints are never checked. A NOT NULL added NOT
-VALID does not count. A column's collation is reported only when it is
-nondeterministic: the dialect's default compares by identity, and such a
-collation does not.
+VALID does not count. A column under a nondeterministic collation is
+reported untyped: sqlassert supports the default collation only, and such a
+collation does not compare by identity (a deterministic one does).
 """
 
 from __future__ import annotations
@@ -48,8 +48,7 @@ SELECT c.relname, a.attname,
         SELECT 1 FROM pg_catalog.pg_constraint k
         WHERE k.conrelid = c.oid AND k.contype = 'n' AND NOT k.convalidated AND a.attnum = ANY(k.conkey)
     ),
-    pg_catalog.format_type(a.atttypid, a.atttypmod),
-    CASE WHEN a.attcollation = 0 OR co.collisdeterministic THEN NULL ELSE co.collname END
+    CASE WHEN a.attcollation = 0 OR co.collisdeterministic THEN pg_catalog.format_type(a.atttypid, a.atttypmod) END
 FROM pg_catalog.pg_attribute a
 JOIN {_RELATION} ON c.oid = a.attrelid
 LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation
@@ -116,8 +115,8 @@ class PostgresKnowledgeFetcher(InformationSchemaKnowledgeFetcher):
 
     def columns(self, catalog: str, schema: str, tables: Sequence[str]) -> list[tuple[str, DatabaseColumn]]:
         return [
-            (table, DatabaseColumn(column, nullable, data_type, collation))
-            for table, column, nullable, data_type, collation in self._rows(_COLUMNS, (schema, list(tables)))
+            (table, DatabaseColumn(column, nullable, data_type))
+            for table, column, nullable, data_type in self._rows(_COLUMNS, (schema, list(tables)))
         ]
 
     def keys(self, catalog: str, schema: str, tables: Sequence[str]) -> list[Key]:

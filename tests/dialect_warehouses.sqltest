@@ -7,7 +7,7 @@
 -- makes every unenforced one a Property Declaration (`test_dialects.py`).
 -- Otherwise it is reported and ignored. Their default collations can be
 -- changed per database, schema or table, so text is never compared by
--- identity without a COLLATE sqlassert knows.
+-- identity.
 
 -- case: snowflake_a_primary_key_without_rely_is_not_knowledge
 -- trust_unenforced_keys: false

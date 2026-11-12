@@ -150,13 +150,6 @@ SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp AS e 
 /**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ UNKNOWN
 /**ASSERT DETERMINES(empno -> d_deptno)**/  --~ PROVED
 
--- case: fd_left_join_collated_conjunct
--- Under a case-insensitive collation 'a' = 'A', yet e.ename LIKE 'a%' tells
--- them apart: ename does not fix the match.
-CREATE TABLE emp_ci (empno INTEGER PRIMARY KEY, ename VARCHAR(20) COLLATE NOCASE NOT NULL, deptno INTEGER NOT NULL);
-SELECT e.empno, e.ename, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp_ci AS e LEFT JOIN dept AS d ON e.deptno = d.deptno AND e.ename LIKE 'a%'
-/**ASSERT DETERMINES(e_deptno, ename -> d_deptno)**/  --~ UNKNOWN
-
 -- case: fd_full_join
 -- inspired by RelMetadataTest.testFunctionalDependencyFullOuterJoin
 -- Calcite has no FDs for a FULL join. empno -> name and UNIQUE(empno) hold

@@ -433,15 +433,6 @@ FROM emp AS e
 WHERE EXISTS (SELECT 1 FROM measure AS m WHERE m.v = e.mgr AND m.v = e.comm)
 /**ASSERT DETERMINES(mgr -> comm)**/  --~ UNKNOWN
 
--- case: pullup_semi_join_through_a_collation
--- 'x' = c.a = 'X' under NOCASE: ename need not be 'x', nor equal name.
-CREATE TABLE coll_ci (id INTEGER PRIMARY KEY, a VARCHAR COLLATE NOCASE NOT NULL);
-SELECT e.empno, e.ename, d.name
-FROM emp AS e JOIN dept AS d ON d.deptno = e.deptno
-WHERE EXISTS (SELECT 1 FROM coll_ci AS c WHERE c.a = e.ename AND c.a = d.name AND c.a = 'x')
-/**ASSERT ENUM(ename IN ('x'))**/  --~ UNKNOWN
-/**ASSERT DETERMINES(ename -> name)**/  --~ UNKNOWN
-
 -- case: pullup_semi_join_through_a_right_column_only_or_bound
 -- An OR in the EXISTS body bounds the matched row's column only when every
 -- part does.
@@ -591,9 +582,3 @@ SELECT w, x, y, z FROM (VALUES (1, 2, 3, NULL), (1, 2, NULL, NULL), (5, 2, 3, NU
 /**ASSERT NOT NULL(w, x)**/  --~ PROVED
 /**ASSERT ENUM(y IN (3))**/  --~ PROVED
 
--- case: pullup_equivalence_under_a_collation
--- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.EquivalenceFinder (any `=` of two columns)
--- 'X' = 'x' under NOCASE, so b need not be 'x'.
-CREATE TABLE coll (id INTEGER PRIMARY KEY, a VARCHAR COLLATE NOCASE, b VARCHAR COLLATE NOCASE);
-SELECT id, a, b FROM coll WHERE a = b AND a = 'x'
-/**ASSERT ENUM(b IN ('x'))**/  --~ UNKNOWN

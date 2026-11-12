@@ -785,6 +785,13 @@ class IrParser:
         by_name = {definition.name: definition for definition in definitions}
         if symbol.statement is not None:
             self._absent.update(column for column in columns if column.name not in by_name)
+        # A column declared with a COLLATE compares under a collation sqlassert
+        # does not model: it is left untyped, so its values are unknown.
+        collated = {name for name, definition in by_name.items() if _collated(definition)}
+        for column in columns:
+            if column.name in collated:
+                self._unsupported.append((column, "COLLATE"))
+        by_name = {name: definition for name, definition in by_name.items() if name not in collated}
         typed = tuple(
             replace(
                 column, binary_text=self._is_binary_text(by_name[column.name]),
@@ -806,7 +813,7 @@ class IrParser:
             return None
         if kind.this in exp.DataType.TEXT_TYPES:
             return kind.sql(dialect=self.dialect) if self._is_binary_text(definition) else None
-        if _collated(definition) or self._unscaled_decimal(kind):
+        if self._unscaled_decimal(kind):
             return None
         return kind.sql(dialect=self.dialect)
 
@@ -829,16 +836,11 @@ class IrParser:
         return self.semantics.unscaled_decimal and kind.this == exp.DataType.Type.DECIMAL and not kind.expressions
 
     def _is_binary_text(self, definition: exp.ColumnDef) -> bool:
-        """Declared VARCHAR or TEXT, with no COLLATE, in a dialect whose
-        default collation is binary: compared by identity.
-
-        CHAR is not: it ignores trailing spaces when compared. Any COLLATE,
-        even a binary one, is not modelled (issue 49)."""
+        """Declared VARCHAR or TEXT in a dialect whose default collation is
+        binary: compared by identity. CHAR is not: it ignores trailing spaces
+        when compared."""
         kind = definition.args.get("kind")
-        return (
-            isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES
-            and not _collated(definition) and self.semantics.text_is_binary
-        )
+        return isinstance(kind, exp.DataType) and kind.this in _TEXT_TYPES and self.semantics.text_is_binary
 
     def _opaque_output_columns(self, names: Iterable[str], origin: Origin) -> tuple[ir.OutputColumn, ...]:
         if isinstance(names, Set):
@@ -1871,6 +1873,10 @@ class IrParser:
         match expression:
             case exp.Paren():
                 return self._lower_expression(expression.this, bindings, schema_complete=schema_complete, line=line)
+            case exp.Collate():
+                opaque = ir.OpaqueExpression(origin=origin, description=description)
+                self._unsupported.append((opaque, "COLLATE"))
+                return opaque
             case exp.Null():
                 return ir.NullLiteral(origin=origin)
             case exp.Count():

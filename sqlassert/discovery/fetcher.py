@@ -48,15 +48,14 @@ class DatabaseRelationKind(Enum):
 @dataclass(frozen=True)
 class DatabaseColumn:
     """One catalog column. `data_type` is its SQL type as the database writes
-    it (in the fetcher's `type_dialect`), or None when unknown; `collation` is
-    the collation its comparisons use, None for the database's binary default.
-    A fetcher that cannot tell a column's collation leaves `data_type` None,
-    so no comparison is assumed to be by identity."""
+    it (in the fetcher's `type_dialect`), or None when unknown. sqlassert
+    supports the dialect's default collation only: a fetcher reports a column
+    under any other collation that may not compare by identity with
+    `data_type` None, so no comparison of it is assumed to be by identity."""
 
     name: str
     nullable: bool
     data_type: str | None = None
-    collation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,7 +335,7 @@ class _Hydration:
         return declaration
 
     def _column_definition(self, column: DatabaseColumn) -> exp.ColumnDef:
-        """The column with its catalog type and collation, so the Program
+        """The column with its catalog type, so the Program
         compares and enumerates it as the database does; untyped if the type
         does not parse."""
         definition = exp.ColumnDef(this=exp.to_identifier(column.name))
@@ -347,9 +346,6 @@ class _Hydration:
         except SqlglotError:
             return definition
         definition.set("kind", kind)
-        if column.collation is not None:
-            collate = exp.CollateColumnConstraint(this=exp.to_identifier(column.collation))
-            definition.append("constraints", exp.ColumnConstraint(kind=collate))
         return definition
 
     def _view(self, metadata: DatabaseRelationMetadata) -> exp.Create | None:

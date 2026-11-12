@@ -18,7 +18,6 @@ SCHEMA = """
 CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, channel VARCHAR, kind VARCHAR);
 CREATE TABLE codes (code VARCHAR, label VARCHAR);
 CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER, size INTEGER, ratio FLOAT, flag BOOLEAN, tag VARCHAR);
-CREATE TABLE people (name VARCHAR COLLATE NOCASE);
 """
 
 # A source of statuses the author vouches for.

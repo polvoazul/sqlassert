@@ -42,6 +42,6 @@ is proved through it, and a marker inside it is reported
   nested sets such as `((ename), (ename, job))` keep `(ename, job)` a Unique
   Set: a subtotal row's `job` is NULL and a data row's never is. Mostly
   reporting SQL; an assertion that needs one says it is not supported yet.
-- [ ] **Collated text** compares by identity only without a `COLLATE`, in a
-  dialect whose default is binary: Properties under a collation are
-  [49](0049-collation-aware-properties.md).
+- [x] **Collated text**: won't do. sqlassert supports each dialect's
+  default collation only; a `COLLATE` is opaque and warns
+  ([49](done/0049-collation-aware-properties.md), closed).

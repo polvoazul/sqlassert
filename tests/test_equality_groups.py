@@ -156,8 +156,8 @@ def test_equality_groups_sit_below_every_other_stratum():
     assert Stratum.EQUALITY_GROUP == min(Stratum)
 
 
-@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b BIGINT", "a VARCHAR COLLATE NOCASE, b VARCHAR"])
-def test_equalities_requiring_casts_or_collations_do_not_merge(columns: str):
+@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b BIGINT"])
+def test_equalities_requiring_casts_do_not_merge(columns: str):
     parsed = IrParser("duckdb").parse(SqlParser("duckdb").parse(
         f"CREATE TABLE values_ ({columns}); SELECT a, b FROM values_ WHERE a = b"
     )).program

@@ -10,9 +10,10 @@ is missing or incomplete there, and the parameter style.
 
 What it reports, and what it leaves out:
 
-- Every column has the dialect's default collation: per-column and
-  per-table collations are not read (Postgres reports a nondeterministic one,
-  which would otherwise be taken as comparing by identity).
+- Every column has the dialect's default collation, the only one sqlassert
+  supports: per-column and per-table collations are not read, except where
+  one would otherwise be taken as comparing by identity (DuckDB's COLLATE,
+  Postgres's nondeterministic collations): such a column is reported untyped.
 - Primary keys, unique constraints, unique indexes and foreign keys are
   reported as declared; the catalog carries no per-constraint trust. Whether
   they are Knowledge is the dialect's `DialectSemantics` decision, applied

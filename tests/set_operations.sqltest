@@ -71,9 +71,3 @@ WITH ks AS (SELECT k FROM a UNION SELECT k FROM b)
 SELECT ks.k, a.v FROM ks
 /**ASSERT MANY TO ONE**/ LEFT JOIN a ON a.k = ks.k  --~ UNKNOWN
 
--- case: a_union_of_collated_text_does_not_bind
-CREATE TABLE a (k VARCHAR PRIMARY KEY, v INTEGER);
-CREATE TABLE b (k VARCHAR COLLATE nocase);
-WITH ks AS (SELECT k FROM a UNION SELECT k FROM b)
-SELECT ks.k, a.v FROM ks
-/**ASSERT MANY TO ONE**/ LEFT JOIN a ON a.k = ks.k  --~ UNKNOWN
