@@ -92,8 +92,9 @@ class RewriteKind(Enum):
 @dataclass(frozen=True)
 class Rewrite:
     """A result-preserving rewrite of the SQL at one site, with its proof.
-    `edits` make it, on the SQL it was found in; `message` says why, and
-    what to do in a word. Its `suggest_type` is REWRITE_WITH_CAVEAT when a
+    `edits` make it, on the SQL it was found in (one is offered only with
+    them: where its syntax cannot be placed from the tokens, there is none);
+    `message` says why, and what to do in a word. Its `suggest_type` is REWRITE_WITH_CAVEAT when a
     column's type or precision may change, which the message names;
     sqlassert has no result-type model per dialect, so such a change is
     caveated."""
@@ -104,6 +105,10 @@ class Rewrite:
     edits: tuple[Edit, ...]
     evidence: Result[bool]
     suggest_type: SuggestType = SuggestType.REWRITE
+
+    def __post_init__(self) -> None:
+        if not self.edits:
+            raise ValueError(f"a {self.kind.value} Rewrite without edits")
 
     def rewritten(self, sql: str) -> str:
         """`sql`, the SQL this Rewrite was found in, rewritten."""

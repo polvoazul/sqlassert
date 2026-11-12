@@ -854,13 +854,13 @@ EQUIVALENT = [
 
 
 def differing_instance(original: str, rewritten: str) -> SearchResult:
-    """Search for an instance on which the two programs differ as multisets."""
+    """Search for an instance on which the two programs differ as multisets.
+    Each runs its Root Select as written: the text after the last `;`."""
     database = _Database(SqlParser("duckdb").parse(original))
     queries = []
     for sql in (original, rewritten):
-        root = SqlParser("duckdb").parse(sql).root_select
-        assert root is not None
-        queries.append(root.sql(dialect="duckdb"))
+        assert SqlParser("duckdb").parse(sql).root_select is not None
+        queries.append(sql.rsplit(";", 1)[-1])
 
     def differs(_) -> bool:
         before = Counter(database.connection.execute(queries[0]).fetchall())
@@ -878,6 +878,7 @@ def offered(original: str, kind: RewriteKind) -> list[str]:
     report = suggest(original)
     found = [rewrite.rewritten(report.sql) for rewrite in report.rewrites if rewrite.kind is kind]
     assert found, f"no {kind.value} rewrite offered"
+    assert original not in found, "a Rewrite whose edits change nothing"
     return found
 
 
@@ -1010,6 +1011,17 @@ def test_each_kind_of_rewrite_makes_the_diff_written_here(kind: RewriteKind, sql
     report = suggest(sql)
     rewrite, = (item for item in report.rewrites if item.kind is kind)
     assert rewrite.diff(report.sql, context=0) == "--- original\n+++ original (rewritten)\n" + expected
+
+
+def test_an_edit_keeps_the_property_markers_and_comments_in_a_span_it_deletes():
+    sql = SCHEMA + (
+        "SELECT s.ts FROM sessions s LEFT JOIN users u -- the user\n"
+        "ON u.id = s.user_id AND u.nick = /**ASSERT EXHAUSTIVE**/ CASE u.nick WHEN 'a' THEN 'a' ELSE 'b' END\nWHERE s.ts = 1"
+    )
+    report = suggest(sql)
+    rewrite, = report.rewrites
+    assert rewrite.kind is RewriteKind.REDUNDANT_JOIN
+    assert rewrite.rewritten(sql).endswith("FROM sessions s -- the user\n/**ASSERT EXHAUSTIVE**/\nWHERE s.ts = 1")
 
 
 def test_an_edit_keeps_the_comments_in_its_span():
