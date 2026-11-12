@@ -371,7 +371,8 @@ WHERE e.mgr IN (SELECT d.deptno FROM dept AS d WHERE d.deptno = 10)
 
 -- case: pullup_semi_join_from_exists_on_constant
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.inferPredicates (SEMI)
--- Missing proof: the ON constant reaches mgr only through d.deptno, which is no output.
+-- mgr equals d.deptno of the matched dept row, which the ON constant pins to
+-- 10 (same type: equal values are identical).
 SELECT e.empno, e.mgr
 FROM emp AS e
 WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND d.deptno = 10)
@@ -380,12 +381,50 @@ WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND d.deptno = 10)
 
 -- case: pullup_semi_join_equates_two_left_columns
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference (ON equalities are not pulled up for SEMI)
--- Missing proof in both: mgr and comm each equal d.deptno on every output row.
+-- mgr and comm each equal d.deptno of the matched dept row, all INTEGER, so
+-- they are equal: one Equality Group, a dependency each way.
 SELECT e.empno, e.mgr, e.comm
 FROM emp_nullables AS e
 WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND d.deptno = e.comm)
+  AND e.mgr IN (1, 2)
 /**ASSERT DETERMINES(mgr -> comm)**/  --~ PROVED
+/**ASSERT DETERMINES(comm -> mgr)**/  --~ PROVED
+/**ASSERT ENUM(comm IN (1, 2))**/  --~ PROVED
 /**ASSERT NOT NULL(mgr, comm)**/  --~ PROVED
+
+-- case: pullup_semi_join_null_safe_through_a_right_column
+-- IS NOT DISTINCT FROM equates NULLs too: mgr and comm are equal or both NULL.
+SELECT e.empno, e.mgr, e.comm
+FROM emp_nullables AS e
+WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno IS NOT DISTINCT FROM e.mgr AND d.deptno IS NOT DISTINCT FROM e.comm)
+/**ASSERT DETERMINES(mgr -> comm)**/  --~ PROVED
+/**ASSERT DETERMINES(comm -> mgr)**/  --~ PROVED
+
+-- case: pullup_semi_join_through_a_wider_type
+-- Two INTEGERs equal to one DOUBLE need not be equal: above 2^53 distinct
+-- integers cast to one double.
+CREATE TABLE measure (id INTEGER PRIMARY KEY, v DOUBLE NOT NULL);
+SELECT e.empno, e.mgr, e.comm
+FROM emp AS e
+WHERE EXISTS (SELECT 1 FROM measure AS m WHERE m.v = e.mgr AND m.v = e.comm)
+/**ASSERT DETERMINES(mgr -> comm)**/  --~ UNKNOWN
+
+-- case: pullup_semi_join_through_a_collation
+-- 'x' = c.a = 'X' under NOCASE: ename need not be 'x', nor equal name.
+CREATE TABLE coll_ci (id INTEGER PRIMARY KEY, a VARCHAR COLLATE NOCASE NOT NULL);
+SELECT e.empno, e.ename, d.name
+FROM emp AS e JOIN dept AS d ON d.deptno = e.deptno
+WHERE EXISTS (SELECT 1 FROM coll_ci AS c WHERE c.a = e.ename AND c.a = d.name AND c.a = 'x')
+/**ASSERT ENUM(ename IN ('x'))**/  --~ UNKNOWN
+/**ASSERT DETERMINES(ename -> name)**/  --~ UNKNOWN
+
+-- case: pullup_semi_join_through_a_right_column_only_or_bound
+-- An OR in the EXISTS body bounds the matched row's column only when every
+-- part does.
+SELECT e.empno, e.mgr
+FROM emp AS e
+WHERE EXISTS (SELECT 1 FROM dept AS d WHERE d.deptno = e.mgr AND (d.deptno = 10 OR d.name = 'x'))
+/**ASSERT ENUM(mgr IN (10))**/  --~ UNKNOWN
 
 -- case: pullup_anti_join_keeps_left_only
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference.inferPredicates (ANTI pulls up the left only)
@@ -435,7 +474,8 @@ FULL JOIN (SELECT * FROM emp WHERE sal = 3) AS e ON e.deptno = d.deptno
 
 -- case: pullup_aggregate_rollup
 -- inspired by RelMdPredicates.allGroupSetsOverlap ("deptno may be NULL as well")
--- NOT NULL is false (subtotal rows); ENUM holds, NULL being outside it: a missing proof.
+-- NOT NULL is false (subtotal rows); ENUM holds, NULL being outside it: a
+-- missing proof (ROLLUP is not lowered; issue 42).
 SELECT deptno, sal, count(*) AS n FROM emp WHERE deptno = 10 GROUP BY ROLLUP (sal, deptno)
 /**ASSERT NOT NULL(deptno)**/  --~ UNKNOWN
 --~ unsupported-construct "ROLLUP"

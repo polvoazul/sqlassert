@@ -91,11 +91,11 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
 18. ~~**One input column projected twice**~~ Done: an input attribute maps back to every output carrying it (`uniqueness._inverse`). Was: `SELECT deptno, deptno AS deptno2`
     proves `deptno2 -> deptno`. `_row_preserving` and `_grouped` keep one
     output per input column (`back`). `keys: fd_identical_expressions`.
-19. **MIN/MAX/ANY_VALUE of a one-column Unique Set** grouped by anything is
+19. ~~**MIN/MAX/ANY_VALUE of a one-column Unique Set**~~ Done: `any_value` lowers as an `AnyAggregate` like `min` and `max` (`convert._picked_argument`), and closure follows each AnyAggregate of an input column, one at a time, down to the row of its group it picks, with the grouping columns (`uniqueness._picked`): groups are disjoint, so a one-column Unique Set of the aggregate's input (after its joins and filters) is a lax one of the output, and a key only within a group is not. Was: grouped by anything is
     unique, groups being disjoint. Never for a composite key: Calcite's
     version of this is unsound (see the audit, C4).
     `keys: uk_group_by_pass_through_aggregate`, `uk_composite_key_pass_through_aggregates` (boundary).
-20. **Pure conjuncts on the preserved side of an outer join's ON** fix the
+20. ~~**Pure conjuncts on the preserved side of an outer join's ON**~~ Done: a conjunct `ir.determinants` reads as a pure function fixes the match status by the preserved columns it reads, when those compare by identity; a volatile or opaque one still by the whole preserved row (`uniqueness._match_status`). Was: fix the
     match status by the columns they read (Paulley L6), not the whole row:
     `ON e.deptno = d.deptno AND e.sal > 1000` proves `e_deptno, sal -> d_deptno`.
     `keys: fd_left_join_extra_conjunct`, `fd_right_join_extra_conjunct`.
@@ -104,7 +104,7 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
     `keys: fd_full_join`.
 22. Moved to issue 37 (with U2). Was: **UNION ALL with disjoint branches** (`WHERE deptno = 10` / `= 20`) keeps
     each branch's FDs. Pair with U2 (issue 37). `keys: fd_union_all`.
-23. **Semi joins**: a constant in an EXISTS ON pins the left column
+23. ~~**Semi joins**~~ Done: a semi join's Equality Groups run through the matched right row's columns (`equality._equality_groups`), a left column equal to a right one of the same type takes every bound ON puts on it (`domain._matched_narrowings`), and a right column ON pins to a left column or literal fixes each left column ON pins to it (`uniqueness._matched_dependencies`); `=` and IS NOT DISTINCT FROM alike, never across types or collations. An anti join still gives nothing. Was: a constant in an EXISTS ON pins the left column
     (`d.deptno = e.mgr AND d.deptno = 10`); two left columns equal to one
     right column are equal. `nulls: pullup_semi_join_from_exists_on_constant`,
     `pullup_semi_join_equates_two_left_columns`.
@@ -117,6 +117,7 @@ knows why an assertion stays UNKNOWN.
 
 ## Acceptance criteria
 
-- [ ] Each item's cases are PROVED, its boundary cases stay UNKNOWN.
-- [ ] `pytest --soundness-oracle` reports 0 counterexamples.
-- [ ] `docs/calcite-audit.md` rows move from "missing" to "agrees".
+- [x] Each item's cases are PROVED, its boundary cases stay UNKNOWN (8 moved
+  to issue 42, 21 and 22 to issue 37).
+- [x] `pytest --soundness-oracle` reports 0 counterexamples.
+- [x] `docs/calcite-audit.md` rows move from "missing" to "agrees".

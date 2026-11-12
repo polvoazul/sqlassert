@@ -1598,8 +1598,8 @@ class IrParser:
             if id(item) not in grouped_items and _is_bare_aggregate_expression(expression):
                 # A bare column, where a dialect allows one.
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=lowered, empty=empty)
-            elif (argument := _aggregate_argument(expression, (exp.Min, exp.Max))) is not None:
-                # One of its argument's non-null values.
+            elif (argument := _picked_argument(expression)) is not None:
+                # One of its argument's values on some row of the group.
                 value = self._lower_expression(argument, source.bindings, schema_complete=source.relation.is_schema_complete)
                 lowered = ir.AnyAggregate(origin=self._origin(expression), input=value, empty=empty)
             elif (argument := _aggregate_argument(expression, (exp.Sum,))) is not None and self.semantics.checked_arithmetic:
@@ -2848,6 +2848,17 @@ def _aggregate_argument(expression: Expr, kinds: tuple[type[exp.AggFunc], ...]) 
     if any(value for key, value in expression.args.items() if key != "this"):
         return None
     return expression.this
+
+
+def _picked_argument(expression: Expr) -> Expr | None:
+    """The argument of an aggregate whose value is the argument's value on
+    some row of the group: `min` and `max` (a non-null one when there is one)
+    and `any_value`, whatever its NULL treatment (DuckDB parses its own as
+    IGNORE NULLS). Not BigQuery's `any_value(x HAVING MAX y)`, opaque."""
+    if isinstance(expression, (exp.IgnoreNulls, exp.RespectNulls)):
+        expression = expression.this
+    argument = _aggregate_argument(expression, (exp.Min, exp.Max, exp.AnyValue))
+    return None if isinstance(argument, exp.HavingMax) else argument
 
 
 def _is_bare_aggregate_expression(expression: Expr) -> bool:

@@ -258,6 +258,33 @@ def _narrowings(relation: ir.Filter | ir.Join, column: ir.OutputColumn) -> list[
         bound = _conjunct_bound(conjunct, source)
         if bound is not None and bound.value is not None:
             narrowings.append(Result(bound.value, f"The {clause} conjunct bounds {quoted(column.name)} to {_render(bound.value)}", (conjunct,), [bound]))
+    if isinstance(relation, ir.Join) and relation.kind == "semi":
+        narrowings.extend(_matched_narrowings(relation, column, source))
+    return narrowings
+
+
+def _matched_narrowings(join: ir.Join, column: ir.OutputColumn, source: ir.OutputColumn) -> list[Result[Domain]]:
+    """A semi join's left column equal to a right column of the same type
+    takes that column's value on the matched right row, which every other ON
+    conjunct bounds too: `d.deptno = e.mgr AND d.deptno = 10` bounds mgr."""
+    narrowings: list[Result[Domain]] = []
+    for conjunct in join.conjuncts:
+        match conjunct:
+            case (
+                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+            ) if source in (first, second):
+                other = second if first is source else first
+            case _:
+                continue
+        if other not in join.right.output_columns or not _same_type(source, other):
+            continue
+        bounds = [bound for part in join.conjuncts if part is not conjunct and (bound := _conjunct_bound(part, other)) is not None]
+        if bounds:
+            bound = _intersection(other, bounds)
+            if bound.value is not None:
+                reason = f"{quoted(column.name)} equals {quoted(other.name)} of the matched right row, which ON bounds to {_render(bound.value)}"
+                narrowings.append(Result(bound.value, reason, (conjunct,), [bound]))
     return narrowings
 
 

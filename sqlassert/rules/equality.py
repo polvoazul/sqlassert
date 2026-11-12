@@ -8,8 +8,9 @@ input's groups pass through every column that passes an input column through,
 then the relation's own strict equalities merge them. On every row a group's
 members are equal, or all NULL (an outer join padded them, padding nulling a
 whole side, or IS NOT DISTINCT FROM equated NULLs): where one is non-null,
-every one equals it. An outer join's ON never merges: it holds on matched rows only,
-and a padded row keeps the preserved side's value.
+every one equals it. A semi join's ON merges through the columns of the
+matched right row, which no output carries. An outer join's ON never merges:
+it holds on matched rows only, and a padded row keeps the preserved side's value.
 
 A functional dependency `a ↔ b` also holds for an injective `a = f(b)`, whose
 values differ; a group says the values are the same. Facts about values read
@@ -78,6 +79,16 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
         for group in groups.value.groups:
             own = [column for upstream in group for column in passed.get(upstream, ())]
             merge(own, Result(True, "Equal in the input", (), [groups.members[group]]))
+
+    if isinstance(relation, ir.Join) and relation.kind == "semi":
+        # The matched right row's columns carry values too, though no output
+        # does: two left columns equal to one right column are equal.
+        right = relation.right
+        for column in right.output_columns:
+            roots[column], evidence[column], outputs[column] = column, [], [column]
+        groups = _equality_groups(right)
+        for group in groups.value.groups:
+            merge(list(group), Result(True, "Equal in the matched right row", (), [groups.members[group]]))
 
     conjuncts, clause = _strict_conjuncts(relation)
     for conjunct in conjuncts:

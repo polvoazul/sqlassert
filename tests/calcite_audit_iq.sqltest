@@ -162,7 +162,8 @@ FROM emp AS e
     ON e.deptno = d.deptno
 
 -- A correlated scalar subquery over count(*) always yields a row, and count is
--- never NULL; Calcite plans it as CASE WHEN c IS NULL THEN 0. Missing proof.
+-- never NULL; Calcite plans it as CASE WHEN c IS NULL THEN 0. Lowered as a
+-- grouped left join whose count is coalesce(count, 0).
 -- case: correlated_scalar_count_is_never_null
 -- inspired by scalar.iq, "select deptno, (select count(*) from emp where deptno = dept.deptno) as x from dept"
 SELECT deptno, (SELECT count(*) FROM emp WHERE emp.deptno = dept.deptno) AS x
@@ -202,8 +203,8 @@ GROUP BY e.deptno, d.deptno
 /**ASSERT NOT NULL UNIQUE(ed)**/  --~ PROVED
 /**ASSERT DETERMINES(dd -> ed)**/  --~ PROVED
 
--- HAVING only drops groups, so the grouping keys stay a key. Missing proof:
--- a GROUP BY with HAVING is not lowered.
+-- HAVING only drops groups, so the grouping keys stay a key: it is a Filter
+-- of the groups.
 -- case: having_keeps_the_grouping_key
 -- inspired by agg.iq, "select deptno + 1 as d1, count(*) as c from emp group by rollup(deptno) having count(*) > 3"
 SELECT deptno, count(*) AS c FROM emp GROUP BY deptno HAVING count(*) > 1
@@ -279,7 +280,8 @@ SELECT ename FROM q
 -- USING ---------------------------------------------------------------------
 
 -- The USING column of a RIGHT JOIN is COALESCE(emp.deptno, dept.deptno),
--- which is dept.deptno on every row. Missing proof.
+-- which is dept.deptno on every row: an unqualified USING column of a RIGHT
+-- join is the right input's.
 -- case: right_join_using_column_is_the_preserved_side_s
 -- inspired by join.iq, "select distinct deptno, dept.deptno, emp.deptno from emp right join dept using (deptno)"
 SELECT deptno FROM emp RIGHT JOIN dept USING (deptno)

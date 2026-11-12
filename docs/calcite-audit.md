@@ -11,16 +11,19 @@ contracts, never Calcite's answers.
 
 Result: **five soundness bugs in sqlassert, all fixed** (below); **nine
 soundness problems in Calcite** that sqlassert does not share; **24 missing
-proofs**, filed as [issue 45](issues/0045-close-the-calcite-audit-missing-proofs.md)
-(item 2, `GROUP BY ()`, since closed).
+proofs**, filed as [issue 45](issues/0045-close-the-calcite-audit-missing-proofs.md),
+which closed 21 of them; ROLLUP and GROUPING SETS (item 8) and LATERAL moved
+to [issue 42](issues/0042-lowering-support-v2.md), FULL join keys and
+disjoint UNION ALL (items 21, 22) to [issue 37](issues/0037-close-the-paulley-audit-missing-rules.md),
+beside the gaps already filed there (U2, I2, E4, F2/F4).
 
 ## Files
 
 | File | Cases | What |
 |---|---|---|
 | `tests/calcite_audit.sqltest` | 11 | Regressions for the five soundness bugs, with the sound boundary next to each |
-| `tests/calcite_audit_keys.sqltest` | 53 | FDs, unique keys, column uniqueness (`RelMetadataTest`, `MockCatalogReaderSimple`) |
-| `tests/calcite_audit_nulls.sqltest` | 66 | Predicate inference, null rejection, expression nullability (`RexProgramTest`, `RelMetadataTest`) |
+| `tests/calcite_audit_keys.sqltest` | 60 | FDs, unique keys, column uniqueness (`RelMetadataTest`, `MockCatalogReaderSimple`) |
+| `tests/calcite_audit_nulls.sqltest` | 70 | Predicate inference, null rejection, expression nullability (`RexProgramTest`, `RelMetadataTest`) |
 | `tests/calcite_audit_iq.sqltest` | 30 | Plans and NULL boundaries from the Quidem `.iq` files (scott schema) |
 
 Each case names the upstream test or `.iq` query that inspired it.
@@ -58,7 +61,7 @@ Calcite paths are under `core/src/main/java/org/apache/calcite/`: `FD` is
 `CU` `RelMdColumnUniqueness.java`, `PR` `RelMdPredicates.java`, `Strong`
 `plan/Strong.java`. Our code is under `sqlassert/`. Verdicts: **agrees**,
 **ours stronger** (we prove more, soundly), **Calcite unsound** (C-number
-below), **different** (on purpose), **missing** (issue 45 item), **fixed**
+below), **different** (on purpose), **missing** (issue 45 item, the open ones now in issue 37 or 42), **fixed**
 (was unsound here; fixed in issue 40).
 
 ### Functional dependencies
@@ -74,9 +77,9 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 | FD#getFilterFD | `col = col`, `IS NOT DISTINCT FROM` both ways | `uniqueness._equality_dependencies`, `equality._pins` | fd_equality_conditions, uk_filter_constant | agrees (11) |
 | FD#getAggregateFD | Group FDs kept; group set determines aggregates | `_functional_dependencies`, `uniqueness._grouped` | fd_aggregate, fd_aggregate_double_pk | agrees; Calcite latently unsound (C8, C9) |
 | FD#getJoinFD INNER | Both sides plus ON equalities | `uniqueness._join_dependencies` | fd_inner_join | agrees |
-| FD#getJoinFD LEFT/RIGHT | Shared branch with INNER: ON equalities both ways | `_outer_on_dependencies`, `_join_side` (η, match status) | fd_left_join, fd_left_join_extra_conjunct, fd_right_join, fd_right_join_extra_conjunct | Calcite unsound (C1); extra-conjunct proof missing (20) |
-| FD#getJoinFD FULL | No FDs | `_join_side` with η on each side | fd_full_join | ours stronger; keys missing (21) |
-| FD#getFDs SetOp | No FDs | INTERSECT/EXCEPT keep the left input's, UNION all columns | fd_union_all | disjoint UNION ALL missing in both (22) |
+| FD#getJoinFD LEFT/RIGHT | Shared branch with INNER: ON equalities both ways | `_outer_on_dependencies`, `_join_side` (η, match status: a pure conjunct by the preserved columns it reads, `_match_status`) | fd_left_join, fd_left_join_extra_conjunct, fd_right_join, fd_right_join_extra_conjunct, fd_left_join_volatile_conjunct, fd_left_join_collated_conjunct | Calcite unsound (C1); ours agrees on the sound part (20) |
+| FD#getJoinFD FULL | No FDs | `_join_side` with η on each side | fd_full_join | ours stronger; keys missing (21, issue 37) |
+| FD#getFDs SetOp | No FDs | INTERSECT/EXCEPT keep the left input's, UNION all columns | fd_union_all | disjoint UNION ALL missing in both (22, issue 37) |
 
 ### Unique keys and column uniqueness
 
@@ -87,11 +90,11 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 | UK#getProjectUniqueKeys, CU Project | Plain column refs, nullability-only casts | `_one_to_one`, `_row_preserving` | uk_projected_expression, uk_repeated_key_column | ours stronger (injective `+`, `-`) |
 | UK Join, UK#getConstantJoinKeys | Keys through a side unique on the join keys; IS NOT DISTINCT FROM as an equi-key | `_join_dependencies`, `join_cardinality.many_to_one_join` | uk_join_constant_key_inner, uk_join_constant_key_left, uk_null_safe_join_on_key, uk_null_safe_join_on_nullable_unique, uk_join_non_key, uk_self_join_on_key, uk_inner_join_left_key_right_not_key | Calcite unsound (C3, C6); null-safe key agrees, only onto a non-null key (11) |
 | CU Join | Unique when each side is; one-row INNER side; padded side not alone | same | uk_left_join_limit_1, uk_right_join_limit_1, uk_join_constant_columns, uk_join_singleton_aggregate, uk_full_join_one_row_inputs | agrees; ours stronger with ignoreNulls |
-| UK/CU Aggregate, UK#getPassedThroughCols | Group set; MIN/MAX/ANY_VALUE pass a key through | `uniqueness._grouped` | uk_scalar_aggregate, uk_group_by_precise, uk_group_by_pass_through_aggregate, uk_composite_key_pass_through_aggregates, uk_grouping_sets | Calcite unsound for composite keys (C4); one-column pass-through missing (19) |
+| UK/CU Aggregate, UK#getPassedThroughCols | Group set; MIN/MAX/ANY_VALUE pass a key through | `uniqueness._grouped`; `_picked`: one AnyAggregate at a time, down to the row it picks | uk_scalar_aggregate, uk_group_by_precise, uk_group_by_pass_through_aggregate, uk_composite_key_pass_through_aggregates, uk_any_value_of_a_key, uk_max_of_a_nullable_unique_column, uk_max_of_a_key_within_the_group, uk_max_of_a_key_the_join_repeats, uk_max_of_a_key_the_join_keeps, uk_grouping_sets | agrees for a one-column key (19); Calcite unsound for composite keys (C4); GROUPING SETS missing (issue 42) |
 | UK/CU SetOp | UNION all columns; INTERSECT any input's key; EXCEPT the left's | `_functional_dependencies`, `_delegations` | uk_union_constant, uk_intersect_all, uk_intersect_all_right_key, uk_except_all | agrees on the left input; I2, U2 in issue 37 |
 | UK/CU Sort | At most one row: empty key | Limit count ≤ 1 | uk_limit_1, uk_left_join_limit_1 | agrees |
-| UK/CU Values | Literal distinctness | VALUES opaque | uk_values | missing (4) |
-| UK/CU Correlate | UK: left keys always; CU: both sides | LATERAL opaque (issue 42) | uk_correlate_lateral, uk_correlate_lateral_many, uk_correlated_scalar_subquery, uk_uncorrelated_scalar_subquery | Calcite unsound in UK (C5); missing (7, issue 42) |
+| UK/CU Values | Literal distinctness | `convert._lower_values`: lax Unique Sets by `_may_coincide` | uk_values | agrees (4) |
+| UK/CU Correlate | UK: left keys always; CU: both sides | LATERAL opaque (issue 42) | uk_correlate_lateral, uk_correlate_lateral_many, uk_correlated_scalar_subquery, uk_uncorrelated_scalar_subquery | Calcite unsound in UK (C5); a correlated aggregate subquery agrees (7), LATERAL missing (issue 42) |
 
 ### Null rejection and expression nullability
 
@@ -120,13 +123,13 @@ below), **different** (on purpose), **missing** (issue 45 item), **fixed**
 | PR#getPredicates(Project), #eqConstant | Literal columns are constants | `domain._expression_domain`: a strict Call of an always-NULL argument is empty, `IS [NOT] NULL` of a non-null or always-NULL operand a constant; `convert._cast_integer_literal` folds a plain integer CAST | pullup_project_constants, pullup_project_casts_folded_only_when_exact, pullup_project_is_null_of_constrained_column, pullup_project_is_null_of_nullable_column | agrees (16, 17) |
 | RexUtil#predicateConstants | `IS NOT DISTINCT FROM c`, `IS NULL` are constants | `NullSafeEquality`: a domain bound, a constant, and rejection of the other side of a non-null one | strong_is_not_distinct_from_a_literal, strong_is_not_distinct_from_a_non_null_column, strong_is_not_distinct_from_a_nullable_column, strong_is_not_distinct_from_a_literal_without_ansi | agrees (11) |
 | JoinConditionBasedPredicateInference INNER | Equivalence closure; rewrites any predicate across it, any type | `equality._equality_groups`, `_same_type`; `domain._meet` | pullup_inner_join_transitive_constant, pullup_inner_join_on_nullable_column, pullup_equivalence_under_a_collation | agrees; Calcite ignores collation (different) |
-| inferPredicates SEMI | Left predicates plus inferred from the right | `domain._narrowings` | pullup_semi_join_from_in_subquery, pullup_semi_join_from_exists_on_constant, pullup_semi_join_equates_two_left_columns | agrees for IN; EXISTS constant and two-column equality missing (23) |
+| inferPredicates SEMI | Left predicates plus inferred from the right | `domain._narrowings`, `_matched_narrowings`; Equality Groups and `uniqueness._matched_dependencies` through the matched right row, same type only | pullup_semi_join_from_in_subquery, pullup_semi_join_from_exists_on_constant, pullup_semi_join_equates_two_left_columns, pullup_semi_join_null_safe_through_a_right_column, pullup_semi_join_through_a_wider_type, pullup_semi_join_through_a_collation, pullup_semi_join_through_a_right_column_only_or_bound | agrees (23); Calcite ignores types |
 | inferPredicates ANTI/LEFT/RIGHT | Preserved side only; never padded-side or ON predicates | `equality._strict_conjuncts`, `domain._narrowings` | pullup_anti_join_keeps_left_only, pullup_left_join_preserved_on_conjunct, pullup_left_join_padded_on_constant, pullup_left_join_preserved_domain_below_the_join, pullup_left_join_preserved_domain_above_the_join | agrees; ours stronger (padded-side domains); E4 in issue 37 |
 | inferPredicates FULL | Nothing | input domains survive | pullup_full_join_input_predicates | ours stronger |
-| PR#getPredicates(Aggregate) | Group-key predicates; dropped under ROLLUP | grouping columns pass through | pullup_aggregate_rollup, pullup_aggregate_having_on_group_key | agrees on keys; ROLLUP, HAVING missing (1, 8) |
+| PR#getPredicates(Aggregate) | Group-key predicates; dropped under ROLLUP | grouping columns pass through | pullup_aggregate_rollup, pullup_aggregate_having_on_group_key | agrees on keys and HAVING (1); ROLLUP missing (issue 42) |
 | PR#getPredicates(Union) | Common predicates plus OR of residuals | `domain._set_operation_domain` | pullup_union_common_and_disjunctive, pullup_union_with_null_literal, pullup_union_with_cast_null | agrees on domains; U2 in issue 37 |
 | PR#getPredicates(Intersect, Minus) | All inputs; the left input | domains intersect; left input | pullup_intersect_takes_both_inputs, pullup_minus_takes_the_left_input | agrees; Calcite ignores collation |
-| PR#getPredicates(Values) | Per-column `=` or Sarg | VALUES opaque | pullup_values | missing (4) |
+| PR#getPredicates(Values) | Per-column `=` or Sarg | `convert._lower_values`: domains up to 100 rows, nullability | pullup_values | agrees (4) |
 
 ## Soundness bugs found in sqlassert (fixed)
 

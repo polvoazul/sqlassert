@@ -294,7 +294,7 @@ through only with definite determinants. The Test column names cases in
 | G1 | Partition keeps input FDs and equivalences | Claim 22, p.83 | implemented | `uniqueness._grouped` delegation onto the input, from the grouping columns | `paulley_audit.sqltest` G1 |
 | G2 | Grouping function: X → λ(X) | Claim 22, p.83 | implemented | `uniqueness._computed` for computed grouping items | `paulley_audit.sqltest` G2 |
 | G3 | Grouping attributes → ι; no grouping attributes: one row | Claim 22, p.83 | implemented | `uniqueness._functional_dependencies` (Aggregate: grouping outputs → ι; a scalar aggregate has none, so ∅ → ι) | `paulley_audit.sqltest` G3, G3e |
-| G4 | Aggregate is determined by its group: ι → f | Claim 23, p.84 | implemented | ι → every column (`_row_attributes`); our extension: a bare column of a grouped query, where the dialect allows one, passes through (`AnyAggregate`); MIN/MAX/ANY_VALUE are opaque (issue 45) | `paulley_audit.sqltest` G4 |
+| G4 | Aggregate is determined by its group: ι → f | Claim 23, p.84 | implemented | ι → every column (`_row_attributes`); our extension: a bare column of a grouped query, where the dialect allows one, passes through (`AnyAggregate`); so are MIN/MAX/ANY_VALUE, which also map down to the row they pick (`uniqueness._picked`) | `paulley_audit.sqltest` G4 |
 | L1 | Left join keeps the preserved side's strict FDs | Thm 3 strict 1, p.96 | implemented | `uniqueness._join_side` delegation onto the preserved side (always valid) | `paulley_audit.sqltest` L1 |
 | L2 | Null-supplying strict FD X → Y survives when η(p, X) | Lemma 7, Thm 3 strict 2, p.87 | different | `uniqueness._join_side` delegation: instead of η per dependency, the closure on the padded side is valid when some reached column is NULL only on padded rows (η) or the preserved side's match status is reached (`_match_status`); covers Lemma 7 and more | `paulley_audit.sqltest` L2 |
 | L3 | …or when X = Y is a strict equivalence in the null-supplying input | Corollary 2, p.88 | implemented | `uniqueness._join_side` delegation: a reached column whose only Null Source is the padding (Cor 2's equivalence makes the dependent NULL with it) | `paulley_audit.sqltest` L3 |
@@ -427,13 +427,21 @@ def _closure(relation, columns, definite) -> Result[Closure]: ...
     only when the two rows cannot be one matched and one padded: some reached
     column of that side is NULL only by padding (η), is requested non-null, or
     the side's identity is reached; or the preserved side's ON columns are
-    reached, which fixes whether both rows matched.
+    reached, which fixes whether both rows matched. A pure ON conjunct is
+    fixed by the preserved columns it reads when those compare by identity
+    (Lemma 9, L6 below); a volatile or opaque one only by the preserved row.
   - Aggregate, Distinct, INTERSECT / EXCEPT: an output row stands for input
     rows sharing its pass-through values. Two output rows agreeing on some of
     them have representatives agreeing on them, so what those determine in the
     input carries back to pass-through outputs, to an AnyAggregate column whose
     source is constant per group, and to the output's Row Identity (one input
     row belongs to one output row).
+  - Aggregate, once more per AnyAggregate of an input column (min, max,
+    any_value, a bare column): the output row seen as the row its group picks
+    that column's value from, so the AnyAggregate maps down to its input
+    column next to the grouping columns. Groups are disjoint, so a one-column
+    key of the input is one of the output. One AnyAggregate per delegation:
+    two may pick different rows (`min(key1), max(key2)`; Calcite's C4).
 - **Evidence.** `_closure` returns a `Closure` whose `members` hold one
   `Result` per reached attribute, citing the dependency or input closure that
   reached it; when several reach it, their evidence is combined, so two
@@ -500,9 +508,11 @@ with its line.
 - A union-find over **strict** equalities only: `WHERE` and inner-join `ON`
   conjuncts `a = b` between columns of known matching comparison types,
   without collation. Implicit casts and unknown types never merge groups.
-  An outer join's ON never merges, not
-  even within its padded side; neither does `a = f(b)`, a disjunction, or a
-  semi or anti join's ON.
+  A semi join's ON merges too, through the
+  columns of the matched right row, which no output carries: `d.deptno =
+  e.mgr AND d.deptno = e.comm` merges mgr and comm. An outer join's ON never
+  merges, not even within its padded side; neither does `a = f(b)`, a
+  disjunction, or an anti join's ON.
 - Input groups pass through every column that passes an input column
   through: Alias, Named Relation, Filter, Project, LIMIT, both sides of a join,
   grouping columns, DISTINCT, QUALIFY, and the left input of INTERSECT and

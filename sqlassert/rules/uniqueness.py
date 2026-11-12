@@ -147,7 +147,7 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
     for dependency, count in waiting.items():
         if count == 0:
             fire(dependency)
-    inputs: dict[ir.RelationExpr, Result[Closure]] = {}
+    inputs: dict[int, Result[Closure]] = {}
     while True:
         while queue:
             attribute = queue.pop()
@@ -158,11 +158,11 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
                 waiting[dependency] -= 1
                 if waiting[dependency] == 0:
                     fire(dependency)
-        for delegation in _delegations(relation):
+        for index, delegation in enumerate(_delegations(relation)):
             closure = delegation.run(reached, is_definite)
             if closure is None:
                 continue
-            inputs[delegation.input] = closure
+            inputs[index] = closure
             for source, attributes in delegation.back.items():
                 for attribute in attributes if source in closure.value.columns else ():
                     if attribute not in reached:
@@ -253,7 +253,8 @@ def _delegations(relation: ir.RelationExpr) -> list[_Delegation]:
             # Each output row is one left row.
             return [_row_preserving(relation, source)]
         case ir.Aggregate(input=source):
-            return [_grouped(relation, source)]
+            grouped = _grouped(relation, source)
+            return [grouped, *_picked(relation, grouped)]
         case ir.Distinct(input=source):
             return [_grouped(relation, source)]
         case ir.SetOperation(operator="intersect" | "except", left=source):
@@ -336,6 +337,30 @@ def _grouped(relation: ir.RelationExpr, source: ir.RelationExpr) -> _Delegation:
     return _Delegation(source, down, back, "Determined in the input rows", computed=_computed(relation, source))
 
 
+def _picked(aggregate: ir.Aggregate, base: _Delegation) -> list[_Delegation]:
+    """Each output row of an aggregate, seen through one AnyAggregate of an
+    input column (min, max, any_value, a bare column): its value is that
+    column's value on one row of the group, NULL only if the group has a NULL
+    there. Groups are disjoint, so two output rows' picked rows are distinct
+    input rows, and a one-column Unique Set of the input makes the picked
+    column one of the output. One column at a time: two aggregates may pick
+    different rows (`min(key1), max(key2)` of a composite key)."""
+    source = base.input
+    delegations = []
+    for column in aggregate.output_columns:
+        match column.scalar_expr:
+            case ir.AnyAggregate(input=ir.ColumnRef(column=upstream)) if upstream in source.output_columns:
+                back = dict(base.back)
+                back[upstream] = tuple(dict.fromkeys((*back.get(upstream, ()), column)))
+                delegations.append(_Delegation(
+                    source, base.down | {column: upstream}, back, "Determined in the row the aggregate picks",
+                    lambda reached, is_definite, column=column: column in reached, base.computed,
+                ))
+            case _:
+                pass  # Other aggregates are no one row's value.
+    return delegations
+
+
 def _computed(relation: ir.RelationExpr, source: ir.RelationExpr) -> dict[Attribute, frozenset[Attribute]]:
     """Paulley §3.1.4: each column computed from columns of `source` by a pure
     function, with those columns. Only columns compared by identity qualify:
@@ -398,12 +423,18 @@ def _match_status(join: ir.Join, padded_left: bool) -> frozenset[Attribute] | No
     referenced = set()
     for conjunct in join.conjuncts:
         operands = _recognized_operands(conjunct)
-        if operands is None:
-            # An unrecognized conjunct: only the preserved row itself fixes it.
-            return frozenset({RowIdentity(preserved)})
-        for operand in operands:
-            if isinstance(operand, ir.ColumnRef) and operand.column in preserved.output_columns:
-                referenced.add(outputs[operand.column])
+        if operands is not None:
+            reads = [operand.column for operand in operands if isinstance(operand, ir.ColumnRef)]
+        else:
+            # Paulley Lemma 9 (L6): a pure conjunct is fixed by the preserved
+            # columns it reads, when those compare by identity (under NOCASE
+            # `'a' = 'A'` while `x LIKE 'a%'` tells them apart).
+            inputs = ir.determinants(conjunct)
+            reads = [column for column in inputs or () if column in preserved.output_columns]
+            if inputs is None or not all(_identity_comparison(column).value for column in reads):
+                # Volatile, opaque, or read under a collation: only the preserved row fixes it.
+                return frozenset({RowIdentity(preserved)})
+        referenced.update(outputs[column] for column in reads if column in preserved.output_columns)
     return frozenset(referenced)
 
 
@@ -537,6 +568,7 @@ def _join_dependencies(join: ir.Join):
         # The matched right row satisfies ON; only left columns are output.
         for determinant, dependent, strict_evidence in _equality_dependencies(join.conjuncts, outputs, "ON"):
             yield determinant, dependent, True, strict_evidence
+        yield from _matched_dependencies(join, outputs)
         return
     if join.kind == "anti":
         return  # No right row satisfies ON.
@@ -564,6 +596,35 @@ def _join_dependencies(join: ir.Join):
             yield from _outer_on_dependencies(join, outputs, padded_left=join.kind == "right")
         case _:
             pass  # A full join pads both sides: its ON condition holds on neither.
+
+
+def _matched_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.OutputColumn]):
+    """A semi join's dependencies through a column of the matched right row:
+    every matched row satisfies ON, so where ON pins a right column to a left
+    column or a literal, that fixes it, and it fixes each left column ON pins
+    to it. `d.deptno = e.mgr AND d.deptno = e.comm` gives mgr -> comm."""
+    right = join.right.output_columns
+    pairs: list[tuple[ir.OutputColumn, ir.ScalarExpr, ir.ScalarExpr]] = []
+    for conjunct in join.conjuncts:
+        match conjunct:
+            case ir.Equality(left=first, right=second) | ir.NullSafeEquality(left=first, right=second):
+                pairs.extend((other.column, value, conjunct) for other, value in ((first, second), (second, first)) if isinstance(other, ir.ColumnRef) and other.column in right)
+            case _:
+                pass  # Other conjuncts pin nothing.
+    for column, value, conjunct in pairs:
+        # What fixes the right column: a left column or a literal it is pinned to.
+        match value:
+            case ir.ColumnRef(column=source) if source in outputs and _pins(column, value):
+                determinant: tuple[ir.OutputColumn, ...] = (outputs[source],)
+            case ir.Constant() if _pins(column, value):
+                determinant = ()
+            case _:
+                continue
+        for other, bound, other_conjunct in pairs:
+            if other is column and other_conjunct is not conjunct and isinstance(bound, ir.ColumnRef) and bound.column in outputs:
+                if _pins(bound.column, ir.ColumnRef(origin=bound.origin, column=column)):
+                    evidence = Result(True, f"ON conjuncts equal through {quoted(column.name)} of the matched right row", (conjunct, other_conjunct))
+                    yield determinant, outputs[bound.column], True, evidence
 
 
 def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.OutputColumn], padded_left: bool):
