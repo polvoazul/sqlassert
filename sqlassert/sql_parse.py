@@ -260,7 +260,7 @@ _COLUMN_MARKERS_AT = "sqlassert.unique_set_asserted_at"
 _MARKER_POSITION = "sqlassert.marker_position"
 
 # Where a Join, Select, query clause (WHERE, GROUP BY, HAVING, ORDER BY,
-# LIMIT, ...) or plain DISTINCT is written: its `(start, end)` source offsets,
+# LIMIT, ...), function call or plain DISTINCT is written: its `(start, end)` source offsets,
 # from its first token to its last (a Select's start only, recorded as
 # `(start, start)`: its end is its marker position). Rewrites place their
 # edits from these and the token stream (`edits.py`).
@@ -652,6 +652,15 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
                 if start is not None:
                     this.meta[_SPAN] = (start.start, start.start)
 
+        def _parse_function(self, *args, **kwargs):
+            start = self._curr
+            function = super()._parse_function(*args, **kwargs)
+            # A call written with parentheses: from its name to its `)`, or
+            # to the IGNORE or RESPECT NULLS after it.
+            if isinstance(function, Expr) and start is not None and self._prev is not None and self._prev is not start:
+                function.meta[_SPAN] = (start.start, self._prev.end + 1)
+            return function
+
         def _spanned(self, parse):
             """`parse(self)`'s `(key, clause)`, the clause's `_SPAN` recorded."""
             start = self._curr
@@ -1011,8 +1020,9 @@ def _spanned_modifier(parse):
 
 
 def span(node: Expr) -> tuple[int, int] | None:
-    """The `(start, end)` source offsets where a Join, query clause or plain
-    DISTINCT is written; for a Select, `(start, start)`: where it starts."""
+    """The `(start, end)` source offsets where a Join, query clause, function
+    call or plain DISTINCT is written; for a Select, `(start, start)`: where
+    it starts."""
     return node.meta.get(_SPAN)
 
 

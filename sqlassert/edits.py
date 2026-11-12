@@ -152,16 +152,20 @@ class Source:
         parts.append((start, last))
         return parts
 
-    def kept(self, start: int, end: int) -> list[str]:
+    def kept(self, start: int, end: int, moved: Iterable[tuple[int, int]] = ()) -> list[str]:
         """The comments and Property Markers between offsets `start` and `end`,
         outside the SQL tokens: what an edit there must keep. One that ends a
-        line ends with its line break, so a `--` comment still ends there."""
+        line ends with its line break, so a `--` comment still ends there.
+        Those inside a `moved` token range are not: the edit writes that text
+        elsewhere, verbatim."""
+        spans = [(self.start(first), self.end(last)) for first, last in moved]
         pieces = []
         cursor = start
         for token in self.tokens:
             if token.end < start or token.start >= end:
                 continue
-            pieces.extend(self._kept_in(cursor, token.start))
+            if not any(left <= cursor and token.start <= right for left, right in spans):
+                pieces.extend(self._kept_in(cursor, token.start))
             cursor = token.end + 1
         pieces.extend(self._kept_in(cursor, end))
         return pieces
@@ -174,23 +178,21 @@ class Source:
         trailing = gap[len(gap.rstrip()):]
         return [text + ("\n" if "\n" in trailing else "")]
 
-    def replace(self, first: int, last: int, text: str) -> Edit:
+    def replace(self, first: int, last: int, text: str, moved: Iterable[tuple[int, int]] = ()) -> Edit:
         """Tokens `first` through `last` replaced by `text`, keeping the
-        comments and markers between them after it."""
-        return self.replace_span(self.start(first), self.end(last), text)
-
-    def replace_span(self, start: int, end: int, text: str) -> Edit:
-        kept = self.kept(start, end)
+        comments and markers between them, but those `moved` (`kept`), after it."""
+        start, end = self.start(first), self.end(last)
+        kept = self.kept(start, end, moved)
         return Edit(start, end, _joined([text, *kept]) if text else _joined(kept))
 
-    def delete(self, first: int, last: int) -> Edit:
+    def delete(self, first: int, last: int, moved: Iterable[tuple[int, int]] = ()) -> Edit:
         """Tokens `first` through `last` deleted, with the whitespace on one
         side of them (the line's, when they start one), keeping any comment or
-        marker between them."""
+        marker between them but those `moved` (`kept`)."""
         start, end = self.start(first), self.end(last)
         leading = len(self.sql[:start]) - len(self.sql[:start].rstrip())
         trailing = len(self.sql[end:]) - len(self.sql[end:].lstrip())
-        kept = self.kept(start, end)
+        kept = self.kept(start, end, moved)
         # Whitespace on one side only goes when nothing then runs into the
         # deleted text's neighbour: `(... ORDER BY a)`, not `(...), b AS`.
         before = self.sql[start - leading - 1:start - leading]

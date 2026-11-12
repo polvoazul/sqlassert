@@ -266,8 +266,11 @@ def test_a_group_by_over_a_key_of_its_input_is_a_projection():
     rewrite, = suggest(sql).rewrites
     assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
     assert rewrite.suggest_type is SuggestType.REWRITE_WITH_CAVEAT
+    assert rewrite.rewritten(sql).endswith(
+        "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, nick AS a FROM users"
+    )
     assert rewrite.message.endswith(
-        "drop GROUP BY and write SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, nick AS a. "
+        "drop GROUP BY and write each aggregate as its value over that row. "
         "Caveat: 'n' changes from count's result type to an integer literal's type; "
         "'c' changes from count's result type to an integer literal's type; "
         "'s' changes from sum's result type to the type of id; cast them if later arithmetic needs the wider types"
@@ -278,7 +281,7 @@ def test_a_group_by_kept_unique_through_a_many_to_one_join_is_a_projection():
     sql = SCHEMA + "SELECT o.id, max(u.name) AS name FROM orders o JOIN users u ON u.id = o.user_id GROUP BY o.id"
     rewrite, = suggest(sql).rewrites
     assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
-    assert rewrite.message.endswith("write SELECT o.id, u.name AS name")
+    assert rewrite.rewritten(sql).endswith("SELECT o.id, u.name AS name FROM orders o JOIN users u ON u.id = o.user_id")
 
 
 @pytest.mark.parametrize("query", [
@@ -325,7 +328,9 @@ def test_a_one_row_aggregate_is_a_rewrite_with_caveat_when_its_type_changes(item
     query = f"SELECT id, {item} AS v FROM t GROUP BY id"
     rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
     assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.GROUPING_PROJECTION, suggest_type)
-    written = f"drop GROUP BY and write SELECT id, {replacement} AS v"
+    rewritten = rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA)
+    assert rewritten == f"SELECT id, {replacement} AS v FROM t"
+    written = "drop GROUP BY and write each aggregate as its value over that row"
     if suggest_type is SuggestType.REWRITE:
         assert rewrite.message.endswith(written)
     else:
@@ -338,7 +343,7 @@ def test_a_one_row_aggregate_is_a_rewrite_with_caveat_when_its_type_changes(item
     with duckdb.connect() as con:
         con.execute(ONE_ROW_SCHEMA + ONE_ROW_VALUES)
         before = con.execute(f"SELECT id, v, typeof(v) FROM ({query})").fetchall()
-        after = con.execute(f"SELECT id, v, typeof(v) FROM (SELECT id, {replacement} AS v FROM t)").fetchall()
+        after = con.execute(f"SELECT id, v, typeof(v) FROM ({rewritten})").fetchall()
     assert [row[:2] for row in before] == [row[:2] for row in after]
     assert (before[0][2], after[0][2]) == types
 
@@ -405,12 +410,14 @@ def test_a_one_row_aggregate_whose_precision_or_type_may_change_is_a_rewrite_wit
     query = f"SELECT id, {item} AS v FROM t GROUP BY id"
     rewrite, = suggest(schema + query, dialect="duckdb").rewrites
     assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.GROUPING_PROJECTION, SuggestType.REWRITE_WITH_CAVEAT)
-    assert rewrite.message.endswith(f"drop GROUP BY and write SELECT id, {replacement} AS v. Caveat: {caveat}")
+    rewritten = rewrite.rewritten(schema + query).removeprefix(schema)
+    assert rewritten == f"SELECT id, {replacement} AS v FROM t"
+    assert rewrite.message.endswith(f"drop GROUP BY and write each aggregate as its value over that row. Caveat: {caveat}")
     with duckdb.connect() as con:
         con.execute(schema + ONE_ROW_VALUES.replace("'a')", "'a', 9007199254740993, 9007199254740993)"))
         (_, before), = con.execute(f"SELECT v, typeof(v) FROM ({query})").fetchall()
         try:
-            (_, after), = con.execute(f"SELECT {replacement}, typeof({replacement}) FROM t").fetchall()
+            (_, after), = con.execute(f"SELECT v, typeof(v) FROM ({rewritten})").fetchall()
         except duckdb.OutOfRangeException:
             after = None
     assert (before, after) == types
@@ -804,6 +811,21 @@ EQUIVALENT = [
         SCHEMA + "SELECT u.name AS label, u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY (), u.name, u.id",
         RewriteKind.REDUNDANT_GROUPING,
     ),
+    (
+        SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, "
+        "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT o.id, max(u.nick) AS nick, count(u.nick) AS c FROM orders o LEFT JOIN users u ON u.id = o.user_id "
+        "GROUP BY o.id",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT o.id, max(u.nick || 'x') || 'y' AS d, min(o.total) * 2 AS t, count(*) + count(o.total) AS c "
+        "FROM orders o LEFT JOIN users u ON u.id = o.user_id GROUP BY o.id",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
 ]
 
 
@@ -815,20 +837,6 @@ EQUIVALENT_BY_HAND = [
         SCHEMA + "SELECT s.ts, o.total FROM sessions s LEFT JOIN orders o ON o.total = s.ts "
         "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')",
         RewriteKind.FILTER_JOIN,
-    ),
-    (
-        SCHEMA + "SELECT id, count(*) AS n, count(nick) AS c, max(name) AS m, sum(DISTINCT id) AS s, "
-        "any_value(nick) AS a, avg(id) AS v FROM users WHERE nick IS NULL OR id > 1 GROUP BY id",
-        SCHEMA + "SELECT id, 1 AS n, CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c, name AS m, id AS s, "
-        "nick AS a, id AS v FROM users WHERE nick IS NULL OR id > 1",
-        RewriteKind.GROUPING_PROJECTION,
-    ),
-    (
-        SCHEMA + "SELECT o.id, max(u.nick) AS nick, count(u.nick) AS c FROM orders o LEFT JOIN users u ON u.id = o.user_id "
-        "GROUP BY o.id",
-        SCHEMA + "SELECT o.id, u.nick AS nick, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END AS c FROM orders o "
-        "LEFT JOIN users u ON u.id = o.user_id",
-        RewriteKind.GROUPING_PROJECTION,
     ),
     (
         SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
@@ -971,6 +979,16 @@ EXPECTED_DIFFS = [
 @@ -7 +7 @@
 -GROUP BY u.id, u.name
 +GROUP BY u.id""",
+    ),
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        SCHEMA + "SELECT o.id, max(u.name) AS name, count(u.nick) + 1 AS c\nFROM orders o JOIN users u ON u.id = o.user_id\nGROUP BY o.id",
+        """\
+@@ -5 +5 @@
+-SELECT o.id, max(u.name) AS name, count(u.nick) + 1 AS c
++SELECT o.id, u.name AS name, CASE WHEN u.nick IS NULL THEN 0 ELSE 1 END + 1 AS c
+@@ -7 +6,0 @@
+-GROUP BY o.id""",
     ),
 ]
 
