@@ -149,7 +149,7 @@ def rewrites(
             found.extend(one_row or _redundant_sort_keys(site, relation, node, sort_keys.get(site), dialect, source))
         match relation:
             case ir.Join() if isinstance(node, exp.Join):
-                same = _self_join(arena, site, relation, node, program, dialect)
+                same = _self_join(arena, site, relation, node, program, dialect, source)
                 removed = None if same else _redundant_join(arena, site, relation, node, dialect, source)
                 inner = None if removed or same else _inner_join(arena, site, relation, parents, node, source)
                 found.extend(item for item in (removed, same, inner) if item is not None)
@@ -954,7 +954,9 @@ def _copy(column: ir.OutputColumn, program: ir.Program) -> _Copy | None:
                 return None
 
 
-def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, program: ir.Program, dialect: str) -> Rewrite | None:
+def _self_join(
+    arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join, program: ir.Program, dialect: str, source: Source,
+) -> Rewrite | None:
     """`a JOIN t b ON a.k = b.k`, where `a` reads the same relation `t` and
     `k` is a non-null key of it: each row of `a` matches itself, so every
     `b.x` is `a.x` and the join goes. Other ON conjuncts move to WHERE (an
@@ -962,7 +964,9 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
     differently) or, for a LEFT JOIN, guard each column read from `b`:
     `CASE WHEN cond THEN a.x END`, NULL where the join padded. The relation
     is a table, or a view or CTE whose rows are the same each time it is read
-    (`_same_rows`) and whose columns read through `b` are pure (`_pure`)."""
+    (`_same_rows`) and whose columns read through `b` are pure (`_pure`).
+    The edits delete the join, qualify each `b.x` with `a`, and write the
+    other conjuncts, as written but for `b`, in WHERE or each guard."""
     if join.kind not in {"inner", "left"} or not isinstance(join.right, ir.Alias) or node.args.get("using") or node.args.get("method"):
         return None
     select = node.parent
@@ -993,21 +997,26 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
         key = key & present
     mine, theirs = alias.name, node.this.alias_or_name
     names = {column.name.lower() for column in keys.values()}
-    on = node.args.get("on")
-    conjuncts = _syntax_conjuncts(on) if on is not None else []
+    written, _ = _on_conjuncts(node, source)
+    tokens = source.tokens_of(span(node))
+    if written is None or tokens is None:
+        return None
     columns = {column.name.lower(): column for column in relation.output_columns}
-    extra = [conjunct for conjunct in conjuncts if not _key_equality(conjunct, mine, theirs, names)]
+    extra = [(conjunct, first, last) for conjunct, first, last in written if not _key_equality(conjunct, mine, theirs, names)]
     if extra and join.kind == "inner" and _right_or_full_join_follows(node):
         return None
     if extra and join.kind == "left" and join.predicate is not None and ir.determinants(join.predicate) is None:
         return None  # A volatile condition repeated per column would draw again.
-    rewritten = select.copy()
-    copied = next(other for other, original in zip(rewritten.args.get("joins") or (), select.args.get("joins") or ()) if original is node)
-    guard = exp.and_(*(_requalified(conjunct, theirs, mine, names) for conjunct in extra)) if extra else None
-    for column in list(rewritten.find_all(exp.Column)):
-        if _within(column, copied):
+    reader = exp.to_identifier(mine).sql(dialect=dialect)
+    parts = [_requalified(source, conjunct, first, last, theirs, reader, mine, dialect) for conjunct, first, last in extra]
+    if any(part is None for part in parts):
+        return None
+    guard = " AND ".join(part for part in parts if part is not None) or None
+    edits: list[Edit] = []
+    for column in select.find_all(exp.Column):
+        if _within(column, node):
             continue
-        if column.find_ancestor(exp.Select) is not rewritten:
+        if column.find_ancestor(exp.Select) is not select:
             if column.table.lower() == theirs.lower():
                 return None  # Read in a nested query, which this rewrite does not reach.
             continue
@@ -1017,52 +1026,63 @@ def _self_join(arena: Arena, site: AttachmentSite, join: ir.Join, node: exp.Join
             continue
         if column.table.lower() != theirs.lower():
             continue
-        source = columns.get(column.name.lower())
-        if source is None or not _pure(source, program):
+        read = columns.get(column.name.lower())
+        qualifier, name = _identifier_token(column.args.get("table"), source), _identifier_token(column.this, source)
+        if read is None or not _pure(read, program) or qualifier is None or name is None:
             return None
-        value: exp.Expression = exp.column(column.name, table=mine)
         if guard is not None and join.kind == "left":
-            value = exp.Case(ifs=[exp.If(this=guard.copy(), true=value)])
-            if column.parent is rewritten:
-                value = exp.alias_(value, column.name)
-        column.replace(value)
-    copied.pop()
+            written_name = source.text(name, name)
+            value = f"CASE WHEN {guard} THEN {reader}.{written_name} END"
+            edits.append(source.replace(qualifier, name, value + (f" AS {written_name}" if column.parent is select else "")))
+        else:
+            edits.append(source.replace(qualifier, qualifier, reader))
+    moved = [(first, last) for _, first, last in extra]
     if guard is not None and join.kind == "inner":
-        rewritten.where(guard, copy=False)
+        anded = _anded_into_where(select, source, guard, tokens, moved)
+        if anded is None:
+            return None
+        edits.extend(anded)
+    else:
+        # A LEFT JOIN's guard may be copied into no column: its comments stay.
+        edits.append(source.delete(*tokens))
     message = (
         f"each {mine} row matches itself on the key ({quoted_all(sorted(column.name for column in keys.values()))}), "
-        f"so {theirs} is {mine}: delete the join and read {mine}'s columns: {written_sql(rewritten, dialect)}"
+        f"so {theirs} is {mine}: delete the join and read {mine}'s columns"
     )
-    return Rewrite(site, RewriteKind.SELF_JOIN, message, (), key)
+    return Rewrite(site, RewriteKind.SELF_JOIN, message, tuple(edits), key)
 
 
-def _syntax_conjuncts(condition: exp.Expression) -> list[exp.Expression]:
-    while isinstance(condition, exp.Paren):
-        condition = condition.this
-    if isinstance(condition, exp.And):
-        return [*_syntax_conjuncts(condition.this), *_syntax_conjuncts(condition.expression)]
-    return [condition]
+def _identifier_token(identifier: Expr | None, source: Source) -> int | None:
+    return source.at(identifier.meta["start"]) if isinstance(identifier, exp.Identifier) and "start" in identifier.meta else None
 
 
-def _key_equality(conjunct: exp.Expression, mine: str, theirs: str, names: set[str]) -> bool:
+def _requalified(source: Source, conjunct: Expr, first: int, last: int, old: str, new: str, new_name: str, dialect: str) -> str | None:
+    """The conjunct, written from token `first` to `last`, reading `new`
+    (written as `new`, named `new_name`) where it read `old`; `new.x =
+    old.x` becomes `new.x IS NOT NULL`, all it still checks once both are
+    one row."""
+    if isinstance(conjunct, exp.EQ) and _key_equality(conjunct, new_name, old, {conjunct.this.name.lower()}):
+        return written_sql(exp.Is(this=exp.column(conjunct.this.name, table=new_name), expression=exp.null(), negate=True), dialect)
+    qualifiers = [
+        _identifier_token(column.args.get("table"), source)
+        for column in conjunct.find_all(exp.Column) if column.table.lower() == old.lower()
+    ]
+    text, cursor = "", source.start(first)
+    for index in sorted(index if index is not None else -1 for index in qualifiers):
+        if index < 0:
+            return None
+        text += source.sql[cursor:source.start(index)] + new
+        cursor = source.end(index)
+    return text + source.sql[cursor:source.end(last)]
+
+
+def _key_equality(conjunct: Expr, mine: str, theirs: str, names: set[str]) -> bool:
     """`mine.k = theirs.k` (either way round) for a key column `k`."""
     if not isinstance(conjunct, exp.EQ) or not isinstance(conjunct.this, exp.Column) or not isinstance(conjunct.expression, exp.Column):
         return False
     first, second = conjunct.this, conjunct.expression
     tables = {first.table.lower(), second.table.lower()}
     return first.name.lower() == second.name.lower() and first.name.lower() in names and tables == {mine.lower(), theirs.lower()}
-
-
-def _requalified(expression: exp.Expression, old: str, new: str, names: set[str]) -> exp.Expression:
-    """`expression` reading `new` where it read `old`; `new.x = old.x` becomes
-    `new.x IS NOT NULL`, all it still checks once both are one row."""
-    if isinstance(expression, exp.EQ) and _key_equality(expression, new, old, {expression.this.name.lower()}):
-        return exp.Is(this=exp.column(expression.this.name, table=new), expression=exp.null(), negate=True)
-    copied = expression.copy()
-    for column in copied.find_all(exp.Column):
-        if column.table.lower() == old.lower():
-            column.set("table", exp.to_identifier(new))
-    return copied
 
 
 def _same_rows(relation: ir.RelationExpr, program: ir.Program) -> bool:

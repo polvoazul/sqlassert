@@ -498,21 +498,21 @@ def test_limit_that_may_change_the_rows_is_kept(query: str):
 
 
 @pytest.mark.parametrize(("query", "rewritten"), [
-    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id", "SELECT u.id, u.name FROM users AS u"),
-    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id AND v.nick = 'x'", "SELECT u.id, u.name FROM users AS u WHERE u.nick = 'x'"),
+    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id", "SELECT u.id, u.name FROM users u"),
+    ("SELECT u.id, v.name FROM users u JOIN users v ON u.id = v.id AND v.nick = 'x'", "SELECT u.id, u.name FROM users u WHERE u.nick = 'x'"),
     (
         "SELECT u.id, v.name FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
-        "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name FROM users AS u",
+        "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name FROM users u",
     ),
-    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL"),
+    ("SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick", "SELECT u.id, u.nick FROM users u WHERE u.nick IS NOT NULL"),
     (
         "WITH c AS (SELECT id, name, random() AS r FROM users) SELECT a.id, b.name FROM c a JOIN c b ON a.id = b.id",
-        "SELECT a.id, a.name FROM c AS a",
+        "SELECT a.id, a.name FROM c a",
     ),
 ])
 def test_a_self_join_on_a_key_reads_the_same_row(query: str, rewritten: str):
     rewrite = next(i for i in suggest(SCHEMA + query).rewrites if i.kind is RewriteKind.SELF_JOIN)
-    assert rewrite.message.endswith(rewritten)
+    assert rewrite.rewritten(SCHEMA + query).endswith(rewritten)
 
 
 def test_a_self_join_that_only_filters_reads_the_same_row_instead_of_exists():
@@ -632,7 +632,8 @@ def test_the_cli_labels_a_rewrite_with_caveat(tmp_path, capsys):
 
 # Rewrites preserve the result ---------------------------------------------------
 
-# (original, rewritten, the rewrite that justifies the rewrite)
+# (original, a kind of Rewrite suggest offers for it): each such Rewrite's
+# edits make the SQL compared with the original.
 EQUIVALENT = [
     # Issue 33: padding traced through a later LEFT JOIN whose ON rejects the padded column.
     (
@@ -835,22 +836,21 @@ EQUIVALENT = [
         SCHEMA + "SELECT s.ts FROM sessions s JOIN users u ON (u.id = s.user_id) WHERE s.ts = 1 OR s.user_id = 2 ORDER BY 1",
         RewriteKind.FILTER_JOIN,
     ),
-]
-
-
-# Kinds whose rewrite has no edits yet: compared with a query written by hand.
-EQUIVALENT_BY_HAND = [
     (
         SCHEMA + "SELECT u.id, v.name, v.email FROM users u LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
-        SCHEMA + "SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email FROM users AS u",
         RewriteKind.SELF_JOIN,
     ),
     (
         SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND u.nick = v.nick AND v.name <> 'a'",
-        SCHEMA + "SELECT u.id, u.nick FROM users AS u WHERE u.nick IS NOT NULL AND u.name <> 'a'",
+        RewriteKind.SELF_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.nick FROM users u JOIN users v ON u.id = v.id AND (v.name <> 'a' OR v.nick = 'b') "
+        "WHERE u.id > 1 OR u.email = 'c'",
         RewriteKind.SELF_JOIN,
     ),
 ]
+
 
 
 def differing_instance(original: str, rewritten: str) -> SearchResult:
@@ -887,15 +887,6 @@ def test_each_rewrite_preserves_the_result_on_random_instances(original: str, re
         search = differing_instance(original, rewritten)
         assert search.status == "no-counterexample", (rewritten, search)
         assert search.valid >= 100
-
-
-@pytest.mark.parametrize(("original", "rewritten", "rewrite"), EQUIVALENT_BY_HAND)
-def test_each_rewrite_without_edits_preserves_the_result_on_random_instances(original: str, rewritten: str, rewrite: RewriteKind):
-    assert rewrite in rewrites(original)
-
-    search = differing_instance(original, rewritten)
-    assert search.status == "no-counterexample", search
-    assert search.valid >= 100
 
 
 # One Rewrite of each kind, and the diff its edits make, written by hand.
@@ -1000,6 +991,16 @@ EXPECTED_DIFFS = [
 -JOIN users u ON u.id = s.user_id AND u.nick = '1'
 -WHERE s.ts = 1
 +WHERE s.ts = 1 AND EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id AND u.nick = '1')""",
+    ),
+    (
+        RewriteKind.SELF_JOIN,
+        SCHEMA + "SELECT u.id, v.name, v.email\nFROM users u\nLEFT JOIN users v ON u.id = v.id AND v.nick = 'x'",
+        """\
+@@ -5 +5 @@
+-SELECT u.id, v.name, v.email
++SELECT u.id, CASE WHEN u.nick = 'x' THEN u.name END AS name, CASE WHEN u.nick = 'x' THEN u.email END AS email
+@@ -7 +6,0 @@
+-LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
     ),
 ]
 
