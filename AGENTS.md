@@ -22,6 +22,15 @@ missing and how to supply it, and treat the affected facts as unknown; never
 guess. With a connection (`analyze_database`), resolve it from the catalog. A
 connection may only add proofs, never change what the SQL alone proves.
 
+## Current, strict engines only
+
+Model each engine's latest release under its default settings, strict modes
+on ([ADR 0006](docs/adr/0006-model-only-current-strict-engines.md)). No
+older versions, no permissive settings (non-strict `sql_mode`, Spark ANSI
+off), and no meaning for SQL the standard rejects but a flavor tolerates
+(a column neither grouped nor aggregated): make it opaque and warn
+`unsupported-construct`. Simpler code beats supporting outdated SQL.
+
 ## Where things are
 
 - Domain language: `CONTEXT.md`. Use its terms; it lists terms to avoid.

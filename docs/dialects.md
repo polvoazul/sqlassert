@@ -9,6 +9,7 @@ for dialects the oracle does not run.
 
 ## The rule for every flag
 
+Superseded by [ADR 0006](adr/0006-model-only-current-strict-engines.md) (latest release, default settings, strict modes; cleanup in [issue 70](issues/0070-drop-legacy-and-permissive-dialect-support.md)). Until then:
 A flag may only claim what holds under *all* of the dialect's settings,
 because the SQL alone does not say which are in force (ADR 0005). Where a
 setting decides (Spark's ANSI mode), the flag takes the
