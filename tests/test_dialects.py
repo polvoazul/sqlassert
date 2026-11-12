@@ -63,5 +63,6 @@ def test_pipes_are_concatenation_elsewhere():
 
 def test_a_dialect_not_listed_gets_cautious_semantics_and_enforced_keys():
     assert semantics("tsql") == DialectSemantics()
+    assert semantics("spark2") == DialectSemantics()  # Older versions are not modelled (ADR 0006).
     assert not DialectSemantics().checked_arithmetic and not DialectSemantics().text_is_binary
     assert DialectSemantics().pipes is None and DialectSemantics().unique_keys == "enforced"

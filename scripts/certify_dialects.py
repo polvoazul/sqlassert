@@ -66,7 +66,6 @@ VERSION_SQL: dict[str, str] = {
     "redshift": "SELECT version()",
     "databricks": "SELECT current_version().dbr_version",
     "spark": "SELECT version()",
-    "spark2": "SELECT version()",
     "hive": "SELECT version()",
     "oracle": "SELECT version_full FROM product_component_version",
     "trino": "SELECT version()",

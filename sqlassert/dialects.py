@@ -190,7 +190,6 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     ),
     "databricks": replace(_SPARK, checked_division=True, casts_raise=True),
     "spark": _SPARK,
-    "spark2": _SPARK,
     "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced",
         check_constraints="unenforced",
     ),

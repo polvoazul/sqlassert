@@ -61,7 +61,7 @@ DuckDB's text is not compared by identity without a COLLATE
 ClickHouse, absent from BigQuery, Redshift, Hive, Oracle and unlisted
 dialects.
 
-Left: the local engine Spark (Databricks, `spark`, `spark2`) keeps `doc`
+Left: the local engine Spark (Databricks, `spark`) keeps `doc`
 provenance: certifying it needs Java or a Spark image and a DB-API bridge.
 MySQL's NDB engine facts are `doc` (no NDB locally). Hive and Oracle are
 `doc`.
