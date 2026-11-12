@@ -57,7 +57,7 @@ SELECT empno, deptno, random() AS r1, random() AS r2 FROM emp
 -- inspired by RelMetadataTest.testFunctionalDependencyWithIdenticalExpressions
 -- deptno2 -> deptno: missing proof (one input column passed through twice).
 SELECT deptno, deptno AS deptno2, deptno + 1 AS deptno3 FROM emp
-/**ASSERT DETERMINES(deptno2 -> deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(deptno2 -> deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(deptno2 -> deptno3)**/  --~ PROVED
 
 -- case: fd_constants
@@ -124,7 +124,7 @@ SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno, d.name FROM emp AS e
 -- d_deptno holds (Paulley Lemma 9): missing proof.
 SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp AS e LEFT JOIN dept AS d ON e.deptno = d.deptno AND e.sal > 1000
 /**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ UNKNOWN
-/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(empno -> d_deptno)**/  --~ PROVED
 
 -- case: fd_right_join
@@ -138,6 +138,7 @@ SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno, d.name FROM dept AS 
 -- False, as in fd_left_join_extra_conjunct; Calcite derives it.
 SELECT e.empno, e.deptno AS e_deptno, d.deptno AS d_deptno FROM dept AS d RIGHT JOIN emp AS e ON e.deptno = d.deptno AND e.sal > 1000
 /**ASSERT DETERMINES(e_deptno -> d_deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(e_deptno, sal -> d_deptno)**/  --~ PROVED
 
 -- case: fd_full_join
 -- inspired by RelMetadataTest.testFunctionalDependencyFullOuterJoin
@@ -159,8 +160,8 @@ JOIN emp AS e2
     ON e2.mgr IS NOT DISTINCT FROM e2.deptno
 WHERE e1.empno = e1.sal
 /**ASSERT DETERMINES(sal -> empno)**/  --~ PROVED
-/**ASSERT DETERMINES(mgr -> deptno)**/  --~ UNKNOWN
-/**ASSERT DETERMINES(deptno -> mgr)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(mgr -> deptno)**/  --~ PROVED
+/**ASSERT DETERMINES(deptno -> mgr)**/  --~ PROVED
 
 -- case: fd_union_all
 -- inspired by RelMetadataTest.testFunctionalDependencyUnion
@@ -244,7 +245,7 @@ SELECT l.k1, l.k2 FROM ck AS l LEFT JOIN (SELECT 5 AS c) AS s ON l.k1 = s.c
 -- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (IS NOT DISTINCT FROM onto a non-null key)
 -- Each left row matches at most one s row: missing proof.
 SELECT l.k FROM r AS l JOIN r AS s ON l.x IS NOT DISTINCT FROM s.k
-/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(k)**/  --~ PROVED
 
 -- case: uk_null_safe_join_on_nullable_unique
 -- inspired by RelMdColumnUniqueness.areColumnsUnique(Join) (JoinInfo counts IS NOT DISTINCT FROM as an equi-key)
@@ -306,7 +307,7 @@ SELECT empno, ename FROM emp GROUP BY empno, ename
 SELECT sal, max(deptno) AS max_dept, max(empno) AS max_emp FROM emp GROUP BY sal
 /**ASSERT UNIQUE(sal)**/  --~ PROVED
 /**ASSERT UNIQUE(max_dept)**/  --~ UNKNOWN
-/**ASSERT UNIQUE(max_emp)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(max_emp)**/  --~ PROVED
 
 -- case: uk_composite_key_pass_through_aggregates
 -- inspired by RelMetadataTest.testCompositeKeysAggregationUniqueKeys

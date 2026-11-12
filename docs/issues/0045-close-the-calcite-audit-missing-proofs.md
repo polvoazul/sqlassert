@@ -99,10 +99,10 @@ Roughly in this order: the lowering gaps lose proofs on common SQL.
     match status by the columns they read (Paulley L6), not the whole row:
     `ON e.deptno = d.deptno AND e.sal > 1000` proves `e_deptno, sal -> d_deptno`.
     `keys: fd_left_join_extra_conjunct`, `fd_right_join_extra_conjunct`.
-21. **A FULL join that is Many To One** keeps the left side's key laxly: the
+21. Moved to issue 37 (with F2/F4). Was: **A FULL join that is Many To One** keeps the left side's key laxly: the
     left Row Identity determines the right one. Pair with F2/F4 (issue 37).
     `keys: fd_full_join`.
-22. **UNION ALL with disjoint branches** (`WHERE deptno = 10` / `= 20`) keeps
+22. Moved to issue 37 (with U2). Was: **UNION ALL with disjoint branches** (`WHERE deptno = 10` / `= 20`) keeps
     each branch's FDs. Pair with U2 (issue 37). `keys: fd_union_all`.
 23. **Semi joins**: a constant in an EXISTS ON pins the left column
     (`d.deptno = e.mgr AND d.deptno = 10`); two left columns equal to one

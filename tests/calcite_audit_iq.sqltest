@@ -127,8 +127,37 @@ SELECT e.deptno
 FROM emp AS e
 /**ASSERT MANY TO ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS x  --~ PROVED
     ON TRUE
-/**ASSERT EXACTLY ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS y  --~ UNKNOWN
+/**ASSERT EXACTLY ONE**/ LEFT JOIN (SELECT count(*) AS c FROM dept) AS y  --~ PROVED
     ON TRUE
+
+-- case: cross_join_to_a_scalar_aggregate_matches_exactly_once
+-- inspired by misc.iq (as above, written as CROSS JOIN)
+SELECT e.deptno, x.c
+FROM emp AS e
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS c FROM dept) AS x  --~ PROVED
+
+-- case: cross_join_to_a_filtered_scalar_aggregate_matches_exactly_once
+-- A scalar aggregate has one row even when its WHERE keeps none; HAVING can drop it.
+SELECT e.deptno, x.c, y.c AS c2
+FROM emp AS e
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS c FROM dept WHERE 1 = 0) AS x  --~ PROVED
+/**ASSERT EXACTLY ONE**/ CROSS JOIN (SELECT count(*) AS c FROM dept HAVING count(*) > 5) AS y  --~ UNKNOWN
+
+-- Parenthesized joins ---------------------------------------------------------
+
+-- case: parenthesized_join_as_a_right_input
+-- inspired by issue 45 item 6: a join in parentheses on a join's right side
+SELECT d.deptno, e.empno, c.ename
+FROM dept AS d
+LEFT JOIN (emp AS e /**ASSERT MANY TO ONE**/ LEFT JOIN emp AS c USING (empno))  --~ PROVED
+    ON d.deptno = e.deptno
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
+
+-- case: parenthesized_join_unique_from_the_outside
+SELECT e.empno, d.dname
+FROM emp AS e
+/**ASSERT MANY TO ONE**/ LEFT JOIN (dept AS d JOIN dept AS d2 ON d.deptno = d2.deptno)  --~ PROVED
+    ON e.deptno = d.deptno
 
 -- A correlated scalar subquery over count(*) always yields a row, and count is
 -- never NULL; Calcite plans it as CASE WHEN c IS NULL THEN 0. Missing proof.
@@ -205,7 +234,7 @@ SELECT deptno FROM emp WHERE deptno IS NOT NULL GROUP BY ROLLUP (deptno)
 -- case: grouped_sum_of_a_non_null_column_is_non_null
 -- inspired by agg.iq, "select sum(deptno) as deptno from dept group by dname" (CALCITE-6557)
 SELECT dname, sum(deptno) AS s FROM dept GROUP BY dname
-/**ASSERT NOT NULL(s)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(s)**/  --~ PROVED
 
 -- QUALIFY over a grouped query keeps one row per partition. Missing proof.
 -- case: qualify_over_group_by_keeps_one_row_per_partition
@@ -214,7 +243,7 @@ SELECT deptno
 FROM emp
 GROUP BY deptno, job
 QUALIFY row_number() OVER (PARTITION BY deptno ORDER BY count(*) DESC) = 1
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 
 -- Set operations --------------------------------------------------------------
 
