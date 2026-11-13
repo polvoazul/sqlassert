@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - docs/assets/sqlassert-demo.html
+      - docs/site/index.html
       - .github/workflows/demo-pages.yml
   workflow_dispatch:
 
@@ -27,7 +28,8 @@ jobs:
       - name: Prepare demo
         run: |
           mkdir _site
-          cp docs/assets/sqlassert-demo.html _site/index.html
+          cp docs/site/index.html _site/index.html
+          cp docs/assets/sqlassert-demo.html _site/demo.html
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site

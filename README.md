@@ -7,9 +7,9 @@
 
 **sqlassert adds asserts and static proofs to your SQL, without touching your data, to catch common mistakes before they ship.**
 
-[![Open the interactive demo showing highlighted SQL and a Fan Trap finding](docs/assets/sqlassert-demo-preview.png)](https://polvoazul.github.io/sqlassert/)
+[![Open the interactive demo showing highlighted SQL and a Fan Trap finding](docs/assets/sqlassert-demo-preview.png)](https://polvoazul.github.io/sqlassert/demo.html)
 
-[Open the interactive demo](https://polvoazul.github.io/sqlassert/)
+[Open the interactive demo](https://polvoazul.github.io/sqlassert/demo.html)
 
 Mark what a query must guarantee (this join never multiplies rows, this column is a key, this `CASE` covers every status) and sqlassert proves it from the SQL and schema alone. A proof holds for *any* data, not just the rows in the table today, and it runs in milliseconds in your test suite or CI, with no warehouse and no connection.
 
