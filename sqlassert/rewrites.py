@@ -853,7 +853,8 @@ def _redundant_grouping(
         determinant = frozenset(other.scalar_expr.column for other in others if isinstance(other.scalar_expr, ir.ColumnRef))
         closure = _closure(aggregate.input, determinant, frozenset())
         source_column = grouped.scalar_expr.column
-        if source_column not in closure.value.columns:
+        expression = expressions[aggregate.grouping_outputs.index(grouped)]
+        if source_column not in closure.value.columns or _read_past_select_list(node, expression):
             continue
         kept.remove(grouped)
         names = quoted_all(written[other] for other in others)
@@ -881,6 +882,24 @@ def _redundant_grouping(
     return found
 
 
+def _read_past_select_list(node: exp.Select, expression: Expr) -> bool:
+    """Whether a column `expression` reads may be read in DISTINCT ON, HAVING,
+    QUALIFY or ORDER BY of `node`, where it must stay grouped: any column of
+    the same name, but, in DISTINCT ON and ORDER BY, an unqualified one that
+    names a select item, which they read instead."""
+    names = {column.name.lower() for column in expression.find_all(exp.Column)}
+    outputs = {item.alias_or_name.lower() for item in node.expressions}
+    distinct = node.args.get("distinct")
+    for key, clause in (("on", distinct.args.get("on") if distinct is not None else None), *(
+        (key, node.args.get(key)) for key in ("having", "qualify", "order")
+    )):
+        for column in clause.find_all(exp.Column) if clause is not None else ():
+            name = column.name.lower()
+            if name in names and not (key in {"on", "order"} and not column.table and name in outputs):
+                return True
+    return False
+
+
 def _select_items(node: exp.Select, source: Source) -> list[tuple[tuple[int, int], tuple[int, int]]] | None:
     """The tokens of each item of `node`'s select list, whole and without
     its alias; None where they cannot be told apart."""
@@ -893,10 +912,15 @@ def _select_items(node: exp.Select, source: Source) -> list[tuple[tuple[int, int
     first = start + 1
     distinct = node.args.get("distinct")
     if distinct is not None:
-        tokens = source.tokens_of(span(distinct))
-        if tokens is None or tokens[0] != first:
-            return None  # DISTINCT ON
+        if not source.is_(first, TokenType.DISTINCT):
+            return None
         first += 1
+        if distinct.args.get("on") is not None:
+            # DISTINCT ON (...): the list starts past its parenthesized keys.
+            closing = source.closing(first + 1) if source.is_(first, TokenType.ON) and source.is_(first + 1, TokenType.L_PAREN) else None
+            if closing is None:
+                return None
+            first = closing + 1
     elif source.is_(first, TokenType.ALL):
         first += 1
     # The list ends at FROM, or at the first clause after it.

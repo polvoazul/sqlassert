@@ -249,6 +249,31 @@ def test_a_redundant_grouping_column_beside_an_item_computed_over_aggregates():
     assert rewrite.message.endswith("drop 'u.name' from GROUP BY and select any_value(u.name) AS name")
 
 
+def test_a_redundant_grouping_column_under_distinct_on_is_dropped():
+    # The select list starts past DISTINCT ON's parenthesized keys.
+    sql = SCHEMA + (
+        "SELECT DISTINCT ON (u.id) u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id, u.name ORDER BY u.id"
+    )
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.REDUNDANT_GROUPING
+    assert rewrite.rewritten(sql).removeprefix(SCHEMA) == (
+        "SELECT DISTINCT ON (u.id) u.id, any_value(u.name) AS name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id ORDER BY u.id"
+    )
+
+
+@pytest.mark.parametrize("query", [
+    # Read past the select list, the column must stay grouped.
+    "SELECT DISTINCT ON (u.name) u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name ORDER BY u.name",
+    "SELECT u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name ORDER BY u.name",
+    "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name HAVING u.name > 'a'",
+    "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name QUALIFY u.name > 'a'",
+])
+def test_a_grouping_column_read_outside_the_select_list_is_kept(query: str):
+    assert RewriteKind.REDUNDANT_GROUPING not in rewrites(SCHEMA + query)
+
+
 def test_a_redundant_grouping_column_not_selected_is_dropped():
     sql = SCHEMA + "SELECT count(*) + 1 AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name"
     rewrite, = suggest(sql).rewrites
@@ -894,6 +919,12 @@ EQUIVALENT = [
         "WHERE u.id > 1 OR u.email = 'c'",
         RewriteKind.SELF_JOIN,
     ),
+    # DISTINCT ON: the select list starts past its keys.
+    (
+        SCHEMA + "SELECT DISTINCT ON (u.id) u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id, u.name ORDER BY u.id",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
     # A new WHERE before WINDOW.
     (
         SCHEMA + "SELECT s.ts, count(*) OVER w AS n FROM sessions s JOIN users u ON u.id = s.user_id "
@@ -1060,6 +1091,17 @@ EXPECTED_DIFFS = [
 -LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
     ),
     # Placements beyond the one per kind.
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        SCHEMA + "SELECT DISTINCT ON (u.id) u.id, u.name\nFROM users u JOIN sessions s ON s.user_id = u.id\nGROUP BY u.id, u.name",
+        """\
+@@ -5 +5 @@
+-SELECT DISTINCT ON (u.id) u.id, u.name
++SELECT DISTINCT ON (u.id) u.id, any_value(u.name) AS name
+@@ -7 +7 @@
+-GROUP BY u.id, u.name
++GROUP BY u.id""",
+    ),
     (
         RewriteKind.FILTER_JOIN,
         SCHEMA + "SELECT s.ts, count(*) OVER w AS n\nFROM sessions s\nJOIN users u ON u.id = s.user_id\nWINDOW w AS (PARTITION BY s.ts)",
