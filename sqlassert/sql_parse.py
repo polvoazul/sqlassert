@@ -408,8 +408,8 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # every concrete dialect sets its own, so the base class's static type
     # cannot know they exist. This is exactly the private-API coupling
     # documented below, not a type worth narrowing further.
-    class _Tokenizer(parent.Tokenizer):  # ty: ignore[unresolved-attribute]
-        KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[unresolved-attribute]
+    class _Tokenizer(parent.Tokenizer):  # ty: ignore[missing-attribute]
+        KEYWORDS = {**parent.Tokenizer.KEYWORDS, **MARKERS}  # ty: ignore[missing-attribute]
 
     # This hooks SQLGlot's private API: `Tokenizer.KEYWORDS`, `_parse_join`,
     # `_match`, `_prev`, `_curr`. It is the best seam available — SQLGlot exposes
@@ -428,17 +428,17 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
     # program reporting as proved. `_unresolved_markers` exists for that case;
     # do not remove it, and do not add a fallback that carries on without the
     # hook.
-    class _Parser(parent.Parser):  # ty: ignore[unresolved-attribute]
+    class _Parser(parent.Parser):  # ty: ignore[missing-attribute]
         # The case marker is a primary expression of its own, so it attaches
         # to whatever expression follows it, which must be a simple CASE.
         PRIMARY_PARSERS = {
-            **parent.Parser.PRIMARY_PARSERS,  # ty: ignore[unresolved-attribute]
+            **parent.Parser.PRIMARY_PARSERS,  # ty: ignore[missing-attribute]
             SqlassertToken.SQLASSERT_EXHAUSTIVE: lambda self, token: self._parse_exhaustive_case(token),
         }
         # Each query clause records where it is written (`_SPAN`).
         QUERY_MODIFIER_PARSERS = {
             token_type: _spanned_modifier(parse)
-            for token_type, parse in parent.Parser.QUERY_MODIFIER_PARSERS.items()  # ty: ignore[unresolved-attribute]
+            for token_type, parse in parent.Parser.QUERY_MODIFIER_PARSERS.items()  # ty: ignore[missing-attribute]
         }
 
         def reset(self) -> None:
@@ -882,7 +882,7 @@ class SqlParser:
 
     def _marker_token(self, sql: str) -> Token | None:
         try:
-            tokens = self.dialect_class.Tokenizer().tokenize(sql)  # ty: ignore[unresolved-attribute]
+            tokens = self.dialect_class.Tokenizer().tokenize(sql)  # ty: ignore[missing-attribute]
         except SqlglotError:
             return None
         return next(
