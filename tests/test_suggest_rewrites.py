@@ -458,9 +458,38 @@ def test_a_one_row_aggregate_whose_precision_or_type_may_change_is_a_rewrite_wit
     # Of an expression, the argument's type is unknown.
     "sum(i + 1)",
     "avg(i + 1)",
+    # count(t.*) counts rows, not a value that may be NULL.
+    "count(t.*)",
+    # A call SQLGlot does not know may be an aggregate the analysis does not
+    # model (DuckDB's mean, arbitrary, count_star, fsum): left in place, it
+    # would aggregate the whole table once GROUP BY is gone.
+    "mean(i)",
+    "arbitrary(s)",
+    "count_star()",
+    "fsum(f)",
+    "main.max(s)",
+    "max(s) + mean(i)",
 ])
 def test_a_one_row_aggregate_whose_value_may_change_or_whose_type_is_unknown_is_not_rewritten(item: str):
     assert not suggest(ONE_ROW_SCHEMA + f"SELECT id, {item} AS v FROM t GROUP BY id").rewrites
+
+
+@pytest.mark.parametrize(("dialect", "item", "replacement"), [
+    # Every spelling of a call the analysis gives a one-row value is placed.
+    ("duckdb", "count(ALL s)", "CASE WHEN s IS NULL THEN 0 ELSE 1 END"),
+    ("duckdb", "max(ALL s)", "s"),
+    ("postgres", "sum(ALL i) + 1", "i + 1"),
+    ("duckdb", "MAX ( DISTINCT s )", "s"),
+    ("snowflake", "{fn MAX(s)}", "s"),
+    ("snowflake", "{fn MAX(s)} || 'x'", "s || 'x'"),
+    ("bigquery", "any_value(s HAVING MAX i)", "s"),
+    ("bigquery", "any_value(s HAVING MIN i)", "s"),
+])
+def test_every_spelling_of_a_one_row_aggregate_is_placed(dialect: str, item: str, replacement: str):
+    query = f"SELECT id, {item} AS v FROM t GROUP BY id"
+    rewrite, = suggest(ONE_ROW_SCHEMA + query, dialect=dialect).rewrites
+    assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA) == f"SELECT id, {replacement} AS v FROM t"
 
 
 def test_a_rewrite_that_keeps_every_column_type_is_a_plain_rewrite():
@@ -965,6 +994,12 @@ EQUIVALENT = [
         "GROUP BY u.id, u.name ORDER BY u.id",
         RewriteKind.REDUNDANT_GROUPING,
     ),
+    # ALL, like DISTINCT, is no part of the argument.
+    (
+        SCHEMA + "SELECT o.id, count(ALL u.nick) AS c, max(ALL u.name) AS m FROM orders o LEFT JOIN users u ON u.id = o.user_id "
+        "GROUP BY o.id",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
     # DuckDB's FROM-first Select.
     (
         SCHEMA + "FROM sessions s JOIN users u ON u.id = s.user_id SELECT s.ts",
@@ -1148,6 +1183,16 @@ EXPECTED_DIFFS = [
 -LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
     ),
     # Placements beyond the one per kind.
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        SCHEMA + "SELECT id,\n  count(ALL nick) AS c\nFROM users\nGROUP BY id",
+        """\
+@@ -6 +6 @@
+-  count(ALL nick) AS c
++  CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c
+@@ -8 +7,0 @@
+-GROUP BY id""",
+    ),
     (
         RewriteKind.REDUNDANT_GROUPING,
         SCHEMA + "FROM users u JOIN sessions s ON s.user_id = u.id\nSELECT u.id, u.name\nGROUP BY u.id, u.name",

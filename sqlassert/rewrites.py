@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal, assert_never
 
+import sqlglot
 from sqlglot import Expr, exp
 from sqlglot.tokens import TokenType
 
@@ -630,6 +631,11 @@ def _grouping_is_projection(
         for call in node.find_all(exp.AggFunc)
     ) or any(node.args.get(key) is not None for key in ("qualify", "having")) or any(item.find(exp.Window) for item in node.expressions):
         return None
+    if any(item.find(exp.Anonymous, exp.AnonymousAggFunc) for item in node.expressions):
+        # A call SQLGlot does not know may be an aggregate the analysis does
+        # not model (DuckDB's mean, arbitrary, count_star): with GROUP BY
+        # gone, it would aggregate the whole input.
+        return None
     keys = frozenset(column.scalar_expr.column for column in outputs if isinstance(column.scalar_expr, ir.ColumnRef))
     evidence = _reaches_row_identity(_closure(aggregate.input, keys, frozenset()))
     if not evidence.value:
@@ -651,7 +657,7 @@ def _grouping_is_projection(
             return None
         replacements, item_caveats = rewritten
         for replacement in replacements:
-            edit = _one_row_edit(replacement, source)
+            edit = _one_row_edit(replacement, source, dialect)
             if edit is None:
                 return None
             edits.append(edit)
@@ -674,44 +680,62 @@ def _grouping_is_projection(
 class _OneRowValue:
     """An aggregate call's value over one row: `target`, the call or the
     IGNORE or RESPECT NULLS around it, is written as 1 (`count(*)`), as
-    `CASE WHEN x IS NULL THEN 0 ELSE 1 END` (`count(x)`), or as its argument.
-    `whole`: the call is its select item's whole expression."""
+    `CASE WHEN x IS NULL THEN 0 ELSE 1 END` (`count(x)`), or as its argument
+    `argument` (none for `count(*)`). `whole`: the call is its select item's
+    whole expression."""
 
     target: Expr
     call: exp.AggFunc
     form: Literal["one", "case", "argument"]
     whole: bool
+    argument: Expr | None
 
 
-def _one_row_edit(value: _OneRowValue, source: Source) -> Edit | None:
+def _one_row_edit(value: _OneRowValue, source: Source, dialect: str) -> Edit | None:
     """The call written as its one-row value: its argument's text, verbatim,
-    without DISTINCT or IGNORE or RESPECT NULLS, in parentheses inside an
-    expression unless it is a column, literal, call or CASE."""
+    in parentheses inside an expression unless it is a column, literal, call
+    or CASE. The call is written `name(...)` or, as an ODBC escape, `{fn
+    name(...)}`; its argument without DISTINCT or ALL before it, nor IGNORE
+    or RESPECT NULLS or BigQuery's HAVING MAX or MIN after it. None when the
+    text left does not parse back to the argument."""
     tokens = source.tokens_of(span(value.target) or span(value.call))
     if tokens is None:
         return None
     first, last = tokens
-    closing = source.closing(first + 1) if source.is_(first + 1, TokenType.L_PAREN) else None
-    if closing is None or closing > last:
+    name, end = first, last
+    if source.is_(first, TokenType.L_BRACE) and source.tokens[first + 1].text.lower() == "fn":
+        if not source.is_(last, TokenType.R_BRACE):
+            return None
+        name, end = first + 2, last - 1
+    closing = source.closing(name + 1) if source.is_(name + 1, TokenType.L_PAREN) else None
+    if closing is None or closing > end:
         return None
-    argument_first, argument_last = first + 2, closing - 1
-    if source.is_(argument_first, TokenType.DISTINCT):
+    if value.form == "one":
+        return source.replace(first, last, "1")
+    argument_first, argument_last = name + 2, closing - 1
+    if source.is_(argument_first, TokenType.DISTINCT, TokenType.ALL):
         argument_first += 1
     if (
         argument_last - 1 > argument_first and source.tokens[argument_last].text.upper() == "NULLS"
         and source.tokens[argument_last - 1].text.upper() in {"IGNORE", "RESPECT"}
     ):
         argument_last -= 2
-    if value.form == "one":
-        return source.replace(first, last, "1")
-    if argument_last < argument_first:
+    having = source.top_level(argument_first, argument_last, TokenType.HAVING)
+    if having:
+        argument_last = having[0] - 1
+    if argument_last < argument_first or value.argument is None:
         return None
     argument = source.text(argument_first, argument_last)
+    try:
+        parsed = sqlglot.parse_one(argument, read=dialect)
+    except sqlglot.errors.ParseError:
+        return None
+    if parsed.sql(dialect=dialect) != value.argument.sql(dialect=dialect):
+        return None
     moved = [(argument_first, argument_last)]
     if value.form == "case":
         return source.replace(first, last, f"CASE WHEN {argument} IS NULL THEN 0 ELSE 1 END", moved)
-    written = value.call.this.expressions[0] if isinstance(value.call.this, exp.Distinct) else value.call.this
-    atomic = isinstance(written, exp.Column | exp.Literal | exp.Paren | exp.Func | exp.Case | exp.Null | exp.Boolean)
+    atomic = isinstance(value.argument, exp.Column | exp.Literal | exp.Paren | exp.Func | exp.Case | exp.Null | exp.Boolean)
     return source.replace(first, last, argument if value.whole or atomic else f"({argument})", moved)
 
 
@@ -772,13 +796,17 @@ def _one_row(item: Expr, name: str, dialect: str, types: dict[str, str | None]) 
         target: Expr = call
         while isinstance(target.parent, exp.IgnoreNulls | exp.RespectNulls):
             target = target.parent
-        if isinstance(target.parent, exp.Filter) or any(value for key, value in call.args.items() if key not in {"this", "big_int"}):
+        if isinstance(target.parent, exp.Filter | exp.WithinGroup) or any(value for key, value in call.args.items() if key not in {"this", "big_int"}):
             return None
         argument = call.this
         if isinstance(argument, exp.Distinct):
             if len(argument.expressions) != 1:
                 return None
             argument = argument.expressions[0]
+        if isinstance(argument, exp.HavingMax):
+            argument = argument.this  # BigQuery's ANY_VALUE(x HAVING MAX y): x, over one row.
+        if isinstance(argument, exp.Column) and isinstance(argument.this, exp.Star):
+            return None  # count(t.*) counts rows.
         declared = types.get(call.sql(dialect=dialect))
         kind = exp.DataType.build(declared, dialect=dialect).this if declared is not None else None
         whole = target is item or (isinstance(item, exp.Alias) and target is item.this)
@@ -819,7 +847,7 @@ def _one_row(item: Expr, name: str, dialect: str, types: dict[str, str | None]) 
                 f"{name} runs its arithmetic in {narrowed_to}, not {aggregate}'s result type, "
                 f"and may {risk} where the aggregate's did not"
             ), castable=True))
-        values.append(_OneRowValue(target, call, form, whole))
+        values.append(_OneRowValue(target, call, form, whole, argument if form != "one" else None))
     return values, caveats
 
 
