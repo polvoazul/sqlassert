@@ -53,3 +53,20 @@ SELECT t.id FROM t JOIN json_each('[1, 2]') AS a ON true /**ASSERT UNIQUE(id)**/
 
 -- case: a_table_function_alone_reads_no_table
 SELECT * FROM generate_series(1, 3) AS g
+
+-- case: a_from_first_select_keeps_its_joins
+-- `FROM a JOIN b SELECT ...`: SQLGlot hangs the joins on the first source.
+CREATE TABLE s (t_id INTEGER, ts INTEGER);
+FROM t JOIN s ON s.t_id = t.id SELECT t.id /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_bare_from_keeps_its_joins
+CREATE TABLE s (t_id INTEGER, ts INTEGER);
+FROM t /**ASSERT EXACTLY ONE**/ JOIN s ON s.t_id = t.id  --~ UNKNOWN
+
+-- case: a_from_first_derived_table_keeps_its_joins
+CREATE TABLE s (t_id INTEGER, ts INTEGER);
+FROM (SELECT id FROM t) AS d JOIN s ON s.t_id = d.id SELECT d.id /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_from_first_join_is_proved_like_a_select_first_one
+CREATE TABLE s (t_id INTEGER NOT NULL REFERENCES t (id), ts INTEGER);
+FROM s /**ASSERT EXACTLY ONE**/ JOIN t ON t.id = s.t_id SELECT s.ts, t.plain  --~ PROVED

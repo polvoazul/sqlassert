@@ -249,6 +249,31 @@ def test_a_redundant_grouping_column_beside_an_item_computed_over_aggregates():
     assert rewrite.message.endswith("drop 'u.name' from GROUP BY and select any_value(u.name) AS name")
 
 
+def test_a_redundant_grouping_column_under_distinct_on_is_dropped():
+    # The select list starts past DISTINCT ON's parenthesized keys.
+    sql = SCHEMA + (
+        "SELECT DISTINCT ON (u.id) u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id, u.name ORDER BY u.id"
+    )
+    rewrite, = suggest(sql).rewrites
+    assert rewrite.kind is RewriteKind.REDUNDANT_GROUPING
+    assert rewrite.rewritten(sql).removeprefix(SCHEMA) == (
+        "SELECT DISTINCT ON (u.id) u.id, any_value(u.name) AS name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id ORDER BY u.id"
+    )
+
+
+@pytest.mark.parametrize("query", [
+    # Read past the select list, the column must stay grouped.
+    "SELECT DISTINCT ON (u.name) u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name ORDER BY u.name",
+    "SELECT u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name ORDER BY u.name",
+    "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name HAVING u.name > 'a'",
+    "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name QUALIFY u.name > 'a'",
+])
+def test_a_grouping_column_read_outside_the_select_list_is_kept(query: str):
+    assert RewriteKind.REDUNDANT_GROUPING not in rewrites(SCHEMA + query)
+
+
 def test_a_redundant_grouping_column_not_selected_is_dropped():
     sql = SCHEMA + "SELECT count(*) + 1 AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name"
     rewrite, = suggest(sql).rewrites
@@ -433,9 +458,89 @@ def test_a_one_row_aggregate_whose_precision_or_type_may_change_is_a_rewrite_wit
     # Of an expression, the argument's type is unknown.
     "sum(i + 1)",
     "avg(i + 1)",
+    # count(t.*) counts rows, not a value that may be NULL.
+    "count(t.*)",
+    # A call SQLGlot does not know may be an aggregate the analysis does not
+    # model (DuckDB's mean, arbitrary, count_star, fsum): left in place, it
+    # would aggregate the whole table once GROUP BY is gone.
+    "mean(i)",
+    "arbitrary(s)",
+    "count_star()",
+    "fsum(f)",
+    "main.max(s)",
+    "max(s) + mean(i)",
 ])
 def test_a_one_row_aggregate_whose_value_may_change_or_whose_type_is_unknown_is_not_rewritten(item: str):
     assert not suggest(ONE_ROW_SCHEMA + f"SELECT id, {item} AS v FROM t GROUP BY id").rewrites
+
+
+@pytest.mark.parametrize(("dialect", "item", "replacement"), [
+    # Every spelling of a call the analysis gives a one-row value is placed.
+    ("duckdb", "count(ALL s)", "CASE WHEN s IS NULL THEN 0 ELSE 1 END"),
+    ("duckdb", "max(ALL s)", "s"),
+    ("postgres", "sum(ALL i) + 1", "i + 1"),
+    ("duckdb", "MAX ( DISTINCT s )", "s"),
+    ("snowflake", "{fn MAX(s)}", "s"),
+    ("snowflake", "{fn MAX(s)} || 'x'", "s || 'x'"),
+    ("bigquery", "any_value(s HAVING MAX i)", "s"),
+    ("bigquery", "any_value(s HAVING MIN i)", "s"),
+])
+def test_every_spelling_of_a_one_row_aggregate_is_placed(dialect: str, item: str, replacement: str):
+    query = f"SELECT id, {item} AS v FROM t GROUP BY id"
+    rewrite, = suggest(ONE_ROW_SCHEMA + query, dialect=dialect).rewrites
+    assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA) == f"SELECT id, {replacement} AS v FROM t"
+
+
+@pytest.mark.parametrize(("query", "rewritten"), [
+    # HAVING's aggregates become their one-row values, as the items' do, and
+    # its condition moves into WHERE: here no row, as the original returns.
+    ("SELECT id, sum(i) AS v FROM t GROUP BY id HAVING count(*) > 1", "SELECT id, i AS v FROM t WHERE 1 > 1"),
+    # A grouping column stays as written.
+    ("SELECT id, max(s) AS v FROM t GROUP BY id HAVING id > 1 AND max(s) <> 'x'", "SELECT id, s AS v FROM t WHERE id > 1 AND s <> 'x'"),
+    # ANDed to a WHERE, each parenthesized when an OR.
+    (
+        "SELECT id, count(*) AS v FROM t WHERE i > 1 OR s = 'a' GROUP BY id HAVING count(s) = 1 OR min(i) > 2",
+        "SELECT id, 1 AS v FROM t WHERE (i > 1 OR s = 'a') AND (CASE WHEN s IS NULL THEN 0 ELSE 1 END = 1 OR i > 2)",
+    ),
+    ("SELECT id FROM t WHERE i > 1 GROUP BY id HAVING sum(i) + 1 > 2", "SELECT id FROM t WHERE i > 1 AND i + 1 > 2"),
+    # Before the clauses after it.
+    (
+        "SELECT id, max(s) AS v FROM t GROUP BY id HAVING bool_or(bo) ORDER BY id LIMIT 3",
+        "SELECT id, s AS v FROM t WHERE bo ORDER BY id LIMIT 3",
+    ),
+])
+def test_a_group_by_of_one_row_per_group_moves_having_into_where(query: str, rewritten: str):
+    rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
+    assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA) == rewritten
+    assert "move HAVING into WHERE" in rewrite.message
+    with duckdb.connect() as con:
+        con.execute(ONE_ROW_SCHEMA + ONE_ROW_VALUES + ", (2, NULL, 3, 0.5, 1.5, 2.25, false, 'x')")
+        assert sorted(con.execute(query).fetchall()) == sorted(con.execute(rewritten).fetchall())
+
+
+def test_a_having_aggregate_whose_type_may_change_is_a_caveat():
+    query = "SELECT id FROM t GROUP BY id HAVING sum(i) + 1 > 2"
+    rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
+    assert rewrite.suggest_type is SuggestType.REWRITE_WITH_CAVEAT
+    assert rewrite.message.endswith(
+        "Caveat: HAVING runs its arithmetic in the type of i, not sum's result type, and may overflow where the aggregate's did not"
+    )
+
+
+@pytest.mark.parametrize("having", [
+    # sum of a BOOLEAN counts it.
+    "sum(bo) > 0",
+    # A select item's name, which WHERE cannot read.
+    "v > 1",
+    # An aggregate in a subquery.
+    "(SELECT max(i) FROM t) > 1",
+    # A call SQLGlot does not know may be an aggregate.
+    "mean(i) > 1",
+])
+def test_a_having_with_no_one_row_form_keeps_the_group_by(having: str):
+    assert not suggest(ONE_ROW_SCHEMA + f"SELECT id, max(i) AS v FROM t GROUP BY id HAVING {having}").rewrites
 
 
 def test_a_rewrite_that_keeps_every_column_type_is_a_plain_rewrite():
@@ -591,6 +696,91 @@ def test_a_cte_used_in_a_nested_query_is_alive():
     SELECT user_id FROM sessions WHERE user_id IN (SELECT id FROM a)
     """
     assert rewrites(sql) == []
+
+
+# Edits in every clause order ------------------------------------------------------
+
+
+@pytest.mark.parametrize(("dialect", "kind", "query", "rewritten"), [
+    # A new WHERE goes after the FROM and its joins, before WINDOW.
+    (
+        "duckdb", RewriteKind.FILTER_JOIN,
+        "SELECT s.ts, count(*) OVER w AS n FROM sessions s JOIN users u ON u.id = s.user_id WINDOW w AS (PARTITION BY s.ts) ORDER BY 1",
+        "SELECT s.ts, count(*) OVER w AS n FROM sessions s WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id) "
+        "WINDOW w AS (PARTITION BY s.ts) ORDER BY 1",
+    ),
+    (
+        "postgres", RewriteKind.SELF_JOIN,
+        "SELECT u.id, v.nick, count(*) OVER w AS n FROM users u JOIN users v ON u.id = v.id AND v.name <> 'a' WINDOW w AS (PARTITION BY u.nick)",
+        "SELECT u.id, u.nick, count(*) OVER w AS n FROM users u WHERE u.name <> 'a' WINDOW w AS (PARTITION BY u.nick)",
+    ),
+    # A `, LATERAL (...)` is part of the FROM.
+    (
+        "duckdb", RewriteKind.FILTER_JOIN,
+        "SELECT s.ts, l.x FROM sessions s JOIN users u ON u.id = s.user_id, LATERAL (SELECT s.ts + 1 AS x) l WINDOW w AS (ORDER BY s.ts)",
+        "SELECT s.ts, l.x FROM sessions s, LATERAL (SELECT s.ts + 1 AS x) l WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id) "
+        "WINDOW w AS (ORDER BY s.ts)",
+    ),
+    # Hive and Spark's LATERAL VIEW follows the FROM and precedes WHERE.
+    (
+        "spark", RewriteKind.FILTER_JOIN,
+        "SELECT s.ts, e.x FROM sessions s JOIN users u ON u.id = s.user_id LATERAL VIEW explode(array(1, 2)) e AS x",
+        "SELECT s.ts, e.x FROM sessions s LATERAL VIEW explode(array(1, 2)) e AS x WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id)",
+    ),
+    (
+        "spark", RewriteKind.FILTER_JOIN,
+        "SELECT s.ts FROM sessions s JOIN users u ON u.id = s.user_id LATERAL VIEW explode(array(1, 2)) e AS x GROUP BY s.ts",
+        "SELECT s.ts FROM sessions s LATERAL VIEW explode(array(1, 2)) e AS x WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id) "
+        "GROUP BY s.ts",
+    ),
+])
+def test_a_new_where_goes_where_the_from_ends_in_every_clause_order(dialect: str, kind: RewriteKind, query: str, rewritten: str):
+    report = suggest(SCHEMA + query, dialect=dialect)
+    rewrite, = (item for item in report.rewrites if item.kind is kind)
+    written = rewrite.rewritten(report.sql).removeprefix(SCHEMA)
+    assert written == rewritten
+    root = SqlParser(dialect).parse(SCHEMA + written).root_select
+    assert root is not None and root.args.get("where") is not None
+
+
+@pytest.mark.parametrize(("kind", "query", "rewritten"), [
+    # DuckDB's FROM-first Select: its WHERE follows the select list.
+    (
+        RewriteKind.FILTER_JOIN,
+        "FROM sessions s JOIN users u ON u.id = s.user_id SELECT s.ts",
+        "FROM sessions s SELECT s.ts WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id)",
+    ),
+    (
+        RewriteKind.SELF_JOIN,
+        "FROM users u JOIN users v ON u.id = v.id AND v.name <> 'a' SELECT u.id, v.nick ORDER BY 1",
+        "FROM users u SELECT u.id, u.nick WHERE u.name <> 'a' ORDER BY 1",
+    ),
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        "FROM users u JOIN sessions s ON s.user_id = u.id SELECT u.id, u.name, count(*) AS n GROUP BY u.id, u.name",
+        "FROM users u JOIN sessions s ON s.user_id = u.id SELECT u.id, any_value(u.name) AS name, count(*) AS n GROUP BY u.id",
+    ),
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        "FROM users SELECT id, count(*) AS n GROUP BY id",
+        "FROM users SELECT id, 1 AS n",
+    ),
+    (
+        RewriteKind.REDUNDANT_JOIN,
+        "FROM orders o LEFT JOIN users u ON u.id = o.user_id SELECT o.id",
+        "FROM orders o SELECT o.id",
+    ),
+    # A bare FROM selects every column.
+    (
+        RewriteKind.INNER_JOIN,
+        "FROM orders o LEFT JOIN users u ON u.id = o.user_id",
+        "FROM orders o JOIN users u ON u.id = o.user_id",
+    ),
+])
+def test_a_from_first_select_is_rewritten(kind: RewriteKind, query: str, rewritten: str):
+    report = suggest(SCHEMA + query)
+    rewrite, = (item for item in report.rewrites if item.kind is kind)
+    assert rewrite.rewritten(report.sql).removeprefix(SCHEMA) == rewritten
 
 
 # Output -----------------------------------------------------------------------
@@ -849,6 +1039,66 @@ EQUIVALENT = [
         "WHERE u.id > 1 OR u.email = 'c'",
         RewriteKind.SELF_JOIN,
     ),
+    # DISTINCT ON: the select list starts past its keys.
+    (
+        SCHEMA + "SELECT DISTINCT ON (u.id) u.id, u.name, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id "
+        "GROUP BY u.id, u.name ORDER BY u.id",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    # ALL, like DISTINCT, is no part of the argument.
+    (
+        SCHEMA + "SELECT o.id, count(ALL u.nick) AS c, max(ALL u.name) AS m FROM orders o LEFT JOIN users u ON u.id = o.user_id "
+        "GROUP BY o.id",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    # HAVING moved into WHERE, its aggregates written as their one-row values.
+    (
+        SCHEMA + "SELECT id, sum(id) AS s FROM users GROUP BY id HAVING count(*) > 1",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT id, count(*) AS n FROM users WHERE nick IS NULL OR id > 1 GROUP BY id "
+        "HAVING count(nick) = 0 OR max(name) > 'm'",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT o.id, max(u.nick) AS nick FROM orders o LEFT JOIN users u ON u.id = o.user_id GROUP BY o.id "
+        "HAVING o.id > 1 AND count(u.nick) + 1 > 1",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    # A redundant grouping column beside a HAVING.
+    (
+        SCHEMA + "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name HAVING count(*) > 1",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    # DuckDB's FROM-first Select.
+    (
+        SCHEMA + "FROM sessions s JOIN users u ON u.id = s.user_id SELECT s.ts",
+        RewriteKind.FILTER_JOIN,
+    ),
+    (
+        SCHEMA + "FROM users u JOIN users v ON u.id = v.id AND v.name <> 'a' SELECT u.id, v.nick",
+        RewriteKind.SELF_JOIN,
+    ),
+    (
+        SCHEMA + "FROM users u JOIN sessions s ON s.user_id = u.id SELECT u.id, u.name, count(*) AS n GROUP BY u.id, u.name",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    (
+        SCHEMA + "FROM orders o LEFT JOIN users u ON u.id = o.user_id",
+        RewriteKind.INNER_JOIN,
+    ),
+    # A new WHERE before WINDOW.
+    (
+        SCHEMA + "SELECT s.ts, count(*) OVER w AS n FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WINDOW w AS (PARTITION BY s.ts) ORDER BY 1",
+        RewriteKind.FILTER_JOIN,
+    ),
+    (
+        SCHEMA + "SELECT u.id, v.nick, sum(u.id) OVER w AS n FROM users u JOIN users v ON u.id = v.id AND v.name <> 'a' "
+        "WINDOW w AS (PARTITION BY u.nick)",
+        RewriteKind.SELF_JOIN,
+    ),
 ]
 
 
@@ -1003,15 +1253,67 @@ EXPECTED_DIFFS = [
 @@ -7 +6,0 @@
 -LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
     ),
+    # Placements beyond the one per kind.
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        SCHEMA + "SELECT id, sum(id) AS s\nFROM users\nGROUP BY id\nHAVING count(*) > 1",
+        """\
+@@ -5 +5 @@
+-SELECT id, sum(id) AS s
++SELECT id, id AS s
+@@ -7,2 +7 @@
+-GROUP BY id
+-HAVING count(*) > 1
++WHERE 1 > 1""",
+    ),
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        SCHEMA + "SELECT id,\n  count(ALL nick) AS c\nFROM users\nGROUP BY id",
+        """\
+@@ -6 +6 @@
+-  count(ALL nick) AS c
++  CASE WHEN nick IS NULL THEN 0 ELSE 1 END AS c
+@@ -8 +7,0 @@
+-GROUP BY id""",
+    ),
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        SCHEMA + "FROM users u JOIN sessions s ON s.user_id = u.id\nSELECT u.id, u.name\nGROUP BY u.id, u.name",
+        """\
+@@ -6,2 +6,2 @@
+-SELECT u.id, u.name
+-GROUP BY u.id, u.name
++SELECT u.id, any_value(u.name) AS name
++GROUP BY u.id""",
+    ),
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        SCHEMA + "SELECT DISTINCT ON (u.id) u.id, u.name\nFROM users u JOIN sessions s ON s.user_id = u.id\nGROUP BY u.id, u.name",
+        """\
+@@ -5 +5 @@
+-SELECT DISTINCT ON (u.id) u.id, u.name
++SELECT DISTINCT ON (u.id) u.id, any_value(u.name) AS name
+@@ -7 +7 @@
+-GROUP BY u.id, u.name
++GROUP BY u.id""",
+    ),
+    (
+        RewriteKind.FILTER_JOIN,
+        SCHEMA + "SELECT s.ts, count(*) OVER w AS n\nFROM sessions s\nJOIN users u ON u.id = s.user_id\nWINDOW w AS (PARTITION BY s.ts)",
+        """\
+@@ -7 +7 @@
+-JOIN users u ON u.id = s.user_id
++WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id)""",
+    ),
 ]
 
 
 def test_every_kind_of_rewrite_has_a_diff_written_here_and_an_equivalence_case():
-    assert sorted(kind.name for kind, _, _ in EXPECTED_DIFFS) == sorted(kind.name for kind in RewriteKind)
+    assert {kind for kind, _, _ in EXPECTED_DIFFS} == set(RewriteKind)
     assert {kind for _, kind in EQUIVALENT} == set(RewriteKind)
 
 
-@pytest.mark.parametrize(("kind", "sql", "expected"), EXPECTED_DIFFS, ids=[kind.name for kind, _, _ in EXPECTED_DIFFS])
+@pytest.mark.parametrize(("kind", "sql", "expected"), EXPECTED_DIFFS, ids=[f"{kind.name}-{index}" for index, (kind, _, _) in enumerate(EXPECTED_DIFFS)])
 def test_each_kind_of_rewrite_makes_the_diff_written_here(kind: RewriteKind, sql: str, expected: str):
     report = suggest(sql)
     rewrite, = (item for item in report.rewrites if item.kind is kind)

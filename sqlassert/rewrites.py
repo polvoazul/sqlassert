@@ -38,10 +38,11 @@ the SQL's tokens; one whose syntax they cannot place is not offered.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Literal, assert_never
 
+import sqlglot
 from sqlglot import Expr, exp
 from sqlglot.tokens import TokenType
 
@@ -165,11 +166,7 @@ def rewrites(
                 found.extend(_implied_conjuncts(arena, site, relation, program, "ON", written, None, source, dialect))
             case ir.Distinct() if isinstance(node, exp.Select):
                 found.extend(_redundant_distinct(site, relation, node, source))
-            case ir.Aggregate() | ir.Project(input=ir.Aggregate()) if isinstance(node, exp.Select):
-                # A Project over the Aggregate drops its hidden outputs and
-                # computes the items over aggregates (`_lower_aggregate`).
-                aggregate = relation if isinstance(relation, ir.Aggregate) else relation.input
-                assert isinstance(aggregate, ir.Aggregate)
+            case ir.Aggregate() | ir.Project() | ir.Filter() if isinstance(node, exp.Select) and (aggregate := _grouped(relation, node)) is not None:
                 projection = _grouping_is_projection(site, aggregate, node, dialect, source)
                 found.extend([projection] if projection else _redundant_grouping(site, relation, aggregate, node, dialect, source))
             case _:
@@ -181,6 +178,17 @@ def rewrites(
             if wanted(site) and (item := _set_operation_all(site, operation, source)) is not None
         )
     return sorted(found, key=lambda item: item.site.offset)
+
+
+def _grouped(relation: ir.RelationExpr, node: exp.Select) -> ir.Aggregate | None:
+    """The Aggregate of a grouped Select's relation: under the Project that
+    drops its hidden outputs and computes the items over aggregates
+    (`_lower_aggregate`), and the Filter that is its HAVING."""
+    if isinstance(relation, ir.Project):
+        relation = relation.input
+    if isinstance(relation, ir.Filter) and node.args.get("having") is not None and node.args.get("qualify") is None:
+        relation = relation.input
+    return relation if isinstance(relation, ir.Aggregate) else None
 
 
 def _redundant_subquery_filters(
@@ -492,29 +500,47 @@ def _anded_into_where(
     `moved` into `condition`."""
     where = select.args.get("where")
     if where is not None:
-        tokens = source.tokens_of(span(where))
-        if tokens is None:
-            return None
-        if isinstance(where.this, exp.Or | exp.Xor):
-            added = (source.insert_before(tokens[0] + 1, "("), source.insert_after(tokens[1], f") AND {condition}"))
-        else:
-            added = (source.insert_after(tokens[1], f" AND {condition}"),)
-        return (source.delete(*deleted, moved), *added)
-    if select.args.get("laterals") or select.args.get("windows"):
-        return None
-    # The WHERE goes where the FROM ends: before the first clause after it.
-    end = marker_position(select)
-    clauses = [
-        position[0] for key, value in select.args.items()
-        if key != "distinct" and isinstance(value, Expr) and (position := span(value)) is not None
-    ]
-    boundary = min(clauses, default=end[0] if end is not None else None)
-    last = source.before(boundary) if boundary is not None else None
+        added = _anded_to_where(where, source, condition)
+        return None if added is None else (source.delete(*deleted, moved), *added)
+    last = _from_end(select, source)
     if last is None:
         return None
     if last == deleted[1]:
         return (source.replace(*deleted, f"WHERE {condition}", moved),)
     return (source.delete(*deleted, moved), source.insert_after(last, f" WHERE {condition}"))
+
+
+def _anded_to_where(where: exp.Where, source: Source, condition: str) -> tuple[Edit, ...] | None:
+    """`condition` ANDed to the end of `where`, whose own condition is
+    parenthesized when it is an OR."""
+    tokens = source.tokens_of(span(where))
+    if tokens is None:
+        return None
+    if isinstance(where.this, exp.Or | exp.Xor):
+        return (source.insert_before(tokens[0] + 1, "("), source.insert_after(tokens[1], f") AND {condition}"))
+    return (source.insert_after(tokens[1], f" AND {condition}"),)
+
+
+def _from_end(select: exp.Select, source: Source) -> int | None:
+    """The last token of `select`'s FROM clause, where a new WHERE goes: past
+    its joins (a `, LATERAL` or `JOIN LATERAL` among them) and any Hive or
+    Spark `LATERAL VIEW`, before the first clause after them (GROUP BY,
+    HAVING, WINDOW, QUALIFY, ORDER BY, LIMIT, ...)."""
+    end = marker_position(select)
+    clauses = [
+        position[0] for key, value in select.args.items()
+        if key != "distinct" and isinstance(value, Expr) and (position := span(value)) is not None
+    ]
+    # A WINDOW clause is a list, which records no span: its keyword is found.
+    if select.args.get("windows"):
+        position = span(select)
+        first = source.at(position[0]) if position is not None else None
+        last = source.before(end[0]) if end is not None else None
+        if first is None or last is None:
+            return None
+        clauses.extend(source.start(index) for index in source.top_level(first, last, TokenType.WINDOW))
+    boundary = min(clauses, default=end[0] if end is not None else None)
+    return source.before(boundary) if boundary is not None else None
 
 
 def _right_side_used(join: ir.Join, node: exp.Join) -> bool:
@@ -604,18 +630,32 @@ def _grouping_is_projection(
     so the query is a projection, each aggregate its value over that row.
     An empty input gives no rows either way. Silent when a grouping
     expression is not a column, or an aggregate has no one-row form here
-    (`_one_row`), or is read outside the select list (ORDER BY, QUALIFY, a
-    window over it), or with a HAVING. A rewrite with caveat when an item's type or precision
-    may change (`_one_row`). The edits delete GROUP BY and replace each
-    aggregate call by its one-row value (`_one_row_edit`)."""
+    (`_one_row`), or is read outside the select list and HAVING (ORDER BY,
+    QUALIFY, a window over it), or HAVING reads a select item by its name,
+    which WHERE cannot. A rewrite with caveat when an item's type or
+    precision may change (`_one_row`), or HAVING's arithmetic may overflow.
+    The edits delete GROUP BY and replace each aggregate call by its one-row
+    value (`_one_row_edit`); a HAVING, its calls replaced so, is deleted and
+    its condition ANDed into WHERE (each parenthesized when an OR), or
+    written as a WHERE in GROUP BY's place."""
     expressions = grouping(node) or []
     outputs = aggregate.grouping_outputs
     if not outputs or len(expressions) != len(outputs) or not all(isinstance(column.scalar_expr, ir.ColumnRef) for column in outputs):
         return None
+    having = node.args.get("having")
+    parts = [*node.expressions, *([having] if having is not None else [])]
     if any(
-        call.find_ancestor(exp.Select) is node and not any(_within(call, item) for item in node.expressions)
+        call.find_ancestor(exp.Select) is node and not any(_within(call, part) for part in parts)
         for call in node.find_all(exp.AggFunc)
-    ) or any(node.args.get(key) is not None for key in ("qualify", "having")) or any(item.find(exp.Window) for item in node.expressions):
+    ) or node.args.get("qualify") is not None or any(item.find(exp.Window) for item in node.expressions):
+        return None
+    aliases = {item.alias.lower() for item in node.expressions if isinstance(item, exp.Alias)}
+    if having is not None and any(not column.table and column.name.lower() in aliases for column in having.find_all(exp.Column)):
+        return None
+    if any(part.find(exp.Anonymous, exp.AnonymousAggFunc) for part in parts):
+        # A call SQLGlot does not know may be an aggregate the analysis does
+        # not model (DuckDB's mean, arbitrary, count_star): with GROUP BY
+        # gone, it would aggregate the whole input.
         return None
     keys = frozenset(column.scalar_expr.column for column in outputs if isinstance(column.scalar_expr, ir.ColumnRef))
     evidence = _reaches_row_identity(_closure(aggregate.input, keys, frozenset()))
@@ -629,8 +669,16 @@ def _grouping_is_projection(
     clause = source.tokens_of(span(node.args["group"])) if node.args.get("group") is not None else None
     if clause is None:
         return None
-    edits = list(source.deletions([clause]))
     caveats: list[_Caveat] = []
+    if having is None:
+        edits = list(source.deletions([clause]))
+    else:
+        moved = _having_into_where(node, having, clause, source, dialect, types)
+        if moved is None:
+            return None
+        having_edits, having_caveats = moved
+        edits = list(having_edits)
+        caveats.extend(having_caveats)
     for item in node.expressions:
         name = quoted(item.alias if isinstance(item, exp.Alias) else written_sql(item, dialect))
         rewritten = _one_row(item, name, dialect, types)
@@ -638,7 +686,7 @@ def _grouping_is_projection(
             return None
         replacements, item_caveats = rewritten
         for replacement in replacements:
-            edit = _one_row_edit(replacement, source)
+            edit = _one_row_edit(replacement, source, dialect)
             if edit is None:
                 return None
             edits.append(edit)
@@ -647,7 +695,7 @@ def _grouping_is_projection(
     message = (
         f"no two rows agree on ({names}), NULL equal to NULL, so every group is one row: "
         "drop GROUP BY and write each aggregate as its value over that row"
-    )
+    ) + (", and move HAVING into WHERE" if having is not None else "")
     if not caveats:
         return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, tuple(edits), evidence)
     message += f". Caveat: {'; '.join(caveat.text for caveat in caveats)}"
@@ -657,48 +705,102 @@ def _grouping_is_projection(
     return Rewrite(site, RewriteKind.GROUPING_PROJECTION, message, tuple(edits), evidence, SuggestType.REWRITE_WITH_CAVEAT)
 
 
+def _having_into_where(
+    node: exp.Select, having: exp.Having, group: tuple[int, int], source: Source, dialect: str, types: dict[str, str | None],
+) -> tuple[tuple[Edit, ...], list[_Caveat]] | None:
+    """GROUP BY (tokens `group`) and HAVING deleted, HAVING's condition, each
+    aggregate call in it written as its one-row value as an item's is,
+    ANDed into WHERE or written as a WHERE in GROUP BY's place; and what the
+    replacements may change, as for an item (no column to cast)."""
+    clause = source.tokens_of(span(having))
+    rewritten = _one_row(having.this, "HAVING", dialect, types)
+    if clause is None or rewritten is None or clause[0] + 1 > clause[1]:
+        return None
+    replacements, caveats = rewritten
+    first, last = clause[0] + 1, clause[1]
+    start = source.start(first)
+    inner = []
+    for replacement in replacements:
+        edit = _one_row_edit(replacement, source, dialect)
+        if edit is None:
+            return None
+        inner.append(Edit(edit.start - start, edit.end - start, edit.replacement))
+    condition = apply_edits(source.sql[start:source.end(last)], inner)
+    caveats = [replace(caveat, castable=False) for caveat in caveats]
+    moved = [(first, last)]
+    where = node.args.get("where")
+    adjacent = clause[0] == group[1] + 1
+    if where is None:
+        if adjacent:
+            return (source.replace(group[0], clause[1], f"WHERE {condition}", moved),), caveats
+        return (source.replace(*group, f"WHERE {condition}"), source.delete(*clause, moved)), caveats
+    anded = _anded_to_where(where, source, f"({condition})" if isinstance(having.this, exp.Or | exp.Xor) else condition)
+    if anded is None:
+        return None
+    deleted = (source.delete(group[0], clause[1], moved),) if adjacent else (*source.deletions([group]), source.delete(*clause, moved))
+    return (*deleted, *anded), caveats
+
+
 @dataclass(frozen=True)
 class _OneRowValue:
     """An aggregate call's value over one row: `target`, the call or the
     IGNORE or RESPECT NULLS around it, is written as 1 (`count(*)`), as
-    `CASE WHEN x IS NULL THEN 0 ELSE 1 END` (`count(x)`), or as its argument.
-    `whole`: the call is its select item's whole expression."""
+    `CASE WHEN x IS NULL THEN 0 ELSE 1 END` (`count(x)`), or as its argument
+    `argument` (none for `count(*)`). `whole`: the call is its select item's
+    whole expression."""
 
     target: Expr
     call: exp.AggFunc
     form: Literal["one", "case", "argument"]
     whole: bool
+    argument: Expr | None
 
 
-def _one_row_edit(value: _OneRowValue, source: Source) -> Edit | None:
+def _one_row_edit(value: _OneRowValue, source: Source, dialect: str) -> Edit | None:
     """The call written as its one-row value: its argument's text, verbatim,
-    without DISTINCT or IGNORE or RESPECT NULLS, in parentheses inside an
-    expression unless it is a column, literal, call or CASE."""
+    in parentheses inside an expression unless it is a column, literal, call
+    or CASE. The call is written `name(...)` or, as an ODBC escape, `{fn
+    name(...)}`; its argument without DISTINCT or ALL before it, nor IGNORE
+    or RESPECT NULLS or BigQuery's HAVING MAX or MIN after it. None when the
+    text left does not parse back to the argument."""
     tokens = source.tokens_of(span(value.target) or span(value.call))
     if tokens is None:
         return None
     first, last = tokens
-    closing = source.closing(first + 1) if source.is_(first + 1, TokenType.L_PAREN) else None
-    if closing is None or closing > last:
+    name, end = first, last
+    if source.is_(first, TokenType.L_BRACE) and source.tokens[first + 1].text.lower() == "fn":
+        if not source.is_(last, TokenType.R_BRACE):
+            return None
+        name, end = first + 2, last - 1
+    closing = source.closing(name + 1) if source.is_(name + 1, TokenType.L_PAREN) else None
+    if closing is None or closing > end:
         return None
-    argument_first, argument_last = first + 2, closing - 1
-    if source.is_(argument_first, TokenType.DISTINCT):
+    if value.form == "one":
+        return source.replace(first, last, "1")
+    argument_first, argument_last = name + 2, closing - 1
+    if source.is_(argument_first, TokenType.DISTINCT, TokenType.ALL):
         argument_first += 1
     if (
         argument_last - 1 > argument_first and source.tokens[argument_last].text.upper() == "NULLS"
         and source.tokens[argument_last - 1].text.upper() in {"IGNORE", "RESPECT"}
     ):
         argument_last -= 2
-    if value.form == "one":
-        return source.replace(first, last, "1")
-    if argument_last < argument_first:
+    having = source.top_level(argument_first, argument_last, TokenType.HAVING)
+    if having:
+        argument_last = having[0] - 1
+    if argument_last < argument_first or value.argument is None:
         return None
     argument = source.text(argument_first, argument_last)
+    try:
+        parsed = sqlglot.parse_one(argument, read=dialect)
+    except sqlglot.errors.ParseError:
+        return None
+    if parsed.sql(dialect=dialect) != value.argument.sql(dialect=dialect):
+        return None
     moved = [(argument_first, argument_last)]
     if value.form == "case":
         return source.replace(first, last, f"CASE WHEN {argument} IS NULL THEN 0 ELSE 1 END", moved)
-    written = value.call.this.expressions[0] if isinstance(value.call.this, exp.Distinct) else value.call.this
-    atomic = isinstance(written, exp.Column | exp.Literal | exp.Paren | exp.Func | exp.Case | exp.Null | exp.Boolean)
+    atomic = isinstance(value.argument, exp.Column | exp.Literal | exp.Paren | exp.Func | exp.Case | exp.Null | exp.Boolean)
     return source.replace(first, last, argument if value.whole or atomic else f"({argument})", moved)
 
 
@@ -759,13 +861,17 @@ def _one_row(item: Expr, name: str, dialect: str, types: dict[str, str | None]) 
         target: Expr = call
         while isinstance(target.parent, exp.IgnoreNulls | exp.RespectNulls):
             target = target.parent
-        if isinstance(target.parent, exp.Filter) or any(value for key, value in call.args.items() if key not in {"this", "big_int"}):
+        if isinstance(target.parent, exp.Filter | exp.WithinGroup) or any(value for key, value in call.args.items() if key not in {"this", "big_int"}):
             return None
         argument = call.this
         if isinstance(argument, exp.Distinct):
             if len(argument.expressions) != 1:
                 return None
             argument = argument.expressions[0]
+        if isinstance(argument, exp.HavingMax):
+            argument = argument.this  # BigQuery's ANY_VALUE(x HAVING MAX y): x, over one row.
+        if isinstance(argument, exp.Column) and isinstance(argument.this, exp.Star):
+            return None  # count(t.*) counts rows.
         declared = types.get(call.sql(dialect=dialect))
         kind = exp.DataType.build(declared, dialect=dialect).this if declared is not None else None
         whole = target is item or (isinstance(item, exp.Alias) and target is item.this)
@@ -806,7 +912,7 @@ def _one_row(item: Expr, name: str, dialect: str, types: dict[str, str | None]) 
                 f"{name} runs its arithmetic in {narrowed_to}, not {aggregate}'s result type, "
                 f"and may {risk} where the aggregate's did not"
             ), castable=True))
-        values.append(_OneRowValue(target, call, form, whole))
+        values.append(_OneRowValue(target, call, form, whole, argument if form != "one" else None))
     return values, caveats
 
 
@@ -840,7 +946,8 @@ def _redundant_grouping(
         determinant = frozenset(other.scalar_expr.column for other in others if isinstance(other.scalar_expr, ir.ColumnRef))
         closure = _closure(aggregate.input, determinant, frozenset())
         source_column = grouped.scalar_expr.column
-        if source_column not in closure.value.columns:
+        expression = expressions[aggregate.grouping_outputs.index(grouped)]
+        if source_column not in closure.value.columns or _read_past_select_list(node, expression):
             continue
         kept.remove(grouped)
         names = quoted_all(written[other] for other in others)
@@ -868,6 +975,24 @@ def _redundant_grouping(
     return found
 
 
+def _read_past_select_list(node: exp.Select, expression: Expr) -> bool:
+    """Whether a column `expression` reads may be read in DISTINCT ON, HAVING,
+    QUALIFY or ORDER BY of `node`, where it must stay grouped: any column of
+    the same name, but, in DISTINCT ON and ORDER BY, an unqualified one that
+    names a select item, which they read instead."""
+    names = {column.name.lower() for column in expression.find_all(exp.Column)}
+    outputs = {item.alias_or_name.lower() for item in node.expressions}
+    distinct = node.args.get("distinct")
+    for key, clause in (("on", distinct.args.get("on") if distinct is not None else None), *(
+        (key, node.args.get(key)) for key in ("having", "qualify", "order")
+    )):
+        for column in clause.find_all(exp.Column) if clause is not None else ():
+            name = column.name.lower()
+            if name in names and not (key in {"on", "order"} and not column.table and name in outputs):
+                return True
+    return False
+
+
 def _select_items(node: exp.Select, source: Source) -> list[tuple[tuple[int, int], tuple[int, int]]] | None:
     """The tokens of each item of `node`'s select list, whole and without
     its alias; None where they cannot be told apart."""
@@ -875,15 +1000,23 @@ def _select_items(node: exp.Select, source: Source) -> list[tuple[tuple[int, int
     end = marker_position(node)
     start = source.at(position[0]) if position is not None else None
     last = source.before(end[0]) if end is not None else None
-    if start is None or last is None or not source.is_(start, TokenType.SELECT):
+    # Its SELECT keyword: after the FROM of a DuckDB FROM-first Select, and
+    # none in a bare `FROM t`, whose `*` is implied.
+    keyword = next(iter(source.top_level(start, last, TokenType.SELECT)), None) if start is not None and last is not None else None
+    if keyword is None or last is None:
         return None
-    first = start + 1
+    first = keyword + 1
     distinct = node.args.get("distinct")
     if distinct is not None:
-        tokens = source.tokens_of(span(distinct))
-        if tokens is None or tokens[0] != first:
-            return None  # DISTINCT ON
+        if not source.is_(first, TokenType.DISTINCT):
+            return None
         first += 1
+        if distinct.args.get("on") is not None:
+            # DISTINCT ON (...): the list starts past its parenthesized keys.
+            closing = source.closing(first + 1) if source.is_(first, TokenType.ON) and source.is_(first + 1, TokenType.L_PAREN) else None
+            if closing is None:
+                return None
+            first = closing + 1
     elif source.is_(first, TokenType.ALL):
         first += 1
     # The list ends at FROM, or at the first clause after it.
