@@ -500,21 +500,34 @@ def _anded_into_where(
         else:
             added = (source.insert_after(tokens[1], f" AND {condition}"),)
         return (source.delete(*deleted, moved), *added)
-    if select.args.get("laterals") or select.args.get("windows"):
-        return None
-    # The WHERE goes where the FROM ends: before the first clause after it.
-    end = marker_position(select)
-    clauses = [
-        position[0] for key, value in select.args.items()
-        if key != "distinct" and isinstance(value, Expr) and (position := span(value)) is not None
-    ]
-    boundary = min(clauses, default=end[0] if end is not None else None)
-    last = source.before(boundary) if boundary is not None else None
+    last = _from_end(select, source)
     if last is None:
         return None
     if last == deleted[1]:
         return (source.replace(*deleted, f"WHERE {condition}", moved),)
     return (source.delete(*deleted, moved), source.insert_after(last, f" WHERE {condition}"))
+
+
+def _from_end(select: exp.Select, source: Source) -> int | None:
+    """The last token of `select`'s FROM clause, where a new WHERE goes: past
+    its joins (a `, LATERAL` or `JOIN LATERAL` among them) and any Hive or
+    Spark `LATERAL VIEW`, before the first clause after them (GROUP BY,
+    HAVING, WINDOW, QUALIFY, ORDER BY, LIMIT, ...)."""
+    end = marker_position(select)
+    clauses = [
+        position[0] for key, value in select.args.items()
+        if key != "distinct" and isinstance(value, Expr) and (position := span(value)) is not None
+    ]
+    # A WINDOW clause is a list, which records no span: its keyword is found.
+    if select.args.get("windows"):
+        position = span(select)
+        first = source.at(position[0]) if position is not None else None
+        last = source.before(end[0]) if end is not None else None
+        if first is None or last is None:
+            return None
+        clauses.extend(source.start(index) for index in source.top_level(first, last, TokenType.WINDOW))
+    boundary = min(clauses, default=end[0] if end is not None else None)
+    return source.before(boundary) if boundary is not None else None
 
 
 def _right_side_used(join: ir.Join, node: exp.Join) -> bool:
