@@ -907,9 +907,12 @@ def _select_items(node: exp.Select, source: Source) -> list[tuple[tuple[int, int
     end = marker_position(node)
     start = source.at(position[0]) if position is not None else None
     last = source.before(end[0]) if end is not None else None
-    if start is None or last is None or not source.is_(start, TokenType.SELECT):
+    # Its SELECT keyword: after the FROM of a DuckDB FROM-first Select, and
+    # none in a bare `FROM t`, whose `*` is implied.
+    keyword = next(iter(source.top_level(start, last, TokenType.SELECT)), None) if start is not None and last is not None else None
+    if keyword is None or last is None:
         return None
-    first = start + 1
+    first = keyword + 1
     distinct = node.args.get("distinct")
     if distinct is not None:
         if not source.is_(first, TokenType.DISTINCT):

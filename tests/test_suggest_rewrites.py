@@ -663,6 +663,46 @@ def test_a_new_where_goes_where_the_from_ends_in_every_clause_order(dialect: str
     assert root is not None and root.args.get("where") is not None
 
 
+@pytest.mark.parametrize(("kind", "query", "rewritten"), [
+    # DuckDB's FROM-first Select: its WHERE follows the select list.
+    (
+        RewriteKind.FILTER_JOIN,
+        "FROM sessions s JOIN users u ON u.id = s.user_id SELECT s.ts",
+        "FROM sessions s SELECT s.ts WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id)",
+    ),
+    (
+        RewriteKind.SELF_JOIN,
+        "FROM users u JOIN users v ON u.id = v.id AND v.name <> 'a' SELECT u.id, v.nick ORDER BY 1",
+        "FROM users u SELECT u.id, u.nick WHERE u.name <> 'a' ORDER BY 1",
+    ),
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        "FROM users u JOIN sessions s ON s.user_id = u.id SELECT u.id, u.name, count(*) AS n GROUP BY u.id, u.name",
+        "FROM users u JOIN sessions s ON s.user_id = u.id SELECT u.id, any_value(u.name) AS name, count(*) AS n GROUP BY u.id",
+    ),
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        "FROM users SELECT id, count(*) AS n GROUP BY id",
+        "FROM users SELECT id, 1 AS n",
+    ),
+    (
+        RewriteKind.REDUNDANT_JOIN,
+        "FROM orders o LEFT JOIN users u ON u.id = o.user_id SELECT o.id",
+        "FROM orders o SELECT o.id",
+    ),
+    # A bare FROM selects every column.
+    (
+        RewriteKind.INNER_JOIN,
+        "FROM orders o LEFT JOIN users u ON u.id = o.user_id",
+        "FROM orders o JOIN users u ON u.id = o.user_id",
+    ),
+])
+def test_a_from_first_select_is_rewritten(kind: RewriteKind, query: str, rewritten: str):
+    report = suggest(SCHEMA + query)
+    rewrite, = (item for item in report.rewrites if item.kind is kind)
+    assert rewrite.rewritten(report.sql).removeprefix(SCHEMA) == rewritten
+
+
 # Output -----------------------------------------------------------------------
 
 
@@ -925,6 +965,23 @@ EQUIVALENT = [
         "GROUP BY u.id, u.name ORDER BY u.id",
         RewriteKind.REDUNDANT_GROUPING,
     ),
+    # DuckDB's FROM-first Select.
+    (
+        SCHEMA + "FROM sessions s JOIN users u ON u.id = s.user_id SELECT s.ts",
+        RewriteKind.FILTER_JOIN,
+    ),
+    (
+        SCHEMA + "FROM users u JOIN users v ON u.id = v.id AND v.name <> 'a' SELECT u.id, v.nick",
+        RewriteKind.SELF_JOIN,
+    ),
+    (
+        SCHEMA + "FROM users u JOIN sessions s ON s.user_id = u.id SELECT u.id, u.name, count(*) AS n GROUP BY u.id, u.name",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
+    (
+        SCHEMA + "FROM orders o LEFT JOIN users u ON u.id = o.user_id",
+        RewriteKind.INNER_JOIN,
+    ),
     # A new WHERE before WINDOW.
     (
         SCHEMA + "SELECT s.ts, count(*) OVER w AS n FROM sessions s JOIN users u ON u.id = s.user_id "
@@ -1091,6 +1148,16 @@ EXPECTED_DIFFS = [
 -LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
     ),
     # Placements beyond the one per kind.
+    (
+        RewriteKind.REDUNDANT_GROUPING,
+        SCHEMA + "FROM users u JOIN sessions s ON s.user_id = u.id\nSELECT u.id, u.name\nGROUP BY u.id, u.name",
+        """\
+@@ -6,2 +6,2 @@
+-SELECT u.id, u.name
+-GROUP BY u.id, u.name
++SELECT u.id, any_value(u.name) AS name
++GROUP BY u.id""",
+    ),
     (
         RewriteKind.REDUNDANT_GROUPING,
         SCHEMA + "SELECT DISTINCT ON (u.id) u.id, u.name\nFROM users u JOIN sessions s ON s.user_id = u.id\nGROUP BY u.id, u.name",
