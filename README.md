@@ -1,5 +1,10 @@
 # sqlassert
 
+[![PyPI version](https://img.shields.io/pypi/v/sqlassert)](https://pypi.org/project/sqlassert/)
+[![CI](https://github.com/polvoazul/sqlassert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/polvoazul/sqlassert/actions/workflows/ci.yml)
+[![MIT license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)](https://pypi.org/project/sqlassert/)
+
 **sqlassert adds asserts and static proofs to your SQL, without touching your data, to catch common mistakes before they ship.**
 
 Mark what a query must guarantee (this join never multiplies rows, this column is a key, this `CASE` covers every status) and sqlassert proves it from the SQL and schema alone. A proof holds for *any* data, not just the rows in the table today, and it runs in milliseconds in your test suite or CI, with no warehouse and no connection.

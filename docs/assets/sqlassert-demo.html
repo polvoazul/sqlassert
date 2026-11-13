@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sqlassert interactive demo</title>
+<style>
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0b1119; color: #edf5fc; }
+body { max-width: 80rem; margin: 0 auto; padding: clamp(1rem, 4vw, 3rem); }
+h1 { margin: 0 0 .4rem; font-size: 2.6rem; }
+header p { margin: 0 0 1.8rem; color: #b0c1d3; }
+nav, footer { display: flex; flex-wrap: wrap; gap: .6rem; }
+footer { justify-content: space-between; margin-top: 1.15rem; }
+button { font: inherit; cursor: pointer; color: inherit; background: #162435; border: 1px solid #405771;
+  border-radius: .45rem; padding: .6rem .9rem; }
+button[aria-pressed="true"] { color: #07221b; background: #67e8cd; border-color: #67e8cd; }
+button:focus-visible { outline: 3px solid #ffc979; outline-offset: 3px; }
+button:disabled { opacity: .45; cursor: default; }
+.columns { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1rem; }
+.panel { min-width: 0; border: 1px solid #2b4055; border-radius: .65rem; background: #111b28; overflow: hidden; }
+h2 { font-size: 1.5rem; margin-bottom: .4rem; }
+section > p { margin-top: 0; color: #b0c1d3; }
+h3 { margin: 0; padding: .75rem 1rem; border-bottom: 1px solid #2b4055; color: #b0c1d3; font: 500 .95rem system-ui; }
+pre { margin: 0; padding: .85rem 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: .92rem/1.65 ui-monospace, Menlo, monospace; tab-size: 4; }
+.line { display: grid; grid-template-columns: 2ch 1fr; gap: .85rem; padding: 0 .9rem; }
+.number { color: #9bb0c4; text-align: right; user-select: none; }
+mark { color: #ffdb9e; background: #3d3022; border-left: 3px solid #ffc979; padding-left: calc(.9rem - 3px) !important; }
+.output { padding: .85rem 1rem; }
+.prompt, .added { color: #67e8cd; }
+.removed { color: #ff9eaa; }
+@media (max-width: 52rem) { .columns { grid-template-columns: 1fr; } }
+</style>
+<header><h1>sqlassert</h1><p>Simplify and catch SQL bugs before they ship</p></header>
+<nav aria-label="Choose an example"><button type="button" aria-controls="step-0" aria-pressed="true">Fan Trap</button><button type="button" aria-controls="step-1" aria-pressed="false">INNER JOIN</button><button type="button" aria-controls="step-2" aria-pressed="false">Redundant Join</button><button type="button" aria-controls="step-3" aria-pressed="false">Annotate</button></nav>
+<main><section id="step-0" aria-labelledby="title-0"><h2 id="title-0">Fan Trap</h2><p>Multiple refunds can make the same payment count more than once.</p><div class="columns"><div class="panel"><h3>fan-trap.sql</h3><pre><span class="line"><span class="number" aria-hidden="true">1</span><span>CREATE TABLE orders (id INT PRIMARY KEY);</span></span><span class="line"><span class="number" aria-hidden="true">2</span><span>CREATE TABLE payments (id INT PRIMARY KEY, order_id INT, amount INT);</span></span><span class="line"><span class="number" aria-hidden="true">3</span><span>CREATE TABLE refunds (id INT PRIMARY KEY, order_id INT);</span></span><span class="line"><span class="number" aria-hidden="true">4</span><span> </span></span><span class="line"><span class="number" aria-hidden="true">5</span><span>SELECT o.id, SUM(p.amount) AS paid</span></span><span class="line"><span class="number" aria-hidden="true">6</span><span>FROM orders o</span></span><mark class="line"><span class="number" aria-hidden="true">7</span><span>JOIN payments p ON p.order_id = o.id</span></mark><mark class="line"><span class="number" aria-hidden="true">8</span><span>JOIN refunds r ON r.order_id = o.id</span></mark><span class="line"><span class="number" aria-hidden="true">9</span><span>GROUP BY o.id;</span></span></pre></div><div class="panel"><h3>Terminal output excerpt</h3><pre class="output"><span class="prompt">$ sqlassert suggest fan-trap.sql</span>
+
+Fan trap · line 9
+
+SUM(p.amount) reads rows that JOIN refunds AS r may repeat: the join is not proved to repeat rows of only one input (fan trap), so a value may be counted more than once</pre></div></div></section>
+<section id="step-1" aria-labelledby="title-1" hidden><h2 id="title-1">INNER JOIN</h2><p>Every order has a customer, so the outer join can be simplified.</p><div class="columns"><div class="panel"><h3>inner-join.sql</h3><pre><span class="line"><span class="number" aria-hidden="true">1</span><span>CREATE TABLE customers (id INT PRIMARY KEY, name VARCHAR);</span></span><span class="line"><span class="number" aria-hidden="true">2</span><span>CREATE TABLE orders (</span></span><span class="line"><span class="number" aria-hidden="true">3</span><span>    id INT PRIMARY KEY,</span></span><span class="line"><span class="number" aria-hidden="true">4</span><span>    customer_id INT NOT NULL REFERENCES customers(id)</span></span><span class="line"><span class="number" aria-hidden="true">5</span><span>);</span></span><span class="line"><span class="number" aria-hidden="true">6</span><span> </span></span><span class="line"><span class="number" aria-hidden="true">7</span><span>SELECT o.id, c.name</span></span><span class="line"><span class="number" aria-hidden="true">8</span><span>FROM orders o</span></span><mark class="line"><span class="number" aria-hidden="true">9</span><span>LEFT JOIN customers c ON c.id = o.customer_id;</span></mark></pre></div><div class="panel"><h3>Terminal output excerpt</h3><pre class="output"><span class="prompt">$ sqlassert suggest inner-join.sql</span>
+
+INNER JOIN · line 9
+
+every left row matches exactly one right row, so the LEFT JOIN pads nothing: write JOIN
+<span class="removed">-LEFT JOIN customers c ON c.id = o.customer_id;</span>
+<span class="added">+JOIN customers c ON c.id = o.customer_id;</span></pre></div></div></section>
+<section id="step-2" aria-labelledby="title-2" hidden><h2 id="title-2">Redundant Join</h2><p>The coupon contributes no columns and cannot multiply orders.</p><div class="columns"><div class="panel"><h3>redundant-join.sql</h3><pre><span class="line"><span class="number" aria-hidden="true">1</span><span>CREATE TABLE orders (id INT PRIMARY KEY, coupon_id INT);</span></span><span class="line"><span class="number" aria-hidden="true">2</span><span>CREATE TABLE coupons (id INT PRIMARY KEY);</span></span><span class="line"><span class="number" aria-hidden="true">3</span><span> </span></span><span class="line"><span class="number" aria-hidden="true">4</span><span>SELECT o.id</span></span><span class="line"><span class="number" aria-hidden="true">5</span><span>FROM orders o</span></span><mark class="line"><span class="number" aria-hidden="true">6</span><span>LEFT JOIN coupons c ON c.id = o.coupon_id;</span></mark></pre></div><div class="panel"><h3>Terminal output excerpt</h3><pre class="output"><span class="prompt">$ sqlassert suggest redundant-join.sql</span>
+
+Redundant Join · line 6
+
+at most one match per row and no column of coupons AS c is used outside its ON: delete the join
+<span class="removed">-FROM orders o</span>
+<span class="removed">-LEFT JOIN coupons c ON c.id = o.coupon_id;</span>
+<span class="added">+FROM orders o;</span></pre></div></div></section>
+<section id="step-3" aria-labelledby="title-3" hidden><h2 id="title-3">Annotate</h2><p>Save the proof as a marker, then check it in CI.</p><div class="columns"><div class="panel"><h3>inner-join.sql</h3><pre><span class="line"><span class="number" aria-hidden="true">1</span><span>CREATE TABLE customers (id INT PRIMARY KEY, name VARCHAR);</span></span><span class="line"><span class="number" aria-hidden="true">2</span><span>CREATE TABLE orders (</span></span><span class="line"><span class="number" aria-hidden="true">3</span><span>    id INT PRIMARY KEY,</span></span><span class="line"><span class="number" aria-hidden="true">4</span><span>    customer_id INT NOT NULL REFERENCES customers(id)</span></span><span class="line"><span class="number" aria-hidden="true">5</span><span>);</span></span><span class="line"><span class="number" aria-hidden="true">6</span><span> </span></span><span class="line"><span class="number" aria-hidden="true">7</span><span>SELECT o.id, c.name</span></span><span class="line"><span class="number" aria-hidden="true">8</span><span>FROM orders o</span></span><mark class="line"><span class="number" aria-hidden="true">9</span><span>LEFT JOIN customers c ON c.id = o.customer_id;</span></mark></pre></div><div class="panel"><h3>Terminal output excerpt</h3><pre class="output"><span class="prompt">$ sqlassert suggest --annotate inner-join.sql</span>
+
+<span class="prompt">$ tail -1 inner-join.sql</span>
+/**ASSERT EXACTLY ONE**/ LEFT JOIN customers c ON c.id = o.customer_id /**ASSERT NOT NULL UNIQUE(id)**/;
+
+<span class="prompt">$ sqlassert check inner-join.sql</span>
+1 file checked: 2 assertions (2 PROVED, 0 UNKNOWN), 0 errors, 0 warnings</pre></div></div></section></main>
+<footer aria-label="Walkthrough controls">
+<button id="previous" type="button">← Previous</button>
+<button id="next" type="button">Next →</button>
+</footer>
+<script>
+const buttons = [...document.querySelectorAll("nav button")];
+const slides = [...document.querySelectorAll("main section")];
+const previous = document.querySelector("#previous");
+const next = document.querySelector("#next");
+let current = 0;
+function show(index, focusButton) {
+  current = index;
+  slides.forEach((slide, i) => { slide.hidden = i !== index; });
+  buttons.forEach((button, i) => { button.setAttribute("aria-pressed", i === index); });
+  previous.disabled = index === 0;
+  next.disabled = index === slides.length - 1;
+  if (focusButton) buttons[index].focus();
+}
+buttons.forEach((button, index) => button.addEventListener("click", () => show(index, false)));
+previous.addEventListener("click", () => show(current - 1, current === 1));
+next.addEventListener("click", () => show(current + 1, current === slides.length - 2));
+show(0, false);
+</script>
+</html>
