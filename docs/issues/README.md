@@ -24,6 +24,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [58. dbt: test and decide how findings map back to model files](0058-dbt-source-mapping.md) — open (deferred)
 - [59. User-defined functions and table functions (Postgres, Spark, Hive)](0059-postgres-user-defined-functions.md) — not planned (P4: a SETOF UDF or a UDTF in a select list repeats rows; read CREATE FUNCTION and the catalog)
 - [69. Real-world SQL corpora, run through the oracle as they are](0069-real-world-sql-corpora.md) — open (P3, deferred: DuckDB logic tests, TPC-H/TPC-DS, public dbt projects, VeriEQL's LeetCode pairs; unblocks 11 and 27 Part 2)
+- [70. Hidden Join Fanout: decide whether many-to-many joins should be a Hazard by default](0070-decide-whether-to-warn-on-hidden-join-fanout-by-default.md) — open (P2, deferred)
 - [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse, Trino certified; Spark 4.3 partly: CAST and zoned-timestamp probes left)
 
