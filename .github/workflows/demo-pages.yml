@@ -1,0 +1,35 @@
+name: Publish interactive demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/assets/sqlassert-demo.html
+      - .github/workflows/demo-pages.yml
+  workflow_dispatch:
+
+concurrency:
+  group: demo-pages
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+      - name: Prepare demo
+        run: |
+          mkdir _site
+          cp docs/assets/sqlassert-demo.html _site/index.html
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        id: deployment
