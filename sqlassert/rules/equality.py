@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import assert_never
 import re
 
@@ -44,7 +44,7 @@ class EqualityGroups:
     groups: tuple[_Group, ...]
 
 
-@analysis(Stratum.NON_NULL)
+@analysis(Stratum.EQUALITY_GROUP)
 def _equal_columns(column: ir.OutputColumn) -> Result[frozenset[ir.OutputColumn]]:
     """Every column of `column`'s relation that carries its value, itself included."""
     groups = _equality_groups(column.get_relation(current_arena().program))
@@ -52,7 +52,7 @@ def _equal_columns(column: ir.OutputColumn) -> Result[frozenset[ir.OutputColumn]
     return Result(frozenset(group), "Equal columns", (column,), [groups.members[group]])
 
 
-@analysis(Stratum.NON_NULL)
+@analysis(Stratum.EQUALITY_GROUP)
 def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
     """`relation`'s equality groups; each group's member cites the equalities that merged it."""
     roots = {column: column for column in relation.output_columns}
@@ -112,13 +112,11 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
                 merge([first, second], Result(True, "The ON equality holds without padding", (reason,), [definite]))
 
     if isinstance(relation, ir.SetOperation) and relation.operator == "union":
-        columns = [column for column in relation.output_columns if _same_set_types(relation, (column,))]
-        for first, second in combinations(columns, 2):
-            first_arms, second_arms = relation.arms(first), relation.arms(second)
-            assert first_arms is not None and second_arms is not None
-            proofs = [_equal_columns(arm) for arm in first_arms]
-            if all(other in proof.value for other, proof in zip(second_arms, proofs)):
-                merge([first, second], Result(True, "Equal in both UNION inputs", (relation,), proofs))
+        typed = {column: arms for column in relation.output_columns if (arms := _typed_arms(relation, column)) is not None}
+        for first, second in combinations(typed, 2):
+            arm_groups = [_equal_columns(arm) for arm in typed[first]]
+            if all(other in group.value for other, group in zip(typed[second], arm_groups)):
+                merge([first, second], Result(True, "Equal in both UNION inputs", (relation,), arm_groups))
 
     grouped: dict[ir.OutputColumn, list[ir.OutputColumn]] = {}
     for column in relation.output_columns:
@@ -134,13 +132,24 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
     return Result(value, "Equality groups", (relation,), list(members.values()), members=members)
 
 
-def _predicate_equalities(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[tuple[ir.OutputColumn, ir.OutputColumn], ir.ScalarExpr]:
-    pairs = {}
+# Ordered pairs of columns an equality relates, each with the conjunct that
+# relates them.
+type Equalities = dict[tuple[ir.OutputColumn, ir.OutputColumn], ir.ScalarExpr]
+
+
+def _in_every_branch[Key](disjunction: ir.Or, facts: Callable[[tuple[ir.ScalarExpr, ...]], Mapping[Key, object]]) -> list[Key]:
+    """The facts every branch of an OR establishes: one of them holds on each row."""
+    first, *rest = (facts(ir.conjuncts(part)) for part in disjunction.parts)
+    return [key for key in first if all(key in branch for branch in rest)]
+
+
+def _predicate_equalities(conjuncts: tuple[ir.ScalarExpr, ...]) -> Equalities:
+    """The column equalities every row satisfying `conjuncts` meets."""
+    pairs: Equalities = {}
     for conjunct in conjuncts:
         match conjunct:
-            case ir.Or(parts=parts):
-                branches = [_predicate_equalities(ir.conjuncts(part)) for part in parts]
-                pairs.update({pair: conjunct for pair in branches[0] if all(pair in branch for branch in branches[1:])})
+            case ir.Or():
+                pairs.update(dict.fromkeys(_in_every_branch(conjunct, _predicate_equalities), conjunct))
             case (
                 ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
                 | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
@@ -149,10 +158,10 @@ def _predicate_equalities(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[tuple[ir
     return pairs
 
 
-@analysis(Stratum.EQUALITY_GROUP)
-def _lax_equalities(relation: ir.RelationExpr) -> Result[dict[tuple[ir.OutputColumn, ir.OutputColumn], ir.ScalarExpr]]:
+@analysis(Stratum.COMPARISON)
+def _lax_equalities(relation: ir.RelationExpr) -> Result[Equalities]:
     """Directed pairs: where the first is non-null, it equals the second."""
-    pairs = {}
+    pairs: Equalities = {}
     for source in _inputs(relation):
         passed = _pass_through(relation, source)
         for (first, second), reason in _lax_equalities(source).value.items():
@@ -171,47 +180,64 @@ def _lax_equalities(relation: ir.RelationExpr) -> Result[dict[tuple[ir.OutputCol
 
 
 def _predicate_constants(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn, tuple[ir.LiteralValue | None, ir.ScalarExpr]]:
-    constants = {}
+    """The constant (SQL NULL included) each column has on every row
+    satisfying `conjuncts`, with the conjunct that fixes it."""
+    return {column: (value, conjunct) for (column, value), conjunct in _pinned_values(conjuncts).items()}
+
+
+def _pinned_values(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[tuple[ir.OutputColumn, ir.LiteralValue | None], ir.ScalarExpr]:
+    pinned: dict[tuple[ir.OutputColumn, ir.LiteralValue | None], ir.ScalarExpr] = {}
     for conjunct in conjuncts:
         match conjunct:
-            case ir.Or(parts=parts):
-                branches = [_predicate_constants(ir.conjuncts(part)) for part in parts]
-                for column, (value, _) in branches[0].items():
-                    if all(column in branch and branch[column][0] == value for branch in branches[1:]):
-                        constants[column] = value, conjunct
+            case ir.Or():
+                pinned.update(dict.fromkeys(_in_every_branch(conjunct, _pinned_values), conjunct))
             case ir.Equality(left=left, right=right) | ir.NullSafeEquality(left=left, right=right):
                 for column, literal in ((left, right), (right, left)):
                     if isinstance(column, ir.ColumnRef) and isinstance(literal, ir.Constant) and literal.value is not None:
                         if _pins(column.column, literal):
-                            constants[column.column] = literal.value, conjunct
+                            pinned[column.column, literal.value] = conjunct
             case ir.IsNull(operand=ir.ColumnRef(column=column)):
-                constants[column] = None, conjunct
-    return constants
+                pinned[column, None] = conjunct
+    return pinned
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.COMPARISON)
 def _constant_value(column: ir.OutputColumn) -> Result[tuple[ir.LiteralValue | None] | None]:
     """An exact constant, including SQL NULL, on every row carrying this column."""
-    relation = column.get_relation(current_arena().program)
-    match relation, column.scalar_expr:
-        case ir.SetOperation(operator="union"), _ if _same_set_types(relation, (column,)):
-            arms = relation.arms(column)
-            assert arms is not None
+    relation = column.get_relation(current_arena().program).closed
+    unknown_value: Result[tuple[ir.LiteralValue | None] | None] = Result(None, "No exact constant is known", (column,))
+    match relation:
+        case ir.SetOperation(operator="union"):
+            if (arms := _typed_arms(relation, column)) is None:
+                return unknown_value
             left, right = (_constant_value(arm) for arm in arms)
             if left.value is not None and left.value == right.value:
                 return Result(left.value, "The same constant in both UNION inputs", (column,), [left, right])
-        case ir.Filter(conjuncts=conjuncts), ir.ColumnRef(column=source):
-            if (constant := _predicate_constants(conjuncts).get(source)) is not None:
-                value, conjunct = constant
-                return Result((value,), "The WHERE clause fixes the value", (conjunct,))
-            return _constant_value(source)
-        case ir.Project() | ir.Alias() | ir.NamedRelation() | ir.Distinct() | ir.Limit() | ir.QualifyByPartition(), ir.ColumnRef(column=source):
-            return _constant_value(source)
-        case _, ir.Constant(value=ir.LiteralValue() as literal):
-            return Result((literal,), "A literal is constant", (column,))
-        case _, ir.NullLiteral():
-            return Result((None,), "A NULL literal is constant", (column,))
-    return Result(None, "No exact constant is known", (column,))
+            return unknown_value
+        case ir.Filter(conjuncts=conjuncts):
+            match column.scalar_expr:
+                case ir.ColumnRef(column=source) if (constant := _predicate_constants(conjuncts).get(source)) is not None:
+                    value, conjunct = constant
+                    return Result((value,), "The WHERE clause fixes the value", (conjunct,))
+                case ir.ColumnRef(column=source):
+                    return _constant_value(source)
+                case _:
+                    return unknown_value
+        case ir.Project() | ir.Alias() | ir.NamedRelation() | ir.Distinct() | ir.Limit() | ir.QualifyByPartition():
+            match column.scalar_expr:
+                case ir.ColumnRef(column=source):
+                    return _constant_value(source)
+                case ir.Constant(value=ir.LiteralValue() as literal):
+                    return Result((literal,), "A literal is constant", (column,))
+                case ir.NullLiteral():
+                    return Result((None,), "A NULL literal is constant", (column,))
+                case _:
+                    return unknown_value
+        case ir.Join() | ir.Aggregate() | ir.SetOperation() | ir.OpaqueRelation():
+            # Padding, grouping, and the other set operations are not followed.
+            return unknown_value
+        case _:
+            assert_never(relation)
 
 
 def _same_type(first: ir.OutputColumn, second: ir.OutputColumn) -> bool:
@@ -220,7 +246,7 @@ def _same_type(first: ir.OutputColumn, second: ir.OutputColumn) -> bool:
     return first is second or first_type is not None and first_type == _comparison_type(second).value
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.COMPARISON)
 def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
     relation = column.get_relation(current_arena().program)
     if isinstance(relation, ir.SetOperation) and (arms := relation.arms(column)) is not None:
@@ -237,7 +263,7 @@ def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
             return Result(column.comparison_type, "Declared comparison type", (column,))
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.COMPARISON)
 def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
     """Whether equal values of `column` are identical, from its declared type."""
     relation = column.get_relation(current_arena().program)
@@ -317,7 +343,13 @@ def _signed_integer(column: ir.OutputColumn) -> bool:
 
 def _same_set_types(operation: ir.SetOperation, columns: Iterable[ir.OutputColumn]) -> bool:
     """Whether set output columns retain the same types as their inputs."""
-    return all((arms := operation.arms(column)) is not None and _same_type(*arms) for column in columns)
+    return all(_typed_arms(operation, column) is not None for column in columns)
+
+
+def _typed_arms(operation: ir.SetOperation, column: ir.OutputColumn) -> tuple[ir.OutputColumn, ir.OutputColumn] | None:
+    """`column`'s input columns, when it keeps their type: its values are theirs."""
+    arms = operation.arms(column)
+    return arms if arms is not None and _same_type(*arms) else None
 
 
 def _exact_arithmetic(column: ir.OutputColumn) -> bool:
@@ -334,7 +366,7 @@ def _exact_arithmetic(column: ir.OutputColumn) -> bool:
     return source is not None and exact_numeric(source).value
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.COMPARISON)
 def _binary_text(column: ir.OutputColumn) -> Result[bool]:
     """Whether `column` is text compared by identity, from its declared type."""
     relation = column.get_relation(current_arena().program)
@@ -347,7 +379,7 @@ def _binary_text(column: ir.OutputColumn) -> Result[bool]:
             return Result(column.binary_text, "Declared as text compared by identity", (column,))
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.COMPARISON)
 def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
     """Whether `column` is an integer or decimal, from its declared type."""
     relation = column.get_relation(current_arena().program)

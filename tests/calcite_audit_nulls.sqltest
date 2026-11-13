@@ -516,11 +516,11 @@ LEFT JOIN emp AS e ON e.deptno = d.deptno
 
 -- case: pullup_left_join_preserved_domain_above_the_join
 -- inspired by RelMdPredicates.JoinConditionBasedPredicateInference (LEFT: left predicates inferred onto the right)
--- Missing proof: matched rows have e.deptno = d.deptno, which the WHERE bounds (issue 37, E4).
+-- Matched rows have e.deptno = d.deptno, which the WHERE bounds; padded rows are NULL.
 SELECT d.deptno, e.deptno AS edeptno
 FROM dept AS d LEFT JOIN emp AS e ON e.deptno = d.deptno
 WHERE d.deptno IN (1, 2)
-/**ASSERT ENUM(edeptno IN (1, 2))**/  --~ UNKNOWN
+/**ASSERT ENUM(edeptno IN (1, 2))**/  --~ PROVED
 
 -- case: pullup_full_join_input_predicates
 -- inspired by RelMdPredicates class comment, "For Full Outer Joins no predicates are pulledUp"
@@ -549,7 +549,7 @@ SELECT deptno, count(*) AS n FROM emp GROUP BY deptno HAVING deptno = 10
 
 -- case: pullup_union_common_and_disjunctive
 -- inspired by RelMetadataTest.testPullUpPredicatesFromUnion2
--- Missing proof: empno is the constant 1 in both inputs (issue 37, U2).
+-- empno is the constant 1 in both inputs, so it depends on nothing.
 WITH u AS (
     SELECT empno, comm, deptno FROM emp_nullables WHERE empno = 1 AND comm = 2 AND deptno = 3
     UNION ALL
@@ -560,7 +560,7 @@ SELECT empno, comm, deptno FROM u
 /**ASSERT ENUM(comm IN (2, 4))**/  --~ PROVED
 /**ASSERT NOT NULL(empno, comm)**/  --~ PROVED
 /**ASSERT ENUM(deptno IN (3))**/  --~ UNKNOWN
-/**ASSERT DETERMINES(deptno -> empno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(deptno -> empno)**/  --~ PROVED
 
 -- case: pullup_union_with_null_literal
 -- inspired by RelMetadataTest.testPullUpPredicatesFromUnionWithValues1

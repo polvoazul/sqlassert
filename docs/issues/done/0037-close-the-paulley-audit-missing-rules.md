@@ -57,8 +57,13 @@ then OR branches.
 
 The regression cases are in `tests/paulley_audit.sqltest` and
 `tests/calcite_audit_keys.sqltest`. A disjoint UNION ALL uses both input
-closures when the determinant reaches the separating column. In the Calcite
-example, the same employee number can occur in both inputs with different
-department numbers when employee numbers are only keys within each input.
-A Many To One FULL join preserves the left key laxly. Its right-only rows can
-have NULL for the left determinant and different right values.
+closures when the determinant reaches the separating column. Input FDs do
+not hold across inputs in general (one id can occur in both with different
+values), but when both inputs copy one table's columns, a key of that table
+picks one row whichever input a row came from: Calcite's `fd_union_all`
+proves `empno -> deptno` that way.
+F2 is lax, not strict as Paulley states it: right-only rows share a NULL
+`a` and can differ on `z`; DETERMINES is lax in its determinant, so the case
+still proves. A Many To One FULL join preserves the left key laxly. Its
+right-only rows can have NULL for the left determinant and different right
+values.

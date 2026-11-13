@@ -88,6 +88,11 @@ MERGED = [
     ("GROUP BY columns", "SELECT x, y, count(*) AS n FROM t WHERE x = y GROUP BY x, y", {frozenset({"x", "y"})}),
     ("DISTINCT", "SELECT DISTINCT x, y FROM t WHERE x = y", {frozenset({"x", "y"})}),
     ("LIMIT", "SELECT x, y FROM t WHERE x = y LIMIT 2", {frozenset({"x", "y"})}),
+    (
+        "an ON equality within the padded side",
+        "SELECT t.z, s.a, s.b FROM t LEFT JOIN s ON t.z = s.a AND s.a = s.b",
+        {frozenset({"a", "b"})},
+    ),
 ]
 
 
@@ -100,7 +105,6 @@ SEPARATE = [
     ("LEFT JOIN ON", "SELECT t.x, s.a FROM t LEFT JOIN s ON t.x = s.a"),
     ("RIGHT JOIN ON", "SELECT t.x, s.a FROM t RIGHT JOIN s ON t.x = s.a"),
     ("FULL JOIN ON", "SELECT t.x, s.a FROM t FULL JOIN s ON t.x = s.a"),
-    ("an equality within the padded side", "SELECT t.z, s.a, s.b FROM t LEFT JOIN s ON t.z = s.a AND s.a = s.b"),
     ("an expression", "SELECT x, y FROM t WHERE x = y + 1"),
     ("a computed column", "SELECT x, x + 0 AS w FROM t"),
     ("a disjunction", "SELECT x, y FROM t WHERE x = y OR z = 1"),
@@ -151,9 +155,9 @@ def test_a_column_without_equalities_is_equal_only_to_itself():
         assert _equal_columns(x).value == frozenset({x})
 
 
-def test_equality_groups_sit_below_every_other_stratum():
+def test_equality_groups_sit_above_null_sources():
     assert _equality_groups.stratum is Stratum.EQUALITY_GROUP
-    assert Stratum.EQUALITY_GROUP == min(Stratum)
+    assert Stratum.NON_NULL < Stratum.EQUALITY_GROUP < Stratum.FUNCTIONAL_DEPENDENCY
 
 
 @pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b BIGINT"])

@@ -141,9 +141,10 @@ class Stratum(IntEnum):
     DAG, so this keeps the whole call graph acyclic: the memoized engine cannot
     compute mutually recursive facts, which would need a fixpoint.
 
-    Comparison types and directed lax equalities come first. Unique Joins
+    Comparisons come first: comparison types, directed lax equalities, and
+    the constants a predicate fixes, all read from conjuncts. Unique Joins
     (and Exactly One Joins) follow, so a relation's Null Sources may use them.
-    Equality Groups can read Null Sources to strengthen lax equalities;
+    Equality Groups follow Null Sources, which strengthen lax equalities;
     dependencies also use Null Sources (a padded side's
     dependencies hold only when the join cannot pad an agreeing row) and Unique
     Joins; closure uses dependencies and non-nullness; Unique Sets and
@@ -153,9 +154,10 @@ class Stratum(IntEnum):
     with the analyzed SQL.
     """
 
-    EQUALITY_GROUP = 5
+    COMPARISON = 5
     UNIQUE_JOIN = 10
     NON_NULL = 20
+    EQUALITY_GROUP = 25
     FUNCTIONAL_DEPENDENCY = 30
     CLOSURE = 40
     UNIQUE_SET = 50

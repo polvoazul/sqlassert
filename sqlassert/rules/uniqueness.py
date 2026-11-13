@@ -21,7 +21,7 @@ non-null by the caller, or proved non-null.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import assert_never
@@ -30,7 +30,7 @@ from sqlassert.diagnostics import quoted
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
-from sqlassert.rules.equality import _binary_text, _constant_value, _equal_columns, _identity_comparison, _pins, _predicate_constants, _predicate_equalities, _same_set_types, _signed_integer, exact_numeric
+from sqlassert.rules.equality import _binary_text, _constant_value, _equal_columns, _identity_comparison, _pins, _predicate_constants, _predicate_equalities, _same_set_types, _signed_integer, _typed_arms, exact_numeric
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -181,50 +181,127 @@ def _closure(relation: ir.RelationExpr, columns: frozenset[Attribute], definite:
     return Result(value, "Closure", (relation,), list(inputs.values()), members=reached)
 
 
-def _union_closure(relation: ir.SetOperation, reached: dict[Attribute, Result[bool]], is_definite: Callable[[Attribute], bool]):
-    """A reached tag separates cross-arm pairs; both arm closures handle within-arm pairs."""
-    left, right = {}, {}
-    for column in relation.output_columns:
-        if (arms := relation.arms(column)) is not None and _same_set_types(relation, (column,)):
-            left[column], right[column] = arms
-    columns = tuple(left)
-    for tag in columns:
+def _union_closure(
+    relation: ir.SetOperation, reached: dict[Attribute, Result[bool]], is_definite: Callable[[Attribute], bool]
+) -> Iterator[tuple[Attribute, Result[bool]]]:
+    """What a UNION's reached columns determine across its inputs."""
+    yield from _separated_inputs(relation, reached, is_definite)
+    yield from _shared_table_rows(relation, reached, is_definite)
+
+
+def _separated_inputs(
+    relation: ir.SetOperation, reached: dict[Attribute, Result[bool]], is_definite: Callable[[Attribute], bool]
+) -> Iterator[tuple[Attribute, Result[bool]]]:
+    """A reached tag, constant and different in each input, keeps rows of one
+    input from agreeing with rows of the other; within each input, its own
+    closure decides. Both input closures start from every reached column,
+    whichever tag separates, so the first such tag suffices."""
+    arms = {column: pair for column in relation.output_columns if (pair := _typed_arms(relation, column)) is not None}
+    for tag, (left_tag, right_tag) in arms.items():
         if tag not in reached:
             continue
-        first, second = _constant_value(left[tag]), _constant_value(right[tag])
-        if first.value is None or second.value is None or not _distinct_tags(tag, first.value[0], second.value[0]):
+        first, second = _constant_value(left_tag), _constant_value(right_tag)
+        if first.value is None or second.value is None or not _distinct_tags((left_tag, right_tag), first.value[0], second.value[0]):
             continue
+        determined = [column for column in arms if column in reached]
         closures = [
-            _closure(source, frozenset(mapping[column] for column in columns if column in reached),
-                     frozenset(mapping[column] for column in columns if column in reached and is_definite(column)))
-            for source, mapping in ((relation.left, left), (relation.right, right))
+            _closure(source, frozenset(arms[column][side] for column in determined),
+                     frozenset(arms[column][side] for column in determined if is_definite(column)))
+            for side, source in enumerate((relation.left, relation.right))
         ]
-        for attribute, a, b in [
-            *((column, left[column], right[column]) for column in columns),
-            (RowIdentity(relation), RowIdentity(relation.left), RowIdentity(relation.right)),
-        ]:
+        for attribute, (a, b) in [*arms.items(), (RowIdentity(relation), (RowIdentity(relation.left), RowIdentity(relation.right)))]:
             if a in closures[0].members and b in closures[1].members:
                 yield attribute, Result(True, "The determinant separates the UNION inputs and determines the value in both",
                                         (relation, tag), [first, second, reached[tag], closures[0].members[a], closures[1].members[b]])
         return
 
 
-def _distinct_tags(column: ir.OutputColumn, first: ir.LiteralValue | None, second: ir.LiteralValue | None) -> bool:
+# DOUBLE holds every integer of up to 15 digits exactly, so tags that short
+# stay distinct whichever numeric type an engine gives the literal.
+_EXACT_DIGITS = 15
+
+
+def _distinct_tags(arms: tuple[ir.OutputColumn, ir.OutputColumn], first: ir.LiteralValue | None, second: ir.LiteralValue | None) -> bool:
+    """Whether the constants `first` and `second` of a UNION's input columns
+    `arms` never compare equal."""
     if first is None or second is None:
         return first != second
-    if first.type == second.type == "string" and _binary_text(column).value:
+    if first.type == second.type == "string" and all(_binary_text(arm).value for arm in arms):
         return first != second
     if first.type == second.type == "numeric":
-        arms = column.get_relation(current_arena().program).closed
-        assert isinstance(arms, ir.SetOperation)
-        pair = arms.arms(column)
-        assert pair is not None
         return (
-            all(_signed_integer(arm) or isinstance(arm.scalar_expr, ir.Constant) for arm in pair)
-            and all(value.text.lstrip("-").isdigit() and len(value.text.lstrip("-")) <= 15 for value in (first, second))
+            all(_signed_integer(arm) or isinstance(arm.scalar_expr, ir.Constant) for arm in arms)
+            and all(value.text.lstrip("-").isdigit() and len(value.text.lstrip("-")) <= _EXACT_DIGITS for value in (first, second))
             and int(first.text) != int(second.text)
         )
     return False
+
+
+def _shared_table_rows(
+    relation: ir.SetOperation, reached: dict[Attribute, Result[bool]], is_definite: Callable[[Attribute], bool]
+) -> Iterator[tuple[Attribute, Result[bool]]]:
+    """Both UNION inputs copying one table's columns along one path each: a
+    key of that table among the reached columns picks one table row, from
+    whichever input a row came, and that row fixes every column copied along
+    the same paths. `SELECT empno, deptno FROM emp WHERE deptno = 10 UNION
+    ALL SELECT empno, deptno FROM emp WHERE deptno = 20` keeps `empno ->
+    deptno`."""
+    paths: dict[tuple[tuple[ir.RelationExpr, ...], tuple[ir.RelationExpr, ...]], list[tuple[ir.OutputColumn, ir.OutputColumn]]] = {}
+    for column in relation.output_columns:
+        if (arms := _typed_arms(relation, column)) is None:
+            continue
+        left, right = (_table_column(arm) for arm in arms)
+        if left is not None and right is not None and left[1] is right[1]:
+            paths.setdefault((left[0], right[0]), []).append((column, left[1]))
+    program = current_arena().program
+    for members in paths.values():
+        determinant = [(column, source) for column, source in members if column in reached and _identity_comparison(column).value]
+        if not determinant:
+            continue
+        table = determinant[0][1].get_relation(program)
+        closure = _closure(
+            table, frozenset(source for _, source in determinant),
+            frozenset(source for column, source in determinant if is_definite(column)),
+        )
+        if RowIdentity(table) not in closure.value.columns:
+            continue
+        proof = Result(True, "Both UNION inputs copy one row of the table, which the determinant picks", (relation, table),
+                       [closure.members[RowIdentity(table)], *(reached[column] for column, _ in determinant)])
+        for column, _ in members:
+            yield column, proof
+
+
+def _table_column(column: ir.OutputColumn) -> tuple[tuple[ir.RelationExpr, ...], ir.OutputColumn] | None:
+    """The table column `column` copies and the relations it passes through,
+    or None when it is computed, grouped away, or read from a set operation.
+
+    Columns copied along one path carry one table row's values on each row:
+    each relation on it keeps a row's columns together (a join side, a group's
+    shared grouping values), and a padded row is NULL on all of them."""
+    program = current_arena().program
+    path: list[ir.RelationExpr] = []
+    while True:
+        relation = column.get_relation(program).closed
+        path.append(relation)
+        match relation:
+            case ir.NamedRelation(role=ir.RelationRole.TABLE):
+                return tuple(path), column
+            case ir.Join(left=left, right=right) if left is right:
+                return None  # Two rows of one relation, on one path.
+            case ir.Aggregate(grouping_outputs=grouping) if column not in grouping:
+                return None
+            case ir.SetOperation() | ir.OpaqueRelation():
+                return None
+            case (
+                ir.NamedRelation() | ir.Alias() | ir.Join() | ir.Filter() | ir.Project() | ir.Limit()
+                | ir.Aggregate() | ir.Distinct() | ir.QualifyByPartition()
+            ):
+                pass
+            case _:
+                assert_never(relation)
+        if not isinstance(column.scalar_expr, ir.ColumnRef):
+            return None
+        column = column.scalar_expr.column
 
 
 def _row_attributes(relation: ir.RelationExpr) -> tuple[Attribute, ...]:
@@ -485,7 +562,9 @@ def _join_side(join: ir.Join, left: bool) -> _Delegation:
             if attribute in down and isinstance(attribute, ir.OutputColumn):
                 if _null_sources(attribute).value <= {Padding(join, left)}:
                     return True
-        status = _match_status(join, left) if join.kind != "full" else None
+        if join.kind == "full":
+            return False  # The other side pads too: its columns may be NULL.
+        status = _match_status(join, left)
         return status is not None and status <= set(reached)
 
     return _Delegation(side, down, back, "Determined in the null-supplying input", valid)
@@ -689,8 +768,11 @@ def _join_dependencies(join: ir.Join):
         case "left" | "right":
             yield from _outer_on_dependencies(join, outputs, padded_left=join.kind == "right")
         case "full":
-            for padded_left in (False, True):
-                yield from _outer_on_dependencies(join, outputs, padded_left)
+            yield from _full_on_dependencies(join, outputs)
+        case "semi" | "anti":
+            raise AssertionError("semi and anti joins return above")
+        case _:
+            assert_never(join.kind)
 
 
 def _matched_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.OutputColumn]):
@@ -723,7 +805,7 @@ def _matched_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outpu
 
 
 def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.OutputColumn], padded_left: bool):
-    """Paulley Lemma 9: what an outer join's ON condition still guarantees.
+    """Paulley Lemma 9: what a left or right join's ON condition still guarantees.
 
     The preserved row fixes whether a row matched, and a matched row satisfies
     the condition, so the preserved side's ON columns determine every column
@@ -740,10 +822,8 @@ def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outp
         evidence = Result(True, "ON conjunct of an outer join", (conjunct,))
         match conjunct:
             case ir.Equality(left=first, right=second) | ir.NullSafeEquality(left=first, right=second):
-                if join.kind == "full" and not isinstance(conjunct, ir.Equality):
-                    continue
                 pairs = ((first, second), (second, first))
-            case ir.IsNull(operand=ir.ColumnRef(column=column)) if join.kind != "full" and column in padded.output_columns:
+            case ir.IsNull(operand=ir.ColumnRef(column=column)) if column in padded.output_columns:
                 # NULL on matched rows and on padded rows alike.
                 yield (), outputs[column], True, evidence
                 continue
@@ -754,25 +834,46 @@ def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outp
                 continue
             match value:
                 case ir.ColumnRef(column=other) if other in padded.output_columns:
-                    if join.kind != "full" and _pins(bound.column, value):
+                    if _pins(bound.column, value):
                         yield (outputs[other],), outputs[bound.column], True, evidence
                 case ir.ColumnRef(column=other):
                     if _pins(bound.column, value):
-                        if join.kind == "full":
-                            # A definite cross-side operand witnesses a real row
-                            # on its side. All its ON inputs fix match status.
-                            yield status | {outputs[other]}, outputs[bound.column], False, evidence
-                        else:
-                            yield status, outputs[bound.column], True, evidence
-                    if join.kind != "full" and _pins(other, bound):
+                        yield status, outputs[bound.column], True, evidence
+                    if _pins(other, bound):
                         yield (outputs[bound.column],), outputs[other], False, evidence
-                case ir.Constant() if join.kind != "full" and _pins(bound.column, value):
+                case ir.Constant() if _pins(bound.column, value):
                     yield status, outputs[bound.column], True, evidence
-                case ir.Constant():
-                    pass
                 case _:
-                    pass  # An expression or NULL binds nothing.
+                    pass  # A NULL, an unpinned constant, or an expression binds nothing.
 
+
+def _full_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.OutputColumn]):
+    """Paulley Lemma 10: what a full join's ON condition still guarantees.
+
+    Both sides pad, so only a cross-side `=` survives, laxly: a non-null
+    operand witnesses a real row on its side, and with the other ON columns
+    of that side it fixes which rows the row matches, each equal to it. Each
+    side's padded rows are unconstrained by ON, so a padded-side equality, a
+    literal, or IS NULL gives nothing; IS NOT DISTINCT FROM is not followed.
+    """
+    for padded_left in (False, True):
+        padded = join.left if padded_left else join.right
+        status = _match_status(join, padded_left)
+        assert status is not None
+        for conjunct in join.conjuncts:
+            evidence = Result(True, "ON conjunct of a full join", (conjunct,))
+            match conjunct:
+                case ir.Equality(left=first, right=second):
+                    for bound, value in ((first, second), (second, first)):
+                        match bound, value:
+                            case ir.ColumnRef(column=column), ir.ColumnRef(column=other) if (
+                                column in padded.output_columns and other not in padded.output_columns and _pins(column, value)
+                            ):
+                                yield status | {outputs[other]}, outputs[column], False, evidence
+                            case _:
+                                pass  # Within one side, or not a column: ON holds on matched rows only.
+                case _:
+                    pass  # Other conjuncts hold on matched rows only.
 
 
 def minimal_keys(relation: ir.RelationExpr, max_size: int = 3) -> list[tuple[ir.OutputColumn, ...]]:

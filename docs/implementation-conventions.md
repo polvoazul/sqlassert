@@ -152,7 +152,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
 - `ir/convert.py` lowers `WHERE` and `ON` into `Filter.conjuncts` and
   `Join.conjuncts`: `=`, `IS NOT DISTINCT FROM`, `IN (...)`, `IS NULL`, and `IS NOT NULL` are recognized nodes, and
   any other conjunct is kept as an ordinary (usually opaque) scalar expression,
-  so the tuple is always the whole condition.
+  so the tuple is always the whole condition. A `LIKE` whose pattern is a
+  string literal with no `%`, `_`, or backslash, and no `ESCAPE`, lowers to
+  `=` when the dialect's text compares byte for byte and the column is a
+  declared `VARCHAR` or `TEXT` read without passing a set operation.
 - `discovery/` hydrates a SQL Program from a database catalog before the
   engine runs; the engine never sees it. `DatabaseKnowledgeFetcher` links the
   Program once without a connection to find the external Named Relations it

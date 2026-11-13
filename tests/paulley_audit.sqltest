@@ -336,6 +336,25 @@ FROM q
 SELECT t.a, u.z FROM t LEFT JOIN u ON u.z = t.a AND u.z = 5 WHERE u.z IS NOT NULL
 /**ASSERT ENUM(a IN (5))**/  --~ PROVED
 
+-- case: E4_foreign_key
+-- Foreign Key stand-ins cross the strengthened equality too.
+CREATE TABLE r (z INTEGER PRIMARY KEY);
+CREATE TABLE w (z INTEGER REFERENCES r (z));
+SELECT t.a, w.z FROM t LEFT JOIN w ON w.z = t.a WHERE w.z IS NOT NULL
+/**ASSERT FOREIGN KEY(a) REFERENCES r(z)**/  --~ PROVED
+
+-- case: E4_foreign_key_minus
+-- Without the filter, an unmatched row keeps an a that need not be in r.
+CREATE TABLE r (z INTEGER PRIMARY KEY);
+CREATE TABLE w (z INTEGER REFERENCES r (z));
+SELECT t.a, w.z FROM t LEFT JOIN w ON w.z = t.a
+/**ASSERT FOREIGN KEY(a) REFERENCES r(z)**/  --~ UNKNOWN
+
+-- case: E4_minus
+-- The filter must make the padded column non-null; t.b says nothing about padding.
+SELECT t.a, u.z FROM t LEFT JOIN u ON u.z = t.a AND u.z = 5 WHERE t.b IS NOT NULL
+/**ASSERT ENUM(a IN (5))**/  --~ UNKNOWN
+
 -- case: L14
 SELECT u.z FROM t LEFT JOIN u ON u.z = t.a WHERE t.a = 5
 /**ASSERT ENUM(z IN (5))**/  --~ PROVED
@@ -348,6 +367,11 @@ SELECT t.a FROM t LEFT JOIN u ON u.z = t.a AND u.z = 5
 SELECT u.x FROM t LEFT JOIN u ON u.x = u.z AND u.z = 3
 /**ASSERT ENUM(x IN (3))**/  --~ PROVED
 
+-- case: L13_full_minus
+-- A full join's right-only rows are unconstrained by ON.
+SELECT u.x FROM t FULL JOIN u ON u.x = u.z AND u.z = 3
+/**ASSERT ENUM(x IN (3))**/  --~ UNKNOWN
+
 -- case: R9
 SELECT id, name FROM labels WHERE name LIKE 'example'
 /**ASSERT DETERMINES(id -> name)**/  --~ PROVED
@@ -358,6 +382,27 @@ SELECT id, name FROM labels WHERE name LIKE 'ex_mple'
 
 -- case: R9_escape
 SELECT id, name FROM labels WHERE name LIKE 'example' ESCAPE 'e'
+/**ASSERT DETERMINES(id -> name)**/  --~ UNKNOWN
+
+-- case: R9_case_insensitive_minus
+-- dialect: mysql
+-- MySQL's default collation ignores case, which LIKE and = treat alike only per collation.
+SELECT id, name FROM labels WHERE name LIKE 'example'
+/**ASSERT DETERMINES(id -> name)**/  --~ UNKNOWN
+
+-- case: R9_char_minus
+-- dialect: postgres
+-- CHAR pads: = ignores trailing spaces, LIKE does not.
+CREATE TABLE codes (id INTEGER, code CHAR(10));
+SELECT id, code FROM codes WHERE code LIKE 'ab'
+/**ASSERT DETERMINES(id -> code)**/  --~ UNKNOWN
+
+-- case: R9_through_union_minus
+-- dialect: postgres
+-- The right input's CHAR values reach the UNION column the left input's type names.
+CREATE TABLE codes (id INTEGER, code CHAR(10));
+WITH q AS (SELECT id, name FROM labels UNION ALL SELECT id, code FROM codes)
+SELECT id, name FROM q WHERE name LIKE 'example'
 /**ASSERT DETERMINES(id -> name)**/  --~ UNKNOWN
 
 -- case: I1_right
@@ -375,6 +420,21 @@ WITH q AS (
     SELECT x, z FROM u
 )
 SELECT name, id FROM q /**ASSERT DETERMINES(name -> id)**/  --~ UNKNOWN
+
+-- case: I1_double_minus
+-- DOUBLE equality is not identity (0.0 = -0.0): the right input's key stays there.
+CREATE TABLE fl (p DOUBLE, q INTEGER);
+CREATE TABLE fr (p DOUBLE PRIMARY KEY, q INTEGER);
+WITH s AS (SELECT p, q FROM fl INTERSECT ALL SELECT p, q FROM fr)
+SELECT p, q FROM s /**ASSERT DETERMINES(p -> q)**/  --~ UNKNOWN
+
+-- case: I1_case_insensitive_minus
+-- dialect: mysql
+-- 'a' = 'A' under MySQL's default collation: the right input's key stays there.
+CREATE TABLE ml (s VARCHAR(10), n INTEGER);
+CREATE TABLE mr (s VARCHAR(10) PRIMARY KEY, n INTEGER);
+WITH s AS (SELECT s, n FROM ml INTERSECT ALL SELECT s, n FROM mr)
+SELECT s, n FROM s /**ASSERT DETERMINES(s -> n)**/  --~ UNKNOWN
 
 -- case: U2
 WITH q AS (
@@ -394,7 +454,103 @@ WITH q AS (
 SELECT id, a, b FROM q
 /**ASSERT DETERMINES(id, a -> b)**/  --~ PROVED
 /**ASSERT UNIQUE(id, a)**/  --~ PROVED
+/**ASSERT DETERMINES(id -> a)**/  --~ PROVED
+
+-- case: U2_different_constants_minus
+-- One id occurs in both inputs, with c = 5 in one and 6 in the other.
+WITH q AS (
+    SELECT id, 5 AS c FROM t
+    UNION ALL
+    SELECT id, 6 AS c FROM t
+)
+SELECT id, c FROM q
+/**ASSERT DETERMINES(id -> c)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(id, c)**/  --~ PROVED
+
+-- case: U2_shared_table_padded
+-- An id picks one t row in both inputs; a padded row is NULL on id and a alike.
+WITH q AS (
+    SELECT t.id, t.a FROM u LEFT JOIN t ON t.id = u.k
+    UNION ALL
+    SELECT id, a FROM t
+)
+SELECT id, a FROM q
+/**ASSERT DETERMINES(id -> a)**/  --~ PROVED
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: U2_shared_table_different_columns_minus
+WITH q AS (
+    SELECT id, a FROM t
+    UNION ALL
+    SELECT id, b FROM t
+)
+SELECT id, a FROM q
 /**ASSERT DETERMINES(id -> a)**/  --~ UNKNOWN
+
+-- case: U2_shared_table_self_join_minus
+-- id and a come from different rows of t in the first input.
+WITH q AS (
+    SELECT t1.id, t2.a FROM t AS t1 CROSS JOIN t AS t2
+    UNION ALL
+    SELECT id, a FROM t
+)
+SELECT id, a FROM q
+/**ASSERT DETERMINES(id -> a)**/  --~ UNKNOWN
+
+-- case: U2_shared_cte_self_join_minus
+-- One CTE, two references: two rows of t again.
+WITH c AS (SELECT id, a FROM t), q AS (
+    SELECT c1.id, c2.a FROM c AS c1 CROSS JOIN c AS c2
+    UNION ALL
+    SELECT id, a FROM t
+)
+SELECT id, a FROM q
+/**ASSERT DETERMINES(id -> a)**/  --~ UNKNOWN
+
+-- case: U2_shared_table_nullable_key
+-- x is UNIQUE but nullable: rows with a NULL x are exempt from DETERMINES, and
+-- each non-null x occurs once per input.
+WITH q AS (
+    SELECT x, y FROM u
+    UNION ALL
+    SELECT x, y FROM u
+)
+SELECT x, y FROM q
+/**ASSERT DETERMINES(x -> y)**/  --~ PROVED
+/**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+
+-- case: U2_null_tag_minus
+-- A NULL tag in one input separates nothing on its own: id repeats across inputs.
+WITH q AS (
+    SELECT id, NULL AS tag FROM t
+    UNION ALL
+    SELECT id, 1 AS tag FROM t
+)
+SELECT id, tag FROM q
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: U2_string_tag
+CREATE TABLE tagged (id INTEGER PRIMARY KEY, tag VARCHAR(10));
+WITH q AS (
+    SELECT id, tag FROM tagged WHERE tag = 'a'
+    UNION ALL
+    SELECT id, tag FROM tagged WHERE tag = 'A'
+)
+SELECT id, tag FROM q
+/**ASSERT UNIQUE(id, tag)**/  --~ PROVED
+
+-- case: U2_string_tag_case_insensitive_minus
+-- dialect: mysql
+-- 'a' = 'A' under MySQL's default collation: the tag does not separate the inputs.
+CREATE TABLE tagged (id INTEGER PRIMARY KEY, tag VARCHAR(10));
+WITH q AS (
+    SELECT id, tag FROM tagged WHERE tag = 'a'
+    UNION ALL
+    SELECT id, tag FROM tagged WHERE tag = 'A'
+)
+SELECT id, tag FROM q
+/**ASSERT UNIQUE(id, tag)**/  --~ UNKNOWN
 
 -- case: F2
 SELECT t.a, u.z FROM t FULL JOIN u ON u.z = t.a
@@ -410,6 +566,16 @@ SELECT t.a, t.b, u.z FROM t FULL JOIN u ON u.z = t.a AND t.b = 1
 SELECT t.id, u.k FROM t FULL JOIN u ON u.k = t.a
 /**ASSERT UNIQUE(id)**/  --~ PROVED
 /**ASSERT NOT NULL UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: F2_constant_minus
+-- Right-only rows keep any z: ON holds on matched rows only.
+SELECT t.id, u.z FROM t FULL JOIN u ON u.z = 5
+/**ASSERT ENUM(z IN (5))**/  --~ UNKNOWN
+
+-- case: F2_same_side_minus
+-- Right-only rows keep any w and q.
+SELECT v.w, v.q FROM t FULL JOIN v ON v.w = v.q
+/**ASSERT DETERMINES(w -> q)**/  --~ UNKNOWN
 
 -- case: OR_branches
 SELECT d, a, b, c FROM t WHERE (a = 5 AND b = c AND d = 1) OR (a = 5 AND c = b AND d = 2)

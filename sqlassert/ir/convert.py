@@ -149,6 +149,8 @@ class IrParser:
     _absent: set[ir.OutputColumn] = field(default_factory=set)
     # Each declared table column's type, as its CREATE TABLE writes it.
     _declared_types: dict[ir.OutputColumn, exp.DataType] = field(default_factory=dict)
+    # Every set operation's output column: it refers to its left input only,
+    # so the left input's declared type need not describe its values.
     _set_outputs: set[ir.OutputColumn] = field(default_factory=set)
     # The comparisons already checked for a zoned timestamp's text, by id.
     _zone_checked: set[int] = field(default_factory=set)
@@ -2172,7 +2174,10 @@ class IrParser:
 
     def _declared_type(self, expression: ir.ScalarExpr, *, through_sets: bool = True) -> exp.DataType | None:
         """The type a CREATE TABLE declares for the column `expression` reads,
-        through every column that passes it on."""
+        through every column that passes it on. A set operation passes on its
+        left input's type, which hazard checks want; `through_sets=False`
+        stops there instead, for a rewrite that the right input's values must
+        also satisfy."""
         while isinstance(expression, ir.ColumnRef):
             column = expression.column
             if not through_sets and column in self._set_outputs:

@@ -174,15 +174,16 @@ WHERE e1.empno = e1.sal
 
 -- case: fd_union_all
 -- inspired by RelMetadataTest.testFunctionalDependencyUnion
--- deptno separates the inputs. It must be determined to use their FDs;
--- branch disjointness alone does not prove empno -> deptno.
+-- Both inputs copy emp's columns, so an empno picks one emp row whichever
+-- input it came from: empno -> deptno. deptno separates the inputs, so with
+-- it each input's own keys hold.
 WITH q AS (
     SELECT empno, deptno FROM emp WHERE deptno = 10
     UNION ALL
     SELECT empno, deptno FROM emp WHERE deptno = 20
 )
 SELECT empno, deptno FROM q
-/**ASSERT DETERMINES(empno -> deptno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(empno -> deptno)**/  --~ PROVED
 /**ASSERT DETERMINES(deptno -> empno)**/  --~ UNKNOWN
 /**ASSERT UNIQUE(deptno, empno)**/  --~ PROVED
 
