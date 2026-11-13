@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use sqlassert in published research, please cite the version you used."
+title: sqlassert
+type: software
+authors:
+  - given-names: Fred
+    family-names: Israel
+repository-code: "https://github.com/polvoazul/sqlassert"
+license: MIT

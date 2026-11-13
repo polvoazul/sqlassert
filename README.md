@@ -770,3 +770,8 @@ More compile-time SQL checks can be added under the same model: explicit syntax,
 ## Roadmap
 
 Open work is tracked as one file per issue in [`docs/issues/`](https://github.com/polvoazul/sqlassert/blob/main/docs/issues/README.md).
+
+## Citation
+
+If you use sqlassert in published research, please cite the version you used.
+See [CITATION.cff](CITATION.cff) for citation details.
