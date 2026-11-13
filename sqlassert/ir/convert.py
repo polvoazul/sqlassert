@@ -1559,6 +1559,18 @@ class IrParser:
 
         output_columns = self._aggregate_output_columns(items, lowered, grouped_items)
         grouping_outputs = [output_columns[next(index for index, item in enumerate(items) if item is match)] for match in matched]
+        # Each call of the items, then each call only HAVING writes.
+        written_calls = [
+            call for item in select.expressions for call in item.find_all(exp.AggFunc)
+            if call.find_ancestor(exp.Window, exp.Select) is select
+        ]
+        if having is not None:
+            texts = {call.sql(dialect=self.dialect) for call in written_calls}
+            for call in having.find_all(exp.AggFunc):
+                text = call.sql(dialect=self.dialect)
+                if call.find_ancestor(exp.Window, exp.Select) is select and text not in texts:
+                    texts.add(text)
+                    written_calls.append(call)
         calls = tuple(
             ir.AggregateCall(
                 origin=self._origin(call), description=call.sql(dialect=self.dialect),
@@ -1567,8 +1579,7 @@ class IrParser:
                     for argument in _aggregate_arguments(call)
                 ),
             )
-            for item in select.expressions for call in item.find_all(exp.AggFunc)
-            if call.find_ancestor(exp.Window, exp.Select) is select
+            for call in written_calls
         )
         aggregate = ir.Aggregate(
             origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,

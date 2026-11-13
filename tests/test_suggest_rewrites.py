@@ -492,6 +492,57 @@ def test_every_spelling_of_a_one_row_aggregate_is_placed(dialect: str, item: str
     assert rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA) == f"SELECT id, {replacement} AS v FROM t"
 
 
+@pytest.mark.parametrize(("query", "rewritten"), [
+    # HAVING's aggregates become their one-row values, as the items' do, and
+    # its condition moves into WHERE: here no row, as the original returns.
+    ("SELECT id, sum(i) AS v FROM t GROUP BY id HAVING count(*) > 1", "SELECT id, i AS v FROM t WHERE 1 > 1"),
+    # A grouping column stays as written.
+    ("SELECT id, max(s) AS v FROM t GROUP BY id HAVING id > 1 AND max(s) <> 'x'", "SELECT id, s AS v FROM t WHERE id > 1 AND s <> 'x'"),
+    # ANDed to a WHERE, each parenthesized when an OR.
+    (
+        "SELECT id, count(*) AS v FROM t WHERE i > 1 OR s = 'a' GROUP BY id HAVING count(s) = 1 OR min(i) > 2",
+        "SELECT id, 1 AS v FROM t WHERE (i > 1 OR s = 'a') AND (CASE WHEN s IS NULL THEN 0 ELSE 1 END = 1 OR i > 2)",
+    ),
+    ("SELECT id FROM t WHERE i > 1 GROUP BY id HAVING sum(i) + 1 > 2", "SELECT id FROM t WHERE i > 1 AND i + 1 > 2"),
+    # Before the clauses after it.
+    (
+        "SELECT id, max(s) AS v FROM t GROUP BY id HAVING bool_or(bo) ORDER BY id LIMIT 3",
+        "SELECT id, s AS v FROM t WHERE bo ORDER BY id LIMIT 3",
+    ),
+])
+def test_a_group_by_of_one_row_per_group_moves_having_into_where(query: str, rewritten: str):
+    rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
+    assert rewrite.kind is RewriteKind.GROUPING_PROJECTION
+    assert rewrite.rewritten(ONE_ROW_SCHEMA + query).removeprefix(ONE_ROW_SCHEMA) == rewritten
+    assert "move HAVING into WHERE" in rewrite.message
+    with duckdb.connect() as con:
+        con.execute(ONE_ROW_SCHEMA + ONE_ROW_VALUES + ", (2, NULL, 3, 0.5, 1.5, 2.25, false, 'x')")
+        assert sorted(con.execute(query).fetchall()) == sorted(con.execute(rewritten).fetchall())
+
+
+def test_a_having_aggregate_whose_type_may_change_is_a_caveat():
+    query = "SELECT id FROM t GROUP BY id HAVING sum(i) + 1 > 2"
+    rewrite, = suggest(ONE_ROW_SCHEMA + query).rewrites
+    assert rewrite.suggest_type is SuggestType.REWRITE_WITH_CAVEAT
+    assert rewrite.message.endswith(
+        "Caveat: HAVING runs its arithmetic in the type of i, not sum's result type, and may overflow where the aggregate's did not"
+    )
+
+
+@pytest.mark.parametrize("having", [
+    # sum of a BOOLEAN counts it.
+    "sum(bo) > 0",
+    # A select item's name, which WHERE cannot read.
+    "v > 1",
+    # An aggregate in a subquery.
+    "(SELECT max(i) FROM t) > 1",
+    # A call SQLGlot does not know may be an aggregate.
+    "mean(i) > 1",
+])
+def test_a_having_with_no_one_row_form_keeps_the_group_by(having: str):
+    assert not suggest(ONE_ROW_SCHEMA + f"SELECT id, max(i) AS v FROM t GROUP BY id HAVING {having}").rewrites
+
+
 def test_a_rewrite_that_keeps_every_column_type_is_a_plain_rewrite():
     rewrite, = suggest(SCHEMA + "SELECT DISTINCT id, name FROM users").rewrites
     assert (rewrite.kind, rewrite.suggest_type) == (RewriteKind.REDUNDANT_DISTINCT, SuggestType.REWRITE)
@@ -1000,6 +1051,26 @@ EQUIVALENT = [
         "GROUP BY o.id",
         RewriteKind.GROUPING_PROJECTION,
     ),
+    # HAVING moved into WHERE, its aggregates written as their one-row values.
+    (
+        SCHEMA + "SELECT id, sum(id) AS s FROM users GROUP BY id HAVING count(*) > 1",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT id, count(*) AS n FROM users WHERE nick IS NULL OR id > 1 GROUP BY id "
+        "HAVING count(nick) = 0 OR max(name) > 'm'",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    (
+        SCHEMA + "SELECT o.id, max(u.nick) AS nick FROM orders o LEFT JOIN users u ON u.id = o.user_id GROUP BY o.id "
+        "HAVING o.id > 1 AND count(u.nick) + 1 > 1",
+        RewriteKind.GROUPING_PROJECTION,
+    ),
+    # A redundant grouping column beside a HAVING.
+    (
+        SCHEMA + "SELECT u.id, count(*) AS n FROM users u JOIN sessions s ON s.user_id = u.id GROUP BY u.id, u.name HAVING count(*) > 1",
+        RewriteKind.REDUNDANT_GROUPING,
+    ),
     # DuckDB's FROM-first Select.
     (
         SCHEMA + "FROM sessions s JOIN users u ON u.id = s.user_id SELECT s.ts",
@@ -1183,6 +1254,18 @@ EXPECTED_DIFFS = [
 -LEFT JOIN users v ON u.id = v.id AND v.nick = 'x'""",
     ),
     # Placements beyond the one per kind.
+    (
+        RewriteKind.GROUPING_PROJECTION,
+        SCHEMA + "SELECT id, sum(id) AS s\nFROM users\nGROUP BY id\nHAVING count(*) > 1",
+        """\
+@@ -5 +5 @@
+-SELECT id, sum(id) AS s
++SELECT id, id AS s
+@@ -7,2 +7 @@
+-GROUP BY id
+-HAVING count(*) > 1
++WHERE 1 > 1""",
+    ),
     (
         RewriteKind.GROUPING_PROJECTION,
         SCHEMA + "SELECT id,\n  count(ALL nick) AS c\nFROM users\nGROUP BY id",

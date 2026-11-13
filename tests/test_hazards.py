@@ -377,4 +377,10 @@ def test_a_grouping_key_not_selected_repeats_rows_on_data():
 
 
 def test_a_trap_under_having_is_still_a_hazard():
-    assert concerns(FAN + " HAVING count(*) > 0") == [Concern.FAN_TRAP]
+    # The call HAVING repeats is one.
+    assert concerns(FAN + " HAVING sum(p.amount) > 0") == [Concern.FAN_TRAP]
+
+
+def test_an_aggregate_only_having_writes_is_checked_for_traps_too():
+    # count(*) counts the many-to-many join's rows, which decides the groups kept.
+    assert concerns(FAN + " HAVING count(*) > 0") == [Concern.FAN_TRAP, Concern.FAN_TRAP]
