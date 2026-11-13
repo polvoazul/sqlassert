@@ -9,6 +9,7 @@
 CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c INTEGER, d INTEGER NOT NULL, e INTEGER NOT NULL);
 CREATE TABLE u (k INTEGER PRIMARY KEY, x INTEGER, y INTEGER NOT NULL, z INTEGER, UNIQUE (x));
 CREATE TABLE v (w INTEGER, q INTEGER);
+CREATE TABLE labels (name VARCHAR, id INTEGER);
 
 -- case: A1
 SELECT a, b FROM t /**ASSERT DETERMINES(a, b -> a)**/  --~ PROVED
@@ -120,7 +121,7 @@ FULL JOIN u
 SELECT t.id, u.k FROM t FULL JOIN u ON u.k = t.a /**ASSERT UNIQUE(id, k)**/  --~ PROVED
 
 -- case: F3_minus
-SELECT t.id, u.k FROM t FULL JOIN u ON u.k = t.a /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+SELECT t.id, u.z FROM t FULL JOIN u ON u.z = t.a /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
 
 -- case: F5_minus
 SELECT t.b, u.k FROM t FULL JOIN u ON u.k = t.a AND t.b = 1 /**ASSERT ENUM(b IN (1))**/
@@ -330,3 +331,91 @@ WITH q AS (SELECT a, b FROM t UNION SELECT c, d FROM t)
 SELECT a, b
 FROM q
 /**ASSERT UNIQUE(a, b)**/  --~ PROVED
+
+-- case: E4
+SELECT t.a, u.z FROM t LEFT JOIN u ON u.z = t.a AND u.z = 5 WHERE u.z IS NOT NULL
+/**ASSERT ENUM(a IN (5))**/  --~ PROVED
+
+-- case: L14
+SELECT u.z FROM t LEFT JOIN u ON u.z = t.a WHERE t.a = 5
+/**ASSERT ENUM(z IN (5))**/  --~ PROVED
+
+-- case: L14_minus
+SELECT t.a FROM t LEFT JOIN u ON u.z = t.a AND u.z = 5
+/**ASSERT ENUM(a IN (5))**/  --~ UNKNOWN
+
+-- case: L13
+SELECT u.x FROM t LEFT JOIN u ON u.x = u.z AND u.z = 3
+/**ASSERT ENUM(x IN (3))**/  --~ PROVED
+
+-- case: R9
+SELECT id, name FROM labels WHERE name LIKE 'example'
+/**ASSERT DETERMINES(id -> name)**/  --~ PROVED
+
+-- case: R9_minus
+SELECT id, name FROM labels WHERE name LIKE 'ex_mple'
+/**ASSERT DETERMINES(id -> name)**/  --~ UNKNOWN
+
+-- case: R9_escape
+SELECT id, name FROM labels WHERE name LIKE 'example' ESCAPE 'e'
+/**ASSERT DETERMINES(id -> name)**/  --~ UNKNOWN
+
+-- case: I1_right
+WITH q AS (
+    SELECT a, b FROM t
+    INTERSECT ALL
+    SELECT x, z FROM u
+)
+SELECT a, b FROM q /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: I1_coercion
+WITH q AS (
+    SELECT name, id FROM labels
+    INTERSECT ALL
+    SELECT x, z FROM u
+)
+SELECT name, id FROM q /**ASSERT DETERMINES(name -> id)**/  --~ UNKNOWN
+
+-- case: U2
+WITH q AS (
+    SELECT a, b, c FROM t WHERE a = b AND c = 5
+    UNION ALL
+    SELECT a, b, c FROM t WHERE b = a AND c = 5
+)
+SELECT a, b, c FROM q
+/**ASSERT DETERMINES(a -> b, c)**/  --~ PROVED
+
+-- case: U2_disjoint
+WITH q AS (
+    SELECT id, a, b FROM t WHERE a = 10
+    UNION ALL
+    SELECT id, a, b FROM t WHERE a = 20
+)
+SELECT id, a, b FROM q
+/**ASSERT DETERMINES(id, a -> b)**/  --~ PROVED
+/**ASSERT UNIQUE(id, a)**/  --~ PROVED
+/**ASSERT DETERMINES(id -> a)**/  --~ UNKNOWN
+
+-- case: F2
+SELECT t.a, u.z FROM t FULL JOIN u ON u.z = t.a
+/**ASSERT DETERMINES(a -> z)**/  --~ PROVED
+/**ASSERT DETERMINES(z -> a)**/  --~ PROVED
+
+-- case: F2_extra_on
+SELECT t.a, t.b, u.z FROM t FULL JOIN u ON u.z = t.a AND t.b = 1
+/**ASSERT DETERMINES(a, b -> z)**/  --~ PROVED
+/**ASSERT DETERMINES(a -> z)**/  --~ UNKNOWN
+
+-- case: F4
+SELECT t.id, u.k FROM t FULL JOIN u ON u.k = t.a
+/**ASSERT UNIQUE(id)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: OR_branches
+SELECT d, a, b, c FROM t WHERE (a = 5 AND b = c AND d = 1) OR (a = 5 AND c = b AND d = 2)
+/**ASSERT DETERMINES(d -> a)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> c)**/  --~ PROVED
+
+-- case: OR_branches_different_constants
+SELECT b, a FROM t WHERE (a = 5 AND d = 1) OR (a = 6 AND d = 2)
+/**ASSERT DETERMINES(b -> a)**/  --~ UNKNOWN

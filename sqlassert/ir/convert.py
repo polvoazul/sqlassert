@@ -149,6 +149,7 @@ class IrParser:
     _absent: set[ir.OutputColumn] = field(default_factory=set)
     # Each declared table column's type, as its CREATE TABLE writes it.
     _declared_types: dict[ir.OutputColumn, exp.DataType] = field(default_factory=dict)
+    _set_outputs: set[ir.OutputColumn] = field(default_factory=set)
     # The comparisons already checked for a zoned timestamp's text, by id.
     _zone_checked: set[int] = field(default_factory=set)
     # Each composite column or CAST a comparison reads, by id, with the
@@ -555,6 +556,7 @@ class IrParser:
                 output_columns = self._opaque_output_columns(names.values(), origin)
             else:
                 output_columns = _pass_output_columns(left.output_columns, origin)
+            self._set_outputs.update(output_columns)
             relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=_SET_OPERATORS[type(query)], left=left, right=right, distinct=bool(query.args.get("distinct")),
@@ -2020,6 +2022,16 @@ class IrParser:
             )
             if function.accepts(len(values)) and not extra:
                 arguments = tuple(lower(value) for value in values)
+                if (
+                    type(expression) is exp.Like and self.semantics.text_is_binary
+                    and isinstance(arguments[1], ir.Constant)
+                    and (pattern := arguments[1].value) is not None and pattern.type == "string"
+                    and not any(character in pattern.text for character in "%_\\")
+                    and expression.find_ancestor(exp.Escape) is None
+                    and (kind := self._declared_type(arguments[0], through_sets=False)) is not None
+                    and kind.this in _TEXT_TYPES
+                ):
+                    return ir.Equality(origin=origin, left=arguments[0], right=arguments[1], total=True)
                 composites = [
                     (value, argument) for value, argument in zip(values, arguments)
                     if function.name in _ORDER_COMPARISONS and function.total is not None and self._is_composite(value, lower)
@@ -2158,11 +2170,13 @@ class IrParser:
             case _:
                 return False
 
-    def _declared_type(self, expression: ir.ScalarExpr) -> exp.DataType | None:
+    def _declared_type(self, expression: ir.ScalarExpr, *, through_sets: bool = True) -> exp.DataType | None:
         """The type a CREATE TABLE declares for the column `expression` reads,
         through every column that passes it on."""
         while isinstance(expression, ir.ColumnRef):
             column = expression.column
+            if not through_sets and column in self._set_outputs:
+                return None
             if column in self._declared_types:
                 return self._declared_types[column]
             expression = column.scalar_expr

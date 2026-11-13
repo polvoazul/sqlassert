@@ -141,9 +141,10 @@ class Stratum(IntEnum):
     DAG, so this keeps the whole call graph acyclic: the memoized engine cannot
     compute mutually recursive facts, which would need a fixpoint.
 
-    Equality groups come first: they read only the relation's own conjuncts
-    and its inputs' groups. Unique Joins (and Exactly One Joins) follow, so a
-    relation's Null Sources may use them; dependencies use Null Sources (a padded side's
+    Comparison types and directed lax equalities come first. Unique Joins
+    (and Exactly One Joins) follow, so a relation's Null Sources may use them.
+    Equality Groups can read Null Sources to strengthen lax equalities;
+    dependencies also use Null Sources (a padded side's
     dependencies hold only when the join cannot pad an agreeing row) and Unique
     Joins; closure uses dependencies and non-nullness; Unique Sets and
     Functional Dependency assertions are closure questions; Foreign Keys use

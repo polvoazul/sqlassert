@@ -9,8 +9,8 @@ then the relation's own strict equalities merge them. On every row a group's
 members are equal, or all NULL (an outer join padded them, padding nulling a
 whole side, or IS NOT DISTINCT FROM equated NULLs): where one is non-null,
 every one equals it. A semi join's ON merges through the columns of the
-matched right row, which no output carries. An outer join's ON never merges:
-it holds on matched rows only, and a padded row keeps the preserved side's value.
+matched right row, which no output carries. An outer join's ON merges columns on the side it pads together. Cross-side
+equalities become strict when a filter excludes the padding.
 
 A functional dependency `a ↔ b` also holds for an injective `a = f(b)`, whose
 values differ; a group says the values are the same. Facts about values read
@@ -21,6 +21,7 @@ never does.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 from collections.abc import Callable, Iterable
 from typing import assert_never
 import re
@@ -43,7 +44,7 @@ class EqualityGroups:
     groups: tuple[_Group, ...]
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.NON_NULL)
 def _equal_columns(column: ir.OutputColumn) -> Result[frozenset[ir.OutputColumn]]:
     """Every column of `column`'s relation that carries its value, itself included."""
     groups = _equality_groups(column.get_relation(current_arena().program))
@@ -51,7 +52,7 @@ def _equal_columns(column: ir.OutputColumn) -> Result[frozenset[ir.OutputColumn]
     return Result(frozenset(group), "Equal columns", (column,), [groups.members[group]])
 
 
-@analysis(Stratum.EQUALITY_GROUP)
+@analysis(Stratum.NON_NULL)
 def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
     """`relation`'s equality groups; each group's member cites the equalities that merged it."""
     roots = {column: column for column in relation.output_columns}
@@ -92,15 +93,32 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
             merge(list(group), Result(True, "Equal in the matched right row", (), [groups.members[group]]))
 
     conjuncts, clause = _strict_conjuncts(relation)
-    for conjunct in conjuncts:
-        match conjunct:
-            case (
-                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
-                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
-            ) if first in outputs and second in outputs and _same_type(first, second):
-                merge([*outputs[first], *outputs[second]], Result(True, f"{clause} equality", (conjunct,)))
-            case _:
-                pass  # Other conjuncts only remove rows.
+    for (first, second), reason in _predicate_equalities(conjuncts).items():
+        if first in outputs and second in outputs:
+            merge([*outputs[first], *outputs[second]], Result(True, f"{clause} equality", (reason,)))
+
+    if isinstance(relation, ir.Join) and relation.kind in {"left", "right"}:
+        padded = relation.right if relation.kind == "left" else relation.left
+        for (first, second), reason in _predicate_equalities(relation.conjuncts).items():
+            if first in padded.output_columns and second in padded.output_columns:
+                merge([*outputs[first], *outputs[second]], Result(True, "ON equality within the padded side", (reason,)))
+
+    if isinstance(relation, ir.Filter):
+        from sqlassert.rules.nullability import non_null_column
+
+        for (first, second), reason in _lax_equalities(relation).value.items():
+            definite = non_null_column(first)
+            if definite.value:
+                merge([first, second], Result(True, "The ON equality holds without padding", (reason,), [definite]))
+
+    if isinstance(relation, ir.SetOperation) and relation.operator == "union":
+        columns = [column for column in relation.output_columns if _same_set_types(relation, (column,))]
+        for first, second in combinations(columns, 2):
+            first_arms, second_arms = relation.arms(first), relation.arms(second)
+            assert first_arms is not None and second_arms is not None
+            proofs = [_equal_columns(arm) for arm in first_arms]
+            if all(other in proof.value for other, proof in zip(second_arms, proofs)):
+                merge([first, second], Result(True, "Equal in both UNION inputs", (relation,), proofs))
 
     grouped: dict[ir.OutputColumn, list[ir.OutputColumn]] = {}
     for column in relation.output_columns:
@@ -114,6 +132,86 @@ def _equality_groups(relation: ir.RelationExpr) -> Result[EqualityGroups]:
         )
     value = EqualityGroups(relation, tuple(members))
     return Result(value, "Equality groups", (relation,), list(members.values()), members=members)
+
+
+def _predicate_equalities(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[tuple[ir.OutputColumn, ir.OutputColumn], ir.ScalarExpr]:
+    pairs = {}
+    for conjunct in conjuncts:
+        match conjunct:
+            case ir.Or(parts=parts):
+                branches = [_predicate_equalities(ir.conjuncts(part)) for part in parts]
+                pairs.update({pair: conjunct for pair in branches[0] if all(pair in branch for branch in branches[1:])})
+            case (
+                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
+            ) if _same_type(first, second):
+                pairs[first, second] = pairs[second, first] = conjunct
+    return pairs
+
+
+@analysis(Stratum.EQUALITY_GROUP)
+def _lax_equalities(relation: ir.RelationExpr) -> Result[dict[tuple[ir.OutputColumn, ir.OutputColumn], ir.ScalarExpr]]:
+    """Directed pairs: where the first is non-null, it equals the second."""
+    pairs = {}
+    for source in _inputs(relation):
+        passed = _pass_through(relation, source)
+        for (first, second), reason in _lax_equalities(source).value.items():
+            for own in passed.get(first, ()):
+                for other in passed.get(second, ()):
+                    pairs[own, other] = reason
+    if isinstance(relation, ir.Join) and relation.kind in {"left", "right"}:
+        padded, preserved = (relation.right, relation.left) if relation.kind == "left" else (relation.left, relation.right)
+        padded_outputs = _pass_through(relation, padded)
+        preserved_outputs = _pass_through(relation, preserved)
+        for (first, second), reason in _predicate_equalities(relation.conjuncts).items():
+            for own in padded_outputs.get(first, ()):
+                for other in preserved_outputs.get(second, ()):
+                    pairs[own, other] = reason
+    return Result(pairs, "Lax equalities", (relation,))
+
+
+def _predicate_constants(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[ir.OutputColumn, tuple[ir.LiteralValue | None, ir.ScalarExpr]]:
+    constants = {}
+    for conjunct in conjuncts:
+        match conjunct:
+            case ir.Or(parts=parts):
+                branches = [_predicate_constants(ir.conjuncts(part)) for part in parts]
+                for column, (value, _) in branches[0].items():
+                    if all(column in branch and branch[column][0] == value for branch in branches[1:]):
+                        constants[column] = value, conjunct
+            case ir.Equality(left=left, right=right) | ir.NullSafeEquality(left=left, right=right):
+                for column, literal in ((left, right), (right, left)):
+                    if isinstance(column, ir.ColumnRef) and isinstance(literal, ir.Constant) and literal.value is not None:
+                        if _pins(column.column, literal):
+                            constants[column.column] = literal.value, conjunct
+            case ir.IsNull(operand=ir.ColumnRef(column=column)):
+                constants[column] = None, conjunct
+    return constants
+
+
+@analysis(Stratum.EQUALITY_GROUP)
+def _constant_value(column: ir.OutputColumn) -> Result[tuple[ir.LiteralValue | None] | None]:
+    """An exact constant, including SQL NULL, on every row carrying this column."""
+    relation = column.get_relation(current_arena().program)
+    match relation, column.scalar_expr:
+        case ir.SetOperation(operator="union"), _ if _same_set_types(relation, (column,)):
+            arms = relation.arms(column)
+            assert arms is not None
+            left, right = (_constant_value(arm) for arm in arms)
+            if left.value is not None and left.value == right.value:
+                return Result(left.value, "The same constant in both UNION inputs", (column,), [left, right])
+        case ir.Filter(conjuncts=conjuncts), ir.ColumnRef(column=source):
+            if (constant := _predicate_constants(conjuncts).get(source)) is not None:
+                value, conjunct = constant
+                return Result((value,), "The WHERE clause fixes the value", (conjunct,))
+            return _constant_value(source)
+        case ir.Project() | ir.Alias() | ir.NamedRelation() | ir.Distinct() | ir.Limit() | ir.QualifyByPartition(), ir.ColumnRef(column=source):
+            return _constant_value(source)
+        case _, ir.Constant(value=ir.LiteralValue() as literal):
+            return Result((literal,), "A literal is constant", (column,))
+        case _, ir.NullLiteral():
+            return Result((None,), "A NULL literal is constant", (column,))
+    return Result(None, "No exact constant is known", (column,))
 
 
 def _same_type(first: ir.OutputColumn, second: ir.OutputColumn) -> bool:
@@ -277,7 +375,7 @@ def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:
         case ir.Join(left=left):
             # A semi or anti join keeps left rows; its right columns have no row.
             return (left,)
-        case ir.SetOperation(operator="intersect" | "except", left=left):
+        case ir.SetOperation(operator="intersect" | "except", left=left) if _same_set_types(relation, relation.output_columns):
             # Every output row equals some row of the left input.
             return (left,)
         case ir.SetOperation() | ir.NamedRelation() | ir.OpaqueRelation():

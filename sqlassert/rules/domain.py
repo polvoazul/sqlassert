@@ -39,7 +39,7 @@ from sqlassert import ir
 from sqlassert import properties as props
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
-from sqlassert.rules.equality import _equal_columns, _same_type
+from sqlassert.rules.equality import _equal_columns, _lax_equalities, _same_type
 from sqlassert.rules.nullability import _non_null_expression, non_null_column
 
 # A finite set of possible non-null values, or None when any value is possible.
@@ -139,13 +139,25 @@ def _domain(column: ir.OutputColumn) -> Result[Domain]:
     """`column`'s domain: its own, intersected with every equal column's."""
     group = _equal_columns(column)
     relation = column.get_relation(current_arena().program)
-    members = [member for member in relation.output_columns if member in group.value]
+    reachable = set(group.value)
+    edges = _lax_equalities(relation).value
+    lax_evidence = []
+    pending = list(reachable)
+    while pending:
+        first = pending.pop()
+        for (source, other), reason in edges.items():
+            if source is first and other not in reachable:
+                new = _equal_columns(other).value - reachable
+                reachable.update(new)
+                pending.extend(new)
+                lax_evidence.append(Result(True, "A non-null value satisfies the ON equality", (reason,)))
+    members = [member for member in relation.output_columns if member in reachable]
     owns = [_own_domain(member) for member in members]
     known = [own for own in owns if own.value is not None]
     if not known:
         return Result(None, f"No finite domain is known for {quoted(column.name)}", (column,), owns)
     value = _meet([own.value for own in known if own.value is not None], _binary_text(column))
-    premises = [group, *known] if len(members) > 1 else known
+    premises = [group, *lax_evidence, *known] if len(members) > 1 else known
     return Result(value, f"{quoted(column.name)} is one of {_render(value)}", (column,), premises)
 
 

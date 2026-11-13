@@ -119,7 +119,7 @@ an inclusion dependency whose right side is a key. Theory behind issues
 | Project | Input FDs restricted to surviving columns, computed through closure first (`a → b → c` with `b` dropped still yields `a → c`); plus `inputs → f(inputs)` for pure computed columns, and the reverse for injective ones. |
 | Inner join | Union of both sides' FDs, plus `l.x ↔ r.y` for each ON equality. |
 | Left join | See below. |
-| Full join | Input FDs survive only with η (below) on their side; one-sided ON conditions give nothing; cross-side FDs need η on both sides (Paulley Lemma 10, Thm 4, p.100). |
+| Full join | Input FDs survive only with η (below) on their side; one-sided ON conditions give nothing; cross-side ON dependencies are lax because unmatched rows pad the determinant side (Paulley Lemma 10, Thm 4, p.100). |
 | Aggregate | See below. |
 | Set operations | See below. |
 
@@ -202,9 +202,10 @@ NULL (Def 37, Lemma 7). Either way, a NULL in x means a padded row.
   columns are strictly equivalent. A lax FD turns strict when either side
   makes its columns non-null (Claim 21, Lemma 6, Cor 1).
 - `EXCEPT` (and `ALL`): everything that holds in the left input holds.
-- `UNION ALL`: no FDs in general (proving the branches disjoint is
-  undecidable); only equivalences and constants shared by both branches
-  survive (Example 15).
+- `UNION ALL`: shared equivalences and constants survive (Example 15).
+  Different constant values at the same position separate the input rows.
+  An FD survives when its determinant reaches that position and determines
+  the dependent in each input.
 - `UNION` (distinct): all output columns form a null-equal strict key.
 - Our extension: branches tagged with distinct literals (`select 'a' as tag,
   … union all select 'b', …`) make `(tag, branch key)` a key.
@@ -254,15 +255,15 @@ through only with definite determinants. The Test column names cases in
 | A11 | Lax transitivity only through a definite middle | fd7b, Lemma 2, p.38 | implemented | `uniqueness._closure`: a lax step fires only from definite attributes | `paulley_audit.sqltest` A11, A11- |
 | E1 | Strict equivalence: identity, commutativity, transitivity | eq1–eq3, Claim 14, p.69 | implemented | `equality._equality_groups` (union-find), `uniqueness._equality_dependencies` | `paulley_audit.sqltest` E1 |
 | E2 | Strict equivalence implies FDs both ways | eq4, p.69 | implemented | `uniqueness._equality_dependencies` (both directions) | `paulley_audit.sqltest` E2 |
-| E3 | Lax equivalence: commutativity; strict ⇒ lax | eq5–eq6, Lemma 4, p.69 | different | no lax equivalence object: an outer join's cross equality gives the lax FD padded → preserved and a strict FD from the match status (`uniqueness._outer_on_dependencies`); equality groups hold strict equivalences only | `paulley_audit.sqltest` E5 |
-| E4 | Lax equivalence strengthened when both definite | eq7, p.69 | missing | equality groups never strengthen: `WHERE r.z IS NOT NULL` after `LEFT JOIN r ON r.z = l.a` does not put z and a in one group, so domains and Foreign Key stand-ins do not cross (the closure does, via A9). Filed in issue 37 |  |
+| E3 | Lax equivalence: commutativity; strict ⇒ lax | eq5–eq6, Lemma 4, p.69 | different | Directed lax equalities transfer Enumerated Domains; Equality Groups hold strict equalities. Cross-side ON FDs are analyzed separately. | `paulley_audit.sqltest` E5, L14 |
+| E4 | Lax equivalence strengthened when both definite | eq7, p.69 | implemented | A filter merges a directed lax equality when its first column is definite. | `paulley_audit.sqltest` E4 |
 | E5 | Lax equivalence implies lax FDs both ways | eq8, p.69 | implemented | `uniqueness._outer_on_dependencies` (lax padded → preserved) | `paulley_audit.sqltest` E5 |
 | E6 | Lax equivalence transitive: strict∘lax, or lax∘lax through a definite middle | eq9a/b, Lemma 5, p.70 | implemented | `uniqueness._closure` (strict after lax; lax after lax only through a definite middle) | `paulley_audit.sqltest` E6, E6- |
 | S1 | PRIMARY KEY and unique index: strict key K → ι | Claim 16, p.73 | different | PRIMARY KEY: strict key (`NonNullColumn` + `UniqueSet` Knowledge, `convert._table_knowledge`). A unique index is a lax key like UNIQUE: SQL unique indexes repeat NULLs, Paulley's strict reading would be unsound | `paulley_audit.sqltest` S1, S1- |
 | S2 | UNIQUE constraint: lax key U ↦ ι | Claim 16, p.73 | implemented | `convert._table_knowledge` → `UniqueSet`, a lax key onto the Row Identity (`uniqueness._functional_dependencies`) | `paulley_audit.sqltest` S2, S2- |
 | S3 | Equality to a constant: ∅ → A | §3.1.3, p.68 | implemented | `uniqueness._equality_dependencies` (`∅ → col` for `col = literal`) | `paulley_audit.sqltest` S3 |
 | S4 | Scalar function: X → λ(X), result possibly NULL | §3.1.4, p.71 | different | `ir.determinants` and `uniqueness._computed`: any expression built from columns, literals, `Call`s of Builtins, `OpaquePureFunction`s, coalesce and CASE, but not from a user-defined or volatile function, aggregate, window or subquery (`OpaqueExpression`); only of inputs compared by identity (NOCASE text and DOUBLE equal values a function tells apart). Injective Builtins (`a + 1`, `-a` over integers and decimals) also give f(X) → X (`uniqueness._one_to_one`) | `paulley_audit.sqltest` S4 |
-| S5 | CHECK constraints: equalities over non-null columns strict, else lax | §3.2.1, p.73 | missing | CHECK constraints are ignored without a diagnostic. `CHECK (m = 1)` or `CHECK (m IN (...))` would give a domain and a constant (true-interpreted: NULL passes, so lax). Filed in issue 37 |  |
+| S5 | CHECK constraints: equalities over non-null columns strict, else lax | §3.2.1, p.73 | different | Literal equalities and IN lists give Enumerated Domains; other CHECKs warn `ignored-check-constraint`. | `check_constraints.sqltest` |
 | P1 | Projection keeps input FDs, transitively through dropped columns | Claim 17, p.74 | implemented | `uniqueness._row_preserving` delegation: closure runs in the input, so dropped columns still connect (hide, don't delete) | `paulley_audit.sqltest` P1 |
 | P2 | Projection: X → λ(X) and ι → λ(X) | Claim 17, p.74 | implemented | `uniqueness._computed` on the Project delegation (with S4's restriction) | `paulley_audit.sqltest` P2 |
 | P3 | Distinct projection: selected attributes → ι | Claim 18, p.75 | implemented | `uniqueness._functional_dependencies` (Distinct: output columns → ι) | `paulley_audit.sqltest` P3 |
@@ -271,24 +272,24 @@ through only with definite determinants. The Test column names cases in
 | C3 | An input with at most one row: the other's key is the result's key | §3.2.3, p.75 (omitted from his algorithm) | implemented | `many_to_one_join` with no conjuncts: the right input's empty set reaches its Row Identity; a scalar aggregate is grouped by nothing (issue 23) | `paulley_audit.sqltest` C3 |
 | R1 | Restriction keeps strict FDs and strict equivalences | Claim 20, p.78 | implemented | `uniqueness._row_preserving` (Filter delegates to its input) | `paulley_audit.sqltest` R1 |
 | R2 | Restriction strengthens a lax FD whose columns become definite | Claim 20, p.78 | implemented | `uniqueness._definite` reads `non_null_column` of the Filter's output, so a lax step through a column the WHERE makes non-null fires | `paulley_audit.sqltest` R2 |
-| R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | missing | see E4 |  |
+| R3 | Restriction strengthens a lax equivalence whose columns become definite | Claim 20, p.78 | implemented | See E4. | `paulley_audit.sqltest` E4 |
 | R4 | Function in WHERE: X → λ(X) | Claim 20, p.78 | implemented | `uniqueness._equality_dependencies`: `b = f(X)` gives X → b under the S4 conditions, and b → a too when f is injective in a and both are integers or decimals | `paulley_audit.sqltest` R4, R4- |
 | R5 | False-interpreted Type 1/2 equality: strict equivalence, FDs both ways | Claim 20, p.79 | implemented | `uniqueness._equality_dependencies`, `equality._equality_groups`, `nullability._null_rejected` | `paulley_audit.sqltest` R5 |
 | R6 | True-interpreted equality (correlation inside a subquery): lax equivalence and FDs | Claim 20, p.79 | different | EXISTS is lowered as a semi join whose ON is false-interpreted, which is exact (issue 23); the true-interpreted forms (NOT IN, ALL) are not lowered, so no lax facts arise |  |
 | R7 | IS NOT NULL: attribute definite | §3.2.4, p.77 | implemented | `nullability._null_rejected` (IS NOT NULL) | `paulley_audit.sqltest` R7 |
 | R8 | IS NULL: equality with a NULL constant | §3.2.4, p.77 | implemented | `uniqueness._equality_dependencies` (`col IS NULL`: `∅ → col`) | `paulley_audit.sqltest` R8 |
-| R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | missing | LIKE is opaque; without wildcards it is an equality. Filed in issue 37 |  |
+| R9 | LIKE without wildcards is an equality | §3.2.4, p.77 | implemented | Lower a literal pattern without wildcards or escapes on known binary VARCHAR/TEXT as equality. | `paulley_audit.sqltest` R9, R9- |
 | R10 | Equality with an uncorrelated scalar subquery: an unknown constant | §3.2.4, p.77 | implemented | A scalar subquery lowers to a left join; uncorrelated, its body sits under an implied LIMIT 1, whose empty Unique Set (C3) gives `∅ → m`, and `col = m` puts `col` in its Equality Group (issue 38) | `test_analyze_scalar_subqueries.py` aggregate |
 | R11 | Null-intolerant conjunct makes its attributes, and those strictly equal to them, definite | §3.2.4, p.78 | implemented | `nullability._null_rejected`: a conjunct rejects every column it is strict in (`ir.strict_inputs`, from each `Call`'s `strict_arguments`): every comparison but the IS family, through arithmetic, CAST, NOT, and AND/OR when both sides are strict in it; `IS NOT NULL` rejects its operand's. Non-nullness spreads through Equality Groups | `paulley_audit.sqltest` R11 |
 | R12 | EXISTS as restriction; correlation attributes are constants of the subquery | §3.2, p.72; §2.3.1.2 | implemented | WHERE EXISTS / IN as semi joins (`convert._subquery_join`); outer columns resolve in the ON | `paulley_audit.sqltest` R12 |
 | R13 | Disjunctions give nothing | §3.2.4, p.77 | different | No FDs from an `ir.Or`, as Paulley. Stronger for row-wise facts that hold in every branch: null rejection (`nullability._null_rejected`) and Enumerated Domains (`domain._conjunct_bound`, the union of the branches' bounds) | `paulley_audit.sqltest` R13 |
-| I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | missing | partly: the left input's FDs hold (`uniqueness._delegations`, `_grouped` onto the left), the right input's do not. Sound only under identity comparison (an INTERSECT row carries the left value). Filed in issue 37 | `paulley_audit.sqltest` I1 |
-| I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | missing | partly, as I1: the left input's keys hold, the right input's do not. Filed in issue 37 | `paulley_audit.sqltest` I2 |
+| I1 | Intersection keeps strict FDs of either input | Lemma 6, Claim 21, p.79 | implemented | Right-input closure requires matching comparison types and identity comparisons across the paired columns. | `paulley_audit.sqltest` I1, I1-right |
+| I2 | Intersection keeps superkeys of either input | Corollary 1, p.80 | implemented | Same guard as I1; the right Row Identity determines the INTERSECT output row. | `calcite_audit_keys.sqltest` uk_intersect_all_right_key |
 | I3 | Intersection strengthens lax FDs and equivalences made definite | Claim 21, p.81 | implemented | nullability through INTERSECT takes either input (`nullability._set_operation_sources`), and the closure then strengthens lax steps (A9) | `paulley_audit.sqltest` I3 |
 | I4 | Intersection: corresponding attributes strictly equivalent | Claim 21, p.81 | different | an output column refers to the left input; `SetOperation.arms` pairs the right one by position, used for nullability and domains (domains only under identity comparison for strings) |  |
 | I5 | Intersection: ι(S) ↔ ι(T) | Claim 21, p.81 | n/a | the Row Identity of an INTERSECT is reached through the left input only; the right input's identity is never needed |  |
 | U1 | UNION ALL keeps no input FDs | §3.2.6, p.81 | implemented | `uniqueness._delegations` gives a UNION no delegation | `paulley_audit.sqltest` U1- |
-| U2 | UNION ALL keeps strict equivalences (and constants) holding in both inputs | §3.2.6, Example 15, p.82 | missing | equivalences and constants holding in both UNION ALL inputs are dropped (constants survive only as Enumerated Domains). Filed in issue 37 |  |
+| U2 | UNION ALL keeps strict equivalences (and constants) holding in both inputs | §3.2.6, Example 15, p.82 | implemented | Both inputs must prove each shared equality or the same constant. A reached, disjoint constant tag permits combining both input closures. | `paulley_audit.sqltest` U2, U2-disjoint |
 | U3 | Distinct UNION: all attributes form a superkey | §3.2.6, p.82 | implemented | `uniqueness._functional_dependencies` (`SetOperation(distinct=True)`: output columns → ι) | `paulley_audit.sqltest` U3 |
 | D1 | Difference keeps every FD, equivalence and superkey of the left input | §3.2.7, p.82 | implemented | `uniqueness._delegations` (`EXCEPT` delegates to its left input) | `paulley_audit.sqltest` D1 |
 | G1 | Partition keeps input FDs and equivalences | Claim 22, p.83 | implemented | `uniqueness._grouped` delegation onto the input, from the grouping columns | `paulley_audit.sqltest` G1 |
@@ -306,25 +307,22 @@ through only with definite determinants. The Test column names cases in
 | L9 | Null-supplying strict FD without η degrades to lax | Thm 3 lax 3, p.96 | implemented | `uniqueness._join_side` delegation: the padded side's closure is refused when nothing reached tells padded rows apart | `paulley_audit.sqltest` L9- |
 | L10 | Other ON-derived FDs touching the null-supplying side are lax | Lemma 9 case 4, Thm 3 lax 4, p.93 | implemented | `uniqueness._outer_on_dependencies` (cross equality only lax from the padded side); `nullability._padded_sides` | `paulley_audit.sqltest` L10- |
 | L11 | ON conditions only on the preserved side give nothing | Lemma 9 case 1, p.93 | implemented | `uniqueness._outer_on_dependencies` reads only conjuncts binding a padded column; `nullability._on_rejected` keeps the padded side's columns only | `paulley_audit.sqltest` L11- |
-| L12 | Lax equivalence in T strengthened when η holds for both | Thm 3 strict eq 3, p.97 | n/a | no lax equivalence objects (E3) |  |
-| L13 | ON equality within T: strict equivalence | Thm 3 strict eq 4, p.97 | missing | partly: the FDs hold (L5), but an ON equality within the padded side does not merge an Equality Group (`equality._strict_conjuncts` gives an outer join none), so `ON u.x = u.z AND u.z = 3` does not bound x's domain. Filed in issue 37 |  |
-| L14 | Cross-side ON equality: lax equivalence only | Thm 3 lax eq 3, p.97 | missing | the cross equality is rightly not an Equality Group, but domains could cross a lax equivalence (NULL is outside every domain): after `LEFT JOIN u ON u.z = t.a WHERE t.a = 5`, z is 5 or NULL. Filed in issue 37 with E4 |  |
+| L12 | Lax equivalence in T strengthened when η holds for both | Thm 3 strict eq 3, p.97 | different | Directed lax equalities are promoted at a filter (E4). | `paulley_audit.sqltest` E4 |
+| L13 | ON equality within T: strict equivalence | Thm 3 strict eq 4, p.97 | implemented | ON equalities within the padded side form Equality Groups. | `paulley_audit.sqltest` L13 |
+| L14 | Cross-side ON equality: lax equivalence only | Thm 3 lax eq 3, p.97 | implemented | A non-null padded-side value comes from a matching row and can inherit the preserved-side domain. | `paulley_audit.sqltest` L14, L14- |
 | L15 | Null constraints among the null-supplying side's definite attributes; a later null-intolerant predicate makes them all definite | Def 38, Thm 3 null, p.95 | implemented | Null Sources: `Padding(join)` is shared by every column the join pads, so one null-rejecting conjunct removes it from all (`nullability._rejected`) | `paulley_audit.sqltest` L15, L15- |
 | F1 | Full join: input strict FD survives when η(p, X) or a strict equivalence | Thm 4 strict 1, p.100 | different | `uniqueness._join_side` delegations on both sides, each valid only when a reached column is NULL only on that side's padded rows (η); a full join has no match status to fall back on (`_match_status` is None) | `paulley_audit.sqltest` F1, F1-, F1-left |
-| F2 | Full join: cross-side ON FD αR(p) → Y with η(p, Y) and η(p, αS(p)) | Lemma 10 case 3, Thm 4 strict 2, p.100 | missing | a full join's ON gives no dependencies (`uniqueness._join_dependencies`: `case _: pass`). Lemma 10 case 3: `ON u.z = t.a` gives `a → z` (and lax `z → a`, F4), since a non-null a is a left row whose matches it fixes. Filed in issue 37 |  |
+| F2 | Full join: cross-side ON FD αR(p) → Y with η(p, Y) and η(p, αS(p)) | Lemma 10 case 3, Thm 4 strict 2, p.100 | different | Use a lax dependency from the ON inputs on one side, including the equality operand that witnesses a real row on that side. Unmatched rows on the other side can share a NULL determinant and disagree on the dependent. | `paulley_audit.sqltest` F2, F2-extra-on |
 | F3 | Full join: ι(Q) ↔ ι(R), ι(S) | Thm 4 strict 3, p.100 | implemented | `uniqueness._join_dependencies` (`(ι(left), ι(right)) → ι`) | `paulley_audit.sqltest` F3, F3- |
-| F4 | Full join keeps both sides' lax FDs; cross-side ON FDs lax | Thm 4 lax, p.101 | missing | partly: each side's lax FDs hold (`uniqueness._join_side` delegations), the cross-side ON FDs do not (F2). Filed in issue 37 with F2 | `paulley_audit.sqltest` F1 |
-| F5 | Full join: ON conditions within one side give nothing | Lemma 10 cases 1–2, p.99 | implemented | nothing is derived from a full join's ON | `paulley_audit.sqltest` F5- |
+| F4 | Full join keeps both sides' lax FDs; cross-side ON FDs lax | Thm 4 lax, p.101 | implemented | Cross-side ON dependencies are lax. A Many To One full join also keeps the left key laxly. | `paulley_audit.sqltest` F2, F4 |
+| F5 | Full join: ON conditions within one side give nothing | Lemma 10 cases 1–2, p.99 | implemented | One-sided ON conditions alone give no new FDs or Enumerated Domains. | `paulley_audit.sqltest` F5- |
 | F6 | Full join: equivalences of inputs kept; cross-side ON equality lax | Thm 4 eq, p.101 | implemented | `uniqueness._join_side` delegations (an equivalence makes its dependent NULL with its determinant, Cor 2); no cross-side equivalence | `paulley_audit.sqltest` F6 |
 | F7 | Full join: a key of the result needs η for each input key | §3.2.10.1, p.99 | implemented | `uniqueness._join_dependencies` keys the result by both Row Identities; reaching each side's identity through a key needs η via the delegation | `paulley_audit.sqltest` F3 |
 | F8 | Full join: null constraints within each side | Thm 4 null, p.101 | implemented | Null Sources: a full join pads both sides (`nullability._padded_sides`), each removed by a null-rejecting conjunct on a column it pads | `paulley_audit.sqltest` F8, F8- |
 
-Summary: 77 rows; every implemented row has a case in
-`tests/test_paulley_audit.py`, judged by the soundness oracle (0
-counterexamples). The *missing* rows are filed in issue 37: E4/R3/L14 (equivalences and domains across outer joins),
-S5 (CHECK constraints), R9 (LIKE without wildcards; R10 is done, in issue 38),
-I1/I2 (the right input of INTERSECT), U2 (UNION ALL equivalences), L13, and
-F2/F4 (full join ON dependencies). Two differences are deliberate and
+Issue 37 closes the remaining audit gaps. OR predicates also preserve common
+literal constants and common column equalities (see `OR_branches`).
+Two differences are deliberate and
 stronger than Paulley: our lax FDs are lax in the determinant only (A7), so
 a strict step may continue from a lax-reached attribute, where Paulley's
 Dependency-closure (line 651) stops; and unique indexes are lax keys (S1).

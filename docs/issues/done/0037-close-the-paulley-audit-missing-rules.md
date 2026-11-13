@@ -1,6 +1,6 @@
 # 37. Close the Paulley audit's missing rules
 
-- **State:** open
+- **State:** done
 - **Priority:** P2 (ready): With #45: what the #35 audit found missing. None is
   unsound; each loses proofs Paulley would make. Do them roughly in the order
   below.
@@ -13,7 +13,7 @@ The rows marked *missing* in the audit table (`docs/functional-dependencies.md`,
 Suggested order: E4 with L14, L13, S5, R9, I1 with I2, U2, F2 with F4,
 then OR branches.
 
-- [ ] **E4** (eq7): a lax equivalence whose columns a later filter makes
+- [x] **E4** (eq7): a lax equivalence whose columns a later filter makes
   definite does not become an Equality Group: after `LEFT JOIN r ON r.z = l.a
   WHERE r.z IS NOT NULL`, z and a are not merged, so Enumerated Domains and
   Foreign Key stand-ins do not cross between them. (The FD closure already
@@ -21,7 +21,7 @@ then OR branches.
   Related, **L14**: for Enumerated Domains a lax equivalence is enough, since
   NULL is outside every domain: after `LEFT JOIN u ON u.z = t.a WHERE t.a =
   5`, z is 5 or NULL, so `ENUM(z IN (5))` holds; today it is UNKNOWN.
-- [ ] **L13** (Thm 3, strict equivalence 4): an ON equality within the padded
+- [x] **L13** (Thm 3, strict equivalence 4): an ON equality within the padded
   side of an outer join (`ON ... AND u.x = u.z`) is a strict equivalence in
   the result (both NULL on padded rows), but does not merge an Equality Group,
   so `u.z = 3` in the same ON does not bound x's domain.
@@ -31,23 +31,34 @@ then OR branches.
   passes), which is exactly what ENUM means.
 - R10 (§3.2.4, `a = (uncorrelated scalar subquery)` gives `∅ → a`) moved to
   [38](done/0038-lower-order-by-and-select-list-subqueries.md) (done): it falls out of lowering scalar subqueries as joins.
-- [ ] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.
-- [ ] **I1, I2** (Lemma 6, Corollary 1): the right input's FDs and keys
+- [x] **R9** (§3.2.4): `LIKE 'x'` with no wildcard is `= 'x'`.
+- [x] **I1, I2** (Lemma 6, Corollary 1): the right input's FDs and keys
   through INTERSECT. Sound only when the paired columns compare by identity:
   an INTERSECT row carries the left value, equal to the right one under the
   left column's comparison (`identity_comparison`).
-- [ ] **U2** (§3.2.6, Example 15): equivalences and constants that hold in
+- [x] **U2** (§3.2.6, Example 15): equivalences and constants that hold in
   both UNION ALL inputs at the same positions hold in the output.
   With it, from issue 45 (item 22): a UNION ALL whose inputs are disjoint
   (`WHERE deptno = 10` / `= 20`) keeps each input's FDs. Calcite case
   `keys: fd_union_all`.
-- [ ] **F2, F4** (Lemma 10, Thm 4): a full join's ON gives no dependencies
+- [x] **F2, F4** (Lemma 10, Thm 4): a full join's ON gives no dependencies
   today. `t FULL JOIN u ON u.z = t.a` gives `a → z` (a non-null a is a left
   row, and a fixes which rows it matches) when η holds for z and for every
   right column of p, and the lax `z → a`.
   With it, from issue 45 (item 21): a FULL join that is Many To One keeps
   the left side's key laxly (the left Row Identity determines the right
   one). Calcite case `keys: fd_full_join`.
-- [ ] **OR branches** (beyond R13): constants and Equality Groups that hold in
+- [x] **OR branches** (beyond R13): constants and Equality Groups that hold in
   every branch of an OR hold after it. `(k = 5 AND …) OR (k = 5 AND …)` makes
   `k` constant; today an OR gives only null rejection and Enumerated Domains.
+
+
+## Resolution
+
+The regression cases are in `tests/paulley_audit.sqltest` and
+`tests/calcite_audit_keys.sqltest`. A disjoint UNION ALL uses both input
+closures when the determinant reaches the separating column. In the Calcite
+example, the same employee number can occur in both inputs with different
+department numbers when employee numbers are only keys within each input.
+A Many To One FULL join preserves the left key laxly. Its right-only rows can
+have NULL for the left determinant and different right values.

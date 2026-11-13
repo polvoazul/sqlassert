@@ -153,12 +153,11 @@ SELECT e.empno, e.sal, e.deptno AS e_deptno, d.deptno AS d_deptno FROM emp AS e 
 -- case: fd_full_join
 -- inspired by RelMetadataTest.testFunctionalDependencyFullOuterJoin
 -- Calcite has no FDs for a FULL join. empno -> name and UNIQUE(empno) hold
--- (an emp row matches at most one dept; dept-only rows have NULL empno):
--- missing proofs (F2/F4, issue 37).
+-- (an emp row matches at most one dept; dept-only rows have NULL empno).
 SELECT e.empno, e.deptno, d.name FROM emp AS e FULL JOIN dept AS d ON e.deptno = d.deptno
 /**ASSERT DETERMINES(empno -> deptno)**/  --~ PROVED
-/**ASSERT DETERMINES(empno -> name)**/  --~ UNKNOWN
-/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(empno -> name)**/  --~ PROVED
+/**ASSERT UNIQUE(empno)**/  --~ PROVED
 
 -- case: fd_equality_conditions
 -- inspired by RelMetadataTest.testFunctionalDependencyFilterEqualityCondition
@@ -175,9 +174,8 @@ WHERE e1.empno = e1.sal
 
 -- case: fd_union_all
 -- inspired by RelMetadataTest.testFunctionalDependencyUnion
--- The branches are disjoint (deptno 10 and 20), so empno -> deptno holds:
--- missing proof (tagged UNION ALL, U2, issue 37); Calcite has no set-operation
--- FDs either.
+-- deptno separates the inputs. It must be determined to use their FDs;
+-- branch disjointness alone does not prove empno -> deptno.
 WITH q AS (
     SELECT empno, deptno FROM emp WHERE deptno = 10
     UNION ALL
@@ -186,6 +184,7 @@ WITH q AS (
 SELECT empno, deptno FROM q
 /**ASSERT DETERMINES(empno -> deptno)**/  --~ UNKNOWN
 /**ASSERT DETERMINES(deptno -> empno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno, empno)**/  --~ PROVED
 
 -- Unique keys and column uniqueness: joins --------------------------------
 
@@ -459,14 +458,14 @@ SELECT * FROM emp LIMIT 1
 
 -- case: uk_union_constant
 -- inspired by RelMetadataTest.testColumnUniquenessForUnionWithConstantColumns
--- sal is 1000 in both branches, so deptno is unique: missing proof (U2, issue 37).
+-- sal is 1000 in both branches, so deptno is unique.
 WITH q AS (
     SELECT deptno, sal FROM emp WHERE sal = 1000
     UNION
     SELECT deptno, sal FROM emp WHERE sal = 1000
 )
 SELECT deptno, sal FROM q
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 
 -- case: uk_intersect_all
 -- inspired by RelMetadataTest.testColumnUniquenessForIntersectWithConstantColumns
@@ -480,14 +479,13 @@ SELECT deptno, sal FROM q
 
 -- case: uk_intersect_all_right_key
 -- inspired by RelMetadataTest.testUniqueKeysIntersect (a key on the right input only)
--- Missing proof (I2, issue 37).
 WITH q AS (
     SELECT deptno FROM emp
     INTERSECT ALL
     SELECT deptno FROM dept
 )
 SELECT deptno FROM q
-/**ASSERT UNIQUE(deptno)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(deptno)**/  --~ PROVED
 
 -- case: uk_except_all
 -- inspired by RelMetadataTest.testColumnUniquenessForMinusWithConstantColumns

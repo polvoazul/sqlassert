@@ -4,7 +4,6 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 
 - [11. Fuzz-test analyze against a real-world SQL corpus](0011-fuzz-test-analyze-against-a-real-world-sql-corpus.md) — open
 - [27. Soundness oracle against DuckDB](0027-soundness-oracle-against-duckdb.md) — open (Part 1 done: `pytest --soundness-oracle`; Part 2 open)
-- [37. Close the Paulley audit's missing rules](0037-close-the-paulley-audit-missing-rules.md) — open
 - [39. Smaller lowering gaps](0039-smaller-lowering-gaps.md) — open
 - [42. Lowering support v2](0042-lowering-support-v2.md) — not planned (P4 epic, split from 23)
 - [49. Collation-aware Properties](0049-collation-aware-properties.md) — not planned (P4, child of 42: COLLATE is unsupported and warns today)
@@ -37,8 +36,6 @@ Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds th
 reasoning; its **Theme** and **Blocked by** bullets place it on the local tracker):
 
 - **P1:** none open. #41 and #38 are done.
-- **P2:** #37 (Paulley audit's missing rules, now also the FULL join and
-  disjoint UNION ALL FDs from #45).
 - **P3, needs downloaded corpora:** #69 (DuckDB logic tests, TPC-H/TPC-DS,
   public dbt projects, VeriEQL's LeetCode pairs, run through the oracle
   unchanged), which unblocks #11
