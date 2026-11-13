@@ -1049,6 +1049,11 @@ class IrParser:
         return self._lower_expression(conjunct, bindings, schema_complete=schema_complete, line=_source_line(conjunct))
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
+        if select.args.get("laterals"):
+            # Hive and Spark's LATERAL VIEW repeats each row per generated value.
+            opaque = self._opaque_relation(select, _selected_output_names(select))
+            self._unsupported.append((opaque, "LATERAL VIEW"))
+            return opaque
         if any(
             isinstance(star, exp.Star) and any(star.args.values())
             for item in select.expressions for star in (item.this if isinstance(item, exp.Column) else item,)
@@ -1069,6 +1074,16 @@ class IrParser:
             lowered = self._fan_out(lowered, calls, self._origin(select))
         if keys is not None:
             relation = self._qualified(self._lower_aggregate(lowered, select, keys), select, grouped=True)
+            distinct = select.args.get("distinct")
+            if relation is not None and distinct is not None and distinct.args.get("on") is not None:
+                # DISTINCT ON keeps one group per key, by an ORDER BY not modelled:
+                # it drops groups, keeping every fact of the ones left.
+                origin = self._origin(distinct)
+                relation = ir.Filter(
+                    origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin),
+                    is_schema_complete=True, input=relation,
+                    predicate=ir.OpaqueExpression(origin=origin, description=distinct.sql(dialect=self.dialect)),
+                )
         elif select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None:
             relation = self._lower_distinct_on(lowered, select, select.args["distinct"].args["on"])
         elif select.args.get("distinct") is not None:
@@ -3411,6 +3426,8 @@ def _aggregate_arguments(call: exp.AggFunc) -> list[Expr]:
         return []
     if isinstance(this, exp.Distinct):
         return list(this.expressions)
+    if not isinstance(this, Expr):  # An unknown call's name (`main.max(x)` in ClickHouse).
+        return list(call.expressions)
     return [this, *call.expressions]
 
 

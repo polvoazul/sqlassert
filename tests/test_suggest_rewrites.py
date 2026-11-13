@@ -460,6 +460,9 @@ def test_a_one_row_aggregate_whose_precision_or_type_may_change_is_a_rewrite_wit
     "avg(i + 1)",
     # count(t.*) counts rows, not a value that may be NULL.
     "count(t.*)",
+    # count(t) of a whole row: PostgreSQL counts a row whose columns are all
+    # NULL as NULL, so it is not CASE WHEN t IS NULL.
+    "count(t)",
     # A call SQLGlot does not know may be an aggregate the analysis does not
     # model (DuckDB's mean, arbitrary, count_star, fsum): left in place, it
     # would aggregate the whole table once GROUP BY is gone.
@@ -721,18 +724,6 @@ def test_a_cte_used_in_a_nested_query_is_alive():
         "SELECT s.ts, l.x FROM sessions s, LATERAL (SELECT s.ts + 1 AS x) l WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id) "
         "WINDOW w AS (ORDER BY s.ts)",
     ),
-    # Hive and Spark's LATERAL VIEW follows the FROM and precedes WHERE.
-    (
-        "spark", RewriteKind.FILTER_JOIN,
-        "SELECT s.ts, e.x FROM sessions s JOIN users u ON u.id = s.user_id LATERAL VIEW explode(array(1, 2)) e AS x",
-        "SELECT s.ts, e.x FROM sessions s LATERAL VIEW explode(array(1, 2)) e AS x WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id)",
-    ),
-    (
-        "spark", RewriteKind.FILTER_JOIN,
-        "SELECT s.ts FROM sessions s JOIN users u ON u.id = s.user_id LATERAL VIEW explode(array(1, 2)) e AS x GROUP BY s.ts",
-        "SELECT s.ts FROM sessions s LATERAL VIEW explode(array(1, 2)) e AS x WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = s.user_id) "
-        "GROUP BY s.ts",
-    ),
 ])
 def test_a_new_where_goes_where_the_from_ends_in_every_clause_order(dialect: str, kind: RewriteKind, query: str, rewritten: str):
     report = suggest(SCHEMA + query, dialect=dialect)
@@ -741,6 +732,13 @@ def test_a_new_where_goes_where_the_from_ends_in_every_clause_order(dialect: str
     assert written == rewritten
     root = SqlParser(dialect).parse(SCHEMA + written).root_select
     assert root is not None and root.args.get("where") is not None
+
+
+def test_a_select_with_a_lateral_view_offers_no_rewrite():
+    # Hive and Spark's LATERAL VIEW repeats rows and is not modelled: its
+    # Select is opaque, so nothing about its joins is proved.
+    report = suggest(SCHEMA + "SELECT s.ts, e.x FROM sessions s JOIN users u ON u.id = s.user_id LATERAL VIEW explode(array(1, 2)) e AS x", dialect="spark")
+    assert not report.rewrites
 
 
 @pytest.mark.parametrize(("kind", "query", "rewritten"), [

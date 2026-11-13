@@ -80,3 +80,14 @@ CREATE TABLE b (k VARCHAR);
 WITH ks AS (SELECT k FROM a UNION SELECT k FROM b)
 SELECT ks.k, a.v FROM ks
 /**ASSERT MANY TO ONE**/ LEFT JOIN a ON a.k = ks.k  --~ PROVED
+
+-- case: a_lateral_view_is_named_and_multiplies_rows
+-- dialect: spark
+SELECT e.empno FROM emp e LATERAL VIEW explode(array(1, 2)) x AS n
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "LATERAL VIEW is not supported by sqlassert yet"
+
+-- case: an_unknown_qualified_aggregate_is_opaque
+-- dialect: clickhouse
+SELECT empno, main.max(sal) AS m FROM emp GROUP BY empno
+/**ASSERT UNIQUE(empno)**/  --~ PROVED

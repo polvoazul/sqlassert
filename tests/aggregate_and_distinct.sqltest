@@ -132,3 +132,13 @@ CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL);
 SELECT a.id, b.x FROM t AS a CROSS JOIN t AS b GROUP BY a.id
 /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
 --~ unsupported-construct "a column neither grouped nor inside an aggregate"
+
+-- case: distinct_on_over_groups_does_not_keep_every_group
+CREATE TABLE t (id INTEGER PRIMARY KEY, g INTEGER NOT NULL);
+CREATE TABLE e (k INTEGER PRIMARY KEY, tid INTEGER NOT NULL REFERENCES t (id));
+SELECT e.k FROM e
+/**ASSERT EXACTLY ONE**/ JOIN (SELECT DISTINCT ON (g) id FROM t GROUP BY g, id) s ON e.tid = s.id  --~ UNKNOWN
+
+-- case: distinct_on_over_groups_keeps_their_keys
+CREATE TABLE t (id INTEGER PRIMARY KEY, g INTEGER NOT NULL);
+SELECT * FROM (SELECT DISTINCT ON (g) id FROM t GROUP BY g, id) s /**ASSERT UNIQUE(id)**/  --~ PROVED

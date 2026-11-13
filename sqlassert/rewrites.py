@@ -183,7 +183,11 @@ def rewrites(
 def _grouped(relation: ir.RelationExpr, node: exp.Select) -> ir.Aggregate | None:
     """The Aggregate of a grouped Select's relation: under the Project that
     drops its hidden outputs and computes the items over aggregates
-    (`_lower_aggregate`), and the Filter that is its HAVING."""
+    (`_lower_aggregate`), and the Filter that is its HAVING, all under the
+    Filter of a DISTINCT ON, which keeps one group per key."""
+    distinct = node.args.get("distinct")
+    if isinstance(relation, ir.Filter) and distinct is not None and distinct.args.get("on") is not None:
+        relation = relation.input
     if isinstance(relation, ir.Project):
         relation = relation.input
     if isinstance(relation, ir.Filter) and node.args.get("having") is not None and node.args.get("qualify") is None:
@@ -523,8 +527,8 @@ def _anded_to_where(where: exp.Where, source: Source, condition: str) -> tuple[E
 
 def _from_end(select: exp.Select, source: Source) -> int | None:
     """The last token of `select`'s FROM clause, where a new WHERE goes: past
-    its joins (a `, LATERAL` or `JOIN LATERAL` among them) and any Hive or
-    Spark `LATERAL VIEW`, before the first clause after them (GROUP BY,
+    its joins (a `, LATERAL` or `JOIN LATERAL` among them), before the first
+    clause after them (GROUP BY,
     HAVING, WINDOW, QUALIFY, ORDER BY, LIMIT, ...)."""
     end = marker_position(select)
     clauses = [
@@ -881,6 +885,8 @@ def _one_row(item: Expr, name: str, dialect: str, types: dict[str, str | None]) 
             case exp.Count() if argument is None or isinstance(argument, exp.Star):
                 form = "one"
                 narrowed_to = "an integer literal's type"
+            case exp.Count() if isinstance(argument, exp.Column) and declared is None:
+                return None  # Maybe a whole row (`count(t)`), NULL in PostgreSQL when all its columns are.
             case exp.Count():
                 form = "case"
                 narrowed_to = "an integer literal's type"
