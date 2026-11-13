@@ -555,10 +555,14 @@ def sqlassert_dialect(base: str) -> type[Dialect]:
             consume.
             """
             self._query_starts.append(self._curr)
+            from_first = self._curr is not None and self._curr.token_type is TokenType.FROM
             try:
-                return self._parse_select_query_markers(*args, **kwargs)
+                result = self._parse_select_query_markers(*args, **kwargs)
             finally:
                 self._query_starts.pop()
+            if from_first:
+                _hoist_from_first_joins(result)
+            return result
 
         def _parse_select_query_markers(self, *args, **kwargs):
             result = super()._parse_select_query(*args, **kwargs)
@@ -1017,6 +1021,23 @@ def _is_alter_table(statement: Expr) -> bool:
 
 def _spanned_modifier(parse):
     return lambda self: self._spanned(parse)
+
+
+def _hoist_from_first_joins(query: Expr | None) -> None:
+    """A DuckDB FROM-first Select (`FROM a JOIN b ... SELECT ...`, or a bare
+    `FROM a JOIN b`): SQLGlot hangs its joins on its first source, a table
+    or derived table, where a Select written SELECT-first holds them itself
+    (a parenthesized join's own stay inside it, on its first source). They
+    move to the Select, so both read alike. It is the leftmost operand of a
+    set operation."""
+    while isinstance(query, exp.SetOperation):
+        query = query.this
+    from_ = query.args.get("from_") if isinstance(query, exp.Select) else None
+    source = from_.this if isinstance(from_, exp.From) else None
+    if isinstance(source, Expr) and source.args.get("joins") and isinstance(query, exp.Select):
+        joins = source.args["joins"]
+        source.set("joins", None)
+        query.set("joins", [*joins, *(query.args.get("joins") or ())])
 
 
 def span(node: Expr) -> tuple[int, int] | None:
