@@ -6,5 +6,5 @@ tmp
 papers/
 vendor/
 __pycache__/
-docs/issues/mkt/
-docs/issues/pvt/
+/docs/issues/mkt
+/docs/issues/pvt
