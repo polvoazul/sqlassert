@@ -3,8 +3,8 @@ name: CI
 # Tests on every push and pull request. Publishing (see the jobs at the end)
 # happens only on a push to this repository, never on a pull request:
 #   - a push to main publishes a dev build (X.Y.Z.devN) to TestPyPI;
-#   - a tag vX.Y.Z publishes to PyPI (vX.Y.ZrcN: a pre-release, which pip
-#     installs only with --pre) and creates a GitHub release.
+#   - a tag vX.Y.Z publishes the same artifacts to TestPyPI, then to PyPI
+#     (vX.Y.ZrcN is a pre-release), and creates a GitHub release.
 # No token is stored: PyPI trusts this workflow through OIDC (Trusted
 # Publishing), configured on pypi.org and test.pypi.org for both projects.
 on:
@@ -73,7 +73,7 @@ jobs:
           path: dist/
 
   publish-testpypi:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -92,7 +92,7 @@ jobs:
 
   publish-pypi:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: publish-testpypi
     runs-on: ubuntu-latest
     environment:
       name: pypi
