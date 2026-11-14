@@ -7,6 +7,7 @@
 import argparse
 from collections import Counter
 from io import BytesIO
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -23,14 +24,16 @@ STAR_CACHE = Path("/tmp") / f"sqlassert-github-stars-{os.getuid()}"
 STAR_CACHE_TTL = 24 * 60 * 60
 PROPERTY_TESTS = {"unique", "not_null", "accepted_values", "relationships", "dbt_utils.unique_combination_of_columns"}
 TEST_BLOCK = re.compile(rb"{%-?\s*test\s+")
+SQL_COMMENT = re.compile(rb"--[^\r\n]*|/\*.*?(?:\*/|\Z)|\{#.*?(?:#\}|\Z)", re.DOTALL)
+SIZE_LIMITS = ((200, "XS"), (1_000, "S"), (10_000, "M"), (100_000, "L"), (1_000_000, "XL"))
 TABLE = (
-    "| Repository snapshot | Workload | Stars | SQL files | dbt models | YAML data tests "
+    "| Repository snapshot | Workload | Stars | SQL files | SQL lines | Size | dbt models | YAML data tests "
     "| Supported types | SQL data tests | What it contains |\n"
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+    "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |"
 )
 WORKLOADS = {
     "Published benchmark", "Real-world project", "Real-world project · used in research",
-    "Private project", "Demo or template",
+    "Private project", "Demo",
 }
 
 
@@ -129,7 +132,52 @@ def github_stars(url):
     return stars
 
 
-def repository_row(name, settings):
+def count_sql_lines(sql):
+    uncommented = SQL_COMMENT.sub(lambda match: b"\n" * match[0].count(b"\n"), sql)
+    return sum(bool(line.strip()) for line in uncommented.splitlines())
+
+
+AUDIT_HEADERS = ("Audit", "Tests proved", "Join forms", "Join cardinality", "Base table facts")
+
+
+def load_audit_results():
+    results = {}
+    paths = (VENDOR.parent / "tmp" / "vendor-dbt-audit").glob("run-*/results.json")
+    for path in sorted(paths, key=lambda path: (path.stat().st_mtime_ns, path)):
+        for result in json.loads(path.read_text()):
+            if result.get("project") is not None:
+                key = (result["repository"], result["commit"], result["project"])
+                results[key] = result
+    return results
+
+
+def audit_cells(name, commit, settings, results):
+    projects = settings.get("audit", {})
+    saved = [results.get((name, commit, project), {}) for project in projects]
+    analyzed = [result for result in saved if result.get("status") == "analyzed"]
+    if not analyzed:
+        status = "Unconfigured" if not projects else "Failed" if any(saved) else "Pending"
+        return [status, "—", "—", "—", "—"]
+
+    def breakdown(key):
+        counts = Counter()
+        for result in analyzed:
+            counts.update({kind: entry["count"] for kind, entry in result["joins"].get(key, {}).items()})
+        total = counts.total()
+        return ", ".join(f"{kind} {count:,} ({100 * count / total:.2f}%)" for kind, count in sorted(counts.items())) or "—"
+
+    counts = Counter()
+    for result in analyzed:
+        counts.update({key: result["tests"][key] for key in ("proved", "total")})
+    flags = [result.get("has_base_table_properties") for result in analyzed]
+    base_facts = "Yes" if any(flags) else "—" if None in flags else "No"
+    return [
+        f"{len(analyzed)}/{len(projects)} analyzed", f'{counts["proved"]:,}/{counts["total"]:,}',
+        breakdown("by_type"), breakdown("by_cardinality"), base_facts,
+    ]
+
+
+def repository_row(name, settings, audit_results=None):
     workload = settings["workload"]
     if workload not in WORKLOADS:
         raise ValueError(f"{name}: expected workload to be one of {', '.join(sorted(WORKLOADS))}")
@@ -154,10 +202,15 @@ def repository_row(name, settings):
     if missing := selected - configs:
         raise ValueError(f"{name}: missing dbt configs: {', '.join(map(str, sorted(missing)))}")
 
-    sql_count = sum(path.suffix.lower() == ".sql" for path in tree)
+    files = blobs(repo, {
+        path: oid for path, oid in tree.items()
+        if path.suffix.lower() == ".sql" or (selected and path.suffix.lower() in {".yml", ".yaml"})
+    })
+    sql_files = [content for path, content in files.items() if path.suffix.lower() == ".sql"]
+    sql_lines = sum(map(count_sql_lines, sql_files))
+    size = next((label for limit, label in SIZE_LIMITS if sql_lines < limit), "XXL")
     columns = ["—"] * 4
     if selected:
-        files = blobs(repo, {path: oid for path, oid in tree.items() if path.suffix.lower() in {".sql", ".yml", ".yaml"}})
         paths_by_project = {config: [] for config in selected}
         for path in files:
             for parent in path.parents:
@@ -178,7 +231,9 @@ def repository_row(name, settings):
         tree_path = "-/tree" if url.startswith("https://gitlab.com/") else "tree"
         snapshot = f"[{label}]({url}/{tree_path}/{commit})"
     cells = [snapshot, workload, "—" if stars is None else f"{stars:,}"]
-    cells.extend([f"{sql_count:,}", *columns, settings["description"]])
+    cells.extend([f"{len(sql_files):,}", f"{sql_lines:,}", size, *columns, settings["description"]])
+    if audit_results is not None:
+        cells.extend(audit_cells(name, commit, settings, audit_results))
     return "| " + " | ".join(cells) + " |"
 
 
@@ -214,7 +269,18 @@ def render_html(markdown):
       <dt>Workload</dt>
       <dd>Published benchmark is a corpus released for evaluation. Real-world project covers applied analytics.
         Used in research marks a real-world project with a published research reference in its description.
-        Private project covers internal workloads. Demo or template covers examples and starter projects.</dd>
+        Private project covers internal workloads. Demo covers examples and showcases.</dd>
+      <dt>SQL lines</dt>
+      <dd>Lines in tracked SQL files, excluding blank lines and comment-only lines.</dd>
+      <dt>Size</dt>
+      <dd>SQL line limits are XS under 200, S under 1,000, M under 10,000, L under 100,000,
+        and XL under 1,000,000. XXL starts at 1,000,000.</dd>
+      <dt>Audit</dt>
+      <dd>Completed projects out of those configured for this repository at the displayed commit.</dd>
+      <dt>Join forms and cardinality</dt>
+      <dd>Counts and percentages pooled over completed projects, using separate totals for SQL forms and sqlassert proof sites.</dd>
+      <dt>Base table facts</dt>
+      <dd>Yes means at least one completed project had a known source or base-table unique key or NOT NULL fact.</dd>
       <dt>YAML data tests</dt>
       <dd>Generic dbt data test declarations under <code>tests</code> or <code>data_tests</code> in project YAML.
         These tests check properties of the data, such as whether a column is unique.</dd>
@@ -235,10 +301,12 @@ def render_html(markdown):
     if (window.DataTable) {{
       const table = document.querySelector(".report table");
       table.classList.add("display", "compact");
+      const sizes = {[label for _, label in SIZE_LIMITS] + ["XXL"]};
       for (const row of table.tBodies[0].rows) {{
-        for (const cell of Array.from(row.cells).slice(3, -1)) {{
+        for (const cell of Array.from(row.cells).slice(3, 10)) {{
           const value = cell.textContent.trim();
-          cell.dataset.order = value === "—" ? "-1" : value.replaceAll(",", "");
+          const sizeRank = sizes.indexOf(value);
+          cell.dataset.order = sizeRank >= 0 ? sizeRank : value === "—" ? "-1" : value.replaceAll(",", "");
         }}
       }}
       new DataTable(table, {{ order: [], paging: false }});
@@ -256,10 +324,15 @@ def main():
     try:
         config = load((VENDOR / "vendor_config.yaml").read_text(encoding="utf-8"), Loader=CSafeLoader)
         repositories = config["repositories"]
-        rows = [repository_row(name, repositories[name]) for name in args.repos or repositories]
+        audit_results = load_audit_results() if args.html else None
+        rows = [repository_row(name, repositories[name], audit_results) for name in args.repos or repositories]
     except (KeyError, OSError, ValueError, YAMLError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{parser.prog}: {error}\n")
-    markdown = "\n".join([TABLE, *rows])
+    header, alignment = TABLE.splitlines()
+    if args.html:
+        header += " " + " | ".join(AUDIT_HEADERS) + " |"
+        alignment += " --- |" * len(AUDIT_HEADERS)
+    markdown = "\n".join([header, alignment, *rows])
     print(render_html(markdown) if args.html else markdown)
 
 
