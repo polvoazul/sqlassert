@@ -1,33 +1,47 @@
-"""Compile pinned vendor dbt projects and save proof and join statistics."""
+"""Compile a vendored dbt project offline and analyze its manifest with sqlassert."""
 
-import argparse
 from collections import Counter
 from dataclasses import asdict
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
-import tempfile
 
 from sqlglot import ErrorLevel, exp, parse
 from sqlglot.errors import SqlglotError
 from yaml import safe_dump, safe_load
 
-from report_vendor_sql_repository_facts import VENDOR, git
 from sqlassert_dbt.expectations import Expectation, expectations
-from sqlassert_dbt.manifest import load_manifest
+from sqlassert_dbt.manifest import Catalog, CatalogTable, Column, load_manifest
 from sqlassert import ir
 from sqlassert.properties import NonNullColumn, NonNullColumns, UniqueSet
 from sqlassert.python_engine import Engine
 from sqlassert.rules.join_cardinality import many_to_one_join, one_to_many_join
-from sqlassert_dbt.project import ProjectError, _analysis
+from sqlassert_dbt.project import _analysis
 
 
-def run_dbt(project, output, profiles, target, step, *options):
-    command = ["dbt", step, "--project-dir", str(project), "--profiles-dir", str(profiles),
-               "--target", target, "--log-path", str(output / "logs"), *options]
+# Neither profile reaches a database server. DuckDB introspection queries an empty in-memory
+# database, which some projects need to compile; other adapters compile with
+# --no-introspect --no-populate-cache, so their placeholder connection is never opened.
+OFFLINE_PROFILES = {
+    "duckdb": {"type": "duckdb", "path": ":memory:"},
+    "snowflake": {"type": "snowflake", "account": "offline", "user": "offline", "password": "offline",
+                  "database": "offline", "warehouse": "offline", "schema": "offline"},
+}
+
+
+def run_dbt(project, output, env, step, *options):
+    command = ["dbt", step, "--project-dir", str(project), "--profiles-dir", str(output),
+               "--target", "audit", "--log-path", str(output / "logs"), *options]
     with (output / f"{step}.log").open("w") as log:
-        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, env=os.environ | env)
+    if result.returncode:
+        lines = (output / f"{step}.log").read_text().splitlines()
+        marker = next((i for i, line in enumerate(lines) if line.endswith("Encountered an error:")), None)
+        detail = " ".join(line.strip() for line in lines[marker + 1:marker + 3]) if marker is not None else ""
+        raise RuntimeError(f"dbt {step} failed: {detail}".rstrip(": "))
 
 
 def join_statistics(models, dialect, analysis):
@@ -116,6 +130,7 @@ def join_statistics(models, dialect, analysis):
 
 def load_seed_facts(path, project, manifest):
     facts = []
+    tables = {}
     for node_id, entry in safe_load(path.read_text())["seeds"].items():
         node = manifest["nodes"].get(node_id)
         if not node or node["resource_type"] != "seed":
@@ -123,44 +138,57 @@ def load_seed_facts(path, project, manifest):
         csv_path = project / node["original_file_path"]
         if sha256(csv_path.read_bytes()).hexdigest() != entry["sha256"]:
             raise ValueError(f"{path}: seed changed: {node_id}")
+        if column_types := entry.get("column_types"):
+            tables[node_id] = CatalogTable(
+                node_id, node["database"], node["schema"], node["alias"],
+                tuple(Column(name, kind) for name, kind in column_types.items()),
+            )
         for column, properties in entry["columns"].items():
             for label, declared in (("unique", "unique"), ("not_null", "not_null")):
                 if properties.get(label) is True:
                     name = f"seed_snapshot:{node_id}:{column}:{label}"
                     facts.append(Expectation(name, name, "constraint", node_id, str(path), None, declared, (column,)))
-    return tuple(facts)
+    return tuple(facts), tables
 
 
-def audit_project(project, output, settings):
+def compile_project(project, output, settings):
+    """Run dbt deps and compile without a database; return manifest facts."""
+    if output.exists():
+        shutil.rmtree(output)
+    output.mkdir(parents=True)
     config = safe_load((project / "dbt_project.yml").read_text())
-    target = settings.get("target", "audit")
-    profiles = output
-    if settings.get("profiles_dir"):
-        profiles = Path(settings["profiles_dir"]).expanduser().resolve()
-    else:
-        profile = {"type": "duckdb", "path": ":memory:", "threads": 1}
-        (profiles / "profiles.yml").write_text(safe_dump({config["profile"]: {
-            "target": target, "outputs": {target: profile},
-        }}))
-    result = {"target": target}
+    profile = OFFLINE_PROFILES[settings.get("adapter", "duckdb")] | {"threads": 1}
+    (output / "profiles.yml").write_text(safe_dump({config["profile"]: {
+        "target": "audit", "outputs": {"audit": profile},
+    }}))
+    env = {name: str(value) for name, value in settings.get("env", {}).items()}
     if (project / "packages.yml").exists() or (project / "dependencies.yml").exists():
-        run_dbt(project, output, profiles, target, "deps")
-    compile_mode = [] if profiles == output else ["--no-introspect", "--no-populate-cache"]
-    run_dbt(project, output, profiles, target, "compile", "--target-path", str(output / "target"),
-            *compile_mode, *settings.get("compile_args", []))
-    manifest_path = output / "target" / "manifest.json"
+        run_dbt(project, output, env, "deps")
+    offline = [] if profile["type"] == "duckdb" else ["--no-introspect", "--no-populate-cache"]
+    run_dbt(project, output, env, "compile", "--target-path", str(output / "target"),
+            *offline, *settings.get("compile_args", []))
+    manifest = output / "target" / "manifest.json"
+    metadata = json.loads(manifest.read_text())["metadata"]
+    return {"manifest": str(manifest), "manifest_sha256": sha256(manifest.read_bytes()).hexdigest(),
+            "dbt_version": metadata["dbt_version"], "adapter": metadata["adapter_type"]}
+
+
+def analyze_project(project, manifest_path, settings, seed_facts_path=None):
+    """Prove dbt tests and join cardinalities from a compiled manifest."""
+    config = safe_load((project / "dbt_project.yml").read_text())
     manifest = json.loads(manifest_path.read_text())
-    metadata = manifest["metadata"]
     nodes = [node for node in manifest["nodes"].values() if node["package_name"] == config["name"]]
     models = [node for node in nodes if node["resource_type"] == "model"]
     test_ids = {node["unique_id"] for node in nodes if node["resource_type"] == "test"}
     catalog = settings.get("catalog")
     analysis = _analysis(project, manifest_path, settings.get("trust_upstream_tests", True),
                          Path(catalog).expanduser().resolve() if catalog else None)
-    seed_facts = settings.get("seed_facts")
-    if seed_facts:
-        path = (VENDOR / "vendor_config.yaml").resolve().parent / seed_facts
-        analysis.expectations += load_seed_facts(path, project, manifest)
+    if seed_facts_path:
+        facts, seed_tables = load_seed_facts(seed_facts_path, project, manifest)
+        analysis.expectations += facts
+        if seed_tables:
+            existing = analysis.catalog or Catalog(None)
+            analysis.catalog = Catalog(existing.generated_at, seed_tables | existing.tables)
     report = analysis.run(None)
     tests = [test for test in report.tests if test.unique_id in test_ids and test.kind == "test"]
     eligible = sum(
@@ -169,54 +197,10 @@ def audit_project(project, output, settings):
     )
     proved = sum(test.skippable for test in tests)
     has_base_table_properties, joins = join_statistics(models, report.dialect, analysis)
-    return result | {
-        "status": "analyzed", "dbt_version": metadata["dbt_version"], "adapter": metadata["adapter_type"],
-        "seed_facts": seed_facts, "models": len(models), "joins": joins, "has_base_table_properties": has_base_table_properties,
-        "tests": {"total": len(test_ids), "eligible": eligible, "proved": proved,
-                  "percent_of_total": round(100 * proved / len(test_ids), 2) if test_ids else None,
-                  "percent_of_eligible": round(100 * proved / eligible, 2) if eligible else None},
+    return {
+        "models": len(models), "joins": joins, "has_base_table_properties": has_base_table_properties,
+        "tests": {"total": len(test_ids), "eligible": eligible, "proved": proved},
         "test_outcomes": [asdict(test) for test in tests],
         "problems": [asdict(problem) for problem in report.problems],
         "markers": [asdict(marker) for marker in report.markers],
     }
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("repositories", nargs="*")
-    parser.add_argument("--output", type=Path, default=VENDOR.parent / "tmp" / "vendor-dbt-audit")
-    args = parser.parse_args()
-    repositories = safe_load((VENDOR / "vendor_config.yaml").read_text())["repositories"]
-    if unknown := set(args.repositories) - repositories.keys():
-        parser.error(f"Unknown repositories: {', '.join(sorted(unknown))}")
-    args.output.mkdir(parents=True, exist_ok=True)
-    run = Path(tempfile.mkdtemp(prefix="run-", dir=args.output.resolve()))
-    results = []
-    for name in args.repositories or repositories:
-        repo = VENDOR / name
-        settings = repositories[name]
-        commit = git(repo, "rev-parse", "HEAD").decode().strip()
-        projects = settings.get("audit", {})
-        if not projects:
-            results.append({"repository": name, "commit": commit, "status": "no audit target configured"})
-            continue
-        with tempfile.TemporaryDirectory() as checkout:
-            subprocess.run(["tar", "-xf", "-", "-C", checkout], input=git(repo, "archive", commit, "--", settings.get("scope", ".")), check=True)
-            for index, (path, profile) in enumerate(projects.items(), 1):
-                output = run / name / str(index)
-                output.mkdir(parents=True)
-                result = {"repository": name, "commit": commit, "project": path,
-                          "target": profile.get("target", "audit"), "artifacts": str(output.relative_to(run))}
-                try:
-                    result.update(audit_project(Path(checkout) / path, output, profile))
-                except (subprocess.CalledProcessError, OSError, ValueError, ProjectError) as error:
-                    result.update(status="failed", error=str(error))
-                results.append(result)
-                print(f"{name} / {path}: {result['status']}", flush=True)
-    (run / "results.json").write_text(json.dumps(results, indent=2, default=lambda value: value.value) + "\n")
-    print(run / "results.json")
-    return int(any(result["status"] == "failed" for result in results))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

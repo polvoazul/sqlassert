@@ -8,3 +8,4 @@ vendor/
 __pycache__/
 /docs/issues/mkt
 /docs/issues/pvt
+/pvt/

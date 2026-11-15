@@ -35,6 +35,21 @@ or adding an explicit marker for intentional many-to-many joins.
   how many feed duplicate-sensitive aggregates. Run the existing Hazard on
   the same corpus and report warning volume and reviewed false positives.
 
+## Unknown cardinality as a default Hazard
+
+Evaluate whether the default Hazard should also cover joins where sqlassert
+cannot prove either input matches at most one row per row of the other input.
+Treat those joins as potential fanout and keep their counts separate from
+confirmed many-to-many joins. Measure the additional warnings and review a
+sample for actionable fanout risks and missing schema facts.
+
+In Taiwan Campaign Finance, the final LEFT JOIN in
+[`corporation_contribution.sql`](https://github.com/g0v/tw_campaign_finance/blob/042c5f7c5431ada52830eaf01dce0fbada65322d/models/marts/corporation_contribution.sql)
+matches a donation's donor ID to a corporation lookup ID. Sqlassert cannot
+prove the lookup is unique by corporation ID and has no known unique set for
+the transaction input. If the lookup matches a donation more than once, a
+downstream sum of donation amounts can double count it.
+
 ## Decision
 
 - [ ] Publish the counts, unresolved coverage, reviewed examples, and

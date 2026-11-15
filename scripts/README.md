@@ -13,47 +13,61 @@ Regenerate the GitHub social preview with
 The preview renderer requires Pillow and the macOS system fonts. Both scripts
 use the repository's `.venv/bin/sqlassert`.
 
-## SQL repository facts
+## Vendor repository audit
 
-Run `uv run --script scripts/report_vendor_sql_repository_facts.py data-infra`
-from the repository root to print a Markdown table for one vendor checkout.
-Pass several directory names or omit them to report on every configured repo.
-The script reads each checkout's `HEAD` and links to that commit in the table.
-
-To open a styled report with sorting and search on macOS, run:
+`scripts/audit.py` extracts facts from each checkout in `vendor/`, caches
+them, and renders `tmp/vendor-report.html`. Run it from the virtualenv that
+has dbt, the required dbt adapters, the local `sqlassert-dbt` package, PyYAML
+and markdown-it-py:
 
 ```bash
-uv run --script scripts/report_vendor_sql_repository_facts.py --html > /tmp/sqlassert-repos.html &&
-  open /tmp/sqlassert-repos.html
+python scripts/audit.py                       # rerun stale facts, rebuild the report
+python scripts/audit.py danish-democracy-data # only these checkouts
+python scripts/audit.py --dry-run             # list stale facts and why
+python scripts/audit.py --steps analyze --force
+python scripts/audit.py --markdown            # also print the inventory table
+python scripts/audit.py -j 1                  # serial; default is 8 repositories in parallel threads
 ```
 
-The HTML loads DataTables and its stylesheet from a CDN.
+The run ends by printing the report's `file://` URL.
+
+Each step writes one JSON fact per checkout, or per dbt project, under
+`tmp/vendor-facts/<step>/`. A fact stores the key it was computed from and
+reruns only when that key changes, its time to live passes, or `--force` is
+given. Failures are stored as facts too, so a broken project is not retried
+until its inputs change. The report is rebuilt from all stored facts on every
+run, so it also covers checkouts not selected.
+
+| Step | Produces | Reruns when |
+| --- | --- | --- |
+| `inventory` | SQL files, SQL lines, dbt models and data tests at `HEAD` | commit, `scope`/`dbt_projects`/`workload`, or the inventory module changes |
+| `stars` | GitHub stars, through `gh` | URL changes, or after 24 hours |
+| `compile` | `dbt deps` and `dbt compile` output beside the fact | commit, tracked uncommitted edits, project settings, dbt or adapter version, or compile code changes |
+| `analyze` | proved tests, join forms and cardinality | manifest, seed facts, catalog, the `sqlassert` or `sqlassert_dbt` source tree (uncommitted edits included), sqlglot version, or analysis code changes |
+
+A new compile always produces a new manifest, so `analyze` follows it.
+The report headline counts public projects only.
 
 Edit `vendor/vendor_config.yaml` to add repos or change the label, source URL,
 description and workload. The keys under `repositories` are checkout
-directory names. To report only on certain dbt projects, set `dbt_projects`
+directory names. To count only certain dbt projects, set `dbt_projects`
 to a list of paths relative to that checkout, using `.` for its root project.
-Use `scope` to limit all counts to a package inside a monorepo. Private rows
-show a local commit ID and omit GitHub stars. GitHub star counts are cached per repo
-for 24 hours under `/tmp/sqlassert-github-stars-<uid>/`. On a cache miss or
-expiry, the script fetches the count with `gh`.
+Use `scope` to limit inventory counts to a package inside a monorepo. Private
+rows show a local commit ID and omit GitHub stars. The HTML loads DataTables
+and its stylesheet from a CDN.
 
-## Vendor dbt audit
+To analyze dbt projects, set `audit` to a mapping keyed by dbt project path
+within the checkout. Use `.` for the root. The audit compiles each checkout in
+place, so `dbt deps` installs packages into it; keep the clone otherwise clean.
 
-Run `python scripts/audit_vendor_dbt_projects.py` in an environment with dbt,
-the required adapters, the local `sqlassert-dbt` package, PyYAML, and
-markdown-it-py. Pass checkout names to run a subset. Each run writes
-`results.json`, dbt logs, and compiler artifacts under
-`tmp/vendor-dbt-audit/run-*`. The runner compiles a temporary copy of each
-checkout's HEAD.
-
-In `vendor/vendor_config.yaml`, set `audit` to a mapping keyed by dbt project
-path within the checkout. Use `.` for the root. An empty mapping for a project
-uses an in-memory DuckDB profile. For warehouse projects, set `profiles_dir`
-and `target` to an existing dbt profile directory and target. Optional
-`compile_args` are passed to dbt compile. Set `catalog` to a matching
-catalog JSON path if available. Repos without audit settings appear in the
-results with that status.
+The audit never connects to a database server. It writes a placeholder
+profile for the project's `adapter` (default `duckdb`, or `snowflake`).
+DuckDB projects compile against an empty in-memory database, so introspective
+macros run but see no tables. Other adapters compile with `--no-introspect
+--no-populate-cache`; a model that needs query results fails that project's
+compile. Set `env` to a mapping of placeholder environment variables a project
+requires, `compile_args` to extra dbt compile arguments, and `catalog` to a
+matching catalog JSON path if available.
 
 Join percentages use the joins found in successfully parsed compiled project
 models as their denominator. The report records skipped models. These are
@@ -76,3 +90,8 @@ config. Its `seeds` mapping uses dbt manifest seed IDs. Each entry has the
 CSV's `sha256` and a `columns` mapping with observed `unique` and `not_null`
 flags. The audit rejects changed CSVs. Proofs using these facts apply to the
 profiled snapshot.
+
+The seed entry can also include `column_types`, the complete ordered mapping
+of column names to types observed after loading that seed with dbt. The audit
+uses these types as catalog metadata when a configured catalog has no entry
+for the seed.
