@@ -82,8 +82,11 @@ most one right row. UNKNOWN means neither direction was proved. Confirming
 many-to-many requires evidence that rows can repeat on both sides. Semi and
 anti joins are counted as NOT_APPLICABLE.
 
-Each project result records whether the analysis had any known unique key or
-NOT NULL facts on the source and base tables it reads. The audit assumes eligible upstream tests passed before the model ran. Set
+Each project result counts the base tables (sources, seeds and tables) its
+models read: how many have every read column typed, how many have a known
+unique key, and how many have a NOT NULL column. A join equality on untyped
+columns proves nothing, so untyped base tables leave joins UNKNOWN. The audit
+assumes eligible upstream tests passed before the model ran. Set
 `trust_upstream_tests: false` on a target to disable that assumption.
 
 An audit target can set `seed_facts` to a YAML file beside the vendor

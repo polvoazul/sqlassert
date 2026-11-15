@@ -161,7 +161,8 @@ TABLE = (
     "| Supported types | SQL data tests | What it contains |\n"
     "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |"
 )
-AUDIT_HEADERS = ("Audit", "Tests proved", "Join forms", "Join cardinality", "Base table facts", "Analyzed with")
+AUDIT_HEADERS = ("Audit", "Tests proved", "Join forms", "Join cardinality", "Base tables typed", "Base table facts",
+                 "Analyzed with")
 
 
 def number(value):
@@ -204,11 +205,28 @@ def audit_cells(projects):
     data = [fact["data"] for fact in analyzed]
     proved = sum(result["tests"]["proved"] for result in data)
     total = sum(result["tests"]["total"] for result in data)
-    flags = [result["has_base_table_properties"] for result in data]
+    tables = Counter()
+    for result in data:
+        tables.update(result["base_tables"])
     sqlassert = sorted({fact["key"]["sqlassert"][:8] for fact in analyzed})
     dates = sorted(fact["created"][:10] for fact in analyzed)
     return [status, f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
-            "Yes" if any(flags) else "No", f"`{', '.join(sqlassert)}` {dates[-1]}"]
+            *base_table_cells(tables), f"`{', '.join(sqlassert)}` {dates[-1]}"]
+
+
+def percent(part, whole):
+    return f"{100 * part / whole:.0f}%" if whole else "—"
+
+
+def base_table_cells(tables):
+    """Typing and declared facts of the sources, seeds and tables the analyzed models read."""
+    count = tables["tables"]
+    if not count:
+        return ["no base tables", "—"]
+    typed = (f'{percent(tables["typed"], count)} ({tables["typed"]:,}/{count:,} tables, '
+             f'{tables["typed_columns"]:,}/{tables["columns"]:,} columns)')
+    facts = f'keyed {percent(tables["keyed"], count)}, not null {percent(tables["not_null"], count)}'
+    return [typed, facts]
 
 
 def collect(repositories):
@@ -326,8 +344,13 @@ def render_html(repositories, rows):
       <dd>Data tests sqlassert proves from the compiled manifest, so dbt can skip them, out of all project tests.</dd>
       <dt>Join forms and cardinality</dt>
       <dd>Counts pooled over analyzed projects, with separate totals for SQL forms and sqlassert proof sites.</dd>
+      <dt>Base tables typed</dt>
+      <dd>Sources, seeds and tables the analyzed models read whose every read column has a known type, from a
+        contract, the catalog or seed facts. A join equality on an untyped column proves nothing, since an implicit
+        cast can match unequal values.</dd>
       <dt>Base table facts</dt>
-      <dd>Yes means at least one analyzed project had a known source or base-table unique key or NOT NULL fact.</dd>
+      <dd>Share of those base tables with a known unique key, and with at least one NOT NULL column, from trusted
+        tests, contracts or seed facts.</dd>
       <dt>Analyzed with</dt>
       <dd>Hash of the sqlassert source tree the analysis ran on, and when it ran.</dd>
     </dl>
@@ -406,7 +429,8 @@ def main():
                    for name in args.repos or repositories]
         for future in as_completed(futures):
             lines, repository_failed = future.result()
-            print("\n".join(lines), file=sys.stderr, flush=True)
+            if lines:
+                print("\n".join(lines), file=sys.stderr, flush=True)
             failed |= repository_failed
     if args.dry_run:
         return 0

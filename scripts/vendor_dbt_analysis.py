@@ -48,7 +48,7 @@ def join_statistics(models, dialect, analysis):
     counts = Counter()
     skipped = {}
     cardinalities = []
-    has_base_table_properties = False
+    base_tables = {"tables": 0, "typed": 0, "keyed": 0, "not_null": 0, "columns": 0, "typed_columns": 0}
     model_ids = {node["unique_id"] for node in models}
     builder = analysis._builder(dialect, []) if dialect else None
     if builder:
@@ -58,17 +58,19 @@ def join_statistics(models, dialect, analysis):
         program = conversion.program
         reachable = set(program.nodes())
         facts = (*program.declarations, *conversion.knowledge)
-        base_columns = {
-            column for node in reachable
-            if isinstance(node, ir.NamedRelation) and node.role is ir.RelationRole.TABLE
-            for column in node.output_columns
-        }
-        has_base_table_properties = any(
-            (isinstance(fact, NonNullColumn) and fact.column in base_columns)
-            or (isinstance(fact, NonNullColumns) and bool(fact.columns & base_columns))
-            or (isinstance(fact, UniqueSet) and bool(fact.columns) and fact.columns <= base_columns)
-            for fact in facts
-        )
+        non_null = {fact.column for fact in facts if isinstance(fact, NonNullColumn)}
+        non_null |= {column for fact in facts if isinstance(fact, NonNullColumns) for column in fact.columns}
+        unique_sets = [fact.columns for fact in facts if isinstance(fact, UniqueSet) and fact.columns]
+        # Base tables are the relations analysis reads without SQL: sources, seeds and tables.
+        for table in {node for node in reachable if isinstance(node, ir.NamedRelation) and node.role is ir.RelationRole.TABLE}:
+            columns = set(table.output_columns)
+            typed = sum(column.comparison_type is not None for column in columns)
+            base_tables["tables"] += 1
+            base_tables["columns"] += len(columns)
+            base_tables["typed_columns"] += typed
+            base_tables["typed"] += bool(columns) and typed == len(columns)
+            base_tables["keyed"] += any(key <= columns for key in unique_sets)
+            base_tables["not_null"] += bool(columns & non_null)
         with Engine().session(program, conversion.knowledge):
             for model_id in sorted(model_ids):
                 for branch, statement in enumerate(builder._statements.get(model_id, [])):
@@ -114,7 +116,7 @@ def join_statistics(models, dialect, analysis):
     total = counts.total()
     cardinality_counts = Counter(join["cardinality"] for join in cardinalities)
     cardinality_total = cardinality_counts.total()
-    return has_base_table_properties, {
+    return base_tables, {
         "total": total,
         "by_type": {kind: {"count": count, "percent": round(100 * count / total, 2)}
                     for kind, count in sorted(counts.items())},
@@ -196,9 +198,9 @@ def analyze_project(project, manifest_path, settings, seed_facts_path=None):
         for test in expectations(load_manifest(manifest_path))
     )
     proved = sum(test.skippable for test in tests)
-    has_base_table_properties, joins = join_statistics(models, report.dialect, analysis)
+    base_tables, joins = join_statistics(models, report.dialect, analysis)
     return {
-        "models": len(models), "joins": joins, "has_base_table_properties": has_base_table_properties,
+        "models": len(models), "joins": joins, "base_tables": base_tables,
         "tests": {"total": len(test_ids), "eligible": eligible, "proved": proved},
         "test_outcomes": [asdict(test) for test in tests],
         "problems": [asdict(problem) for problem in report.problems],
