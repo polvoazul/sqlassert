@@ -102,3 +102,4 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
 - [56. dbt: read the live warehouse catalog in the plugin's commands](done/0056-dbt-live-connection.md)
 - [70. Drop legacy and permissive dialect support](done/0070-drop-legacy-and-permissive-dialect-support.md)
 - [71. Rewrites carry exact edits](done/0071-rewrites-carry-exact-edits.md)
+- [72. Type computed select items from certified function result types](done/0072-type-computed-select-items.md)

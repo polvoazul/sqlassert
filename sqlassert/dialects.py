@@ -95,6 +95,13 @@ class DialectSemantics:
     # it is no soundness claim and is not certified: a wrong True suggests SQL
     # the engine rejects, never a wrong proof.
     set_operations_all: bool = False
+    # The type each function returns whatever its arguments' types, by the
+    # SQLGlot node it parses to: a select item that is such a call has that
+    # type, as a column declared with it would. Only where every argument type
+    # the engine accepts gives the same result type (`date_trunc` keeps its
+    # input's type, so it is not here). Certified with the engine's own type
+    # function (`scripts/certify_dialects.py`); a dialect without one claims none.
+    result_types: tuple[tuple[str, str], ...] = ()
 
     @property
     def rely(self) -> bool:
@@ -136,6 +143,12 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         greatest="skips-null",
         subscript_strict=True,
         set_operations_all=True,
+        result_types=(
+            *((node, "VARCHAR") for node in (
+                "MD5", "SHA2", "Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "ConcatWs", "Dayname", "Monthname",
+            )),
+            *((node, "BIGINT") for node in ("Length", "StrPosition", "Year", "Month", "Day")),
+        ),
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,

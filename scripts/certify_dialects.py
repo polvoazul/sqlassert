@@ -118,7 +118,7 @@ class Fact:
 def facts(dialect: str, meaning: DialectSemantics | None = None) -> tuple[Fact, ...]:
     """Every claim `meaning` (the dialect's semantics by default) makes, each with its probe."""
     meaning = semantics(dialect) if meaning is None else meaning
-    found = [*_builtin_facts(dialect, meaning), *_flag_facts(dialect, meaning)]
+    found = [*_builtin_facts(dialect, meaning), *_flag_facts(dialect, meaning), *_result_type_facts(dialect, meaning)]
     return tuple(sorted(found, key=lambda fact: fact.name))
 
 
@@ -428,6 +428,51 @@ def _sum_checks(dialect: str) -> Iterable[Check]:
                 _query(f"SELECT CASE WHEN {function}(x) IS NULL THEN 0 ELSE 1 END FROM ({rows}) AS t", dialect), "error or true",
                 guard=(_query(f"SELECT {values[0]}", dialect),), accepted_error=_OVERFLOW_ERROR,
             )
+
+
+# Calls of each function over different argument types (DuckDB spelling, read
+# as the dialect's), and the engine's function naming a value's type.
+_RESULT_TYPE_CALLS: dict[str, tuple[str, ...]] = {
+    "MD5": ("md5('a')", "md5(CAST('a' AS BLOB))", "md5(CAST(NULL AS VARCHAR))"),
+    "SHA2": ("sha256('a')", "sha256(CAST('a' AS BLOB))"),
+    "Lower": ("lower('A')", "lower(CAST(NULL AS VARCHAR))"),
+    "Upper": ("upper('a')",),
+    "Trim": ("trim(' a ')",),
+    "Replace": ("replace('ab', 'a', 'c')",),
+    "Left": ("left('abc', 2)",),
+    "Right": ("right('abc', 2)",),
+    "Substring": ("substring('abcd', 2, 2)", "substring('abcd', 2)"),
+    "ConcatWs": ("concat_ws('-', 'a', 1)", "concat_ws('-', [1], [2])", "concat_ws('-', DATE '2020-01-01')"),
+    "Dayname": ("dayname(DATE '2020-01-01')", "dayname(TIMESTAMP '2020-01-01 10:00')"),
+    "Monthname": ("monthname(DATE '2020-01-01')", "monthname(TIMESTAMPTZ '2020-01-01 10:00+00')"),
+    "Length": ("length('abc')", "length([1, 2])", "length(CAST('a' AS BLOB))"),
+    "StrPosition": ("strpos('abc', 'b')",),
+    "Year": ("year(DATE '2020-01-01')", "year(TIMESTAMP '2020-01-01')", "year(TIMESTAMPTZ '2020-01-01 00:00+00')"),
+    "Month": ("month(DATE '2020-01-01')", "month(TIMESTAMP '2020-01-01')"),
+    "Day": ("day(DATE '2020-01-01')", "day(TIMESTAMP '2020-01-01')"),
+}
+_TYPE_OF = {"duckdb": "typeof"}
+
+
+def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
+    """Each claimed result type, probed over every listed argument type; a call
+    that is an error for its argument type claims nothing there."""
+    for node, type_name in meaning.result_types:
+        checks = []
+        for call in _RESULT_TYPE_CALLS.get(node, ()):
+            parsed = sqlglot.parse_one(call, read="duckdb")
+            if type(parsed).__name__ != node or dialect not in _TYPE_OF:
+                checks.append(Check("", "true", problem=f"{call} is no {node} in {dialect}, or {dialect} has no type function"))
+                continue
+            text = parsed.sql(dialect=sqlassert_dialect(dialect))
+            checks.append(Check(
+                f"SELECT CASE WHEN {_TYPE_OF[dialect]}({text}) = '{type_name}' THEN 1 ELSE 0 END", "true",
+                # Rejecting the argument type at bind time: no program has that call.
+                accepted_error=r"(?i)no function matches",
+            ))
+        if not checks:
+            checks.append(Check("", "true", problem=f"no probe calls for {node}"))
+        yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", tuple(checks))
 
 
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:

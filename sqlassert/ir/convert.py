@@ -1778,8 +1778,22 @@ class IrParser:
             column = ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=value, comparison_type=comparison_type)
             if isinstance(expression, exp.Cast):
                 self._declared_types[column] = expression.to
+            elif (kind := self._result_type(expression)) is not None:
+                # A call whose type the dialect fixes: typed as a column declared with it.
+                definition = exp.ColumnDef(kind=kind)
+                column = replace(
+                    column, binary_text=self._is_binary_text(definition), comparison_type=self._comparison_type(definition),
+                    identity_comparison=self._identity_comparison(definition), exact_numeric=self._exact_numeric(definition),
+                )
+                self._declared_types[column] = kind
             columns.append(column)
         return tuple(columns)
+
+    def _result_type(self, expression: Expr) -> exp.DataType | None:
+        """The type the dialect returns for `expression`, a call of a function
+        whose result type does not depend on its arguments' (`DialectSemantics.result_types`)."""
+        name = dict(self.semantics.result_types).get(type(expression).__name__)
+        return exp.DataType.build(name, dialect=self.dialect) if name is not None else None
 
     def _aggregate_output_columns(self, items: list[Expr], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
         """Each item of a grouped select. A column outside every aggregate must

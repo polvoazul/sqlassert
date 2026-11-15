@@ -1,0 +1,41 @@
+-- A select item computed by a function whose result type the dialect fixes
+-- (`DialectSemantics.result_types`) is typed as a column declared with that
+-- type: an equality on it binds, and its values compare by identity where the
+-- type does. A function whose type follows its arguments stays untyped, and so
+-- does every function in a dialect that certifies none.
+
+CREATE TABLE people (name VARCHAR, code VARCHAR, born DATE);
+CREATE TABLE badges (code VARCHAR, size INTEGER, issued TIMESTAMP);
+
+-- case: md5_keys_join_as_varchar
+WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people),
+     wanted AS (SELECT md5(code) AS k FROM badges)
+SELECT *
+FROM wanted
+/**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ PROVED
+
+-- case: length_joins_an_integer_column
+WITH sizes AS (SELECT DISTINCT length(name) AS n FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN sizes ON badges.size = sizes.n  --~ PROVED
+
+-- case: varchar_result_does_not_bind_an_integer
+WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN keys ON badges.size = keys.k  --~ UNKNOWN
+
+-- case: date_trunc_follows_its_argument_so_stays_untyped
+WITH months AS (SELECT DISTINCT date_trunc('month', born) AS m FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ UNKNOWN
+
+-- case: a_dialect_that_certifies_no_result_type_leaves_md5_untyped
+-- dialect: postgres
+WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people),
+     wanted AS (SELECT md5(code) AS k FROM badges)
+SELECT *
+FROM wanted
+/**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ UNKNOWN
