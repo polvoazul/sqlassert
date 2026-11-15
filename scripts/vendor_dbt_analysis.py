@@ -19,6 +19,7 @@ from sqlassert import ir
 from sqlassert.properties import NonNullColumn, NonNullColumns, UniqueSet
 from sqlassert.python_engine import Engine
 from sqlassert.rules.join_cardinality import many_to_one_join, one_to_many_join
+from sqlassert_dbt.program import _canonical
 from sqlassert_dbt.project import _analysis
 
 
@@ -49,21 +50,36 @@ def join_statistics(models, dialect, analysis, ignored=frozenset()):
     skipped = {}
     cardinalities = []
     base_tables = {"tables": 0, "typed": 0, "keyed": 0, "not_null": 0, "columns": 0, "typed_columns": 0, "untyped": []}
+    opaque_models = {"names": []}
     model_ids = {node["unique_id"] for node in models}
     builder = analysis._builder(dialect, []) if dialect else None
     if builder:
         builder.build(relation for key, relation in analysis.manifest.relations.items() if key in model_ids)
     conversion = builder._conversion if builder else None
     if conversion:
+        assert builder is not None  # A conversion only comes from a builder.
         program = conversion.program
         reachable = set(program.nodes())
         facts = (*program.declarations, *conversion.knowledge)
         non_null = {fact.column for fact in facts if isinstance(fact, NonNullColumn)}
         non_null |= {column for fact in facts if isinstance(fact, NonNullColumns) for column in fact.columns}
         unique_sets = [fact.columns for fact in facts if isinstance(fact, UniqueSet) and fact.columns]
-        # Base tables are the relations analysis reads without SQL: sources, seeds and tables.
+        # Every relation analysis reads as a table is either a base table (data entering the
+        # project: a source, seed or snapshot, or a name nothing defines) or an opaque model (a
+        # dbt model read as a table, not as its query: Python, left out, or incremental).
+        by_name = {
+            _canonical(relation.relation_name, dialect): relation
+            for relation in analysis.manifest.relations.values() if relation.relation_name
+        }
         tables = {node for node in reachable if isinstance(node, ir.NamedRelation) and node.role is ir.RelationRole.TABLE}
         for table in {table for table in tables if table.name.split(".")[-1].strip('"').lower() not in ignored}:
+            relation = by_name.get(table.name.lower())
+            if relation is not None and relation.resource_type == "model":
+                reason = ("python" if relation.language != "sql" else "left out" if relation.unique_id in builder._left_out
+                          else relation.materialized or "table")
+                opaque_models[reason] = opaque_models.get(reason, 0) + 1
+                opaque_models["names"].append(relation.name)
+                continue
             columns = set(table.output_columns)
             typed = sum(column.comparison_type is not None for column in columns)
             base_tables["tables"] += 1
@@ -119,7 +135,7 @@ def join_statistics(models, dialect, analysis, ignored=frozenset()):
     total = counts.total()
     cardinality_counts = Counter(join["cardinality"] for join in cardinalities)
     cardinality_total = cardinality_counts.total()
-    return base_tables, {
+    return base_tables, opaque_models, {
         "total": total,
         "by_type": {kind: {"count": count, "percent": round(100 * count / total, 2)}
                     for kind, count in sorted(counts.items())},
@@ -215,9 +231,9 @@ def analyze_project(project, manifest_path, settings, base_facts=None, commit=No
     )
     proved = sum(test.skippable for test in tests)
     ignored = frozenset(name.lower() for name in settings.get("ignore_tables", []))
-    base_tables, joins = join_statistics(models, report.dialect, analysis, ignored)
+    base_tables, opaque_models, joins = join_statistics(models, report.dialect, analysis, ignored)
     return {
-        "models": len(models), "joins": joins, "base_tables": base_tables,
+        "models": len(models), "joins": joins, "base_tables": base_tables, "opaque_models": opaque_models,
         "tests": {"total": len(test_ids), "eligible": eligible, "proved": proved},
         "test_outcomes": [asdict(test) for test in tests],
         "problems": [asdict(problem) for problem in report.problems],

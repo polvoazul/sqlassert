@@ -162,7 +162,7 @@ TABLE = (
     "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |"
 )
 AUDIT_HEADERS = ("Audit", "Tests proved", "Join forms", "Join cardinality", "Base tables typed", "Base table facts",
-                 "Analyzed with")
+                 "Opaque models", "Analyzed with")
 
 
 def number(value):
@@ -211,7 +211,17 @@ def audit_cells(projects):
     sqlassert = sorted({fact["key"]["sqlassert"][:8] for fact in analyzed})
     dates = sorted(fact["created"][:10] for fact in analyzed)
     return [status, f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
-            *base_table_cells(tables), f"`{', '.join(sqlassert)}` {dates[-1]}"]
+            *base_table_cells(tables), opaque_cell(data), f"`{', '.join(sqlassert)}` {dates[-1]}"]
+
+
+def opaque_cell(data):
+    """dbt models analysis reads as tables, by why: Python, left out, or incremental."""
+    reasons = Counter()
+    for result in data:
+        reasons.update({key: value for key, value in result.get("opaque_models", {}).items() if key != "names"})
+    if not reasons:
+        return "none"
+    return f"{reasons.total():,}: " + ", ".join(f"{reason} {count:,}" for reason, count in sorted(reasons.items()))
 
 
 def percent(part, whole):
@@ -345,12 +355,16 @@ def render_html(repositories, rows):
       <dt>Join forms and cardinality</dt>
       <dd>Counts pooled over analyzed projects, with separate totals for SQL forms and sqlassert proof sites.</dd>
       <dt>Base tables typed</dt>
-      <dd>Sources, seeds and tables the analyzed models read whose every read column has a known type, from a
+      <dd>Base tables are the data entering the project: sources, seeds and snapshots the analyzed models read whose every read column has a known type, from a
         contract, the catalog or base facts. A join equality on an untyped column proves nothing, since an implicit
         cast can match unequal values.</dd>
       <dt>Base table facts</dt>
       <dd>Share of those base tables with a known unique key, and with at least one NOT NULL column, from trusted
         tests, contracts or base facts.</dd>
+      <dt>Opaque models</dt>
+      <dd>dbt models the analysis reads as tables rather than as their query, by reason: Python models,
+        SQL models left out because their SQL does not parse or lower, and incremental models (a table to their
+        readers by design). They are intermediate, built from other models, and not counted as base tables.</dd>
       <dt>Analyzed with</dt>
       <dd>Hash of the sqlassert source tree the analysis ran on, and when it ran.</dd>
     </dl>
