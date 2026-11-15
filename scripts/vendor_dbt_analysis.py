@@ -139,7 +139,7 @@ def load_base_facts(path, project, manifest, commit):
     """
     document = safe_load(path.read_text())
     if document["commit"] != commit:
-        raise ValueError(f"{path}: recorded at {document['commit'][:12]}, checkout is at {commit[:12]}; re-derive them")
+        raise ValueError(f"{path}: recorded at {document['commit'][:12]}, checkout is at {commit[:12]}; redo their determination")
     facts = []
     tables = {}
     for node_id, entry in document["tables"].items():
