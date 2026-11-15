@@ -26,7 +26,7 @@ from vendor_repository_inventory import SIZE_LIMITS, VENDOR, git, head
 
 
 ROOT = VENDOR.parent
-CONFIG = VENDOR / "vendor_config.yaml"
+CONFIG = ROOT / "pvt" / "public_repos_audit" / "vendor_config.yaml"  # private workspace checkout
 FACTS = ROOT / "tmp" / "vendor-facts"
 REPORT = ROOT / "tmp" / "vendor-report.html"
 STEPS = ("inventory", "stars", "compile", "analyze")
@@ -140,7 +140,7 @@ def repository_steps(name, settings, sources):
         if not compiled or compiled["status"] != "ok":
             continue
         seed_facts = project_settings.get("seed_facts")
-        seed_path = CONFIG.resolve().parent / seed_facts if seed_facts else None
+        seed_path = CONFIG.parent / seed_facts if seed_facts else None
         catalog = project_settings.get("catalog")
         yield Step("analyze", paths["analyze"], {
             "manifest": compiled["data"]["manifest_sha256"],

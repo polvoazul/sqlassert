@@ -48,7 +48,8 @@ run, so it also covers checkouts not selected.
 A new compile always produces a new manifest, so `analyze` follows it.
 The report headline counts public projects only.
 
-Edit `vendor/vendor_config.yaml` to add repos or change the label, source URL,
+Edit `pvt/public_repos_audit/vendor_config.yaml` (in the private workspace
+checkout at `pvt/`) to add repos or change the label, source URL,
 description and workload. The keys under `repositories` are checkout
 directory names. To count only certain dbt projects, set `dbt_projects`
 to a list of paths relative to that checkout, using `.` for its root project.
@@ -85,7 +86,7 @@ Each project result records whether the analysis had any known unique key or
 NOT NULL facts on the source and base tables it reads. The audit assumes eligible upstream tests passed before the model ran. Set
 `trust_upstream_tests: false` on a target to disable that assumption.
 
-An audit target can set `seed_facts` to a YAML file beside the resolved vendor
+An audit target can set `seed_facts` to a YAML file beside the vendor
 config. Its `seeds` mapping uses dbt manifest seed IDs. Each entry has the
 CSV's `sha256` and a `columns` mapping with observed `unique` and `not_null`
 flags. The audit rejects changed CSVs. Proofs using these facts apply to the
