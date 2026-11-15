@@ -44,11 +44,11 @@ def run_dbt(project, output, env, step, *options):
         raise RuntimeError(f"dbt {step} failed: {detail}".rstrip(": "))
 
 
-def join_statistics(models, dialect, analysis):
+def join_statistics(models, dialect, analysis, ignored=frozenset()):
     counts = Counter()
     skipped = {}
     cardinalities = []
-    base_tables = {"tables": 0, "typed": 0, "keyed": 0, "not_null": 0, "columns": 0, "typed_columns": 0}
+    base_tables = {"tables": 0, "typed": 0, "keyed": 0, "not_null": 0, "columns": 0, "typed_columns": 0, "untyped": []}
     model_ids = {node["unique_id"] for node in models}
     builder = analysis._builder(dialect, []) if dialect else None
     if builder:
@@ -62,13 +62,16 @@ def join_statistics(models, dialect, analysis):
         non_null |= {column for fact in facts if isinstance(fact, NonNullColumns) for column in fact.columns}
         unique_sets = [fact.columns for fact in facts if isinstance(fact, UniqueSet) and fact.columns]
         # Base tables are the relations analysis reads without SQL: sources, seeds and tables.
-        for table in {node for node in reachable if isinstance(node, ir.NamedRelation) and node.role is ir.RelationRole.TABLE}:
+        tables = {node for node in reachable if isinstance(node, ir.NamedRelation) and node.role is ir.RelationRole.TABLE}
+        for table in {table for table in tables if table.name.split(".")[-1].strip('"').lower() not in ignored}:
             columns = set(table.output_columns)
             typed = sum(column.comparison_type is not None for column in columns)
             base_tables["tables"] += 1
             base_tables["columns"] += len(columns)
             base_tables["typed_columns"] += typed
             base_tables["typed"] += bool(columns) and typed == len(columns)
+            if not columns or typed < len(columns):
+                base_tables["untyped"].append(table.name)
             base_tables["keyed"] += any(key <= columns for key in unique_sets)
             base_tables["not_null"] += bool(columns & non_null)
         with Engine().session(program, conversion.knowledge):
@@ -211,7 +214,8 @@ def analyze_project(project, manifest_path, settings, base_facts=None, commit=No
         for test in expectations(load_manifest(manifest_path))
     )
     proved = sum(test.skippable for test in tests)
-    base_tables, joins = join_statistics(models, report.dialect, analysis)
+    ignored = frozenset(name.lower() for name in settings.get("ignore_tables", []))
+    base_tables, joins = join_statistics(models, report.dialect, analysis, ignored)
     return {
         "models": len(models), "joins": joins, "base_tables": base_tables,
         "tests": {"total": len(test_ids), "eligible": eligible, "proved": proved},

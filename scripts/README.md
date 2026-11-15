@@ -66,7 +66,9 @@ profile for the project's `adapter` (default `duckdb`, or `snowflake`).
 DuckDB projects compile against an empty in-memory database, so introspective
 macros run but see no tables. Other adapters compile with `--no-introspect
 --no-populate-cache`; a model that needs query results fails that project's
-compile. Set `env` to a mapping of placeholder environment variables a project
+compile. Set `ignore_tables` to relation names left out of the base-table counts: a
+table a model reads that nothing in the project defines or loads (say why in
+a YAML comment). Set `env` to a mapping of placeholder environment variables a project
 requires, `compile_args` to extra dbt compile arguments, and `catalog` to a
 matching catalog JSON path if available.
 

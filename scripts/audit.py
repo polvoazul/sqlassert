@@ -144,7 +144,7 @@ def repository_steps(name, settings, sources):
         catalog = project_settings.get("catalog")
         yield Step("analyze", paths["analyze"], {
             "manifest": compiled["data"]["manifest_sha256"],
-            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "catalog")},
+            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "catalog", "ignore_tables")},
             "base_facts": file_digest(base_facts) if base_facts else None,
             "catalog": file_digest(Path(catalog).expanduser()) if catalog else None,
             "sqlassert": sources["sqlassert"], "sqlassert_dbt": sources["sqlassert_dbt"],
@@ -207,7 +207,7 @@ def audit_cells(projects):
     total = sum(result["tests"]["total"] for result in data)
     tables = Counter()
     for result in data:
-        tables.update(result["base_tables"])
+        tables.update({key: value for key, value in result["base_tables"].items() if key != "untyped"})
     sqlassert = sorted({fact["key"]["sqlassert"][:8] for fact in analyzed})
     dates = sorted(fact["created"][:10] for fact in analyzed)
     return [status, f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
