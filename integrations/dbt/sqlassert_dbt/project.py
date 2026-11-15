@@ -255,6 +255,11 @@ class _Analysis:
                     f"an enforced model contract listing every column's data_type declares them, or {catalog}"
                     if relation.resource_type == "model" else catalog
                 )
+            if relation.file_read is not None:
+                supply = (
+                    f"it reads files, {relation.file_read}, which `dbt docs generate` does not list: "
+                    "add a catalog.json entry for its unique_id with every column and type"
+                )
             problems.append(Problem(
                 UNKNOWN_COLUMNS,
                 f"the columns of {relation.resource_type} {relation.label} are not all known from the manifest, so its keys "
@@ -454,7 +459,8 @@ def _catalog_columns(
         relation = manifest.relations.get(unique_id)
         if relation is None:
             continue
-        if _canonical(relation.relation_name, dialect) != _name_of(table).lower():
+        # A source that reads files has no warehouse name to compare; its entry is its unique_id's.
+        if relation.file_read is None and _canonical(relation.relation_name, dialect) != _name_of(table).lower():
             other.append(f"{relation.resource_type} {relation.label} is {_name_of(table)} there, {relation.relation_name} here")
             continue
         listed = [column.name.lower() for column in table.columns]

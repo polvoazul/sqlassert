@@ -10,9 +10,10 @@ manifest that is not a JSON object of nodes is a `ManifestError`.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -82,6 +83,9 @@ class Relation:
     extra_ctes: tuple[InjectedCte, ...] = ()
     source_name: str | None = None
     version: str | None = None
+    # A source that reads files (dbt-duckdb `external_location`): the read dbt
+    # pasted where a table name goes; `relation_name` is then its stand-in.
+    file_read: str | None = None
 
     @property
     def label(self) -> str:
@@ -149,6 +153,7 @@ def load_manifest(path: Path) -> Manifest:
     for unique_id, node in _mapping(document.get("sources")).items():
         if isinstance(node, dict):
             relations[unique_id] = _relation(unique_id, node)
+    relations = _name_file_reads(relations)
     return Manifest(
         adapter_type=_text(metadata.get("adapter_type")),
         project_name=_text(metadata.get("project_name")),
@@ -156,6 +161,51 @@ def load_manifest(path: Path) -> Manifest:
         relations=relations,
         tests=tests,
     )
+
+
+# What dbt-duckdb pastes for a source with `external_location`: a DuckDB
+# `read_*` table function, or a quoted path DuckDB reads by its extension.
+_FILE_READ = re.compile(r"read_[a-z0-9_]+\s*\(.*\)|'(?:[^']|'')*'", re.IGNORECASE | re.DOTALL)
+_QUOTED = re.compile(r"'((?:[^']|'')*)'")
+
+
+def _name_file_reads(relations: dict[str, Relation]) -> dict[str, Relation]:
+    """Give each source that reads files a table name, `__file_<file stem>`,
+    and write it where dbt pasted the read, so analysis declares and reads it
+    like any table. The read is one line, so no line moves."""
+    names: dict[str, str] = {}  # read -> stand-in
+    for unique_id, relation in sorted(relations.items()):
+        read = relation.relation_name
+        if relation.resource_type != "source" or read is None or not _FILE_READ.fullmatch(read.strip()):
+            continue
+        if read in names:
+            relations[unique_id] = replace(relation, relation_name=names[read], file_read=read)
+            continue
+        path = _QUOTED.search(read)
+        stem = PurePosixPath(path.group(1).replace("''", "'")).name.split(".")[0] if path else ""
+        stem = re.sub(r"[^a-z0-9_]+", "_", stem.lower()).strip("_") or re.sub(r"[^a-z0-9_]+", "_", relation.name.lower())
+        name, count = f"__file_{stem}", 2
+        while name in names.values():
+            name, count = f"__file_{stem}_{count}", count + 1
+        names[read] = name
+        relations[unique_id] = replace(relation, relation_name=name, file_read=read)
+    if not names:
+        return relations
+    ordered = sorted(names, key=len, reverse=True)  # A longer read first, should one contain another.
+
+    def rewrite(sql: str) -> str:
+        for read in ordered:
+            sql = sql.replace(read, names[read])
+        return sql
+
+    return {
+        unique_id: replace(
+            relation,
+            compiled_code=rewrite(relation.compiled_code) if relation.compiled_code else relation.compiled_code,
+            extra_ctes=tuple(replace(cte, sql=rewrite(cte.sql)) for cte in relation.extra_ctes),
+        ) if relation.compiled_code or relation.extra_ctes else relation
+        for unique_id, relation in relations.items()
+    }
 
 
 def _relation(unique_id: str, node: dict) -> Relation:

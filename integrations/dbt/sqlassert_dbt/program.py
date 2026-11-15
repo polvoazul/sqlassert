@@ -56,7 +56,8 @@ from sqlassert.suggest import MAX_ENUM_VALUES, Suggester, Suggestion
 # Materializations whose relation holds exactly the rows of the model's query
 # when its children are built. An incremental model's table keeps rows of
 # earlier runs, a snapshot's its history: those are tables, not their query.
-QUERY_MATERIALIZATIONS = {"view", "table", "materialized_view", "dynamic_table"}
+# dbt-duckdb's `external` writes the query's rows to a file each run, like `table`.
+QUERY_MATERIALIZATIONS = {"view", "table", "materialized_view", "dynamic_table", "external"}
 
 # Parse results that leave a relation's SQL unusable as a view body.
 _UNPARSEABLE = {diag.SQL_PARSE_FAILED, diag.MULTIPLE_ROOT_SELECTS, diag.UNSUPPORTED_STATEMENT, diag.UNATTACHED_MARKER}
