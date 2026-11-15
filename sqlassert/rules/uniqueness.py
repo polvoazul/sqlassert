@@ -889,9 +889,17 @@ def minimal_keys(relation: ir.RelationExpr, max_size: int = 3) -> list[tuple[ir.
 
     if not columns or not unique(columns):
         return []
-    keys: list[tuple[ir.OutputColumn, ...]] = []
-    for size in range(1, min(max_size, len(columns)) + 1):
-        for members in combinations(columns, size):
+    keys: list[tuple[ir.OutputColumn, ...]] = [(column,) for column in columns if max_size >= 1 and unique((column,))]
+    candidates = columns
+    if max_size > 1 and keys:
+        singletons = {key[0] for key in keys}
+        candidates = tuple(column for column in columns if column not in singletons)
+        # A larger minimal key must avoid every singleton key. If their complement
+        # cannot determine the row, neither can any subset of it.
+        if len(candidates) < 2 or not unique(candidates):
+            return keys
+    for size in range(2, min(max_size, len(candidates)) + 1):
+        for members in combinations(candidates, size):
             if not any(set(key) <= set(members) for key in keys) and unique(members):
                 keys.append(members)
     if keys:

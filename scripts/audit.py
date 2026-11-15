@@ -214,7 +214,7 @@ def audit_cells(projects):
     dates = sorted(fact["created"][:10] for fact in analyzed)
     # Proofs that assume warn-severity tests pass are conditional: say so.
     assumed = " (warn tests trusted)" if any(fact["key"]["settings"].get("trust_warn_tests") for fact in analyzed) else ""
-    return [status, f"{proved:,}/{total:,}{assumed}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
+    return [f"{status}{assumed}", f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
             *base_table_cells(tables), opaque_cell(data), f"`{', '.join(sqlassert)}` {dates[-1]}"]
 
 
@@ -294,7 +294,11 @@ def render_html(repositories, rows):
         for name, project, step, error in failures(rows)
     )
     failure_section = f'<section><h2>Failures</h2><ul class="failures">{failure_items}</ul></section>' if failure_items else ""
-    table = markdown.render(markdown_table(repositories, rows, audit=True))
+    ordered = sorted(repositories, key=lambda name: not any(
+        (fact := project["analyze"]) and fact["status"] == "ok" for project in rows[name][1].values()
+    ))
+    ordered_repositories = {name: repositories[name] for name in ordered}
+    table = markdown.render(markdown_table(ordered_repositories, rows, audit=True))
     generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     return f"""<!doctype html>
 <html lang="en">
@@ -353,11 +357,11 @@ def render_html(repositories, rows):
       <dt>SQL data tests</dt>
       <dd>Standalone dbt test query files. Each query returns rows that fail the check.</dd>
       <dt>Audit</dt>
-      <dd>dbt projects analyzed out of those configured for this repository at the displayed commit.</dd>
+      <dd>dbt projects analyzed out of those configured for this repository at the displayed commit.
+        "warn tests trusted" means the analysis assumes warn-severity tests pass, so proofs based on them are conditional.</dd>
       <dt>Tests proved</dt>
       <dd>Data tests sqlassert proves from the compiled manifest, so dbt can skip them, out of all project tests.
-        Upstream tests are facts only when their failure stops the build (severity error); "warn tests trusted"
-        marks a project whose warn-severity tests are assumed to pass too, so its proofs hold only if they do.</dd>
+        By default, upstream tests are facts only when their failure stops the build (severity error).</dd>
       <dt>Join forms and cardinality</dt>
       <dd>Counts pooled over analyzed projects, with separate totals for SQL forms and sqlassert proof sites.</dd>
       <dt>Base tables typed</dt>

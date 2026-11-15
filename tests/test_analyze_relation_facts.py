@@ -9,7 +9,10 @@ proves Unique Set Assertions.
 
 from __future__ import annotations
 
-from sqlassert import analyze
+from pytest import MonkeyPatch
+
+from sqlassert import analyze, ir
+from sqlassert.rules import uniqueness
 
 
 def test_a_declared_primary_key_is_a_unique_set_on_its_table():
@@ -171,3 +174,35 @@ def test_every_minimal_unique_set_is_reported():
     )
 
     assert report.facts.unique_sets("t") == (("id",), ("email",), ("a", "b"))
+
+
+def test_a_wide_join_chain_prunes_the_search_after_finding_its_only_key(monkeypatch: MonkeyPatch):
+    payload_width = 36
+    payload = ", ".join(f"value_{index} INTEGER" for index in range(payload_width))
+    sql = f"""
+        CREATE TABLE events (id INTEGER NOT NULL, {payload});
+        CREATE TABLE labels (id INTEGER PRIMARY KEY);
+        CREATE VIEW upstream AS SELECT * FROM events /**DECLARE UNIQUE(id)**/;
+    """
+    source = "upstream"
+    for index in range(3):
+        stage = f"stage_{index}"
+        sql += f"CREATE VIEW {stage} AS SELECT a.* FROM {source} a JOIN labels b ON a.id = b.id;\n"
+        source = stage
+    sql += f"SELECT * FROM {source} /**ASSERT UNIQUE(id)**/;"
+
+    closure = uniqueness._closure
+    probes = 0
+
+    def count_probes(relation, columns, definite):
+        nonlocal probes
+        if isinstance(relation, ir.NamedRelation) and relation.name == source:
+            probes += 1
+        return closure(relation, columns, definite)
+
+    monkeypatch.setattr(uniqueness, "_closure", count_probes)
+    report = analyze(sql)
+
+    assert report.proved
+    assert report.facts.unique_sets(source) == (("id",),)
+    assert probes <= 2 * (payload_width + 1)
