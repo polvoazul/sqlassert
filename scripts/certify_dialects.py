@@ -186,6 +186,9 @@ _SHAPES: dict[str, _Shape] = {
     "concat": _Shape("VARCHAR", (exp.Literal.string("a"),)),
     "concat_ws": _Shape("VARCHAR", (exp.Literal.string(","), exp.Literal.string("a"))),
     "lower": _Shape("VARCHAR", (exp.Literal.string("A"),)),
+    "md5": _Shape("VARCHAR", (exp.Literal.string("a"),)),
+    "sha1": _Shape("VARCHAR", (exp.Literal.string("a"),)),
+    "sha256": _Shape("VARCHAR", (exp.Literal.string("a"),), extra=(("length", exp.Literal.number(256)),)),
     "upper": _Shape("VARCHAR", (exp.Literal.string("a"),)),
     "length": _Shape("VARCHAR", (exp.Literal.string("abc"),)),
     "trim": _Shape("VARCHAR", (exp.Literal.string(" a "),), bad=((exp.Literal.string(" "),),)),
@@ -434,6 +437,7 @@ def _sum_checks(dialect: str) -> Iterable[Check]:
 # as the dialect's), and the engine's function naming a value's type.
 _RESULT_TYPE_CALLS: dict[str, tuple[str, ...]] = {
     "MD5": ("md5('a')", "md5(CAST('a' AS BLOB))", "md5(CAST(NULL AS VARCHAR))"),
+    "SHA": ("sha1('a')", "sha1(CAST('a' AS BLOB))"),
     "SHA2": ("sha256('a')", "sha256(CAST('a' AS BLOB))"),
     "Lower": ("lower('A')", "lower(CAST(NULL AS VARCHAR))"),
     "Upper": ("upper('a')",),

@@ -39,3 +39,23 @@ WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people),
 SELECT *
 FROM wanted
 /**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ UNKNOWN
+
+-- case: a_hash_of_a_coalesced_value_is_never_null
+-- dbt's generate_surrogate_key: md5 is strict and total, so the key is
+-- non-null exactly when its argument is, and coalesce makes that argument so.
+SELECT md5(CAST(COALESCE(CAST(code AS VARCHAR), '_null_') AS VARCHAR)) AS k1,
+       sha1(COALESCE(code, '')) AS k2,
+       sha256(COALESCE(code, '')) AS k3
+FROM badges
+/**ASSERT NOT NULL(k1, k2, k3)**/  --~ PROVED
+
+-- case: a_hash_of_a_nullable_value_may_be_null
+SELECT md5(code) AS k FROM badges
+/**ASSERT NOT NULL(k)**/  --~ UNKNOWN
+
+-- case: sha1_keys_join_as_varchar
+WITH keys AS (SELECT DISTINCT sha1(name) AS k FROM people),
+     wanted AS (SELECT sha1(code) AS k FROM badges)
+SELECT *
+FROM wanted
+/**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ PROVED

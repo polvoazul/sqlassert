@@ -102,6 +102,10 @@ class DialectSemantics:
     # input's type, so it is not here). Certified with the engine's own type
     # function (`scripts/certify_dialects.py`); a dialect without one claims none.
     result_types: tuple[tuple[str, str], ...] = ()
+    # Hash functions modelled as strict and total, by SQLGlot node (`MD5`,
+    # `SHA` for sha1, `SHA2` for sha256): NULL exactly when the argument is.
+    # None of them is standard SQL, so each dialect claims its own.
+    hash_functions: tuple[str, ...] = ()
 
     @property
     def rely(self) -> bool:
@@ -145,10 +149,11 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         set_operations_all=True,
         result_types=(
             *((node, "VARCHAR") for node in (
-                "MD5", "SHA2", "Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "ConcatWs", "Dayname", "Monthname",
+                "MD5", "SHA", "SHA2", "Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "ConcatWs", "Dayname", "Monthname",
             )),
             *((node, "BIGINT") for node in ("Length", "StrPosition", "Year", "Month", "Day")),
         ),
+        hash_functions=("MD5", "SHA", "SHA2"),
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,

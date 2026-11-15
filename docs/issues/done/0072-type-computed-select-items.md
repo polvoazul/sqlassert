@@ -48,3 +48,9 @@ column declared with the type. Cases in `tests/computed_select_item_types.sqltes
 On the public dbt project above, typed model columns went from 200 to 223 of
 303; what is left is `try_strptime` (its type follows the format) and date
 arithmetic.
+
+Follow-up: `DialectSemantics.hash_functions` models `md5`, `sha1` and
+`sha256` as strict and total Builtins in DuckDB (certified on 2.0.0), so a
+hash of a non-null value is non-null. dbt's `generate_surrogate_key` keys are
+now proved NOT NULL; the same project went from 38 to 44 of 51 tests proved.
+They stay unproved UNIQUE: a hash is not injective.

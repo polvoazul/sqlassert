@@ -2638,6 +2638,10 @@ def _subquery_conjunct(conjunct: Expr) -> tuple[ir.JoinKind, exp.Select, Expr | 
             return None
 
 
+# The function each hash node is, as `DialectSemantics.hash_functions` names it.
+_HASH_NAMES = {"MD5": "md5", "SHA": "sha1", "SHA2": "sha256"}
+
+
 @cache
 def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Builtin, tuple[str, ...]]]:
     """Each modelled Builtin, by the SQLGlot node it lowers from (exactly that
@@ -2692,6 +2696,8 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
         # NULL when its arguments are equal; NULL only through the first otherwise.
         exp.Nullif: (ir.Builtin(name="nullif", strict=(True, False), total=None, injective=False), ("this", "expression")),
     }
+    for node in meaning.hash_functions:
+        builtins[getattr(exp, node)] = (builtin(_HASH_NAMES[node], 1), ("this",))
     match meaning.pipes:
         case "strict":
             builtins[exp.DPipe] = (builtin("||", 2), ("this", "expression"))
