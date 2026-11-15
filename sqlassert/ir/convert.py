@@ -2639,7 +2639,9 @@ def _subquery_conjunct(conjunct: Expr) -> tuple[ir.JoinKind, exp.Select, Expr | 
 
 
 # The function each hash node is, as `DialectSemantics.hash_functions` names it.
-_HASH_NAMES = {"MD5": "md5", "SHA": "sha1", "SHA2": "sha256"}
+_HASH_NAMES = {
+    "MD5": "md5", "SHA": "sha1", "SHA2": "sha256", "MD5Digest": "md5 digest", "SHA1Digest": "sha1 digest", "SHA2Digest": "sha256 digest",
+}
 
 
 @cache

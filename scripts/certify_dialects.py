@@ -5,8 +5,9 @@ fact `ir/convert.dialect_builtins` derives from it, is a Fact here, with a
 probe generated from it: SQL whose result confirms or refutes the claim on an
 engine. `docs/dialect-provenance.json` records where each fact comes from:
 `{"engine": [versions it passed on]}`, `{"undefined": [versions that cannot
-express its construct]}` (both, when versions differ), or `{"doc": url,
-"read": version}`. An undefined fact claims nothing on that version: if a
+express its construct]}` (both, when versions differ), `{"doc": url,
+"read": version}`, or, only for a dialect with no local engine,
+`{"tentative": why}`: stated from memory, neither probed nor read. An undefined fact claims nothing on that version: if a
 later one supports the construct, its probe runs there and decides.
 
 The runner probes one dialect over a DB-API connection and prints PASS, FAIL,
@@ -53,7 +54,7 @@ sys.path.insert(0, str(ROOT))
 
 from sqlassert.dialects import MODELLED_DIALECTS, DialectSemantics, semantics  # noqa: E402
 from sqlassert.ir import model as ir  # noqa: E402
-from sqlassert.ir.convert import dialect_builtins  # noqa: E402
+from sqlassert.ir.convert import _HASH_NAMES, dialect_builtins  # noqa: E402
 from sqlassert.sql_parse import sqlassert_dialect  # noqa: E402
 
 PROVENANCE = ROOT / "docs" / "dialect-provenance.json"
@@ -189,6 +190,9 @@ _SHAPES: dict[str, _Shape] = {
     "md5": _Shape("VARCHAR", (exp.Literal.string("a"),)),
     "sha1": _Shape("VARCHAR", (exp.Literal.string("a"),)),
     "sha256": _Shape("VARCHAR", (exp.Literal.string("a"),), extra=(("length", exp.Literal.number(256)),)),
+    "md5 digest": _Shape("VARBINARY", (_cast("'a'", "VARBINARY"),)),
+    "sha1 digest": _Shape("VARBINARY", (_cast("'a'", "VARBINARY"),)),
+    "sha256 digest": _Shape("VARBINARY", (_cast("'a'", "VARBINARY"),), extra=(("length", exp.Literal.number(256)),)),
     "upper": _Shape("VARCHAR", (exp.Literal.string("a"),)),
     "length": _Shape("VARCHAR", (exp.Literal.string("abc"),)),
     "trim": _Shape("VARCHAR", (exp.Literal.string(" a "),), bad=((exp.Literal.string(" "),),)),
@@ -200,6 +204,20 @@ _SHAPES: dict[str, _Shape] = {
     "least": _Shape("INT", (_n(1), _n(2))),
     "[]": _Shape("INT[]", (exp.Array(expressions=[_n(1), _n(2)]), _n(1))),
 }
+# A dialect whose function takes other arguments than `_SHAPES` gives:
+# Trino's hashes take VARBINARY only, Postgres's sha256 bytea only.
+_BYTES_ARGUMENT = (_cast("'a'", "VARBINARY"),)
+_DIALECT_SHAPES: dict[tuple[str, str], _Shape] = {
+    ("trino", "md5"): _Shape("VARBINARY", _BYTES_ARGUMENT),
+    ("trino", "sha1"): _Shape("VARBINARY", _BYTES_ARGUMENT),
+    ("trino", "sha256"): _Shape("VARBINARY", _BYTES_ARGUMENT, extra=(("length", exp.Literal.number(256)),)),
+    ("postgres", "sha256"): _Shape("VARBINARY", _BYTES_ARGUMENT, extra=(("length", exp.Literal.number(256)),)),
+}
+
+
+def _shape(name: str, dialect: str) -> _Shape:
+    return _DIALECT_SHAPES.get((dialect, name)) or _SHAPES[name]
+
 
 # The flag each Builtin's totality and injectivity rest on (`dialect_builtins`).
 _ARITHMETIC = {"+", "-", "*", "unary -", "CAST", "abs", "floor", "ceil"}
@@ -221,7 +239,7 @@ def _total_flag(name: str) -> str:
 
 def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
     for node, (builtin, keys) in dialect_builtins(meaning).items():
-        shape = _SHAPES[builtin.name]
+        shape = _shape(builtin.name, dialect)
         variadic = isinstance(builtin, ir.BuiltinVariadic)
         count = len(shape.ordinary) + (1 if variadic else 0)  # two repetitions
         ordinary = shape.ordinary + (shape.ordinary[-1:] if variadic else ())
@@ -455,28 +473,39 @@ _RESULT_TYPE_CALLS: dict[str, tuple[str, ...]] = {
     "Month": ("month(DATE '2020-01-01')", "month(TIMESTAMP '2020-01-01')"),
     "Day": ("day(DATE '2020-01-01')", "day(TIMESTAMP '2020-01-01')"),
 }
-_TYPE_OF = {"duckdb": "typeof"}
+# The engine's function naming a value's type, as a template.
+_TYPE_OF = {"duckdb": "typeof({})", "postgres": "pg_typeof({})::text", "trino": "typeof({})"}
+# An engine rejecting a call's argument types at bind time: no program has that call.
+_BIND_ERROR = r"(?i)no function matches|unexpected parameters \(.*\) for function|function .*\(.*\) does not exist"
 
 
 def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
-    """Each claimed result type, probed over every listed argument type; a call
-    that is an error for its argument type claims nothing there."""
+    """Each claimed result type, probed over every listed argument type. The
+    first call must run (a hash's from its Builtin shape); the others may be
+    rejected for their argument types, which claims nothing there."""
+    hashes = _HASH_NAMES
     for node, type_name in meaning.result_types:
-        checks = []
+        calls: list[Expr] = []
+        if node in hashes:
+            shape = _shape(hashes[node], dialect)
+            calls.append(getattr(exp, node)(this=shape.ordinary[0], **dict(shape.extra)))
         for call in _RESULT_TYPE_CALLS.get(node, ()):
             parsed = sqlglot.parse_one(call, read="duckdb")
-            if type(parsed).__name__ != node or dialect not in _TYPE_OF:
-                checks.append(Check("", "true", problem=f"{call} is no {node} in {dialect}, or {dialect} has no type function"))
-                continue
-            text = parsed.sql(dialect=sqlassert_dialect(dialect))
-            checks.append(Check(
-                f"SELECT CASE WHEN {_TYPE_OF[dialect]}({text}) = '{type_name}' THEN 1 ELSE 0 END", "true",
-                # Rejecting the argument type at bind time: no program has that call.
-                accepted_error=r"(?i)no function matches",
+            if type(parsed).__name__ == node:
+                calls.append(parsed)
+        if dialect not in _TYPE_OF or not calls:
+            yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", (
+                Check("", "true", problem=f"{dialect} has no type function, or there is no probe call for {node}"),
             ))
-        if not checks:
-            checks.append(Check("", "true", problem=f"no probe calls for {node}"))
-        yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", tuple(checks))
+            continue
+        checks = tuple(
+            Check(
+                f"SELECT CASE WHEN lower({_TYPE_OF[dialect].format(call.sql(dialect=sqlassert_dialect(dialect)))}) = lower('{type_name}') THEN 1 ELSE 0 END",
+                "true", accepted_error=_BIND_ERROR if index else "",
+            )
+            for index, call in enumerate(calls)
+        )
+        yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", checks)
 
 
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:

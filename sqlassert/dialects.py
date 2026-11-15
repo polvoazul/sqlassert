@@ -102,9 +102,13 @@ class DialectSemantics:
     # input's type, so it is not here). Certified with the engine's own type
     # function (`scripts/certify_dialects.py`); a dialect without one claims none.
     result_types: tuple[tuple[str, str], ...] = ()
-    # Hash functions modelled as strict and total, by SQLGlot node (`MD5`,
-    # `SHA` for sha1, `SHA2` for sha256): NULL exactly when the argument is.
-    # None of them is standard SQL, so each dialect claims its own.
+    # Hash functions modelled as strict and total, by SQLGlot node: NULL
+    # exactly when the argument is. SQLGlot parses a hex-text hash as `MD5`,
+    # `SHA` (sha1) or `SHA2` and a raw-bytes one as `MD5Digest`, `SHA1Digest`
+    # or `SHA2Digest`, though ClickHouse's `SHA1`/`SHA256` (bytes) parse as
+    # `SHA`/`SHA2`. None is standard SQL, so each dialect claims its own.
+    # `sha2(x, n)` where `n` is free is NULL for an unsupported `n` in MySQL,
+    # Spark and Hive, so `SHA2` is claimed only where the length is fixed.
     hash_functions: tuple[str, ...] = ()
 
     @property
@@ -133,6 +137,9 @@ _SPARK = DialectSemantics(
     # Delta tables check them, other tables cannot declare them.
     check_constraints="unenforced",
     set_operations_all=True,
+    # Tentative. Not SHA2: `sha2(x, n)` is NULL for an unsupported `n`.
+    result_types=(("MD5", "STRING"), ("SHA", "STRING")),
+    hash_functions=("MD5", "SHA"),
 )
 
 _SEMANTICS: dict[str, DialectSemantics] = {
@@ -168,6 +175,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         greatest="skips-null",
         subscript_strict=True,
         set_operations_all=True,
+        # `sha256(x)` returns bytea: SHA2Digest. No Postgres SQL parses to SHA or SHA2.
+        result_types=(("MD5", "TEXT"), ("SHA2Digest", "BYTEA")),
+        hash_functions=("MD5", "SHA2Digest"),
     ),
     "mysql": DialectSemantics(
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
@@ -188,6 +198,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_key_engines=frozenset({"innodb", "ndb", "ndbcluster"}),
         enum_strips_trailing_spaces=True,
         set_operations_all=True,  # Since 8.0.31.
+        # No type function to certify result types with. Not SHA2: its length is free.
+        hash_functions=("MD5", "SHA"),
     ),
     "snowflake": DialectSemantics(
         # Not `checked_arithmetic`: its docs never say integer overflow raises.
@@ -198,6 +210,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         unique_keys="rely",
         foreign_keys="rely",
         check_constraints="unenforced",
+        # Tentative (docs/dialect-provenance.json). `md5_binary` is MD5Digest.
+        result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR"), ("MD5Digest", "BINARY")),
+        hash_functions=("MD5", "SHA", "MD5Digest"),
     ),
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
@@ -210,6 +225,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         unique_keys="unenforced",
         foreign_keys="unenforced",
         check_constraints="unenforced",
+        # Tentative. `md5` and `sha256` return BYTES; `to_hex(md5(x))` parses as MD5.
+        result_types=(("MD5", "STRING"), ("MD5Digest", "BYTES"), ("SHA1Digest", "BYTES"), ("SHA2Digest", "BYTES")),
+        hash_functions=("MD5", "MD5Digest", "SHA1Digest", "SHA2Digest"),
     ),
     "redshift": DialectSemantics(
         checked_arithmetic=True,
@@ -220,6 +238,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         unique_keys="unenforced",
         foreign_keys="unenforced",
         check_constraints="unenforced",
+        # Tentative.
+        result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR")),
+        hash_functions=("MD5", "SHA"),
     ),
     "databricks": replace(
         _SPARK, checked_division=True, casts_raise=True,
@@ -229,6 +250,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "spark": _SPARK,
     "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced",
         check_constraints="unenforced",
+        # Tentative. Not SHA2: `sha2(x, n)` is NULL for an unsupported `n`.
+        result_types=(("MD5", "STRING"), ("SHA", "STRING")),
+        hash_functions=("MD5", "SHA"),
     ),
     "sqlite": DialectSemantics(
         pipes="strict",
@@ -239,7 +263,12 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         primary_key_not_null=False,
     ),
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
-    "clickhouse": DialectSemantics(concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced"),
+    # Its `MD5`/`SHA1`/`SHA256` return FixedString bytes, wrapped in Nullable
+    # for a Nullable argument: a type that follows the argument, so no result
+    # type is claimed.
+    "clickhouse": DialectSemantics(
+        concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced", hash_functions=("MD5Digest", "SHA", "SHA2"),
+    ),
     "oracle": DialectSemantics(empty_string_is_null=True),
     # Trino has no constraint but NOT NULL: its CREATE TABLE rejects a key, so
     # one in the SQL describes a table some other engine holds.
@@ -263,6 +292,9 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         check_constraints="unenforced",
         set_operations_all=True,
+        # `md5`/`sha1`/`sha256` take and return VARBINARY.
+        result_types=(("MD5Digest", "VARBINARY"), ("SHA", "VARBINARY"), ("SHA2Digest", "VARBINARY")),
+        hash_functions=("MD5Digest", "SHA", "SHA2Digest"),
     ),
 }
 

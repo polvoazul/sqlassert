@@ -270,11 +270,15 @@ oracle's judgement of the same rules covers it. The `.sqltest` cases in each dia
 
 ## Certifying facts
 
-Every claim a dialect's flags make, and every Builtin fact
+Every claim a dialect's flags make, every Builtin fact
 (`strict(op)`, `total(op)`, `injective(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
-derives from them, has a provenance in `docs/dialect-provenance.json`:
+derives from them, and every function result type (`result_type(Node)=TYPE`,
+from `DialectSemantics.result_types`) has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
-version or date}` otherwise. A weak setting (unchecked arithmetic, text not
+version or date}` when read in the engine's documentation, and, only for a
+dialect with no local engine, `{"tentative": why}` when stated from memory,
+neither probed nor read: a claim to verify, recorded rather than left out.
+A probe that passes replaces a `doc` or `tentative` provenance. A weak setting (unchecked arithmetic, text not
 compared by identity, unenforced keys) claims nothing and has none.
 `tests/test_dialect_certification.py` checks that every fact has one, that
 every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse, Trino)

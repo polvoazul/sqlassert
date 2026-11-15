@@ -46,11 +46,14 @@ def test_every_fact_has_a_provenance(dialect: str):
     assert set(provenance) == names
     for name, entry in provenance.items():
         probed = bool(entry.keys() & {"engine", "undefined"})
+        local = dialect in LOCAL_ENGINES and (dialect, name) not in DOCUMENTED_ONLY
         if probed:
             assert entry.keys() <= {"engine", "undefined"} and all(entry.values()), name
+        elif "tentative" in entry:
+            # From memory, neither probed nor read: only where no engine runs locally.
+            assert entry.keys() == {"tentative"} and entry["tentative"] and not local, name
         else:
             assert entry.keys() == {"doc", "read"} and entry["doc"].startswith("https://"), name
-        local = dialect in LOCAL_ENGINES and (dialect, name) not in DOCUMENTED_ONLY
         assert probed == (local or (dialect, name) in ENGINE_CERTIFIED), name
 
 

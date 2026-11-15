@@ -32,13 +32,38 @@ SELECT *
 FROM badges
 /**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ UNKNOWN
 
--- case: a_dialect_that_certifies_no_result_type_leaves_md5_untyped
--- dialect: postgres
+-- case: a_dialect_that_claims_no_result_type_leaves_md5_untyped
+-- Oracle has no md5 function: SQLGlot parses one, but nothing is claimed.
+-- dialect: oracle
 WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people),
      wanted AS (SELECT md5(code) AS k FROM badges)
 SELECT *
 FROM wanted
 /**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ UNKNOWN
+
+-- case: postgres_md5_keys_join_as_text
+-- dialect: postgres
+WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people),
+     wanted AS (SELECT md5(code) AS k FROM badges)
+SELECT *
+FROM wanted
+/**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ PROVED
+
+-- case: mysql_hashes_of_non_null_values_are_non_null
+-- MySQL claims md5 and sha1 strict and total, but not sha2: its length is free.
+-- dialect: mysql
+SELECT md5(COALESCE(code, '')) AS k1, sha1(COALESCE(code, '')) AS k2 FROM badges
+/**ASSERT NOT NULL(k1, k2)**/  --~ PROVED
+
+-- case: mysql_sha2_of_a_non_null_value_is_not_known_non_null
+-- dialect: mysql
+SELECT sha2(COALESCE(code, ''), 256) AS k FROM badges
+/**ASSERT NOT NULL(k)**/  --~ UNKNOWN
+
+-- case: trino_digests_of_non_null_values_are_non_null
+-- dialect: trino
+SELECT md5(CAST(COALESCE(code, '') AS VARBINARY)) AS k1, sha256(CAST(COALESCE(code, '') AS VARBINARY)) AS k2 FROM badges
+/**ASSERT NOT NULL(k1, k2)**/  --~ PROVED
 
 -- case: a_hash_of_a_coalesced_value_is_never_null
 -- dbt's generate_surrogate_key: md5 is strict and total, so the key is
