@@ -1,9 +1,10 @@
 # 70. Hidden Join Fanout: decide whether many-to-many joins should be a Hazard by default
 
 - **State:** open
-- **Priority:** P2 (deferred): Establish prevalence before changing default warnings in a later sprint.
+- **Priority:** P2 (blocked): Establish prevalence before changing default warnings in a later sprint.
 - **Theme:** suggestions
 - **Created:** 2026-11-13
+- **Blocked by:** M11
 - **Related:** [69: real-world SQL corpora](0069-real-world-sql-corpora.md)
 
 A single join can repeat rows on both inputs. For example, joining payments
