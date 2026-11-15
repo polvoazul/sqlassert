@@ -133,8 +133,8 @@ def join_statistics(models, dialect, analysis):
 def load_base_facts(path, project, manifest, commit):
     """Facts about the seeds and sources a project reads, recorded once per repository commit.
 
-    Each table entry gives `column_types` (every column, in order) and `columns`
-    (observed or documented `unique` and `not_null` flags). A seed entry also
+    Each table entry gives `column_types` (every column, in order), `columns`
+    (per-column `unique` and `not_null` flags) and `unique_sets` (composite keys). A seed entry also
     pins the profiled CSV by `sha256`. See pvt/public_repos_audit/README.md.
     """
     document = safe_load(path.read_text())
@@ -155,11 +155,14 @@ def load_base_facts(path, project, manifest, commit):
                 node_id, node["database"], node["schema"], name,
                 tuple(Column(column, kind) for column, kind in column_types.items()),
             )
-        for column, properties in entry["columns"].items():
+        for column, properties in entry.get("columns", {}).items():
             for label in ("unique", "not_null"):
                 if properties.get(label) is True:
                     name = f"base_fact:{node_id}:{column}:{label}"
                     facts.append(Expectation(name, name, "constraint", node_id, str(path), None, label, (column,)))
+        for columns in entry.get("unique_sets", []):
+            name = f"base_fact:{node_id}:{','.join(columns)}:unique"
+            facts.append(Expectation(name, name, "constraint", node_id, str(path), None, "unique", tuple(columns)))
     return tuple(facts), tables
 
 
