@@ -45,7 +45,7 @@ def run_dbt(project, output, env, step, *options):
         raise RuntimeError(f"dbt {step} failed: {detail}".rstrip(": "))
 
 
-def join_statistics(models, dialect, analysis, ignored=frozenset()):
+def join_statistics(models, dialect, analysis, ignored=frozenset(), *, intermediate_tables=frozenset()):
     counts = Counter()
     skipped = {}
     cardinalities = []
@@ -64,9 +64,8 @@ def join_statistics(models, dialect, analysis, ignored=frozenset()):
         non_null = {fact.column for fact in facts if isinstance(fact, NonNullColumn)}
         non_null |= {column for fact in facts if isinstance(fact, NonNullColumns) for column in fact.columns}
         unique_sets = [fact.columns for fact in facts if isinstance(fact, UniqueSet) and fact.columns]
-        # Every relation analysis reads as a table is either a base table (data entering the
-        # project: a source, seed or snapshot, or a name nothing defines) or an opaque model (a
-        # dbt model read as a table, not as its query: Python, left out, or incremental).
+        # Base tables are data entering the project. Opaque relations are dbt models
+        # read as tables or configured intermediates materialized outside dbt.
         by_name = {
             _canonical(relation.relation_name, dialect): relation
             for relation in analysis.manifest.relations.values() if relation.relation_name
@@ -74,11 +73,16 @@ def join_statistics(models, dialect, analysis, ignored=frozenset()):
         tables = {node for node in reachable if isinstance(node, ir.NamedRelation) and node.role is ir.RelationRole.TABLE}
         for table in {table for table in tables if table.name.split(".")[-1].strip('"').lower() not in ignored}:
             relation = by_name.get(table.name.lower())
-            if relation is not None and relation.resource_type == "model":
+            if table.name.lower() in intermediate_tables:
+                reason = "intermediate"
+            elif relation is not None and relation.resource_type == "model":
                 reason = ("python" if relation.language != "sql" else "left out" if relation.unique_id in builder._left_out
                           else relation.materialized or "table")
+            else:
+                reason = None
+            if reason is not None:
                 opaque_models[reason] = opaque_models.get(reason, 0) + 1
-                opaque_models["names"].append(relation.name)
+                opaque_models["names"].append(relation.name if relation is not None else table.name)
                 continue
             columns = set(table.output_columns)
             typed = sum(column.comparison_type is not None for column in columns)
@@ -211,7 +215,7 @@ def compile_project(project, output, settings):
             "dbt_version": metadata["dbt_version"], "adapter": metadata["adapter_type"]}
 
 
-def analyze_project(project, manifest_path, settings, base_facts=None, commit=None, catalog=None):
+def analyze_project(project, manifest_path, settings, base_facts=None, commit=None, catalog=None, *, extra_base_facts=None):
     """Prove dbt tests and join cardinalities from a compiled manifest."""
     config = safe_load((project / "dbt_project.yml").read_text())
     manifest = json.loads(manifest_path.read_text())
@@ -226,8 +230,10 @@ def analyze_project(project, manifest_path, settings, base_facts=None, commit=No
         tests = {uid: replace(test, severity="error") if test.severity == "warn" else test
                  for uid, test in analysis.manifest.tests.items()}
         analysis.expectations = tuple(expectations(replace(analysis.manifest, tests=tests)))
-    if base_facts:
-        facts, tables = load_base_facts(base_facts, project, manifest, commit)
+    for path in (base_facts, extra_base_facts):
+        if path is None:
+            continue
+        facts, tables = load_base_facts(path, project, manifest, commit)
         analysis.expectations += facts
         if tables:
             existing = analysis.catalog or Catalog(None)
@@ -240,7 +246,8 @@ def analyze_project(project, manifest_path, settings, base_facts=None, commit=No
     )
     proved = sum(test.skippable for test in tests)
     ignored = frozenset(name.lower() for name in settings.get("ignore_tables", []))
-    base_tables, opaque_models, joins = join_statistics(models, report.dialect, analysis, ignored)
+    intermediate = frozenset(name.lower() for name in settings.get("intermediate_tables", []))
+    base_tables, opaque_models, joins = join_statistics(models, report.dialect, analysis, ignored, intermediate_tables=intermediate)
     return {
         "models": len(models), "joins": joins, "base_tables": base_tables, "opaque_models": opaque_models,
         "tests": {"total": len(test_ids), "eligible": eligible, "proved": proved},

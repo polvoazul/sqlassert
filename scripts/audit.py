@@ -14,7 +14,9 @@ from importlib import metadata
 import inspect
 import json
 from pathlib import Path
+import subprocess
 import sys
+from tempfile import NamedTemporaryFile
 import time
 
 from markdown_it import MarkdownIt
@@ -29,7 +31,7 @@ ROOT = VENDOR.parent
 CONFIG = ROOT / "pvt" / "public_repos_audit" / "vendor_config.yaml"  # private workspace checkout
 FACTS = ROOT / "tmp" / "vendor-facts"
 REPORT = ROOT / "tmp" / "vendor-report.html"
-STEPS = ("inventory", "stars", "compile", "analyze")
+STEPS = ("inventory", "stars", "compile", "base_facts", "analyze")
 STAR_TTL = timedelta(hours=24)
 
 
@@ -66,14 +68,17 @@ def project_slug(path):
 
 
 class Step:
-    def __init__(self, name, path, key, run, ttl=None):
+    def __init__(self, name, path, key, run, ttl=None, output=None):
         self.name, self.path, self.key, self.run, self.ttl = name, path, key, run, ttl
+        self.output = output
 
     def stale_reason(self, saved, force):
         if force:
             return "forced"
         if saved is None:
             return "missing"
+        if self.output is not None and saved["status"] == "ok" and not self.output.is_file():
+            return "missing output"
         if changed := sorted(k for k in self.key.keys() | saved["key"].keys() if self.key.get(k) != saved["key"].get(k)):
             return "changed " + ", ".join(changed)
         if self.ttl and datetime.now(UTC) - datetime.fromisoformat(saved["created"]) > self.ttl:
@@ -106,10 +111,23 @@ def read_fact(path):
 def fact_paths(name, settings):
     repo_facts = {step: FACTS / step / f"{name}.json" for step in ("inventory", "stars")}
     projects = {
-        path: {step: FACTS / step / name / f"{project_slug(path)}.json" for step in ("compile", "analyze")}
+        path: {step: FACTS / step / name / f"{project_slug(path)}.json" for step in ("compile", "base_facts", "analyze")}
         for path in settings.get("audit", {})
     }
     return repo_facts, projects
+
+
+def generate_base_facts(program, context, output):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=output.parent, delete=False) as temporary:
+        path = Path(temporary.name)
+        try:
+            subprocess.run([sys.executable, str(program)], input=json.dumps(context).encode(),
+                           stdout=temporary, check=True)
+            path.replace(output)
+        finally:
+            path.unlink(missing_ok=True)
+    return {"yaml": str(output)}
 
 
 def repository_steps(name, settings, sources):
@@ -139,21 +157,48 @@ def repository_steps(name, settings, sources):
         compiled = read_fact(paths["compile"])
         if not compiled or compiled["status"] != "ok":
             continue
-        base_facts = CONFIG.parent / name / "base_facts.yaml"
-        base_facts = base_facts if base_facts.exists() else None
+        manifest = Path(compiled["data"]["manifest"])
+        base_config = project_settings.get("base_facts")
+        if base_config is not None:
+            base_facts = CONFIG.parent / base_config
+        else:
+            base_facts = CONFIG.parent / name / "base_facts.yaml"
+            if not base_facts.exists():
+                base_facts = None
+        extra_base_facts = None
+        if extra_config := project_settings.get("extra_base_facts"):
+            program = CONFIG.parent / extra_config["program"]
+            inputs = {item: str(manifest if item == "manifest" else project / item) for item in extra_config["inputs"]}
+            trust = {"trust_upstream_tests": project_settings.get("trust_upstream_tests", True),
+                     "trust_warn_tests": project_settings.get("trust_warn_tests", False)}
+            context = {"commit": commit, "inputs": inputs, **trust}
+            extra_base_facts = paths["base_facts"].with_suffix(".yaml")
+            generation = Step("base_facts", paths["base_facts"], {
+                "commit": commit, "program": file_digest(program), "settings": trust,
+                "inputs": {item: file_digest(path) for item, path in inputs.items()},
+                "code": code_digest(generate_base_facts),
+            }, lambda: generate_base_facts(program, context, extra_base_facts), output=extra_base_facts)
+            yield generation
+            generated = read_fact(generation.path)
+            if generation.stale_reason(generated, False) or generated["status"] != "ok":
+                continue
         # A catalog.json from `dbt docs generate` on the real warehouse, named
         # explicitly per target (relative to the audit config) so the config says what was used.
         catalog = CONFIG.parent / project_settings["catalog"] if project_settings.get("catalog") else None
         yield Step("analyze", paths["analyze"], {
             "manifest": compiled["data"]["manifest_sha256"],
-            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "trust_warn_tests", "catalog", "ignore_tables")},
+            "settings": {k: project_settings.get(k) for k in (
+                "trust_upstream_tests", "trust_warn_tests", "catalog", "ignore_tables", "intermediate_tables",
+            )},
             "base_facts": file_digest(base_facts) if base_facts else None,
+            "extra_base_facts": file_digest(extra_base_facts) if extra_base_facts else None,
             "catalog": file_digest(catalog) if catalog else None,
             "sqlassert": sources["sqlassert"], "sqlassert_dbt": sources["sqlassert_dbt"],
             "sqlglot": version("sqlglot"),
             "code": code_digest(dbt.analyze_project, dbt.join_statistics, dbt.load_base_facts),
-        }, lambda project=project, manifest=Path(compiled["data"]["manifest"]), s=project_settings, facts=base_facts, catalog=catalog:
-            dbt.analyze_project(project, manifest, s, facts, commit, catalog))
+        }, lambda project=project, manifest=manifest, s=project_settings, facts=base_facts,
+                  catalog=catalog, extra=extra_base_facts:
+            dbt.analyze_project(project, manifest, s, facts, commit, catalog, extra_base_facts=extra))
 
 
 # Report
@@ -164,7 +209,7 @@ TABLE = (
     "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |"
 )
 AUDIT_HEADERS = ("Audit", "Tests proved", "Join forms", "Join cardinality", "Base tables typed", "Base table facts",
-                 "Opaque models", "Analyzed with")
+                 "Opaque relations", "Analyzed with")
 
 
 def number(value):
@@ -219,7 +264,7 @@ def audit_cells(projects):
 
 
 def opaque_cell(data):
-    """dbt models analysis reads as tables, by why: Python, left out, or incremental."""
+    """Intermediate relations the analysis reads as tables, grouped by reason."""
     reasons = Counter()
     for result in data:
         reasons.update({key: value for key, value in result.get("opaque_models", {}).items() if key != "names"})
@@ -371,10 +416,10 @@ def render_html(repositories, rows):
       <dt>Base table facts</dt>
       <dd>Share of those base tables with a known unique key, and with at least one NOT NULL column, from trusted
         tests, contracts or base facts.</dd>
-      <dt>Opaque models</dt>
-      <dd>dbt models the analysis reads as tables rather than as their query, by reason: Python models,
-        SQL models left out because their SQL does not parse or lower, and incremental models (a table to their
-        readers by design). They are intermediate, built from other models, and not counted as base tables.</dd>
+      <dt>Opaque relations</dt>
+      <dd>Intermediate relations the analysis reads as tables, grouped by reason. Includes Python models,
+        SQL models left out because their SQL does not parse or lower, incremental models, and tables explicitly
+        configured as intermediates. The base-table counts exclude these relations.</dd>
       <dt>Analyzed with</dt>
       <dd>Hash of the sqlassert source tree the analysis ran on, and when it ran.</dd>
     </dl>
@@ -409,10 +454,10 @@ def audit_repository(name, settings, sources, steps, force, dry_run):
     """Run one repository's steps in order; repositories run in parallel threads."""
     lines, failed = [], False
     for step in repository_steps(name, settings, sources):
-        if step.name not in steps:
+        if step.name not in steps and not (step.name == "base_facts" and "analyze" in steps):
             continue
-        label = f"{name} {step.name}" + (f" {step.path.stem}" if step.name in ("compile", "analyze") else "")
-        record, reason = step.execute(force, dry_run)
+        label = f"{name} {step.name}" + (f" {step.path.stem}" if step.name in ("compile", "base_facts", "analyze") else "")
+        record, reason = step.execute(force and step.name in steps, dry_run)
         if dry_run:
             lines.append(f"{label}: {'stale (' + reason + ')' if reason else 'fresh'}")
             continue

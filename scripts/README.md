@@ -68,7 +68,9 @@ macros run but see no tables. Other adapters compile with `--no-introspect
 --no-populate-cache`; a model that needs query results fails that project's
 compile. Set `ignore_tables` to relation names left out of the base-table counts: a
 table a model reads that nothing in the project defines or loads (say why in
-a YAML comment). Set `env` to a mapping of placeholder environment variables a project
+a YAML comment). Set `intermediate_tables` to fully qualified names of tables
+derived outside dbt. The audit still analyzes reads of these tables and counts
+them under Opaque relations. Set `env` to a mapping of placeholder environment variables a project
 requires, and `compile_args` to extra dbt compile arguments. Set
 `catalog` to a `catalog.json` from `dbt docs generate` against the real
 warehouse, as a path relative to the audit config (conventionally
