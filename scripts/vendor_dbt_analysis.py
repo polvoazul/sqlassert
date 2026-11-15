@@ -130,26 +130,36 @@ def join_statistics(models, dialect, analysis):
     }
 
 
-def load_seed_facts(path, project, manifest):
+def load_base_facts(path, project, manifest, commit):
+    """Facts about the seeds and sources a project reads, recorded once per repository commit.
+
+    Each table entry gives `column_types` (every column, in order) and `columns`
+    (observed or documented `unique` and `not_null` flags). A seed entry also
+    pins the profiled CSV by `sha256`. See pvt/public_repos_audit/README.md.
+    """
+    document = safe_load(path.read_text())
+    if document["commit"] != commit:
+        raise ValueError(f"{path}: recorded at {document['commit'][:12]}, checkout is at {commit[:12]}; re-derive them")
     facts = []
     tables = {}
-    for node_id, entry in safe_load(path.read_text())["seeds"].items():
-        node = manifest["nodes"].get(node_id)
-        if not node or node["resource_type"] != "seed":
-            raise ValueError(f"{path}: {node_id} is not a manifest seed")
-        csv_path = project / node["original_file_path"]
-        if sha256(csv_path.read_bytes()).hexdigest() != entry["sha256"]:
-            raise ValueError(f"{path}: seed changed: {node_id}")
+    for node_id, entry in document["tables"].items():
+        node = manifest["sources"].get(node_id) or manifest["nodes"].get(node_id)
+        if not node or node["resource_type"] not in {"seed", "source"}:
+            raise ValueError(f"{path}: {node_id} is not a manifest seed or source")
+        if node["resource_type"] == "seed":
+            if sha256((project / node["original_file_path"]).read_bytes()).hexdigest() != entry["sha256"]:
+                raise ValueError(f"{path}: seed changed: {node_id}")
         if column_types := entry.get("column_types"):
+            name = node["identifier"] if node["resource_type"] == "source" else node["alias"]
             tables[node_id] = CatalogTable(
-                node_id, node["database"], node["schema"], node["alias"],
-                tuple(Column(name, kind) for name, kind in column_types.items()),
+                node_id, node["database"], node["schema"], name,
+                tuple(Column(column, kind) for column, kind in column_types.items()),
             )
         for column, properties in entry["columns"].items():
-            for label, declared in (("unique", "unique"), ("not_null", "not_null")):
+            for label in ("unique", "not_null"):
                 if properties.get(label) is True:
-                    name = f"seed_snapshot:{node_id}:{column}:{label}"
-                    facts.append(Expectation(name, name, "constraint", node_id, str(path), None, declared, (column,)))
+                    name = f"base_fact:{node_id}:{column}:{label}"
+                    facts.append(Expectation(name, name, "constraint", node_id, str(path), None, label, (column,)))
     return tuple(facts), tables
 
 
@@ -175,7 +185,7 @@ def compile_project(project, output, settings):
             "dbt_version": metadata["dbt_version"], "adapter": metadata["adapter_type"]}
 
 
-def analyze_project(project, manifest_path, settings, seed_facts_path=None):
+def analyze_project(project, manifest_path, settings, base_facts=None, commit=None):
     """Prove dbt tests and join cardinalities from a compiled manifest."""
     config = safe_load((project / "dbt_project.yml").read_text())
     manifest = json.loads(manifest_path.read_text())
@@ -185,12 +195,12 @@ def analyze_project(project, manifest_path, settings, seed_facts_path=None):
     catalog = settings.get("catalog")
     analysis = _analysis(project, manifest_path, settings.get("trust_upstream_tests", True),
                          Path(catalog).expanduser().resolve() if catalog else None)
-    if seed_facts_path:
-        facts, seed_tables = load_seed_facts(seed_facts_path, project, manifest)
+    if base_facts:
+        facts, tables = load_base_facts(base_facts, project, manifest, commit)
         analysis.expectations += facts
-        if seed_tables:
+        if tables:
             existing = analysis.catalog or Catalog(None)
-            analysis.catalog = Catalog(existing.generated_at, seed_tables | existing.tables)
+            analysis.catalog = Catalog(existing.generated_at, tables | existing.tables)
     report = analysis.run(None)
     tests = [test for test in report.tests if test.unique_id in test_ids and test.kind == "test"]
     eligible = sum(

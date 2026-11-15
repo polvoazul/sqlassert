@@ -89,13 +89,9 @@ columns proves nothing, so untyped base tables leave joins UNKNOWN. The audit
 assumes eligible upstream tests passed before the model ran. Set
 `trust_upstream_tests: false` on a target to disable that assumption.
 
-An audit target can set `seed_facts` to a YAML file beside the vendor
-config. Its `seeds` mapping uses dbt manifest seed IDs. Each entry has the
-CSV's `sha256` and a `columns` mapping with observed `unique` and `not_null`
-flags. The audit rejects changed CSVs. Proofs using these facts apply to the
-profiled snapshot.
-
-The seed entry can also include `column_types`, the complete ordered mapping
-of column names to types observed after loading that seed with dbt. The audit
-uses these types as catalog metadata when a configured catalog has no entry
-for the seed.
+Facts about the seeds and sources a repository reads (column types, keys,
+NOT NULL columns) live in `pvt/public_repos_audit/<checkout>/base_facts.yaml`,
+recorded for one commit of the checkout; the analyze step uses them when
+present and fails if the checkout is at another commit. Proofs that use them
+hold under those facts. `pvt/public_repos_audit/README.md` describes the
+format and how facts are obtained.

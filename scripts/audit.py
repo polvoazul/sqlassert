@@ -139,19 +139,19 @@ def repository_steps(name, settings, sources):
         compiled = read_fact(paths["compile"])
         if not compiled or compiled["status"] != "ok":
             continue
-        seed_facts = project_settings.get("seed_facts")
-        seed_path = CONFIG.parent / seed_facts if seed_facts else None
+        base_facts = CONFIG.parent / name / "base_facts.yaml"
+        base_facts = base_facts if base_facts.exists() else None
         catalog = project_settings.get("catalog")
         yield Step("analyze", paths["analyze"], {
             "manifest": compiled["data"]["manifest_sha256"],
-            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "catalog", "seed_facts")},
-            "seed_facts": file_digest(seed_path) if seed_path else None,
+            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "catalog")},
+            "base_facts": file_digest(base_facts) if base_facts else None,
             "catalog": file_digest(Path(catalog).expanduser()) if catalog else None,
             "sqlassert": sources["sqlassert"], "sqlassert_dbt": sources["sqlassert_dbt"],
             "sqlglot": version("sqlglot"),
-            "code": code_digest(dbt.analyze_project, dbt.join_statistics, dbt.load_seed_facts),
-        }, lambda project=project, manifest=Path(compiled["data"]["manifest"]), s=project_settings, seed=seed_path:
-            dbt.analyze_project(project, manifest, s, seed))
+            "code": code_digest(dbt.analyze_project, dbt.join_statistics, dbt.load_base_facts),
+        }, lambda project=project, manifest=Path(compiled["data"]["manifest"]), s=project_settings, facts=base_facts:
+            dbt.analyze_project(project, manifest, s, facts, commit))
 
 
 # Report
@@ -346,11 +346,11 @@ def render_html(repositories, rows):
       <dd>Counts pooled over analyzed projects, with separate totals for SQL forms and sqlassert proof sites.</dd>
       <dt>Base tables typed</dt>
       <dd>Sources, seeds and tables the analyzed models read whose every read column has a known type, from a
-        contract, the catalog or seed facts. A join equality on an untyped column proves nothing, since an implicit
+        contract, the catalog or base facts. A join equality on an untyped column proves nothing, since an implicit
         cast can match unequal values.</dd>
       <dt>Base table facts</dt>
       <dd>Share of those base tables with a known unique key, and with at least one NOT NULL column, from trusted
-        tests, contracts or seed facts.</dd>
+        tests, contracts or base facts.</dd>
       <dt>Analyzed with</dt>
       <dd>Hash of the sqlassert source tree the analysis ran on, and when it ran.</dd>
     </dl>
