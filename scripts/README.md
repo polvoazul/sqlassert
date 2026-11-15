@@ -43,7 +43,7 @@ run, so it also covers checkouts not selected.
 | `inventory` | SQL files, SQL lines, dbt models and data tests at `HEAD` | commit, `scope`/`dbt_projects`/`workload`, or the inventory module changes |
 | `stars` | GitHub stars, through `gh` | URL changes, or after 24 hours |
 | `compile` | `dbt deps` and `dbt compile` output beside the fact | commit, tracked uncommitted edits, project settings, dbt or adapter version, or compile code changes |
-| `analyze` | proved tests, join forms and cardinality | manifest, seed facts, catalog, the `sqlassert` or `sqlassert_dbt` source tree (uncommitted edits included), sqlglot version, or analysis code changes |
+| `analyze` | proved tests, join forms and cardinality | manifest, base facts, `catalog.json`, the `sqlassert` or `sqlassert_dbt` source tree (uncommitted edits included), sqlglot version, or analysis code changes |
 
 A new compile always produces a new manifest, so `analyze` follows it.
 The report headline counts public projects only.
@@ -69,8 +69,13 @@ macros run but see no tables. Other adapters compile with `--no-introspect
 compile. Set `ignore_tables` to relation names left out of the base-table counts: a
 table a model reads that nothing in the project defines or loads (say why in
 a YAML comment). Set `env` to a mapping of placeholder environment variables a project
-requires, `compile_args` to extra dbt compile arguments, and `catalog` to a
-matching catalog JSON path if available.
+requires, and `compile_args` to extra dbt compile arguments. Set
+`catalog` to a `catalog.json` from `dbt docs generate` against the real
+warehouse, as a path relative to the audit config (conventionally
+`<checkout>/catalog.json`): it types the base tables it lists. sqlassert uses a catalog entry only when its
+relation name matches the compiled one, so set `database` to the real
+warehouse's database name: a DuckDB project then compiles against an empty
+local file of that name instead of `:memory:`.
 
 Join percentages use the joins found in successfully parsed compiled project
 models as their denominator. The report records skipped models. These are
@@ -90,6 +95,9 @@ unique key, and how many have a NOT NULL column. A join equality on untyped
 columns proves nothing, so untyped base tables leave joins UNKNOWN. The audit
 assumes eligible upstream tests passed before the model ran. Set
 `trust_upstream_tests: false` on a target to disable that assumption.
+A test whose severity is `warn` is no fact, since its failure does not stop
+the build; `trust_warn_tests: true` on a target assumes those pass too, and
+the report marks that project's proofs as conditional on it.
 
 Facts about the seeds and sources a repository reads (column types, keys,
 NOT NULL columns) live in `pvt/public_repos_audit/<checkout>/base_facts.yaml`,

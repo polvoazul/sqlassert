@@ -132,7 +132,7 @@ def repository_steps(name, settings, sources):
         yield Step("compile", paths["compile"], {
             "commit": commit,
             "worktree": digest(git(repo, "diff", "HEAD").decode()),
-            "settings": {k: project_settings.get(k) for k in ("adapter", "env", "compile_args")},
+            "settings": {k: project_settings.get(k) for k in ("adapter", "database", "env", "compile_args")},
             "dbt": version("dbt-core"), "adapter": version(f"dbt-{adapter}"),
             "code": code_digest(dbt.compile_project, dbt.run_dbt, dbt.OFFLINE_PROFILES),
         }, lambda project=project, output=output, s=project_settings: dbt.compile_project(project, output, s))
@@ -141,17 +141,19 @@ def repository_steps(name, settings, sources):
             continue
         base_facts = CONFIG.parent / name / "base_facts.yaml"
         base_facts = base_facts if base_facts.exists() else None
-        catalog = project_settings.get("catalog")
+        # A catalog.json from `dbt docs generate` on the real warehouse, named
+        # explicitly per target (relative to the audit config) so the config says what was used.
+        catalog = CONFIG.parent / project_settings["catalog"] if project_settings.get("catalog") else None
         yield Step("analyze", paths["analyze"], {
             "manifest": compiled["data"]["manifest_sha256"],
-            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "catalog", "ignore_tables")},
+            "settings": {k: project_settings.get(k) for k in ("trust_upstream_tests", "trust_warn_tests", "catalog", "ignore_tables")},
             "base_facts": file_digest(base_facts) if base_facts else None,
-            "catalog": file_digest(Path(catalog).expanduser()) if catalog else None,
+            "catalog": file_digest(catalog) if catalog else None,
             "sqlassert": sources["sqlassert"], "sqlassert_dbt": sources["sqlassert_dbt"],
             "sqlglot": version("sqlglot"),
             "code": code_digest(dbt.analyze_project, dbt.join_statistics, dbt.load_base_facts),
-        }, lambda project=project, manifest=Path(compiled["data"]["manifest"]), s=project_settings, facts=base_facts:
-            dbt.analyze_project(project, manifest, s, facts, commit))
+        }, lambda project=project, manifest=Path(compiled["data"]["manifest"]), s=project_settings, facts=base_facts, catalog=catalog:
+            dbt.analyze_project(project, manifest, s, facts, commit, catalog))
 
 
 # Report
@@ -210,7 +212,9 @@ def audit_cells(projects):
         tables.update({key: value for key, value in result["base_tables"].items() if key != "untyped"})
     sqlassert = sorted({fact["key"]["sqlassert"][:8] for fact in analyzed})
     dates = sorted(fact["created"][:10] for fact in analyzed)
-    return [status, f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
+    # Proofs that assume warn-severity tests pass are conditional: say so.
+    assumed = " (warn tests trusted)" if any(fact["key"]["settings"].get("trust_warn_tests") for fact in analyzed) else ""
+    return [status, f"{proved:,}/{total:,}{assumed}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
             *base_table_cells(tables), opaque_cell(data), f"`{', '.join(sqlassert)}` {dates[-1]}"]
 
 
@@ -351,7 +355,9 @@ def render_html(repositories, rows):
       <dt>Audit</dt>
       <dd>dbt projects analyzed out of those configured for this repository at the displayed commit.</dd>
       <dt>Tests proved</dt>
-      <dd>Data tests sqlassert proves from the compiled manifest, so dbt can skip them, out of all project tests.</dd>
+      <dd>Data tests sqlassert proves from the compiled manifest, so dbt can skip them, out of all project tests.
+        Upstream tests are facts only when their failure stops the build (severity error); "warn tests trusted"
+        marks a project whose warn-severity tests are assumed to pass too, so its proofs hold only if they do.</dd>
       <dt>Join forms and cardinality</dt>
       <dd>Counts pooled over analyzed projects, with separate totals for SQL forms and sqlassert proof sites.</dd>
       <dt>Base tables typed</dt>

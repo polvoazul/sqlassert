@@ -1,7 +1,7 @@
 """Compile a vendored dbt project offline and analyze its manifest with sqlassert."""
 
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 import json
 import os
@@ -192,6 +192,10 @@ def compile_project(project, output, settings):
     output.mkdir(parents=True)
     config = safe_load((project / "dbt_project.yml").read_text())
     profile = OFFLINE_PROFILES[settings.get("adapter", "duckdb")] | {"threads": 1}
+    if settings.get("database") and profile["type"] == "duckdb":
+        # An empty local file named as the real warehouse's database, so relation
+        # names match a catalog.json generated there; nothing else is in it.
+        profile["path"] = str(output / f"{settings['database']}.duckdb")
     (output / "profiles.yml").write_text(safe_dump({config["profile"]: {
         "target": "audit", "outputs": {"audit": profile},
     }}))
@@ -207,16 +211,21 @@ def compile_project(project, output, settings):
             "dbt_version": metadata["dbt_version"], "adapter": metadata["adapter_type"]}
 
 
-def analyze_project(project, manifest_path, settings, base_facts=None, commit=None):
+def analyze_project(project, manifest_path, settings, base_facts=None, commit=None, catalog=None):
     """Prove dbt tests and join cardinalities from a compiled manifest."""
     config = safe_load((project / "dbt_project.yml").read_text())
     manifest = json.loads(manifest_path.read_text())
     nodes = [node for node in manifest["nodes"].values() if node["package_name"] == config["name"]]
     models = [node for node in nodes if node["resource_type"] == "model"]
     test_ids = {node["unique_id"] for node in nodes if node["resource_type"] == "test"}
-    catalog = settings.get("catalog")
     analysis = _analysis(project, manifest_path, settings.get("trust_upstream_tests", True),
-                         Path(catalog).expanduser().resolve() if catalog else None)
+                         catalog)
+    if settings.get("trust_warn_tests"):
+        # Assume warn-severity tests pass too, as if they stopped the build:
+        # proofs that use them hold only if they do.
+        tests = {uid: replace(test, severity="error") if test.severity == "warn" else test
+                 for uid, test in analysis.manifest.tests.items()}
+        analysis.expectations = tuple(expectations(replace(analysis.manifest, tests=tests)))
     if base_facts:
         facts, tables = load_base_facts(base_facts, project, manifest, commit)
         analysis.expectations += facts
