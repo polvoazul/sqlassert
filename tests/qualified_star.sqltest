@@ -1,0 +1,19 @@
+-- A qualified star (`a.*`) selects the columns of its source. SQLGlot parses
+-- it as a column named `*`, which must not become a column of the table.
+
+-- case: a_qualified_star_keeps_the_tables_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+
+SELECT a.* FROM t AS a /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: a_qualified_star_in_a_subquery_keeps_not_null
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+
+SELECT s.y FROM (SELECT a.* FROM t AS a) AS s /**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: a_qualified_star_in_a_union_arm_keeps_the_tables_columns
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+
+SELECT u.y
+FROM (SELECT a.* FROM t AS a UNION ALL SELECT 1, 2) AS u
+/**ASSERT NOT NULL(y)**/  --~ PROVED

@@ -434,6 +434,8 @@ class IrParser:
                     self._discover_query(body, scope)
 
         for column in query.find_all(exp.Column):
+            if isinstance(column.this, exp.Star):
+                continue  # `a.*` selects a's columns; SQLGlot parses it as a column named `*`.
             if column.table:
                 matching = by_qualifier.get(column.table.lower(), ())
                 for source in matching:
@@ -506,7 +508,10 @@ class IrParser:
     def _require(self, source: Expr, column: str) -> None:
         self._source_required.setdefault(id(source), set()).add(column)
         if _is_named_table(source) and column.lower() not in {name.lower() for name in _column_aliases(source)}:
-            self._table_symbols[id(source)].required_columns.add(column)
+            symbol = self._table_symbols[id(source)]
+            # A declared table's columns are its CREATE's: a reference never widens them.
+            if not (symbol.role is ir.RelationRole.TABLE and symbol.statement is not None):
+                symbol.required_columns.add(column)
 
     def _propagate_required_columns(self) -> None:
         """Push requested output columns through star-only view/CTE/subquery bodies."""
@@ -1510,7 +1515,7 @@ class IrParser:
         return _Lowered(relation, tuple(replace(binding, column=remapped[binding.column]) for binding in left.bindings))
 
     def _project(self, lowered: _Lowered, items: list[Expr], origin: Origin) -> ir.Project:
-        output_columns = self._selected_output_columns(items, lowered)
+        output_columns = self._selected_output_columns(_expand_qualified_stars(items, lowered), lowered)
         return ir.Project(origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation)
 
     def _lower_aggregate(self, lowered: _Lowered, select: exp.Select, keys: list[Expr]) -> ir.RelationExpr | None:
@@ -3162,6 +3167,23 @@ def _carrying(column: ir.OutputColumn, scope: ir.RelationExpr) -> ir.OutputColum
 def _schema_path(node: exp.Table | exp.Column) -> str:
     """The catalog and schema a table or column is written with, as `s1` or `c.s1`."""
     return ".".join(part for part in (node.catalog, node.db) if part).lower()
+
+
+def _expand_qualified_stars(items: list[Expr], lowered: _Lowered) -> list[Expr]:
+    """Each `a.*` as a's columns, in order, when every input column is known;
+    otherwise it stays one opaque item, since columns may be missing."""
+    if not lowered.relation.is_schema_complete:
+        return items
+    expanded: list[Expr] = []
+    for item in items:
+        if isinstance(item, exp.Column) and isinstance(item.this, exp.Star) and item.table and not any(item.this.args.values()):
+            qualifier = item.table.lower()
+            columns = [binding for binding in lowered.bindings if binding.qualifier == qualifier]
+            if columns:
+                expanded.extend(exp.column(binding.name, table=item.table, quoted=True) for binding in columns)
+                continue
+        expanded.append(item)
+    return expanded
 
 
 def _star_only(select: exp.Select) -> bool:
