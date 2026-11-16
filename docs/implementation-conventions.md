@@ -123,6 +123,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   types, followed through pass-through columns; unknown and mixed types do not
   rely on SQL's implicit casts. Column-to-column domain narrowing uses the same
   check. Set operations do not supply comparison types from their left arm.
+  A computed select item is typed the same way when its expression has a known
+  type (`IrParser._output_column`): a CAST, a call with a dialect-fixed result
+  type, a CASE, IF, COALESCE or NULLIF whose results share one type
+  (`_type_results`), whether it is projected or a grouping key. The type is how
+  values compare and implies no uniqueness or dependency (docs/dialects.md).
 - `python_engine.py` evaluates Python analysis functions with an analysis-scoped
   arena, caching, and trusted declarations. An analysis function returns
   `Result[Value]`: `.value` is its computed Value and its direct fields carry

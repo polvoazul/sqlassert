@@ -6,6 +6,8 @@
 
 CREATE TABLE people (name VARCHAR, code VARCHAR, born DATE);
 CREATE TABLE badges (code VARCHAR, size INTEGER, issued TIMESTAMP);
+CREATE TABLE events (k INTEGER, ts TIMESTAMP, amount DOUBLE, tag VARCHAR, level INTEGER, big BIGINT, ok BOOLEAN);
+CREATE TABLE dim (k INTEGER, month DATE, tag VARCHAR, level INTEGER, big BIGINT, score DOUBLE, seen TIMESTAMP WITH TIME ZONE);
 
 -- case: md5_keys_join_as_varchar
 WITH keys AS (SELECT DISTINCT md5(name) AS k FROM people),
@@ -84,3 +86,218 @@ WITH keys AS (SELECT DISTINCT sha1(name) AS k FROM people),
 SELECT *
 FROM wanted
 /**ASSERT MANY TO ONE**/ JOIN keys ON wanted.k = keys.k  --~ PROVED
+
+-- case: a_grouped_cast_key_binds_as_a_date
+-- The key is typed as it is when projected: DATE, compared by identity.
+WITH monthly AS (
+  SELECT k, CAST(date_trunc('month', ts) AS DATE) AS month, count(*) AS n FROM events GROUP BY 1, 2
+)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN monthly ON dim.k = monthly.k AND dim.month = monthly.month  --~ PROVED
+
+-- case: a_grouped_cast_key_written_out_binds_as_a_date
+WITH monthly AS (
+  SELECT k, CAST(ts AS DATE) AS month FROM events GROUP BY k, CAST(ts AS DATE)
+)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN monthly ON dim.k = monthly.k AND dim.month = monthly.month  --~ PROVED
+
+-- case: two_computed_dates_bind
+WITH left_months AS (SELECT k, CAST(ts AS DATE) AS month FROM events),
+     right_months AS (SELECT k, CAST(ts AS DATE) AS month, count(*) AS n FROM events GROUP BY 1, 2)
+SELECT *
+FROM left_months
+/**ASSERT MANY TO ONE**/ JOIN right_months ON left_months.k = right_months.k  --~ PROVED
+  AND left_months.month = right_months.month
+
+-- case: a_distinct_cast_key_binds
+WITH months AS (SELECT DISTINCT CAST(ts AS DATE) AS month FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN months ON dim.month = months.month  --~ PROVED
+
+-- case: a_qualify_cast_key_binds
+WITH firsts AS (
+  SELECT k, CAST(ts AS DATE) AS month FROM events
+  QUALIFY row_number() OVER (PARTITION BY k, CAST(ts AS DATE) ORDER BY ts) = 1
+)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN firsts ON dim.k = firsts.k AND dim.month = firsts.month  --~ PROVED
+
+-- case: a_grouped_try_cast_key_binds
+-- A failed TRY_CAST is NULL, and NULL equals nothing.
+WITH monthly AS (SELECT TRY_CAST(tag AS DATE) AS month, count(*) AS n FROM events GROUP BY 1)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN monthly ON dim.month = monthly.month  --~ PROVED
+
+-- case: a_cast_to_integer_binds_an_integer_column
+WITH levels AS (SELECT DISTINCT CAST(amount AS INTEGER) AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN levels ON dim.level = levels.lv  --~ PROVED
+
+-- case: a_cast_to_double_does_not_compare_by_identity
+WITH scores AS (SELECT CAST(level AS DOUBLE) AS s, count(*) AS n FROM events GROUP BY 1)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN scores ON dim.score = scores.s  --~ UNKNOWN
+
+-- case: a_cast_of_a_number_to_text_binds_text
+WITH labels AS (SELECT DISTINCT CAST(level AS VARCHAR) AS s FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN labels ON dim.tag = labels.s  --~ PROVED
+
+-- case: a_cast_of_a_number_to_text_does_not_bind_a_number
+WITH labels AS (SELECT DISTINCT CAST(level AS VARCHAR) AS s FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN labels ON dim.level = labels.s  --~ UNKNOWN
+
+-- case: a_cast_of_text_to_text_stays_untyped
+-- A cast of text may keep the operand's collation, which is not modelled.
+WITH labels AS (SELECT DISTINCT CAST(tag AS VARCHAR) AS s FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN labels ON dim.tag = labels.s  --~ UNKNOWN
+
+-- case: a_cast_to_a_zoned_timestamp_binds_where_it_is_an_instant
+WITH seen AS (SELECT DISTINCT CAST(ts AS TIMESTAMP WITH TIME ZONE) AS at FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN seen ON dim.seen = seen.at  --~ PROVED
+
+-- case: trino_cast_to_a_zoned_timestamp_keeps_its_zone
+-- dialect: trino
+WITH seen AS (SELECT DISTINCT CAST(ts AS TIMESTAMP WITH TIME ZONE) AS at FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN seen ON dim.seen = seen.at  --~ UNKNOWN
+
+-- case: a_case_with_one_typed_result_is_typed_like_it
+WITH picked AS (SELECT DISTINCT CASE WHEN amount > 0.7 THEN level END AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ PROVED
+
+-- case: a_grouped_case_key_is_typed
+WITH picked AS (SELECT CASE WHEN amount > 0.7 THEN level ELSE NULL END AS lv, count(*) AS n FROM events GROUP BY 1)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ PROVED
+
+-- case: a_case_of_integer_widths_is_the_widest
+-- An integer literal and a column of any integer type: some integer type.
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN big ELSE 0 END AS b FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.big = picked.b  --~ PROVED
+
+-- case: a_case_of_text_and_a_string_literal_is_text
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN tag ELSE 'other' END AS t FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.tag = picked.t  --~ PROVED
+
+-- case: a_simple_case_is_typed
+WITH picked AS (SELECT DISTINCT CASE level WHEN 1 THEN level WHEN 2 THEN level END AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ PROVED
+
+-- case: an_if_is_typed
+WITH picked AS (SELECT DISTINCT IF(ok, level, NULL) AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ PROVED
+
+-- case: a_case_of_different_types_stays_untyped
+-- The Hazard `Mixed CASE types`: the engine casts the results to a common type.
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN level ELSE amount END AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ UNKNOWN
+
+-- case: a_case_of_a_decimal_literal_and_an_integer_stays_untyped
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN level ELSE 1.5 END AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ UNKNOWN
+
+-- case: a_string_literal_beside_an_integer_stays_untyped
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN level ELSE '0' END AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ UNKNOWN
+
+-- case: a_case_of_doubles_stays_untyped
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN amount END AS a FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.score = picked.a  --~ UNKNOWN
+
+-- case: a_case_of_a_column_of_unknown_type_stays_untyped
+WITH picked AS (
+  SELECT DISTINCT CASE WHEN events.ok THEN u.mystery END AS m
+  FROM events JOIN unknown_table AS u ON u.k = events.k
+  --~ undeclared-table "unknown_table"
+)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.m  --~ UNKNOWN
+
+-- case: a_case_over_text_stays_untyped_where_text_is_case_insensitive
+-- MySQL's default collations ignore case: equal text is not identical text.
+-- dialect: mysql
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN tag END AS t FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.tag = picked.t  --~ UNKNOWN
+
+-- case: a_case_over_integers_is_typed_in_mysql
+-- dialect: mysql
+WITH picked AS (SELECT DISTINCT CASE WHEN ok THEN level END AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ PROVED
+
+-- case: coalesce_of_one_type_is_typed
+WITH picked AS (SELECT DISTINCT coalesce(level, 0) AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.lv  --~ PROVED
+
+-- case: a_grouped_coalesce_key_of_integer_widths_is_typed
+WITH picked AS (SELECT coalesce(level, big) AS b, count(*) AS n FROM events GROUP BY 1)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.big = picked.b  --~ PROVED
+
+-- case: coalesce_of_text_is_typed
+WITH picked AS (SELECT DISTINCT coalesce(tag, 'none') AS t FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.tag = picked.t  --~ PROVED
+
+-- case: nullif_of_a_typed_operand_and_a_literal_is_typed
+WITH picked AS (SELECT DISTINCT nullif(tag, '') AS t, nullif(level, 0) AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.tag = picked.t AND dim.level = picked.lv  --~ PROVED
+
+-- case: coalesce_of_different_types_stays_untyped
+WITH picked AS (SELECT DISTINCT coalesce(level, amount) AS v FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN picked ON dim.level = picked.v  --~ UNKNOWN
+
+-- case: a_picked_value_of_a_typed_column_keeps_its_type
+-- The typing is `min`/`max`/`any_value` of a column, which a ColumnRef follows.
+WITH extreme AS (SELECT max(level) AS lv FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN extreme ON dim.level = extreme.lv  --~ PROVED
