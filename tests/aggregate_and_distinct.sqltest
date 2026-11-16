@@ -71,7 +71,7 @@ FROM customer_regions
     ON customer_regions.customer_id = distinct_pairs.customer_id
     AND customer_regions.region = distinct_pairs.region
 
--- case: distinct_star_is_unsupported_and_unknown
+-- case: distinct_star_makes_all_its_columns_a_key
 CREATE TABLE orders (customer_id INTEGER);
 CREATE TABLE customers (id INTEGER);
 
@@ -80,7 +80,7 @@ WITH distinct_star AS (
 )
 SELECT *
 FROM customers
-/**ASSERT MANY TO ONE**/ JOIN distinct_star  --~ UNKNOWN, unsupported-construct "this SELECT form (DISTINCT, *)"
+/**ASSERT MANY TO ONE**/ JOIN distinct_star  --~ PROVED
     ON customers.id = distinct_star.customer_id
 
 -- case: a_select_without_from_is_one_row__p1

@@ -53,14 +53,15 @@ CASES = [
     ),
     (
         "opaque SELECT",
-        "SELECT a.id FROM a JOIN (SELECT * FROM b QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1) AS m ON a.k = m.k",
-        UnprovedJoin("unsupported", construct="QUALIFY on SELECT *"),
+        "SELECT a.id FROM a JOIN (SELECT * FROM b JOIN f USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1) AS m "
+        "ON a.k = m.k",
+        UnprovedJoin("unsupported", construct="a star over a USING join"),
     ),
     (
         "key read from an opaque SELECT",
-        "SELECT a.id FROM a JOIN (SELECT k FROM (SELECT * FROM b QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1)) AS m "
-        "ON a.k = m.k",
-        UnprovedJoin("untyped-key", "opaque-relation", "QUALIFY on SELECT *"),
+        "SELECT a.id FROM a JOIN (SELECT k FROM (SELECT * FROM b JOIN f USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1)) "
+        "AS m ON a.k = m.k",
+        UnprovedJoin("untyped-key", "opaque-relation", "a star over a USING join"),
     ),
     (
         "set operation key",

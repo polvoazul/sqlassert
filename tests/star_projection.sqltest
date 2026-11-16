@@ -1,0 +1,374 @@
+-- A star (`*`, `a.*`, with DuckDB's EXCLUDE, REPLACE and RENAME) selects the
+-- columns of its input, in order, alone or beside other items, in a plain,
+-- DISTINCT, DISTINCT ON or QUALIFY select. One expansion serves all of them,
+-- once every input column is known; each column resolves to exactly its own
+-- binding. SQLGlot parses `a.*` as a column named `*`, which must not become a
+-- column of the table.
+
+
+-- case: a_qualified_star_keeps_the_tables_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+
+SELECT a.* FROM t AS a /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: a_qualified_star_in_a_subquery_keeps_not_null
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+
+SELECT s.y FROM (SELECT a.* FROM t AS a) AS s /**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: a_qualified_star_in_a_union_arm_keeps_the_tables_columns
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+
+SELECT u.y
+FROM (SELECT a.* FROM t AS a UNION ALL SELECT 1, 2) AS u
+/**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: exclude_keeps_the_other_columns_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * EXCLUDE (y) FROM t /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: an_excluded_column_is_absent_from_the_output
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * EXCLUDE (x) FROM t /**ASSERT UNIQUE(x)**/
+--~ unknown-asserted-column
+
+-- case: qualified_exclude_hides_the_base_column_and_keeps_the_join_column
+CREATE TABLE l (x INTEGER PRIMARY KEY, payload INTEGER);
+CREATE TABLE r (x INTEGER PRIMARY KEY, payload INTEGER NOT NULL);
+SELECT l.* EXCLUDE (payload), r.payload
+FROM l JOIN r USING (x)
+/**ASSERT UNIQUE(x)**/  --~ PROVED
+/**ASSERT NOT NULL(payload)**/  --~ PROVED
+
+-- case: replace_a_key_does_not_inherit_its_uniqueness
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+SELECT * REPLACE (0 AS x) FROM t /**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+
+-- case: qualified_exclude_and_replace_use_the_original_input
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT t.* EXCLUDE (x) REPLACE (t.x AS y) FROM t /**ASSERT UNIQUE(y)**/  --~ PROVED
+
+-- case: rename_preserves_the_key_at_its_original_position
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT first_column
+FROM (SELECT t.* RENAME (t.x AS renamed) FROM t) AS s(first_column, second_column)
+/**ASSERT UNIQUE(first_column)**/  --~ PROVED
+
+-- case: renaming_columns_can_swap_their_names
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * RENAME (x AS y, y AS x) FROM t
+/**ASSERT UNIQUE(y)**/  --~ PROVED
+/**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+
+-- case: rename_combines_with_exclude_and_replace_on_other_columns
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, z INTEGER);
+SELECT t.* EXCLUDE (z) REPLACE (0 AS y) RENAME (x AS "renamed key") FROM t
+/**ASSERT UNIQUE("renamed key")**/  --~ PROVED
+/**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: rename_cannot_resolve_a_star_with_unknown_columns
+SELECT * RENAME (x AS renamed) FROM external_table /**ASSERT UNIQUE(renamed)**/
+--~ undeclared-table
+--~ unresolved-asserted-column
+
+-- case: a_rename_collision_cannot_borrow_a_deduplicated_names_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, y_1 INTEGER UNIQUE NOT NULL);
+SELECT s.y_1 FROM (SELECT * RENAME (x AS y) FROM t) AS s
+/**ASSERT UNIQUE(y_1)**/
+--~ UNKNOWN
+--~ unsupported-construct "modified star projection"
+
+-- A star beside other items.
+
+-- case: a_star_beside_an_item_keeps_the_inputs_key_and_types
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+SELECT *, y + 1 AS z FROM t
+/**ASSERT UNIQUE(x)**/  --~ PROVED
+/**ASSERT NOT NULL(y)**/  --~ PROVED
+/**ASSERT NOT NULL(z)**/  --~ PROVED
+
+-- case: a_star_after_an_item_keeps_the_inputs_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+SELECT y + 1 AS z, * FROM t /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: a_join_onto_a_star_beside_an_item_is_many_to_one
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER NOT NULL);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT *, v + 1 AS w FROM t) AS s ON s.k = f.k  --~ PROVED
+
+-- case: a_join_onto_a_qualified_star_beside_an_item_is_many_to_one
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER NOT NULL);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT t.*, v + 1 AS w FROM t) AS s ON s.k = f.k  --~ PROVED
+
+-- case: a_star_beside_an_item_over_a_filter_keeps_the_key
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER NOT NULL);
+SELECT *, 1 AS one FROM t WHERE v > 0 /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- Two sources with a column of one name: each expanded column reads its own
+-- source's, in the input's order, as the positional names show.
+-- case: a_star_over_a_join_with_a_shared_column_name_reads_each_sources_column
+CREATE TABLE a (id INTEGER PRIMARY KEY, note INTEGER NOT NULL);
+CREATE TABLE b (bid INTEGER PRIMARY KEY, note INTEGER, aid INTEGER NOT NULL);
+SELECT b_id, a_note, b_note
+FROM (SELECT *, 1 AS w FROM a JOIN b ON a.id = b.aid) AS s (a_id, a_note, b_id, b_note, b_aid, w)
+/**ASSERT NOT NULL(a_note)**/  --~ PROVED
+/**ASSERT NOT NULL(b_note)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(b_id)**/  --~ PROVED
+
+-- case: a_shared_column_name_of_an_expanded_star_is_ambiguous
+CREATE TABLE a (id INTEGER PRIMARY KEY, note INTEGER NOT NULL);
+CREATE TABLE b (bid INTEGER PRIMARY KEY, note INTEGER, aid INTEGER NOT NULL);
+SELECT *, 1 AS w FROM a JOIN b ON a.id = b.aid /**ASSERT NOT NULL(note)**/
+--~ unresolved-asserted-column "ambiguous"
+
+-- case: a_star_over_a_self_join_reads_each_alias
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+SELECT l_k, r_v
+FROM (SELECT *, 1 AS w FROM t AS l JOIN t AS r ON l.k = r.k) AS s (l_k, l_v, r_k, r_v, w)
+/**ASSERT UNIQUE(l_k)**/  --~ PROVED
+/**ASSERT UNIQUE(r_v)**/  --~ UNKNOWN
+
+-- case: a_star_over_unaliased_tables_of_one_name_in_two_schemas_stays_unexpanded
+CREATE SCHEMA s1;
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE s1.a (id INTEGER PRIMARY KEY, z INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT *, 1 AS w FROM a JOIN s1.a ON a.id = s1.a.id) AS s ON s.x = f.k  --~ UNKNOWN
+--~ unsupported-construct "a star whose columns cannot each be named unambiguously"
+
+-- case: a_star_over_a_derived_table_of_a_duplicated_name_stays_unexpanded
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "a star whose columns cannot each be named unambiguously"
+    SELECT *, 1 AS w FROM (SELECT a.k, b.k FROM t AS a JOIN t AS b ON true) AS d
+) AS s ON s.k = f.k
+
+-- Over a USING join the star's columns are ordered by dialect: it stays one
+-- item, and an assertion that reaches it says so.
+-- case: a_star_over_a_using_join_stays_unexpanded_and_is_reported
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT *, 1 AS w FROM a JOIN b USING (k)) AS s ON s.k = f.k  --~ UNKNOWN
+--~ unsupported-construct "a star over a USING join"
+
+-- case: a_lone_star_over_a_using_join_is_reported
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM a JOIN b USING (k)) AS s ON s.x = f.k  --~ UNKNOWN
+--~ unsupported-construct "a star over a USING join"
+
+-- case: a_qualified_star_over_a_using_join_is_expanded
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+SELECT a.*, y AS w FROM a JOIN b USING (k) /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: a_lone_star_stays_the_inputs_relation
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM t) AS s ON s.k = f.k  --~ PROVED
+
+-- A star over an input with columns that are not all known stays one item,
+-- and the missing CREATE is what a Connection Warning names.
+-- case: a_star_beside_an_item_over_an_undeclared_table_stays_unknown
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT *, 1 AS w FROM ext) AS s ON s.k = f.k  --~ UNKNOWN
+--~ undeclared-table
+
+-- case: a_distinct_star_over_an_undeclared_table_stays_unknown
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT DISTINCT * FROM ext) AS s ON s.k = f.k  --~ UNKNOWN
+--~ undeclared-table
+--~ unsupported-construct "this SELECT form (DISTINCT, *)"
+
+-- A star in a GROUP BY select is left as it is, and reported.
+-- case: a_star_in_a_group_by_select_is_reported
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM t GROUP BY k, v) AS s ON s.k = f.k  --~ UNKNOWN
+--~ unsupported-construct "a star in a GROUP BY select"
+
+-- Modifiers beside other items.
+
+-- case: exclude_beside_an_item_keeps_the_other_columns_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, z INTEGER NOT NULL);
+SELECT * EXCLUDE (y), z + 1 AS w FROM t
+/**ASSERT UNIQUE(x)**/  --~ PROVED
+/**ASSERT NOT NULL(w)**/  --~ PROVED
+
+-- case: replace_beside_an_item_replaces_only_its_column
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+SELECT * REPLACE (0 AS x), y AS z FROM t
+/**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: rename_beside_an_item_keeps_the_key_under_its_new_name
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * RENAME (x AS key), y AS z FROM t /**ASSERT UNIQUE(key)**/  --~ PROVED
+
+-- case: a_qualified_modified_star_beside_a_second_sources_column
+CREATE TABLE l (x INTEGER PRIMARY KEY, payload INTEGER);
+CREATE TABLE r (x INTEGER PRIMARY KEY, payload INTEGER NOT NULL);
+SELECT l.* EXCLUDE (payload), r.payload AS rp FROM l JOIN r ON l.x = r.x
+/**ASSERT UNIQUE(x)**/  --~ PROVED
+/**ASSERT NOT NULL(rp)**/  --~ PROVED
+
+-- A modifier's column must be named by exactly one of the star's.
+-- case: exclude_of_a_shared_column_name_is_not_expanded
+CREATE TABLE l (x INTEGER PRIMARY KEY, payload INTEGER);
+CREATE TABLE r (x INTEGER PRIMARY KEY, payload INTEGER NOT NULL);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * EXCLUDE (payload) FROM l JOIN r ON l.x = r.x) AS s ON s.x = f.k  --~ UNKNOWN
+--~ unsupported-construct "a modified star projection"
+
+-- case: exclude_of_a_qualified_shared_column_name_is_expanded
+CREATE TABLE l (x INTEGER PRIMARY KEY, payload INTEGER);
+CREATE TABLE r (x INTEGER PRIMARY KEY, payload INTEGER NOT NULL);
+SELECT * EXCLUDE (l.payload), 1 AS one FROM l JOIN r ON l.x = r.x
+/**ASSERT NOT NULL(payload)**/  --~ PROVED
+
+-- DISTINCT.
+
+-- case: distinct_star_makes_all_its_columns_a_key
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN (SELECT DISTINCT * FROM orders) AS d  --~ PROVED
+    ON customer_regions.customer_id = d.customer_id
+    AND customer_regions.region = d.region
+
+-- case: distinct_star_beside_an_item_makes_all_its_columns_a_key
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN (SELECT DISTINCT *, upper(region) AS shout FROM orders) AS d  --~ PROVED
+    ON customer_regions.customer_id = d.customer_id
+    AND customer_regions.region = d.region
+    AND upper(customer_regions.region) = d.shout
+
+-- case: distinct_star_is_not_a_key_of_part_of_its_columns
+CREATE TABLE orders (customer_id INTEGER, region VARCHAR);
+CREATE TABLE customer_regions (customer_id INTEGER, region VARCHAR);
+SELECT *
+FROM customer_regions
+/**ASSERT MANY TO ONE**/ JOIN (SELECT DISTINCT * FROM orders) AS d  --~ UNKNOWN
+    ON customer_regions.customer_id = d.customer_id
+
+-- case: distinct_star_over_a_join_keeps_its_columns
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (bid INTEGER PRIMARY KEY, aid INTEGER);
+SELECT DISTINCT * FROM a JOIN b ON a.id = b.aid /**ASSERT UNIQUE(bid)**/  --~ PROVED
+
+-- case: distinct_modified_star_is_expanded
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT DISTINCT * EXCLUDE (y) FROM t /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: distinct_on_a_star_keeps_one_row_per_key
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL);
+SELECT DISTINCT ON (k) * FROM t ORDER BY k, v /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: distinct_on_a_qualified_key_of_a_join_star
+CREATE TABLE a (k INTEGER, v INTEGER);
+CREATE TABLE b (k INTEGER, w INTEGER);
+SELECT DISTINCT ON (a.k) a.*, b.w AS bw FROM a JOIN b ON true ORDER BY a.k /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- QUALIFY.
+
+-- case: qualify_on_a_star_keeps_one_row_per_partition
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT * FROM t QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1
+) AS s ON s.k = f.k
+
+-- case: qualify_on_a_star_by_a_qualified_key
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL);
+SELECT * FROM t AS x QUALIFY row_number() OVER (PARTITION BY x.k ORDER BY v) = 1 /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: qualify_on_a_star_beside_an_item
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL);
+SELECT *, v + 1 AS w FROM t QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1 /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: qualify_on_a_star_is_not_a_key_of_another_column
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL);
+SELECT * FROM t QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1 /**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- case: qualify_on_a_modified_star
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL, z INTEGER);
+SELECT * EXCLUDE (z) FROM t QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1 /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: qualify_on_a_star_by_an_excluded_column_is_opaque
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL, z INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY whose PARTITION BY key is not a selected column"
+    SELECT * EXCLUDE (z) FROM t QUALIFY row_number() OVER (PARTITION BY z ORDER BY v) = 1
+) AS s ON s.k = f.k
+
+-- A bare partition key that two expanded columns answer to is not one output.
+-- case: qualify_on_a_star_by_a_shared_column_name_is_opaque
+CREATE TABLE a (k INTEGER, v INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER, w INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY whose PARTITION BY key is not a selected column"
+    SELECT * FROM a JOIN b ON a.k = b.k QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1
+) AS s ON s.v = f.k
+
+-- case: qualify_on_a_star_over_a_using_join_is_reported
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "a star over a USING join"
+    SELECT * FROM a JOIN b USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY y) = 1
+) AS s ON s.x = f.k
+
+-- case: qualify_on_a_star_over_an_undeclared_table_stays_unknown
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY on SELECT * over columns not all known"
+    SELECT * FROM ext QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1  --~ undeclared-table
+) AS s ON s.k = f.k
+
+-- A modifier is DuckDB's: another dialect leaves the select opaque.
+-- case: a_modified_star_in_another_dialect_stays_opaque
+-- dialect: bigquery
+CREATE TABLE t (k INT64, v INT64, z INT64);
+CREATE TABLE f (k INT64, g INT64);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * EXCEPT (z), 1 AS w FROM t) AS s ON s.k = f.k  --~ UNKNOWN
+--~ unsupported-construct "a modified star projection"
