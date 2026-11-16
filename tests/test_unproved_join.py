@@ -9,7 +9,7 @@ from sqlassert.rules.join_cardinality import UnprovedJoin, unproved_join
 from sqlassert.sql_parse import SqlParser
 
 SCHEMA = """
-CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, ts TIMESTAMP, doc VARCHAR, amount DECIMAL(10, 2));
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, ts TIMESTAMP, doc VARCHAR, amount DECIMAL(10, 2), ref INTEGER);
 CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, start_ts TIMESTAMP, end_ts TIMESTAMP, day DATE, amount DECIMAL(10, 2));
 CREATE TABLE f (k REAL, x INTEGER);
 """
@@ -27,7 +27,35 @@ def classify(sql: str) -> UnprovedJoin | None:
 CASES = [
     ("proved", "SELECT a.id FROM a JOIN b ON a.id = b.id", None),
     ("semi join", "SELECT a.id FROM a SEMI JOIN b ON a.k = b.k", None),
-    ("table function", "SELECT a.id FROM a LEFT JOIN json_each(a.doc) AS e ON true", UnprovedJoin("unsupported", construct="a table function")),
+    ("table function reading the left input", "SELECT a.id FROM a LEFT JOIN json_each(a.doc) AS e ON true", None),
+    ("UNNEST reading the left input", "SELECT a.id FROM a CROSS JOIN UNNEST([a.k]) AS s(x)", None),
+    ("table function not reading the left input", "SELECT a.id FROM a CROSS JOIN range(0, 6) AS r(n)", UnprovedJoin("unconstrained")),
+    (
+        "table function not reading the left input, bound to a key",
+        "SELECT a.id FROM a JOIN json_each('[1]') AS e ON e.key = a.doc",
+        UnprovedJoin("untyped-key", "opaque-relation"),
+    ),
+    ("table function of unknown columns", "SELECT a.id FROM a CROSS JOIN read_csv('f.csv') AS f", UnprovedJoin("unsupported", construct="a table function")),
+    (
+        "unqualified key beside a table function",
+        "SELECT a.id FROM a CROSS JOIN json_each(a.doc) AS e JOIN b ON b.k = ref",
+        UnprovedJoin("no-unique-set"),
+    ),
+    (
+        "unqualified key beside a table function of unknown columns",
+        "SELECT a.id FROM a CROSS JOIN read_csv('f.csv') AS f JOIN b ON b.k = ref",
+        UnprovedJoin("unresolved-key", construct="a table function"),
+    ),
+    (
+        "key of a relation over a table function",
+        "SELECT a.id FROM (SELECT a.k, e.value FROM a CROSS JOIN json_each(a.doc) AS e) AS m JOIN b ON b.id = m.k",
+        None,
+    ),
+    (
+        "key of a relation over a table function, not unique",
+        "SELECT a.id FROM (SELECT a.k, e.value FROM a CROSS JOIN json_each(a.doc) AS e) AS m JOIN b ON b.k = m.k",
+        UnprovedJoin("no-unique-set"),
+    ),
     (
         "inside an opaque SELECT",
         "SELECT a.k, unnest([1, 2]) AS v FROM a JOIN b ON a.id = b.id GROUP BY a.k",

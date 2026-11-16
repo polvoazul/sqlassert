@@ -329,12 +329,43 @@ certified by `scripts/certify_dialects.py`.
   engine (NULL keys form one partition, DuckDB probed). RANK, DENSE_RANK and
   NTILE repeat and claim nothing.
 
+## Table functions
+
+A table function or UNNEST in FROM has the columns the dialect fixes for it
+(`DialectSemantics.table_functions`, probed as `table_function(NAME)=COLUMNS`),
+and its rows nothing is known of: an opaque relation, no key, no dependency,
+no type. `SELECT *` over the call returns exactly those columns whatever its
+arguments; an alias column list renames the leading ones (a longer list is
+ignored), and an alias with no list names the one column of a one-column
+function (DuckDB: `range(3) AS r` has column `r`, though `r.range` also
+resolves, which is not modelled). A function not listed, an UNNEST of several
+arguments or `WITH ORDINALITY`, and any function of another dialect keep
+columns unknown: an incomplete schema, so an unqualified name beside it is an
+`ambiguous-column` warning, and the call is an `unsupported-construct`.
+
+| | DuckDB 2.0.0 | SQLite 3.50.4 | the rest |
+| --- | --- | --- | --- |
+| `json_each`, `json_tree` | `key`, `value`, `type`, `atom`, `id`, `parent`, `fullkey`, `path` (probed, also with a path argument) | the same (probed with `pragma_table_info`; no alias column list exists) | not claimed (from memory: Postgres's `jsonb_each` and `jsonb_array_elements` name their columns by function and type, Snowflake's `FLATTEN`, Trino's and Spark's `UNNEST` and `explode` by the element type); each to probe or cite before it is added |
+| `range`, `generate_series` | one column, named like the function (`range`, `generate_series`) | none | not claimed (Postgres's `generate_series` column is named like the function or the alias) |
+| `unnest` of one argument | one column `unnest`; DuckDB's FROM-clause UNNEST takes a list only | none | not claimed |
+
+Whatever the columns, a call whose arguments read a column of the join's left
+input is evaluated once per left row (an implicit LATERAL: DuckDB, probed;
+from memory Postgres, SQLite, Trino's `CROSS JOIN UNNEST`, BigQuery's
+`, UNNEST(t.arr)`), so each of
+its rows belongs to one left row: the join is One To Many (`Join.lateral`),
+for INNER, LEFT and CROSS joins; DuckDB rejects a RIGHT or FULL join that
+reads the left input. A call whose argument holds a subquery or a lambda is
+never taken to read it, since either may name a column of its own. That rows of
+the left input are repeated, none or several times (a LEFT JOIN: at least once),
+is what no key survives.
+
 ## Certifying facts
 
 Every claim a dialect's flags make, every Builtin fact
 (`strict(op)`, `total(op)`, `injective(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
 derives from them, and every function result type (`result_type(Node)=TYPE`,
-from `DialectSemantics.result_types`, and `values_type(KIND)=TYPE`, from `values_types`) has a provenance in `docs/dialect-provenance.json`:
+from `DialectSemantics.result_types`, `values_type(KIND)=TYPE`, from `values_types`, and `table_function(NAME)=COLUMNS`, from `table_functions`) has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
 version or date}` when read in the engine's documentation, and, only for a
 dialect with no local engine, `{"tentative": why}` when stated from memory,

@@ -121,7 +121,7 @@ def facts(dialect: str, meaning: DialectSemantics | None = None) -> tuple[Fact, 
     meaning = semantics(dialect) if meaning is None else meaning
     found = [
         *_builtin_facts(dialect, meaning), *_flag_facts(dialect, meaning), *_result_type_facts(dialect, meaning),
-        *_values_type_facts(dialect, meaning),
+        *_values_type_facts(dialect, meaning), *_table_function_facts(dialect, meaning),
     ]
     return tuple(sorted(found, key=lambda fact: fact.name))
 
@@ -564,6 +564,46 @@ def _values_type_check(dialect: str, rows: tuple[str, ...], expected: str, *, ex
     if dialect not in _TYPE_OF:
         return Check("", "true", problem=f"{dialect} has no type function")
     return Check(f"SELECT {matches(_TYPE_OF[dialect].format('c'))} FROM {source} LIMIT 1", "true")
+
+
+# Calls of each table function the dialects claim, with the argument lists the engine accepts.
+_TABLE_FUNCTION_CALLS: dict[str, tuple[str, ...]] = {
+    "json_each": ("json_each('[1]')", "json_each('{\"a\": [1]}', '$.a')"),
+    "json_tree": ("json_tree('[1]')", "json_tree('{\"a\": [1]}', '$.a')"),
+    "range": ("range(3)", "range(1, 10, 2)"),
+    "generate_series": ("generate_series(1, 3)", "generate_series(5)"),
+    "unnest": ("unnest([1, 2])",),
+}
+
+
+def _table_function_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
+    """Each claimed table function's columns: `SELECT *` over it returns
+    exactly them, in order; an alias column list renames the leading ones and,
+    for a function with one column, an alias alone names it. DuckDB asks
+    DESCRIBE, SQLite `pragma_table_info` (which has no alias column list)."""
+    for name, columns in meaning.table_functions:
+        claimed = ",".join(columns)
+        checks: list[Check] = []
+        for call in _TABLE_FUNCTION_CALLS[name] if dialect == "duckdb" else _TABLE_FUNCTION_CALLS[name][:1]:
+            if dialect == "duckdb":
+                variants = [("", claimed), (" AS a(x)", ",".join(("x", *columns[1:])))]
+                if len(columns) == 1:
+                    variants.append((" AS r", "r"))
+                checks.extend(
+                    Check(
+                        f"SELECT CASE WHEN (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM {call}{alias})) = '{expected}' "
+                        "THEN 1 ELSE 0 END",
+                        "true",
+                    )
+                    for alias, expected in variants
+                )
+            elif dialect == "sqlite":
+                checks.append(Check(
+                    f"SELECT CASE WHEN (SELECT group_concat(name) FROM pragma_table_info('{name}')) = '{claimed}' THEN 1 ELSE 0 END", "true",
+                ))
+            else:
+                checks.append(Check("", "true", problem=f"no probe of {dialect} table functions"))
+        yield Fact(f"table_function({name})={claimed}", f"drop {name} from table_functions in dialects.py", tuple(checks))
 
 
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:

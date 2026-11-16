@@ -684,11 +684,59 @@ class IrParser:
             if values is not None:
                 return self._alias(values, source.alias_or_name, self._origin(source))
 
+        columns = self._table_function_columns(source)
+        if columns is not None:
+            return self._lower_table_function(source, columns)
         opaque = self._opaque_relation(source, self._source_required.get(id(source), set()))
         construct = _unsupported_source(source)
         if construct is not None:
             self._unsupported.append((opaque, construct))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
+
+    def _table_function_columns(self, source: Expr) -> tuple[str, ...] | None:
+        """The columns a table function or UNNEST in FROM returns, when the
+        dialect fixes them (`DialectSemantics.table_functions`); None for any
+        other source and for a call whose columns are not known."""
+        name = _table_function_name(source, self.dialect)
+        return None if name is None else dict(self.semantics.table_functions).get(name)
+
+    def _lower_table_function(self, source: Expr, columns: tuple[str, ...]) -> _Lowered:
+        """A table function or UNNEST in FROM with known columns: rows nothing
+        is known of (how many, or what they hold) under those columns, so
+        no key, dependency or type of theirs, and no fact of the input a join
+        repeats it onto, is lost. The alias names the leading columns, or the
+        one column of a one-column function."""
+        origin = self._origin(source)
+        name = _table_function_name(source, self.dialect)
+        assert name is not None
+        names = _column_aliases(source) or ((source.alias,) if len(columns) == 1 and source.alias else ())
+        relation = ir.OpaqueRelation(
+            origin=origin, is_schema_complete=True, description=source.sql(dialect=self.dialect),
+            output_columns=tuple(
+                ir.OutputColumn(origin=origin, name=column, scalar_expr=ir.OpaqueExpression(origin=origin, description=f"{name}() column {column}"))
+                for column in columns
+            ),
+        )
+        return self._alias(relation, source.alias_or_name or name, origin, column_aliases=names)
+
+    def _reads_left(self, source: Expr, left: _Lowered) -> bool:
+        """Whether `source`, a table function or UNNEST, has an argument that
+        reads a column of `left`. Only a plain column counts: a subquery or
+        lambda in the call may name a column of its own, so it says nothing."""
+        if isinstance(source, exp.Unnest):
+            arguments = list(source.expressions)
+        elif isinstance(source, exp.Table) and isinstance(source.this, exp.Func):
+            arguments = [source.this]
+        else:
+            return False
+        if any(argument.find(exp.Lambda, exp.Query) is not None for argument in arguments):
+            return False
+        for argument in arguments:
+            for column in argument.find_all(exp.Column):
+                value = self._lower_expression(column, left.bindings, schema_complete=left.relation.is_schema_complete)
+                if isinstance(value, ir.ColumnRef) and value.column in left.relation.output_columns:
+                    return True
+        return False
 
     def _alias_join(self, join: ir.RelationExpr, source: Expr) -> _Lowered:
         """`(a JOIN b ...) AS x`: a relation of its own, which hides the names
@@ -998,6 +1046,8 @@ class IrParser:
             left=left.relation,
             right=right.relation,
             predicate=predicate,
+            # A RIGHT or FULL join cannot read its left input (DuckDB rejects it).
+            lateral=kind in {"inner", "left", "cross"} and self._reads_left(join.this, left),
         )
         bindings = tuple(
             replace(binding, column=remapped[binding.column])
@@ -3430,6 +3480,19 @@ def _unsupported_select(select: exp.Select, items: list[Expr], star: str | None)
     if any(_projection_star(item) is not None for item in select.expressions):
         clauses.append("*")
     return f"this SELECT form ({', '.join(clauses)})" if clauses else "this SELECT form"
+
+
+def _table_function_name(source: Expr, dialect: str) -> str | None:
+    """The lower-case name a FROM source calls: a table function as the
+    dialect writes the call, `unnest` for an UNNEST of one argument without
+    ordinality. None for any other source, a qualified function, and an UNNEST
+    of several arguments or with ordinality (its columns are not fixed)."""
+    if isinstance(source, exp.Unnest):
+        return "unnest" if len(source.expressions) == 1 and not source.args.get("offset") else None
+    if isinstance(source, exp.Table) and isinstance(source.this, exp.Func):
+        call = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", source.this.sql(dialect=dialect))
+        return call.group(1).lower() if call else None
+    return None
 
 
 def _unsupported_source(source: Expr) -> str | None:

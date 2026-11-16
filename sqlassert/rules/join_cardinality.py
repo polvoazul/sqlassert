@@ -11,6 +11,8 @@ repeated. A cross join is an ON with no
 conjuncts: the other input must have at most one row. A semi or anti join
 keeps or drops left rows whole and outputs no right row; its left rows are
 never repeated (`many_to_one_join`), and no cardinality marker applies to it.
+A table function or UNNEST that reads the left input is evaluated once per
+left row, so none of its rows is repeated (`Join.lateral`, `one_to_many_join`).
 """
 
 from dataclasses import dataclass, field
@@ -35,6 +37,8 @@ def many_to_one_join(join: ir.Join) -> Result[bool]:
 
 @analysis(Stratum.UNIQUE_JOIN)
 def one_to_many_join(join: ir.Join) -> Result[bool]:
+    if join.lateral:
+        return Result(True, "A table function reading the left input is evaluated once per left row, so each of its rows has one left row", (join,))
     return _at_most_one_match(join, "left")
 
 
@@ -128,9 +132,10 @@ class UnprovedJoin:
     """Why neither `many_to_one_join` nor `one_to_many_join` is proved for a
     join: the first reason that applies, in the order of `UnprovedReason`.
 
-    - `unsupported`: an input is a source sqlassert does not model (a table
-      function, UNNEST, LATERAL), or the join is not reachable from the
-      program: it sits in a SELECT that lowered opaque.
+    - `unsupported`: an input is a source sqlassert does not model (LATERAL,
+      or a table function or UNNEST whose columns the dialect does not fix),
+      or the join is not reachable from the program: it sits in a SELECT that
+      lowered opaque.
     - `unconstrained`: no ON equality relates one input to the other or to a
       constant (a cross join, a range join). No Unique Set can make it a
       Unique Join; whether rows repeat depends on the data, not on a key.

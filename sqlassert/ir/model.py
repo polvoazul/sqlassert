@@ -577,6 +577,12 @@ class Join(RelationExpr):
     # subquery's body, and each left row matches at most one right row, or
     # the query fails (more than one row is a runtime error).
     scalar_subquery: bool = False
+    # An INNER, LEFT or CROSS join whose right input is a table function or
+    # UNNEST with an argument that reads a column of the left input: it is
+    # evaluated once per left row, so each right row is produced by exactly
+    # one left row and none is repeated (a left row may repeat, once per row
+    # the function returns for it).
+    lateral: bool = False
 
     @property
     def conjuncts(self) -> tuple[ScalarExpr, ...]:

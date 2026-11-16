@@ -22,7 +22,10 @@ Which inputs' rows a join can repeat, read in FROM order (the left input is
 everything before the join, the right its joined source). A row of one input
 appears once per matching row of the other, or once padded.
 - **Many To One Join**: no left row is repeated: each matches at most one right row.
-- **One To Many Join**: no right row is repeated.
+- **One To Many Join**: no right row is repeated. A table function or UNNEST
+  in FROM whose argument reads the left input is one: it is evaluated once per
+  left row, so each of its rows belongs to one left row (it repeats left rows,
+  never right ones). One that does not read it is a cross join of unknown rows.
 - **One To One Join**: neither.
 - **Unique Join** (`UNIQUE`, `NOT MANY TO MANY`): rows of at most one input
   are repeated; the join is not many to many.
@@ -31,8 +34,9 @@ _Avoid_: Unique join marker, duplicate check, 1:N
 
 **Unproved Join Reason**:
 Why a join has no proved Join Cardinality, the first that applies:
-`unsupported` (an input sqlassert does not model, or the join sits in an
-opaque SELECT), `unconstrained` (no ON equality between the inputs or to a
+`unsupported` (an input sqlassert does not model: LATERAL, or a table function
+or UNNEST whose columns are not known; or the join sits in an opaque SELECT),
+`unconstrained` (no ON equality between the inputs or to a
 constant: a cross or range join), `unresolved-key`, `untyped-key` (with
 where the type is lost: `values`, `computed`, `opaque-relation`,
 `set-operation`, `table`, `type-mismatch`), `expression-key`,

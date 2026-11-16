@@ -1,0 +1,23 @@
+-- A table function in SQLite: `json_each` and `json_tree` have fixed columns
+-- there too (`DialectSemantics.table_functions`, probed with
+-- `pragma_table_info`), and read the left input as DuckDB's do. SQLite has no
+-- `range` or `generate_series` without an extension, so those are unknown.
+-- dialect: sqlite
+
+CREATE TABLE s (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, doc TEXT);
+CREATE TABLE v (vid INTEGER PRIMARY KEY, label TEXT);
+
+-- case: json_each_is_a_correlated_function_too
+SELECT s.id, e.value FROM s
+/**ASSERT ONE TO MANY**/ CROSS JOIN json_each(s.doc) AS e  --~ PROVED
+
+-- case: json_each_repeats_the_input_rows
+SELECT s.id, e.value FROM s CROSS JOIN json_each(s.doc) AS e /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: json_each_has_fixed_columns_so_the_inputs_names_resolve
+SELECT k, e.value FROM s, json_each(s.doc) AS e
+/**ASSERT MANY TO ONE**/ JOIN v ON v.vid = k  --~ PROVED
+
+-- case: generate_series_is_not_a_known_function
+SELECT s.id FROM s CROSS JOIN generate_series(1, 3) AS g /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+--~ unsupported-construct "a table function"

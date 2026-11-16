@@ -122,6 +122,15 @@ class DialectSemantics:
     # A string type claims only that it is text: whether it compares by
     # identity is `text_is_binary`, as for a declared column.
     values_types: tuple[tuple[str, str], ...] = ()
+    # The columns, in order, that `SELECT * FROM f(...)` returns for a table
+    # function (or UNNEST, as `unnest`) of one argument list, by lower-case
+    # name (`table_function(NAME)=COLUMNS`): whatever its arguments, and
+    # whether or not the alias lists column names, which rename the leading
+    # columns. A function with one column and an alias with no column list
+    # names it by the alias, as DuckDB does (`range(3) AS r` is the column
+    # `r`). A function not listed, an UNNEST of several arguments or WITH
+    # ORDINALITY has columns not known without the data or the engine.
+    table_functions: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def rely(self) -> bool:
@@ -155,6 +164,9 @@ _SPARK = DialectSemantics(
     values_types=(("string", "string"), ("integer", "int"), ("bigint", "bigint"), ("decimal", "decimal")),
 )
 
+# What `json_each` and `json_tree` return, in DuckDB and SQLite alike.
+_JSON_TABLE_COLUMNS = ("key", "value", "type", "atom", "id", "parent", "fullkey", "path")
+
 _SEMANTICS: dict[str, DialectSemantics] = {
     "duckdb": DialectSemantics(
         checked_arithmetic=True,
@@ -175,6 +187,10 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         ),
         hash_functions=("MD5", "SHA", "SHA2"),
         values_types=(("string", "VARCHAR"), ("integer", "INTEGER"), ("bigint", "BIGINT"), ("decimal", "DECIMAL")),
+        table_functions=(
+            ("json_each", _JSON_TABLE_COLUMNS), ("json_tree", _JSON_TABLE_COLUMNS),
+            ("range", ("range",)), ("generate_series", ("generate_series",)), ("unnest", ("unnest",)),
+        ),
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,
@@ -279,6 +295,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         # Only an INTEGER PRIMARY KEY (the rowid) is never NULL.
         primary_key_not_null=False,
+        table_functions=(("json_each", _JSON_TABLE_COLUMNS), ("json_tree", _JSON_TABLE_COLUMNS)),
     ),
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
     # Its `MD5`/`SHA1`/`SHA256` return FixedString bytes, wrapped in Nullable

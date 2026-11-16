@@ -1,0 +1,196 @@
+-- A table function or UNNEST in FROM (DuckDB): rows nothing is known of, under
+-- the columns the engine fixes for it (`DialectSemantics.table_functions`:
+-- `json_each` and `json_tree`, `range`, `generate_series`, `unnest`). Joined to
+-- an input it repeats each input row once per row it returns (none, or for a
+-- LEFT JOIN one padded), so no key of the input is a key of the join, and the
+-- join is not MANY TO ONE. When an argument reads the input (`json_each(t.doc)`)
+-- the function is evaluated once per input row and each of its rows belongs
+-- to exactly one: ONE TO MANY. The input's columns keep their binding, type
+-- and facts.
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, doc VARCHAR, items INTEGER[] NOT NULL);
+CREATE TABLE u (uid INTEGER PRIMARY KEY, label VARCHAR);
+
+-- case: a_correlated_function_repeats_no_function_row
+SELECT t.id, e.value FROM t
+/**ASSERT ONE TO MANY**/ LEFT JOIN json_each(t.doc) AS e ON true  --~ PROVED
+
+-- case: a_correlated_function_is_a_unique_join
+SELECT t.id, e.value FROM t
+/**ASSERT UNIQUE**/ LEFT JOIN json_each(t.doc) AS e ON true  --~ PROVED
+
+-- case: a_correlated_function_repeats_input_rows
+SELECT t.id, e.value FROM t
+/**ASSERT MANY TO ONE**/ LEFT JOIN json_each(t.doc) AS e ON true  --~ UNKNOWN
+
+-- case: a_correlated_function_is_not_one_to_one
+SELECT t.id, e.value FROM t
+/**ASSERT ONE TO ONE**/ LEFT JOIN json_each(t.doc) AS e ON true  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated_by_a_left_join_of_a_function
+SELECT t.id, e.value FROM t LEFT JOIN json_each(t.doc) AS e ON true /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated_by_a_cross_join_of_unnest
+SELECT t.id, s.x FROM t CROSS JOIN UNNEST(t.items) AS s(x) /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated_by_a_comma_join_of_a_function
+SELECT t.id, e.key FROM t, json_each(t.doc) AS e /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: the_input_columns_keep_their_dependencies
+SELECT t.id, t.k, e.value FROM t LEFT JOIN json_each(t.doc) AS e ON true /**ASSERT DETERMINES(id -> k)**/  --~ PROVED
+
+-- case: the_input_columns_keep_not_null
+SELECT t.id, t.k, e.value FROM t LEFT JOIN json_each(t.doc) AS e ON true /**ASSERT NOT NULL(id, k)**/  --~ PROVED
+
+-- case: a_left_joined_function_column_may_be_null
+SELECT t.id, e.value FROM t LEFT JOIN json_each(t.doc) AS e ON true /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: an_inner_joined_function_column_is_not_known_to_be_non_null
+SELECT t.id, e.value FROM t JOIN json_each(t.doc) AS e ON true /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: a_function_column_is_no_function_of_its_argument
+SELECT t.doc, e.value FROM t JOIN json_each(t.doc) AS e ON true /**ASSERT DETERMINES(doc -> value)**/  --~ UNKNOWN
+
+-- case: the_function_columns_are_known_so_unqualified_input_names_resolve
+-- `k` is not a column of json_each: it is t's, with t's type, so a later join on it binds.
+SELECT k, e.value FROM t, json_each(t.doc) AS e
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = k  --~ PROVED
+
+-- case: a_qualified_input_key_binds_through_the_function
+SELECT t.k, e.value FROM t, json_each(t.doc) AS e
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = t.k  --~ PROVED
+
+-- case: an_unqualified_name_the_function_also_has_is_ambiguous
+-- json_each has an `id` column: DuckDB rejects the bare name, so it is opaque.
+SELECT id, e.value FROM t JOIN json_each(t.doc) AS e ON true /**ASSERT NOT NULL(id)**/  --~ UNKNOWN
+
+-- case: a_name_the_function_does_not_have_is_the_inputs
+SELECT k, e.value FROM t JOIN json_each(t.doc) AS e ON true /**ASSERT NOT NULL(k)**/  --~ PROVED
+
+-- case: an_input_key_binds_through_a_cte_over_the_function
+WITH x AS (SELECT k, e.key FROM t, json_each(t.doc) AS e)
+SELECT x.k, u.label FROM x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x.k  --~ PROVED
+
+-- case: a_star_over_an_input_and_a_function_is_expanded
+WITH x AS (SELECT * FROM t, json_each(t.doc) AS e)
+SELECT x.k, u.label FROM x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x.k  --~ PROVED
+
+-- case: a_qualified_star_over_the_input_is_expanded
+WITH x AS (SELECT t.*, e.value FROM t, json_each(t.doc) AS e)
+SELECT x.k, u.label FROM x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x.k  --~ PROVED
+
+-- case: the_columns_of_a_star_are_the_inputs_then_the_functions
+WITH x AS (SELECT * FROM t, json_each(t.doc) AS e)
+SELECT * FROM x /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: a_second_function_reading_the_first_is_correlated
+SELECT t.id, p.value FROM t, json_each(t.doc) AS e
+/**ASSERT ONE TO MANY**/ CROSS JOIN json_each(e.value) AS p  --~ PROVED
+
+-- case: a_function_condition_on_its_own_column_keeps_the_function_one_to_many
+SELECT t.id, e.value FROM t
+/**ASSERT ONE TO MANY**/ JOIN json_each(t.doc) AS e ON e.key = 'a'  --~ PROVED
+
+-- case: an_unnest_with_a_column_list_names_its_column
+SELECT t.id, s.x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(t.items) AS s(x)  --~ PROVED
+
+-- case: an_unnest_with_ordinality_has_no_known_columns
+-- Its columns are not fixed, but each row still belongs to one input row.
+SELECT t.id, s.x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(t.items) WITH ORDINALITY AS s(x, i)  --~ PROVED
+
+-- case: an_unnest_with_ordinality_still_repeats_the_input
+SELECT t.id, s.x FROM t CROSS JOIN UNNEST(t.items) WITH ORDINALITY AS s(x, i) /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"
+
+-- case: an_unnest_of_several_arguments_is_not_modelled
+SELECT t.id, s.x FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN UNNEST(t.items, t.items) AS s(x, y)  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"
+
+-- case: an_unnest_reading_the_input_through_a_lambda_is_not_proved_correlated
+-- The lambda's `k` is its own parameter, not t's.
+SELECT t.id, s.x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(list_transform([1, 2], k -> k)) AS s(x)  --~ UNKNOWN
+
+-- case: an_unnest_reading_the_input_through_a_subquery_is_not_proved_correlated
+SELECT t.id, s.x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST((SELECT list(uid) FROM u WHERE uid = t.k)) AS s(x)  --~ UNKNOWN
+
+-- case: an_uncorrelated_function_repeats_every_input_row
+SELECT t.id, r.n FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN range(0, 6) AS r(n)  --~ UNKNOWN
+
+-- case: an_uncorrelated_function_is_not_many_to_one
+SELECT t.id, r.n FROM t
+/**ASSERT MANY TO ONE**/ CROSS JOIN range(0, 6) AS r(n)  --~ UNKNOWN
+
+-- case: an_uncorrelated_function_repeats_a_key_of_the_input
+SELECT t.id, r.n FROM t, range(0, 6) AS r(n) /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: an_uncorrelated_function_keeps_the_input_facts
+SELECT t.id, t.k, r.n FROM t, range(0, 6) AS r(n) /**ASSERT NOT NULL(id, k)**/  --~ PROVED
+
+-- case: an_uncorrelated_function_joined_by_a_list_column_is_not_one_to_many
+SELECT t.id, e.key FROM t
+/**ASSERT ONE TO MANY**/ JOIN json_each('[1, 2]') AS e ON true  --~ UNKNOWN
+
+-- case: a_function_first_in_from_has_nothing_to_read
+SELECT e.key, u.label FROM json_each('[1, 2]') AS e
+/**ASSERT ONE TO MANY**/ JOIN u ON true  --~ UNKNOWN
+
+-- case: a_function_alone_has_no_key
+SELECT r.n FROM range(0, 3) AS r(n) /**ASSERT UNIQUE(n)**/  --~ UNKNOWN
+
+-- case: a_one_column_function_with_an_alias_names_its_column_by_it
+SELECT t.id, r.r FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN range(t.k) AS r  --~ PROVED
+
+-- case: an_unaliased_function_is_named_by_the_call
+SELECT t.id, json_each.key FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN json_each(t.doc)  --~ PROVED
+
+-- case: a_function_whose_columns_are_unknown_stays_unsupported
+SELECT t.id, f.x FROM t, read_csv('f.csv') AS f /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+--~ unsupported-construct "a table function"
+
+-- case: an_unknown_function_reading_the_input_is_still_one_to_many
+SELECT t.id FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN read_csv(t.doc) AS f  --~ PROVED
+
+-- case: an_unqualified_name_beside_an_unknown_function_is_ambiguous
+-- Its columns are unknown, so `k` may be one of them: never guessed.
+SELECT k, f.x FROM t, read_csv('f.csv') AS f /**ASSERT NOT NULL(k)**/  --~ UNKNOWN
+--~ ambiguous-column "column 'k' is unqualified"
+--~ unsupported-construct "a table function"
+
+-- case: a_scalar_subquery_over_a_correlated_function_keeps_the_select
+-- Its value is opaque (nothing is known of it), and it neither repeats nor drops the outer rows.
+SELECT t.id, (SELECT count(*) FROM json_each(t.doc) AS r) AS n FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: the_value_of_a_scalar_subquery_over_a_function_is_not_known
+SELECT t.id, (SELECT count(*) FROM json_each(t.doc) AS r) AS n FROM t /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
+
+-- case: a_scalar_subquery_over_a_correlated_function_keeps_the_outer_columns
+WITH x AS (SELECT t.k, (SELECT count(*) FROM json_each(t.doc) AS r) AS n FROM t)
+SELECT x.k, u.label FROM x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x.k  --~ PROVED
+
+-- case: a_scalar_subquery_over_an_uncorrelated_function_is_scalar
+SELECT t.id, (SELECT max(n) FROM range(0, 5) AS r(n)) AS m FROM t /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: an_exists_over_a_correlated_function_keeps_the_outer_rows
+SELECT t.id FROM t WHERE EXISTS (SELECT 1 FROM json_each(t.doc) AS e WHERE e.key = 'a') /**ASSERT UNIQUE(id)**/  --~ PROVED
+
+-- case: an_unnest_without_an_alias_is_named_by_the_call
+SELECT t.id, unnest.unnest FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(t.items)  --~ PROVED
+
+-- case: an_unnest_with_an_alias_but_no_column_list_is_named_by_the_alias
+WITH x AS (SELECT t.k, s.s FROM t CROSS JOIN UNNEST(t.items) AS s)
+SELECT x.k, u.label FROM x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x.k  --~ PROVED

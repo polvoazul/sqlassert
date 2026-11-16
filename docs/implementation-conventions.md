@@ -161,6 +161,16 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   string literal with no `%`, `_`, or backslash, and no `ESCAPE`, lowers to
   `=` when the dialect's text compares byte for byte and the column is a
   declared `VARCHAR` or `TEXT` read without passing a set operation.
+- `ir/convert.py` lowers a table function or UNNEST in FROM to an
+  `OpaqueRelation` (rows nothing is known of) under the columns the dialect
+  fixes for it (`DialectSemantics.table_functions`; `_lower_table_function`),
+  so the schema is complete and the other join input's names, types and facts
+  survive; a call whose columns are unknown stays an incomplete opaque
+  relation recorded as unsupported (`_unsupported_source`), and LATERAL is
+  not lowered. An INNER, LEFT or CROSS join of one whose arguments read the
+  left input sets `Join.lateral` (`_reads_left`: plain columns only, none in a
+  subquery or lambda): each of its rows belongs to one left row, so
+  `one_to_many_join` holds, while the left rows it repeats keep no key.
 - `ir/convert.py` lowers a QUALIFY or DISTINCT ON that is not over groups or
   `DISTINCT` as the select's projection, and then by what it can prove of the
   clause. `row_number() OVER (PARTITION BY k...) = 1` (no partition: one row in
