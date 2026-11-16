@@ -319,6 +319,15 @@ certified by `scripts/certify_dialects.py`.
   `NULLIF(a, b)` is read as a CASE over `a` and `b`: DuckDB returns the type of
   `a` (`NULLIF(int, 1.5)` is INTEGER), but another engine may compare in the
   common type.
+- `row_number() OVER (...)`, written exactly so (not inside a larger
+  expression), is an integer type that is never NULL, typed as `BIGINT` (an
+  integer, not claimed to be that one: DuckDB `typeof` gives BIGINT; SQLite
+  `typeof` gives `integer`; from memory, Postgres, Trino and Redshift BIGINT,
+  MySQL BIGINT UNSIGNED, Spark, Databricks and Hive INT, BigQuery INT64,
+  Snowflake NUMBER, ClickHouse UInt64). Its Unique Set with the partition keys
+  needs no flag: the numbers are 1..n within each partition, whatever the
+  engine (NULL keys form one partition, DuckDB probed). RANK, DENSE_RANK and
+  NTILE repeat and claim nothing.
 
 ## Certifying facts
 

@@ -301,3 +301,16 @@ WITH extreme AS (SELECT max(level) AS lv FROM events)
 SELECT *
 FROM dim
 /**ASSERT MANY TO ONE**/ JOIN extreme ON dim.level = extreme.lv  --~ PROVED
+
+-- case: a_row_number_is_an_integer_that_binds_an_integer_column
+-- `row_number()` is an integer type in every engine (DuckDB: BIGINT).
+WITH numbered AS (SELECT k, row_number() OVER (ORDER BY ts) AS n FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN numbered ON dim.level = numbered.n  --~ PROVED
+
+-- case: a_row_number_does_not_bind_text
+WITH numbered AS (SELECT k, row_number() OVER (ORDER BY ts) AS n FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN numbered ON dim.tag = numbered.n  --~ UNKNOWN

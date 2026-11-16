@@ -1956,7 +1956,39 @@ class IrParser:
             expression = item.this if isinstance(item, exp.Alias) else item
             value = self._lower_expression(expression, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
             columns.append(self._output_column(item, expression, value))
+        self._state_row_numbers(items, columns)
         return tuple(columns)
+
+    def _state_row_numbers(self, items: list[Expr], columns: list[ir.OutputColumn]) -> None:
+        """Knowledge of each select item that is exactly `row_number() OVER
+        (PARTITION BY k...)`: it is never NULL, and among the rows of the
+        select's input sharing `k...` (NULLs share one partition) its values
+        are distinct, so `(k..., rn)` is a Unique Set of the relation that
+        computes it, whatever filter or LIMIT follows. A filter that pins `rn`
+        (`rn = 1`) then leaves `k...` unique, by the same closure as any
+        constant.
+
+        Each key must be a selected item (`_partition_plan`: also refusing a
+        key that is not one value per row, or that may read an alias), so the
+        Unique Set is stated over output columns; any other is not stated, and
+        so is none beside a set-returning call, which some engines evaluate
+        after the window. RANK and DENSE_RANK repeat on ties, and a named
+        window may add keys the item does not write: neither is a row number
+        here. A row number inside an expression is no item of its own."""
+        if any(_set_returning_calls(item, self.dialect) for item in items):
+            return
+        for item, column in zip(items, columns):
+            window = _row_number_window(_unaliased(item))
+            if window is None or window.args.get("alias") is not None:
+                continue
+            plan = self._partition_plan(window.args.get("partition_by") or (), items)
+            if plan is None or not all(isinstance(key, int) for key in plan):
+                continue
+            keys = {columns[key] for key in plan if isinstance(key, int)}
+            self._knowledge.append(NonNullColumn(column=column))
+            self._knowledge.append(UniqueSet(columns=frozenset({*keys, column})))
+            # What it is is modelled: an UNKNOWN proof is not for lack of window support.
+            self._unsupported = [(node, construct) for node, construct in self._unsupported if node is not column.scalar_expr]
 
     def _output_column(self, item: Expr, expression: Expr, value: ir.ScalarExpr) -> ir.OutputColumn:
         """The output column of a select item (`value` is `expression` lowered),
@@ -1964,7 +1996,7 @@ class IrParser:
         type the dialect fixes (`_result_type`), a CASE, IF, COALESCE or NULLIF
         whose results share one (`_type_results`). The column is typed as one
         declared with that type, so its equalities bind where the type compares
-        by identity. The type says how values compare, no more: an expression
+        by identity (a `row_number()` window is an integer). The type says how values compare, no more: an expression
         that is not injective is no less typed. Whether it is a projected item
         or a grouping key makes no difference."""
         column = ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=value)
@@ -1978,6 +2010,9 @@ class IrParser:
                 typing = self._cast_typing(expression, value)
             case exp.Case() | exp.If() | exp.Coalesce() | exp.Nullif():
                 typing = self._result_typings.get(id(expression))
+            case exp.Window() if _row_number_window(expression) is not None:
+                kind = exp.DataType.build("BIGINT", dialect=self.dialect)  # An integer type in every engine, whichever.
+                typing = self._declared_typing(kind)
             case _:
                 kind = self._result_type(expression)
                 typing = None if kind is None else self._declared_typing(kind)
@@ -2289,7 +2324,7 @@ class IrParser:
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             opaque = ir.OpaqueExpression(origin=origin, description=description)
             if isinstance(expression, exp.Window):
-                self._unsupported.append((opaque, "a window function (other than QUALIFY row_number() ... = 1)"))
+                self._unsupported.append((opaque, "a window function (other than a row_number() select item or QUALIFY row_number() ... = 1)"))
             return opaque
         return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
 
@@ -3795,6 +3830,13 @@ def _row_number_equals_one(predicate: Expr) -> exp.Window | None:
     if not isinstance(literal, exp.Literal) or literal.is_string or literal.this != "1":
         return None
     return window
+
+
+def _row_number_window(expression: Expr) -> exp.Window | None:
+    """`expression` when it is a `row_number()` window call, however it is partitioned."""
+    while isinstance(expression, exp.Paren):
+        expression = expression.this
+    return expression if isinstance(expression, exp.Window) and isinstance(expression.this, exp.RowNumber) else None
 
 
 def _last_select(query: Expr) -> exp.Select | None:

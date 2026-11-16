@@ -323,3 +323,377 @@ FROM f
 /**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "DISTINCT ON with HAVING"
     SELECT DISTINCT ON (k) k FROM t HAVING k > 1
 ) AS s ON s.k = f.k
+
+-- The portable spelling of the same dedup: a select item that is exactly
+-- `row_number() OVER (PARTITION BY k...)` has distinct values among the rows
+-- sharing `k...`, so `(k..., rn)` is a Unique Set of the relation that
+-- computes it, and a filter that pins `rn` leaves `k...` unique.
+-- case: row_number_in_a_subquery_filtered_to_one_makes_the_partition_key_unique
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT id, k, v FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: row_number_in_a_cte_filtered_to_one_makes_a_join_on_the_key_many_to_one
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+WITH ranked AS (
+    SELECT t.*, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC) AS rn FROM t
+)
+SELECT f.g, ranked.v
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN ranked ON ranked.k = f.k AND ranked.rn = 1  --~ PROVED
+/**ASSERT MANY TO ONE**/ JOIN ranked AS other ON other.k = f.k  --~ UNKNOWN
+
+-- case: row_number_filtered_to_one_in_the_outer_where_joins_many_to_one
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+WITH ranked AS (
+    SELECT id, k, v, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC) AS rn FROM t
+), latest AS (
+    SELECT id, k, v FROM ranked WHERE rn = 1
+)
+SELECT *
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN latest ON latest.k = f.k  --~ PROVED
+
+-- The window item beside a star or other items leaves them their lineage:
+-- the input's key still proves, and NOT NULL still follows.
+-- case: a_row_number_item_leaves_the_other_columns_their_facts
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, v INTEGER, ts INTEGER);
+CREATE TABLE f (id INTEGER, k INTEGER, g INTEGER);
+
+WITH ranked AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+)
+SELECT *
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN ranked ON ranked.id = f.id  --~ PROVED
+
+-- case: a_row_number_item_among_explicit_items_keeps_their_not_null
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, v INTEGER, ts INTEGER);
+
+SELECT id, k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn, v + 1 AS w FROM t
+/**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+/**ASSERT NOT NULL(k)**/  --~ PROVED
+/**ASSERT NOT NULL(rn)**/  --~ PROVED
+/**ASSERT NOT NULL(w)**/  --~ UNKNOWN
+
+-- case: the_relation_that_computes_a_row_number_has_the_partition_key_and_it_as_a_unique_set
+CREATE TABLE t (id INTEGER, k INTEGER, j INTEGER, v INTEGER, ts INTEGER);
+
+SELECT id, k, j, v, ROW_NUMBER() OVER (PARTITION BY k, j ORDER BY ts) AS rn FROM t
+/**ASSERT UNIQUE(k, j, rn)**/  --~ PROVED
+/**ASSERT UNIQUE(k, rn)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(k, j)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(rn)**/  --~ UNKNOWN
+
+-- case: a_composite_partition_key_is_unique_only_as_a_whole
+CREATE TABLE t (id INTEGER, k INTEGER, j INTEGER, v INTEGER, ts INTEGER);
+CREATE TABLE f (k INTEGER, j INTEGER, g INTEGER);
+
+WITH ranked AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k, j ORDER BY ts) AS rn FROM t
+)
+SELECT *
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN ranked ON ranked.k = f.k AND ranked.j = f.j AND ranked.rn = 1  --~ PROVED
+/**ASSERT MANY TO ONE**/ JOIN ranked AS r2 ON r2.k = f.k AND r2.rn = 1  --~ UNKNOWN
+/**ASSERT MANY TO ONE**/ JOIN ranked AS r3 ON r3.k = f.k AND r3.j = f.j  --~ UNKNOWN
+
+-- Without PARTITION BY the row numbers are distinct among all rows: one is
+-- unique, and pinned, the relation has at most one row.
+-- case: row_number_without_a_partition_is_unique_by_itself
+CREATE TABLE t (id INTEGER, v INTEGER, ts INTEGER);
+
+SELECT id, v, ROW_NUMBER() OVER (ORDER BY ts) AS rn FROM t
+/**ASSERT UNIQUE(rn)**/  --~ PROVED
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: row_number_without_a_partition_filtered_to_one_leaves_at_most_one_row
+CREATE TABLE t (id INTEGER, v INTEGER, ts INTEGER);
+
+SELECT id, v FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY ts) AS rn FROM t) WHERE rn = 1
+/**ASSERT UNIQUE(v)**/  --~ PROVED
+
+-- Any constant pins the row number, in any spelling of the filter.
+-- case: row_number_filtered_to_another_constant_leaves_the_key_unique
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE rn = 3
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: row_number_compared_the_other_way_round_leaves_the_key_unique
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE 1 = rn
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: row_number_filtered_null_safely_leaves_the_key_unique
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE rn IS NOT DISTINCT FROM 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_pinning_filter_may_have_other_conjuncts
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE v > 0 AND rn = 1 AND id IS NOT NULL
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- Rows removed before the window renumber the partitions; rows removed after
+-- it leave the numbers distinct.
+-- case: a_filter_before_the_window_keeps_the_unique_set
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t WHERE v > 0
+/**ASSERT UNIQUE(k, rn)**/  --~ PROVED
+
+-- case: a_limit_after_the_window_keeps_the_unique_set
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t LIMIT 5
+/**ASSERT UNIQUE(k, rn)**/  --~ PROVED
+
+-- case: a_qualify_beside_the_window_item_keeps_the_unique_set
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t QUALIFY rn <= 2
+/**ASSERT UNIQUE(k, rn)**/  --~ PROVED
+
+-- case: a_distinct_select_with_a_row_number_keeps_the_unique_set
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT DISTINCT v, k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+/**ASSERT UNIQUE(k, rn)**/  --~ PROVED
+
+-- case: a_row_number_over_a_key_that_is_a_selected_expression
+CREATE TABLE t (id INTEGER, name VARCHAR, ts INTEGER);
+
+SELECT lower(name) AS n, ROW_NUMBER() OVER (PARTITION BY lower(name) ORDER BY ts) AS rn FROM t
+/**ASSERT UNIQUE(n, rn)**/  --~ PROVED
+
+-- The rank functions repeat on ties.
+-- case: rank_is_not_a_row_number
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, RANK() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: dense_rank_is_not_a_row_number
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, DENSE_RANK() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_rank_item_has_no_unique_set
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT k, RANK() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+/**ASSERT UNIQUE(k, rn)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_row_number_filtered_to_a_range_leaves_the_key_repeating
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE rn <= 2
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_row_number_filtered_below_two_leaves_the_key_repeating
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) WHERE rn < 2
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: an_unfiltered_row_number_leaves_the_key_repeating
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t)
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_filter_that_pins_the_row_number_only_on_some_rows_leaves_the_key_repeating
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE rn = 1 OR v > 0
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_filter_on_another_column_does_not_pin_the_row_number
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE v = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_filter_on_the_partition_key_does_not_pin_the_row_number
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT v FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE k = 1
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- The row number is exactly the window call: a computation over it is no row
+-- number, whether it is the item or the filtered expression.
+-- case: an_item_computed_from_a_row_number_is_not_one
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) - 1 AS rn FROM t
+) AS a
+WHERE rn = 0
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_cast_row_number_item_is_not_one
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, CAST(ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS BIGINT) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_filter_on_an_expression_over_the_row_number_does_not_pin_it
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE rn + 0 = 1 AND rn * 1 = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- Parentheses around the window call change nothing.
+-- case: a_parenthesized_row_number_is_one
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, (ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts)) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- A key that is not one value per row, or that is no selected item, states
+-- nothing.
+-- case: a_row_number_over_a_non_deterministic_key_states_nothing
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT id, rn FROM (
+    SELECT id, ROW_NUMBER() OVER (PARTITION BY random() ORDER BY ts) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_row_number_over_a_literal_key_states_nothing
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT k, ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY ts) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_row_number_over_a_key_that_is_not_selected_states_nothing
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(id)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- A bare name that may read a select alias is not a key.
+-- case: a_row_number_over_a_name_an_alias_shadows_states_nothing
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT dept FROM (
+    SELECT k AS dept, id AS k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(dept)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- A named window may add partition keys the item does not write.
+-- case: a_row_number_over_a_named_window_states_nothing
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT *, ROW_NUMBER() OVER w AS rn FROM t WINDOW w AS (PARTITION BY k ORDER BY ts)
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- case: a_row_number_over_a_join_keeps_each_inputs_facts
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER, ts INTEGER);
+CREATE TABLE d (k INTEGER PRIMARY KEY, name VARCHAR);
+
+SELECT k, name FROM (
+    SELECT t.k, d.name, ROW_NUMBER() OVER (PARTITION BY t.k ORDER BY t.ts) AS rn FROM t JOIN d ON d.k = t.k
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT DETERMINES(k -> name)**/  --~ PROVED
+
+-- A join that repeats the row-numbered rows repeats the key.
+-- case: a_row_number_through_a_join_that_repeats_its_rows_is_not_unique
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+SELECT a.k
+FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t) AS a
+JOIN f ON f.k = a.k
+WHERE a.rn = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- The spelling every engine without QUALIFY uses.
+-- case: postgres_row_number_in_a_cte_filtered_to_one_makes_the_key_unique
+-- dialect: postgres
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+WITH ranked AS (
+    SELECT t.*, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC) AS rn FROM t
+)
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN ranked ON ranked.k = f.k AND ranked.rn = 1  --~ PROVED
+
+-- case: mysql_row_number_in_a_subquery_filtered_to_one_makes_the_key_unique
+-- dialect: mysql
+CREATE TABLE t (id INTEGER, k INTEGER, v INTEGER, ts INTEGER);
+
+SELECT id, k, v FROM (
+    SELECT t.*, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: spark_row_number_in_a_subquery_filtered_to_one_makes_the_key_unique
+-- dialect: spark
+CREATE TABLE t (id INT, k INT, v INT, ts INT);
+
+SELECT id, k, v FROM (
+    SELECT t.*, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts DESC) AS rn FROM t
+) AS a
+WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: trino_row_number_filtered_to_one_makes_the_key_unique
+-- dialect: trino
+CREATE TABLE t (id INTEGER, k INTEGER, ts INTEGER);
+
+SELECT k FROM (
+    SELECT k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) AS rn FROM t
+) WHERE rn = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED

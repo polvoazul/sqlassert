@@ -218,7 +218,11 @@ FD survives. The new columns:
 
 - `row_number() over (partition by g …)`: `{g, rn}` is a strict key (row
   numbers are distinct within a partition; NULLs in g share one partition).
-  `QUALIFY rn = 1` then makes `g` a key (the current special case).
+  `QUALIFY rn = 1` then makes `g` a key (`QualifyByPartition`); so does a
+  later `WHERE rn = 1` over a subquery or CTE that computes `rn`, as the
+  closure over the constant `rn` and the Unique Set `{g, rn}`, which
+  `ir/convert.py` states as Knowledge (`_state_row_numbers`) when every `g` is
+  a selected column.
 - `rank()` / `dense_rank()`: ties repeat, so no key.
 - A window aggregate without `ORDER BY` (`sum(x) over (partition by g)`) is
   constant per partition: `g → sum_g`. With `ORDER BY` (running totals) it
@@ -360,9 +364,10 @@ Ordered roughly by payoff over cost.
   all their columns; INTERSECT and EXCEPT keep the left input's dependencies.
   Not yet: tagged `UNION ALL`. The right arm's columns are paired by
   position (`SetOperation.arms`) for nullability and domains, not yet for FDs.
-- [ ] **Window functions** — lower windows into the IR (today only
-  `QUALIFY row_number() … = 1` is recognized), inherit input keys and FDs, and
-  add the `row_number` key and partition-constant aggregate FDs above.
+- [ ] **Window functions** — lower windows into the IR (today a select item
+  `row_number() OVER (PARTITION BY g …)` and `QUALIFY row_number() … = 1` are
+  recognized; the other windows are opaque columns that keep the input's keys
+  and FDs), and add the partition-constant aggregate FDs above.
 
 ## Representation
 

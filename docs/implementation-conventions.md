@@ -175,6 +175,17 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   that holds of each row or of any subset, and no fact that needs all of them
   (Referential Coverage toward it). A select that aggregates without GROUP BY
   or has a HAVING is one group, not rows: it stays opaque.
+- `ir/convert.py` states one more fact of a window: a select item that is
+  exactly `row_number() OVER (PARTITION BY k...)` (no named window, not inside
+  an expression) is Knowledge, `NonNullColumn(rn)` and the Unique Set
+  `(k..., rn)` of the relation that computes it, when every key is a selected
+  item of that select (`_state_row_numbers`, with `_partition_plan`'s key
+  rules). It is typed as an integer, so no new proof is needed: a later filter
+  `rn = 1` (any constant, `IS NOT DISTINCT FROM`, in a WHERE or an ON) pins
+  `rn` as it pins any column, and the closure leaves `k...` a Unique Set, in a
+  subquery, a CTE or a view. A key that is not selected is not stated.
+  Anything else a window computes is still opaque and reported
+  `unsupported-construct`; a recognized row number is not.
 - `discovery/` hydrates a SQL Program from a database catalog before the
   engine runs; the engine never sees it. `DatabaseKnowledgeFetcher` links the
   Program once without a connection to find the external Named Relations it

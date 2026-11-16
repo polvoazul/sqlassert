@@ -17,7 +17,7 @@ SELECT * FROM t
 --~ unsupported-construct "ROLLUP is not supported by sqlassert yet"
 
 -- case: a_window_function_is_named_for_its_own_column
-SELECT empno, row_number() OVER (ORDER BY sal) AS r FROM emp
+SELECT empno, rank() OVER (ORDER BY sal) AS r FROM emp
 /**ASSERT UNIQUE(r)**/  --~ UNKNOWN
 --~ unsupported-construct "a window function"
 
