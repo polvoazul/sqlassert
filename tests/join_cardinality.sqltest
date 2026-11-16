@@ -46,3 +46,208 @@ CREATE TABLE codes (code VARCHAR PRIMARY KEY);
 CREATE TABLE nums (v INTEGER);
 SELECT * FROM nums /**ASSERT ONE TO ONE**/ JOIN codes ON codes.code = nums.v
 --~ UNKNOWN
+
+-- Equalities on a function of the other input's row. For one row of it the
+-- function is one value, so the matched column it equals is bound (`b.k =
+-- -a.x`). The other way round, `-b.x = a.k` binds `b.x` too, but only
+-- because `-x` is injective (exact arithmetic that raises on overflow); a
+-- cast is not. Either way the comparison must lose nothing: typed alike.
+
+-- case: a_negated_column_binds_the_matched_column
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2));
+CREATE TABLE refunds (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+SELECT * FROM ledger /**ASSERT MANY TO ONE**/ JOIN refunds ON refunds.amount = -ledger.amount
+--~ PROVED
+
+-- case: a_negated_column_binds_the_matched_column__not_the_other_input
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2));
+CREATE TABLE refunds (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+SELECT * FROM ledger /**ASSERT ONE TO MANY**/ JOIN refunds ON refunds.amount = -ledger.amount
+--~ UNKNOWN
+
+-- case: the_negated_matched_column_is_bound_through_its_inverse
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+CREATE TABLE refunds (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2));
+SELECT * FROM ledger /**ASSERT ONE TO MANY**/ JOIN refunds ON refunds.amount = -ledger.amount
+--~ PROVED
+
+-- case: both_inputs_unique_on_the_negated_column_is_one_to_one
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+CREATE TABLE refunds (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+SELECT * FROM ledger /**ASSERT ONE TO ONE**/ JOIN refunds ON -refunds.amount = ledger.amount
+--~ PROVED
+
+-- case: an_added_literal_binds_the_matched_column
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = child.parent + 1
+--~ PROVED
+
+-- case: an_added_literal_binds_the_matched_column__not_the_other_input
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT ONE TO MANY**/ JOIN chain AS p ON p.id = child.parent + 1
+--~ PROVED
+
+-- case: an_added_literal_on_the_matched_side_is_inverted
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS a /**ASSERT MANY TO ONE**/ JOIN chain AS b ON a.id = b.parent + 1
+--~ PROVED
+
+-- case: a_subtracted_from_literal_on_the_matched_side_is_inverted
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS a /**ASSERT MANY TO ONE**/ JOIN chain AS b ON 10 - b.parent = a.id
+--~ PROVED
+
+-- case: a_function_of_the_matched_side_binds_through_a_mixed_integer_width
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+CREATE TABLE wide (id BIGINT PRIMARY KEY);
+SELECT * FROM chain /**ASSERT MANY TO ONE**/ JOIN wide ON wide.id = chain.parent + 1
+--~ PROVED
+
+-- case: an_added_literal_is_not_typed_over_a_decimal
+-- DuckDB's DECIMAL(10, 2) + 1 is a DECIMAL(13, 2): compared as a wider type.
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+SELECT * FROM ledger AS a /**ASSERT MANY TO ONE**/ JOIN ledger AS b ON b.amount = a.amount + 1
+--~ UNKNOWN
+
+-- case: an_added_literal_over_a_decimal_on_the_matched_side_is_inverted
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
+SELECT * FROM ledger AS a /**ASSERT ONE TO MANY**/ JOIN ledger AS b ON b.amount = a.amount + 1
+--~ PROVED
+
+-- case: a_product_is_not_typed
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = child.parent * 2
+--~ UNKNOWN
+
+-- case: a_product_on_the_matched_side_is_not_inverted
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS a /**ASSERT MANY TO ONE**/ JOIN chain AS b ON a.id = b.parent * 2
+--~ UNKNOWN
+
+-- case: a_double_is_bound_by_no_function
+-- -0.0 = 0.0, and x + 1 rounds: neither the column nor its function binds.
+CREATE TABLE readings (id INTEGER PRIMARY KEY, v DOUBLE UNIQUE);
+SELECT * FROM readings AS a /**ASSERT MANY TO ONE**/ JOIN readings AS b ON b.v = -a.v
+--~ UNKNOWN
+
+-- case: a_double_is_bound_by_no_function__inverse
+CREATE TABLE readings (id INTEGER PRIMARY KEY, v DOUBLE UNIQUE);
+SELECT * FROM readings AS a /**ASSERT MANY TO ONE**/ JOIN readings AS b ON a.v = b.v + 1
+--~ UNKNOWN
+
+-- case: a_double_is_bound_by_no_function__one_to_many
+CREATE TABLE readings (id INTEGER PRIMARY KEY, v DOUBLE UNIQUE);
+SELECT * FROM readings AS a /**ASSERT ONE TO MANY**/ JOIN readings AS b ON a.v = b.v + 1
+--~ UNKNOWN
+
+-- case: a_cast_of_a_double_function_to_an_integer_binds_the_matched_column
+CREATE TABLE readings (id INTEGER PRIMARY KEY, v DOUBLE UNIQUE);
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM readings /**ASSERT MANY TO ONE**/ JOIN chain ON chain.id = CAST(-readings.v AS INTEGER)
+--~ PROVED
+
+-- case: a_cast_binds_the_matched_column
+CREATE TABLE events (id INTEGER PRIMARY KEY, ts TIMESTAMP UNIQUE);
+CREATE TABLE days (day DATE PRIMARY KEY);
+SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN days ON days.day = CAST(events.ts AS DATE)
+--~ PROVED
+
+-- case: a_cast_is_not_inverted
+-- Many timestamps are on one day, however unique each is.
+CREATE TABLE events (id INTEGER PRIMARY KEY, ts TIMESTAMP UNIQUE);
+CREATE TABLE days (day DATE PRIMARY KEY);
+SELECT * FROM events /**ASSERT ONE TO MANY**/ JOIN days ON days.day = CAST(events.ts AS DATE)
+--~ UNKNOWN
+
+-- case: a_cast_on_the_matched_side_is_not_inverted
+CREATE TABLE events (id INTEGER PRIMARY KEY, ts TIMESTAMP UNIQUE);
+CREATE TABLE days (day DATE PRIMARY KEY);
+SELECT * FROM days /**ASSERT MANY TO ONE**/ JOIN events ON days.day = CAST(events.ts AS DATE)
+--~ UNKNOWN
+
+-- case: a_cast_to_text_binds_the_matched_column
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE nums (v INTEGER UNIQUE);
+SELECT * FROM nums /**ASSERT MANY TO ONE**/ JOIN codes ON codes.code = CAST(nums.v AS VARCHAR)
+--~ PROVED
+
+-- case: a_cast_to_text_is_not_inverted
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE nums (v INTEGER UNIQUE);
+SELECT * FROM nums /**ASSERT ONE TO MANY**/ JOIN codes ON codes.code = CAST(nums.v AS VARCHAR)
+--~ UNKNOWN
+
+-- A BIGINT cast to DOUBLE to be compared loses its low bits: 2^53 and 2^53 + 1
+-- are one double, so two keys match one row.
+-- case: a_cast_to_a_double_binds_no_integer_column
+CREATE TABLE big (id BIGINT PRIMARY KEY);
+CREATE TABLE readings (id INTEGER PRIMARY KEY, v DOUBLE UNIQUE);
+SELECT * FROM readings /**ASSERT MANY TO ONE**/ JOIN big ON big.id = CAST(readings.v AS DOUBLE)
+--~ UNKNOWN
+
+-- case: a_cast_to_another_type_binds_no_column
+-- The comparison would cast the DATE to a TIMESTAMP, whose type is not the column's.
+CREATE TABLE events (id INTEGER PRIMARY KEY, ts TIMESTAMP UNIQUE);
+CREATE TABLE days (day DATE PRIMARY KEY);
+SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN days ON days.day = CAST(events.ts AS TIMESTAMP)
+--~ UNKNOWN
+
+-- case: a_cast_of_text_to_text_is_not_typed
+CREATE TABLE codes (code VARCHAR PRIMARY KEY);
+CREATE TABLE names (name VARCHAR UNIQUE);
+SELECT * FROM names /**ASSERT MANY TO ONE**/ JOIN codes ON codes.code = CAST(names.name AS VARCHAR)
+--~ UNKNOWN
+
+-- case: a_function_that_may_differ_per_evaluation_binds_nothing
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = CAST(child.parent + random() AS INTEGER)
+--~ UNKNOWN
+
+-- case: an_expression_that_may_be_null_for_a_value_binds_nothing_untyped
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = nullif(child.parent, 0)
+--~ UNKNOWN
+
+-- case: a_try_cast_binds_nothing_untyped
+CREATE TABLE events (id INTEGER PRIMARY KEY, ts TIMESTAMP UNIQUE);
+CREATE TABLE days (day DATE PRIMARY KEY);
+SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN days ON days.day = TRY_CAST(events.ts AS DATE)
+--~ UNKNOWN
+
+-- IS NOT DISTINCT FROM also matches NULL to NULL: the bound column is non-null
+-- only when the function is never NULL, here of a NOT NULL column.
+-- case: a_null_safe_equality_on_a_function_of_a_non_null_column_is_definite
+CREATE TABLE a (k INTEGER UNIQUE);
+CREATE TABLE b (k INTEGER NOT NULL);
+SELECT * FROM b /**ASSERT MANY TO ONE**/ JOIN a ON a.k IS NOT DISTINCT FROM -b.k
+--~ PROVED
+
+-- case: a_null_safe_equality_on_a_function_of_a_nullable_column_matches_nulls
+CREATE TABLE a (k INTEGER UNIQUE);
+CREATE TABLE b (k INTEGER);
+SELECT * FROM b /**ASSERT MANY TO ONE**/ JOIN a ON a.k IS NOT DISTINCT FROM -b.k
+--~ UNKNOWN
+
+-- case: a_null_safe_equality_through_an_inverse_is_definite_for_a_non_null_column
+CREATE TABLE a (k INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER UNIQUE);
+SELECT * FROM a /**ASSERT MANY TO ONE**/ JOIN b ON -b.k IS NOT DISTINCT FROM a.k
+--~ PROVED
+
+-- case: a_null_safe_equality_through_an_inverse_matches_nulls_of_a_nullable_column
+CREATE TABLE a (k INTEGER);
+CREATE TABLE b (k INTEGER UNIQUE);
+SELECT * FROM a /**ASSERT MANY TO ONE**/ JOIN b ON -b.k IS NOT DISTINCT FROM a.k
+--~ UNKNOWN
+
+-- case: an_outer_join_binds_through_a_function_too
+CREATE TABLE a (k INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER UNIQUE);
+SELECT * FROM a /**ASSERT MANY TO ONE**/ LEFT JOIN b ON b.k = a.k + 1
+--~ PROVED
+
+-- case: arithmetic_that_wraps_binds_nothing
+-- dialect: sqlite
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = child.parent + 1
+--~ UNKNOWN

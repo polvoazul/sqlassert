@@ -86,21 +86,36 @@ def _reaches_row_identity(closure: Result[Closure]) -> Result[bool]:
     return any_of(gaps)
 
 
-def _uncovered_keys(closure: Result[Closure]) -> list[Result[bool]]:
-    """Each known key the closure misses, naming its missing columns, down
-    through every input the closure looked into."""
+@dataclass(frozen=True)
+class KeyGap:
+    """A known key a closure misses: the key's `reached` attributes and its
+    `missing` columns, with the evidence of the key."""
+
+    reached: frozenset[Attribute]
+    missing: tuple[ir.OutputColumn, ...]
+    evidence: Result[bool]
+
+
+def _key_gaps(closure: Result[Closure]) -> list[KeyGap]:
+    """Each known key the closure misses, down through every input the
+    closure looked into."""
     relation = closure.value.relation
     identity = RowIdentity(relation)
-    gaps: list[Result[bool]] = []
+    gaps: list[KeyGap] = []
     for dependency, evidence in _functional_dependencies(relation).value.items():
         if dependency.dependent != identity or dependency.determinant <= closure.value.columns:
             continue
-        missing = [column for column in relation.output_columns if column in dependency.determinant - closure.value.columns]
-        gaps.append(evidence & unknown("Unique-set columns are not covered", *missing))
+        missing = tuple(column for column in relation.output_columns if column in dependency.determinant - closure.value.columns)
+        gaps.append(KeyGap(dependency.determinant & closure.value.columns, missing, evidence))
     for premise in closure.value.inputs:
         if RowIdentity(premise.value.relation) not in premise.value.columns:
-            gaps.extend(_uncovered_keys(premise))
+            gaps.extend(_key_gaps(premise))
     return gaps
+
+
+def _uncovered_keys(closure: Result[Closure]) -> list[Result[bool]]:
+    """Each known key the closure misses, naming its missing columns."""
+    return [gap.evidence & unknown("Unique-set columns are not covered", *gap.missing) for gap in _key_gaps(closure)]
 
 
 # Closure -----------------------------------------------------------------------

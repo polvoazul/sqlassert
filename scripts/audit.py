@@ -245,9 +245,17 @@ def breakdown(results, key):
 
 # Who can act on a join with no proved cardinality: 1 nobody (no proof exists),
 # 2 the project (a fact is missing), 3 sqlassert (it loses or does not model something).
+# Keys are `reason (detail)` as `vendor_dbt_analysis` writes them; one with a construct after the
+# detail, `reason (detail: construct)`, has its detail's mark. A reason not listed is sqlassert's.
 UNKNOWN_MARKS = {
-    "unconstrained": "¹", "untyped-key (table)": "²", "untyped-key (type-mismatch)": "²", "no-unique-set": "²³",
+    "unconstrained": "¹", "no-unique-set (partial-key)": "¹",
+    "untyped-key (table)": "²", "untyped-key (type-mismatch)": "²", "no-unique-set (undeclared-key)": "²",
+    "no-unique-set (cascade)": "³",
 }
+
+
+def unknown_mark(reason):
+    return UNKNOWN_MARKS.get(reason) or UNKNOWN_MARKS.get(reason.split(": ", 1)[0] + ")", "³")
 
 
 def unknown_reasons(results):
@@ -256,7 +264,7 @@ def unknown_reasons(results):
     counts = Counter()
     for result in results:
         counts.update({reason: entry["count"] for reason, entry in result["joins"].get("by_unknown_reason", {}).items()})
-    marked = [(UNKNOWN_MARKS.get(reason, "³"), reason, count) for reason, count in counts.items()]
+    marked = [(unknown_mark(reason), reason, count) for reason, count in counts.items()]
     marked.sort(key=lambda item: (item[0] == "¹", -item[2], item[1]))
     return f"⟦{urlsafe_b64encode(json.dumps(marked).encode()).decode()}⟧" if marked else ""
 
@@ -440,7 +448,7 @@ def render_html(repositories, rows):
       <dd>An asterisk marks a join source that sqlassert treats as opaque.</dd>
       <dt>Why unknown (click UNKNOWN in Join cardinality)</dt>
       <dd>Marks say who can act: <sup>1</sup> nobody, no proof exists (listed last); <sup>2</sup> the project, by supplying a
-        missing fact (a type, a key); <sup>3</sup> sqlassert, which loses or does not model something. <sup>23</sup> is either.
+        missing fact (a type, a key); <sup>3</sup> sqlassert, which loses or does not model something.
         After a colon, the construct sqlassert does not support that is behind the reason.</dd>
       <dd>Why a join has no proved cardinality, the first that applies:
         <code>unsupported</code> (a table function, UNNEST or LATERAL input, or a join inside a SELECT sqlassert reads as opaque),
@@ -450,7 +458,10 @@ def render_html(repositories, rows):
         <code>values</code>, <code>computed</code>, <code>opaque-relation</code>, <code>set-operation</code>, <code>table</code> with no declared type,
         or <code>type-mismatch</code>),
         <code>expression-key</code> (only expressions are compared, not columns),
-        <code>no-unique-set</code> (the equated columns are a unique key of neither input).</dd>
+        <code>no-unique-set</code> (the equated columns are a unique key of neither input; in parentheses, who can act:
+        <code>cascade</code> <sup>3</sup>, an input has a join or a construct below it that is itself unproved or unsupported, so fixing that may fix this join;
+        <code>partial-key</code> <sup>1</sup>, the equalities bind part of a known key and the rest of ON is a range or inequality, so the join is as constrained as written;
+        <code>undeclared-key</code> <sup>2</sup>, no known key covers the equated columns, so a declared one would prove it).</dd>
       <dt>Base tables typed</dt>
       <dd>Base tables are the data entering the project: sources, seeds and snapshots the analyzed models read whose every read column has a known type, from a
         contract, the catalog or base facts. A join equality on an untyped column proves nothing, since an implicit

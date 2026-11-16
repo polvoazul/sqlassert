@@ -12,6 +12,7 @@ SCHEMA = """
 CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, ts TIMESTAMP, doc VARCHAR, amount DECIMAL(10, 2), ref INTEGER);
 CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, start_ts TIMESTAMP, end_ts TIMESTAMP, day DATE, amount DECIMAL(10, 2));
 CREATE TABLE f (k REAL, x INTEGER);
+CREATE TABLE ranges (k INTEGER, start_ts TIMESTAMP, end_ts TIMESTAMP, PRIMARY KEY (k, start_ts));
 """
 
 
@@ -39,7 +40,7 @@ CASES = [
     (
         "unqualified key beside a table function",
         "SELECT a.id FROM a CROSS JOIN json_each(a.doc) AS e JOIN b ON b.k = ref",
-        UnprovedJoin("no-unique-set"),
+        UnprovedJoin("no-unique-set", "undeclared-key"),
     ),
     (
         "unqualified key beside a table function of unknown columns",
@@ -54,7 +55,7 @@ CASES = [
     (
         "key of a relation over a table function, not unique",
         "SELECT a.id FROM (SELECT a.k, e.value FROM a CROSS JOIN json_each(a.doc) AS e) AS m JOIN b ON b.k = m.k",
-        UnprovedJoin("no-unique-set"),
+        UnprovedJoin("no-unique-set", "undeclared-key"),
     ),
     (
         "inside an opaque SELECT",
@@ -105,12 +106,12 @@ CASES = [
     (
         "key read through a QUALIFY that drops rows",
         "SELECT a.id FROM a JOIN (SELECT k FROM b QUALIFY rank() OVER (ORDER BY id) = 1) AS m ON a.k = m.k",
-        UnprovedJoin("no-unique-set"),
+        UnprovedJoin("no-unique-set", "undeclared-key"),
     ),
     (
         "partition key that is not selected",
         "SELECT a.id FROM a JOIN (SELECT k FROM b QUALIFY row_number() OVER (PARTITION BY k, day ORDER BY id) = 1) AS m ON a.k = m.k",
-        UnprovedJoin("no-unique-set"),
+        UnprovedJoin("no-unique-set", "partial-key"),
     ),
     (
         "set operation key typed in both inputs by name",
@@ -129,9 +130,65 @@ CASES = [
     ),
     ("undeclared table key", "SELECT a.id FROM a JOIN missing AS m ON a.k = m.k", UnprovedJoin("untyped-key", "table")),
     ("type mismatch", "SELECT a.id FROM a JOIN f ON a.k = f.k", UnprovedJoin("untyped-key", "type-mismatch")),
-    ("expression key", "SELECT a.id FROM a JOIN b ON b.day = CAST(a.ts AS DATE)", UnprovedJoin("expression-key")),
-    ("negated key", "SELECT a.id FROM a JOIN b ON a.amount = -b.amount", UnprovedJoin("expression-key")),
-    ("no unique set", "SELECT a.id FROM a JOIN b ON a.k = b.k", UnprovedJoin("no-unique-set")),
+    # An expression that binds a column is no expression-key: what is left is what binds nothing.
+    ("cast key binds the matched column", "SELECT a.id FROM a JOIN b ON b.day = CAST(a.ts AS DATE)", UnprovedJoin("no-unique-set", "undeclared-key")),
+    ("negated key binds both columns", "SELECT a.id FROM a JOIN b ON a.amount = -b.amount", UnprovedJoin("no-unique-set", "undeclared-key")),
+    ("added literal key binds both columns", "SELECT a.id FROM a JOIN b ON a.k = b.k + 1", UnprovedJoin("no-unique-set", "undeclared-key")),
+    ("one equality that binds beside one that does not", "SELECT a.id FROM a JOIN b ON a.k = b.k + 1 AND a.id = b.k * 2", UnprovedJoin("no-unique-set", "undeclared-key")),
+    ("product key", "SELECT a.id FROM a JOIN b ON a.k = b.k * 2", UnprovedJoin("expression-key")),
+    ("cast to a type the column is not", "SELECT a.id FROM a JOIN b ON b.day = CAST(a.ts AS TIMESTAMP)", UnprovedJoin("expression-key")),
+    ("cast to a lossy type", "SELECT a.id FROM a JOIN b ON a.k = CAST(b.amount AS DOUBLE)", UnprovedJoin("expression-key")),
+    ("expression that may be NULL for a value", "SELECT a.id FROM a JOIN b ON a.k = nullif(b.k, 0)", UnprovedJoin("expression-key")),
+    ("an injective function against a product", "SELECT a.id FROM a JOIN b ON a.k + 1 = b.k * 2", UnprovedJoin("expression-key")),
+    ("no unique set", "SELECT a.id FROM a JOIN b ON a.k = b.k", UnprovedJoin("no-unique-set", "undeclared-key")),
+    # no-unique-set, by who can act: a cascade (ours), a partial key (nobody), an undeclared key (the project).
+    (
+        "undeclared key: no key beside the bound column, nothing unproved below",
+        "SELECT a.id FROM a JOIN b ON a.id = b.id JOIN b AS c ON c.k = a.k",
+        UnprovedJoin("no-unique-set", "undeclared-key"),
+    ),
+    (
+        "undeclared key: a semi join below has no cardinality to prove",
+        "SELECT a.id FROM a SEMI JOIN b ON a.k = b.k JOIN b AS c ON c.k = a.k",
+        UnprovedJoin("no-unique-set", "undeclared-key"),
+    ),
+    (
+        "partial key: a range over the rest of the key",
+        "SELECT a.id FROM a JOIN ranges ON a.k = ranges.k AND a.ts >= ranges.start_ts AND a.ts < ranges.end_ts",
+        UnprovedJoin("no-unique-set", "partial-key"),
+    ),
+    (
+        "partial key: nothing else written",
+        "SELECT a.id FROM a JOIN ranges ON a.k = ranges.k",
+        UnprovedJoin("no-unique-set", "partial-key"),
+    ),
+    (
+        "partial key boundary: an equality that binds nothing remains",
+        "SELECT a.id FROM a JOIN ranges ON a.k = ranges.k AND a.id = ranges.k * 2",
+        UnprovedJoin("no-unique-set", "undeclared-key"),
+    ),
+    (
+        "cascade: an upstream join with no proved cardinality",
+        "SELECT a.id FROM a JOIN b ON a.ts >= b.start_ts AND a.ts < b.end_ts JOIN b AS c ON c.k = a.k",
+        UnprovedJoin("no-unique-set", "cascade"),
+    ),
+    (
+        "cascade before partial key: the key is partly bound, but an input has an unproved join",
+        "SELECT a.id FROM a JOIN b ON a.ts >= b.start_ts AND a.ts < b.end_ts JOIN ranges AS r ON r.k = a.k",
+        UnprovedJoin("no-unique-set", "cascade"),
+    ),
+    (
+        "cascade: an unsupported construct below, with an unproved join",
+        "SELECT a.id FROM a JOIN (SELECT * FROM b JOIN f USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1) AS m "
+        "ON a.id = m.id JOIN b AS c ON c.k = a.k",
+        UnprovedJoin("no-unique-set", "cascade", "a star over a USING join"),
+    ),
+    (
+        "cascade: only an unsupported construct below",
+        "SELECT a.id FROM a JOIN (SELECT CAST(k AS INTEGER) AS k FROM (SELECT * FROM b JOIN f USING (k) "
+        "QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1)) AS m ON a.k = m.k",
+        UnprovedJoin("no-unique-set", "cascade", "a star over a USING join"),
+    ),
 ]
 
 

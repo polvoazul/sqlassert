@@ -142,6 +142,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   type, a CASE, IF, COALESCE or NULLIF whose results share one type
   (`_type_results`), whether it is projected or a grouping key. The type is how
   values compare and implies no uniqueness or dependency (docs/dialects.md).
+  A CAST is typed the same way wherever it is written (`ir.Call.typing`), so a
+  join's ON can bind a column through it; `rules/equality._expression_typing`
+  gives the types of the other operands an ON equality binds through
+  (docs/dialects.md, "Expressions an ON equality binds").
 - `python_engine.py` evaluates Python analysis functions with an analysis-scoped
   arena, caching, and trusted declarations. An analysis function returns
   `Result[Value]`: `.value` is its computed Value and its direct fields carry

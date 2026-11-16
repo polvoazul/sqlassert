@@ -146,12 +146,27 @@ class BuiltinVariadic(Builtin):
         return None if self.total is None else self.total + (self.repeated_total,) * (count - len(self.total))
 
 
+@dataclass(frozen=True)
+class ValueTyping:
+    """How the values of a typed expression compare: the four type fields of an
+    `OutputColumn`, as a column declared with that type would have them."""
+
+    comparison_type: str
+    binary_text: bool
+    identity_comparison: bool
+    exact_numeric: bool
+
+
 class Call(ScalarExpr):
-    """A Builtin applied to arguments: `n + 1`, `n > 0`, `CAST(n AS BIGINT)`, `NOT p`."""
+    """A Builtin applied to arguments: `n + 1`, `n > 0`, `CAST(n AS BIGINT)`, `NOT p`.
+
+    `typing` is how its values compare, where the type is known from the call
+    itself: a CAST's (`IrParser._cast_typing`)."""
 
     function: Builtin
     arguments: tuple[ScalarExpr, ...]
     description: str
+    typing: ValueTyping | None = None
 
     def __post_init__(self) -> None:
         assert self.function.accepts(len(self.arguments)), f"{self.function.name} takes no {len(self.arguments)} arguments"

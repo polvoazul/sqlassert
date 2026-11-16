@@ -39,9 +39,19 @@ or UNNEST whose columns are not known; or the join sits in an opaque SELECT),
 `unconstrained` (no ON equality between the inputs or to a
 constant: a cross or range join), `unresolved-key`, `untyped-key` (with
 where the type is lost: `values`, `computed`, `opaque-relation`,
-`set-operation`, `table`, `type-mismatch`), `expression-key`,
-`no-unique-set`. A diagnostic about a missing proof, never a claim about the
-data: an `unconstrained` join is not shown to be many to many.
+`set-operation`, `table`, `type-mismatch`), `expression-key` (every equality
+compares an expression that binds no column: a deterministic function of one
+input's columns binds the other's column when the comparison loses nothing, and
+an injective one of a column (`-x`, `x + 1`) binds that column; a product, a
+float, a cast to another type, a volatile function does not),
+`no-unique-set` (the bound columns reach the Row Identity of neither input),
+with who can act, the first that applies: `cascade` (an input has a join with
+no proved Join Cardinality or an unsupported construct below it, so fixing that
+may fix this one), `partial-key` (the equalities bind part of a known Unique
+Set and the rest of ON is a range or inequality: the join is as constrained as
+written), `undeclared-key` (no known Unique Set covers the bound columns: one
+the project could declare). A diagnostic about a missing proof, never a claim
+about the data: an `unconstrained` join is not shown to be many to many.
 _Avoid_: Many-to-many join (for `unconstrained`), failure reason
 
 **Fan Trap**, **Chasm Trap**:

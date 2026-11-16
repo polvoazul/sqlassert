@@ -2,10 +2,15 @@
 
 A row of one input appears once per matching row of the other, or once padded,
 whatever the join kind. Matching rows satisfy ON, so they agree on every
-column an ON equality binds to the first row's column or to a constant, all
-non-null. IS NOT DISTINCT FROM binds them too, but matches NULL to NULL, so
-those columns are non-null only where proved, or where the other side is a
-literal or a non-null column, which no NULL equals. When those columns reach the
+column an ON equality binds, all non-null: to a constant or to a pure function
+of the first row's columns (a column, `-b.x`, `b.x + 1`, `CAST(b.ts AS DATE)`),
+which is one value for that row, or, for the one column an exact injective
+function of it is of (`-a.x`, `a.x + 1`), to such a value. Neither operand
+needs to be injective to bind the other's column; the comparison must lose
+nothing (`_pins`). IS NOT DISTINCT FROM binds them too, but matches NULL to
+NULL, so those columns are non-null only where proved, or where the other side
+is a literal or an expression of non-null columns that is never NULL for them
+(`ir.total`), which no NULL equals. When those columns reach the
 matched input's Row Identity, a row matches at most one row and is never
 repeated. A cross join is an ON with no
 conjuncts: the other input must have at most one row. A semi or anti join
@@ -15,15 +20,16 @@ A table function or UNNEST that reads the left input is evaluated once per
 left row, so none of its rows is repeated (`Join.lateral`, `one_to_many_join`).
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Literal, assert_never
+from typing import Literal
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, any_of, analysis, cache, current_arena
 from sqlassert.rules.column_set import Attribute, ColumnSet
-from sqlassert.rules.equality import _comparison_type, _identity_comparison, _pins
+from sqlassert.rules.equality import _comparison_type, _identity_comparison, _pins, exact_numeric
 from sqlassert.rules.nullability import non_null_column
-from sqlassert.rules.uniqueness import _closure, _reaches_row_identity
+from sqlassert.rules.uniqueness import _closure, _key_gaps, _reaches_row_identity
 
 type Side = Literal["left", "right"]
 
@@ -70,60 +76,67 @@ class BoundColumns(ColumnSet):
     DISTINCT FROM, which also matches NULL to NULL."""
 
     definite: set[Attribute] = field(default_factory=set)
+    # The ON equalities that bound a column.
+    equalities: set[ir.ScalarExpr] = field(default_factory=set)
 
 
 @analysis(Stratum.UNIQUE_JOIN)
 def _bound_columns(join: ir.Join, matched: Side) -> Result[BoundColumns]:
     """The columns of `matched` an ON equality (or IS NOT DISTINCT FROM)
-    binds to the other input's column or to a constant."""
+    binds for each row of the other input.
+
+    One operand is a constant or a pure function of that row's columns: a
+    column, `-b.x`, `b.x + 1`, `CAST(b.ts AS DATE)`; for one row it is one
+    value. The other fixes a column of `matched`: the column itself, or the one
+    column an injective function of it (`-a.x`, `a.x + 1`) is of, since that
+    function takes that value at one column value only. Neither needs the
+    other to be injective, but the comparison must lose nothing (`_pins`).
+    """
     relation, other = (join.right, join.left) if matched == "right" else (join.left, join.right)
     members = {}
     definite = set()
+    equalities = set()
     for equality in join.conjuncts:
         if not isinstance(equality, ir.Equality | ir.NullSafeEquality):
             continue
         for bound, value in ((equality.left, equality.right), (equality.right, equality.left)):
             if bound is value:
                 continue
-            bound, value = bound.closed, value.closed
-            match bound:
-                case ir.ColumnRef(column=column):
-                    if column not in relation.output_columns:
-                        continue
-                case ir.Constant() | ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Accumulation() | ir.Elements() | ir.Equality() | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
-                    continue
-                case _:
-                    assert_never(bound)
-
+            column = _fixed_column(bound, relation)
+            inputs = ir.determinants(value)
+            if column is None or inputs is None or not all(read in other.output_columns for read in inputs):
+                continue
             # An equality that casts pins nothing: '01' and '1' both equal 1.
-            match value:
-                case ir.Constant():
-                    if not _pins(column, value):
-                        continue
-                case ir.ColumnRef(column=other_column):
-                    if other_column not in other.output_columns or not _pins(column, value):
-                        continue
-                case ir.NullLiteral() | ir.Coalesce() | ir.SimpleCase() | ir.OpaqueExpression() | ir.OpaquePureFunction() | ir.Call() | ir.Count() | ir.AnyAggregate() | ir.Accumulation() | ir.Elements() | ir.Equality() | ir.NullSafeEquality() | ir.InList() | ir.IsNull() | ir.IsNotNull() | ir.And() | ir.Or():
-                    continue
-                case _:
-                    assert_never(value)
+            if not _pins(column, value):
+                continue
 
             evidence = Result(True, "Equality fixes the matched column for each row of the other input", (equality, column, value))
             members[column] = members[column] | evidence if column in members else evidence
-            # IS NOT DISTINCT FROM a literal or a non-null column is `=`.
-            if isinstance(equality, ir.Equality) or isinstance(value, ir.Constant):
+            equalities.add(equality)
+            # IS NOT DISTINCT FROM a value that is never NULL is `=`.
+            if isinstance(equality, ir.Equality) or (ir.total(value) and all(non_null_column(read).value for read in inputs)):
                 definite.add(column)
-            elif non_null_column(value.column).value:
-                definite.add(column)
-                members[column] = members[column] & non_null_column(value.column)
+                if not isinstance(equality, ir.Equality):
+                    members[column] = all_of((members[column], *(non_null_column(read) for read in inputs)))
 
-    return Result(BoundColumns(relation, set(members), definite), "Bound columns", members=members)
+    return Result(BoundColumns(relation, set(members), definite, equalities), "Bound columns", members=members)
+
+
+def _fixed_column(expression: ir.ScalarExpr, relation: ir.RelationExpr) -> ir.OutputColumn | None:
+    """The column of `relation` that `expression` taking one value fixes: the
+    column itself, or the one an exact, injective function of it is of
+    (`ir.injective_input`; the value of `-x` or `x + 1` has one `x`)."""
+    column = ir.injective_input(expression)
+    if column is None or column not in relation.output_columns:
+        return None
+    return column if isinstance(expression.closed, ir.ColumnRef) or exact_numeric(column).value else None
 
 
 # Why a join has no proved Join Cardinality --------------------------------
 
 type UnprovedReason = Literal["unsupported", "unconstrained", "unresolved-key", "untyped-key", "expression-key", "no-unique-set"]
 type TypeLoss = Literal["values", "computed", "opaque-relation", "set-operation", "table", "type-mismatch"]
+type NoUniqueSet = Literal["cascade", "partial-key", "undeclared-key"]
 type _Operand = Literal["left", "right", "constant", "opaque", "both"]
 
 
@@ -145,19 +158,33 @@ class UnprovedJoin:
     - `untyped-key`: a column = column equality binds nothing, since the two
       columns do not compare without a lossy coercion; `detail` names where
       the type is lost (`TypeLoss`).
-    - `expression-key`: every such equality compares an expression, not a
-      column of one input.
+    - `expression-key`: every such equality compares an expression, and none
+      binds a column (`_bound_columns`): the expression is not deterministic,
+      or has no type that compares without a lossy coercion (`_pins`), or the
+      matched side is not an injective function of one exact column. `a.k =
+      b.k * 2` is one, `a.k = b.k + 1` is not.
     - `no-unique-set`: the equalities bind columns that reach the Row
-      Identity of neither input.
+      Identity of neither input. `detail` says who can act, the first that
+      applies (`NoUniqueSet`):
+      `cascade`: something below an input is itself unproved or unsupported
+      (an upstream join with no proved Join Cardinality, through which no
+      Unique Set passes, or an unsupported construct), so fixing that may fix
+      this join; `construct` names the unsupported one, if any.
+      `partial-key`: the equalities bind a strict subset of a known Unique
+      Set of an input and every equality written binds a column; the rest of
+      ON is a range or inequality, so the join is as constrained as written.
+      `undeclared-key`: the bound side has no known Unique Set covering the
+      bound columns, a key the project could declare.
 
     `construct` names the construct sqlassert does not support, when one
     is behind the reason: the nearest one at or under the input, or the
-    relation, the reason points at.
+    relation, the reason points at; for a join in a SELECT that lowered
+    opaque, the one that made it so (`IrParser._name_orphan_joins`).
 
     A diagnostic about a missing proof: it never changes what is proved."""
 
     reason: UnprovedReason
-    detail: TypeLoss | None = None
+    detail: TypeLoss | NoUniqueSet | None = None
     construct: str | None = None
 
 
@@ -177,12 +204,14 @@ def unproved_join(join: ir.Join) -> UnprovedJoin | None:
         if isinstance(source, ir.OpaqueRelation) and (construct := _unsupported_under(source)) is not None:
             return UnprovedJoin("unsupported", construct=construct)
     pairs = []
+    related = []
     for equality in join.conjuncts:
         if not isinstance(equality, ir.Equality | ir.NullSafeEquality):
             continue
         sides = (_operand(join, equality.left), _operand(join, equality.right))
         if "both" not in sides and (sides[0] != sides[1] or sides[0] == "opaque"):
             pairs.append((equality.left.closed, equality.right.closed, sides))
+            related.append(equality)
     if not pairs:
         return UnprovedJoin("unconstrained")
     if any("opaque" in sides for _, _, sides in pairs):
@@ -195,9 +224,59 @@ def unproved_join(join: ir.Join) -> UnprovedJoin | None:
                 if (loss := _type_loss(column)) is not None:
                     return UnprovedJoin("untyped-key", loss[0], _unsupported_under(loss[1]) if loss[0] == "opaque-relation" else None)
             return UnprovedJoin("untyped-key", "type-mismatch")
-    if all(not isinstance(first, ir.ColumnRef | ir.Constant) or not isinstance(second, ir.ColumnRef | ir.Constant) for first, second, _ in pairs):
+    if all(not isinstance(first, ir.ColumnRef | ir.Constant) or not isinstance(second, ir.ColumnRef | ir.Constant) for first, second, _ in pairs) and not any(
+        _bound_columns(join, matched).value.columns for matched in ("left", "right")
+    ):
         return UnprovedJoin("expression-key")
-    return UnprovedJoin("no-unique-set")
+    return _no_unique_set(join, related)
+
+
+def _no_unique_set(join: ir.Join, related: list[ir.ScalarExpr]) -> UnprovedJoin:
+    """Who can act on a join whose bound columns reach no Row Identity, from
+    the IR and analyses it already ran: one walk of each input's tree, and
+    the closures `_at_most_one_match` took (`related`: its ON equalities
+    that relate the inputs or an input to a constant)."""
+    unproved, constructs = _cascade(join)
+    if unproved or any(constructs):
+        return UnprovedJoin("no-unique-set", "cascade", next(filter(None, constructs), None))
+    for matched in ("right", "left"):
+        cols = _bound_columns(join, matched)
+        if not all(equality in cols.value.equalities for equality in related):
+            continue  # An equality binds nothing here: not as constrained as written.
+        relation = join.right if matched == "right" else join.left
+        closure = _closure(relation, frozenset(cols.value.columns), frozenset(cols.value.definite))
+        if any(gap.reached for gap in _key_gaps(closure)):
+            return UnprovedJoin("no-unique-set", "partial-key")
+    return UnprovedJoin("no-unique-set", "undeclared-key")
+
+
+def _cascade(join: ir.Join) -> tuple[bool, tuple[str | None, str | None]]:
+    """Whether a join below an input of `join` has no proved Join Cardinality
+    (a semi or anti join has none to prove), and the unsupported construct
+    nearest each input, in one walk of the two trees."""
+    unsupported = {id(node): construct for node, construct in current_arena().program.unsupported}
+    unproved = False
+    constructs = []
+    for relation in (join.left, join.right):
+        nearest = None
+        for node in _tree(relation):
+            nearest = nearest or unsupported.get(id(node))
+            if isinstance(node, ir.Join) and node.kind not in {"semi", "anti"}:
+                unproved |= not (many_to_one_join(node).value or one_to_many_join(node).value)
+        constructs.append(nearest)
+    return unproved, (constructs[0], constructs[1])
+
+
+def _tree(relation: ir.RelationExpr) -> Iterator[ir.RelationExpr]:
+    """`relation` and every relation it reads, nearest first, each once."""
+    pending, seen = [relation], set()
+    while pending:
+        node = pending.pop(0)
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        yield node
+        pending.extend(child for child in ir.children(node) if isinstance(child, ir.RelationExpr))
 
 
 @cache
@@ -209,16 +288,7 @@ def _unsupported_under(relation: ir.RelationExpr) -> str | None:
     """The construct sqlassert does not support nearest to `relation`: its
     own, else the first found reading down through its inputs."""
     unsupported = {id(node): construct for node, construct in current_arena().program.unsupported}
-    pending, seen = [relation], set()
-    while pending and unsupported:
-        node = pending.pop(0)
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if id(node) in unsupported:
-            return unsupported[id(node)]
-        pending.extend(child for child in ir.children(node) if isinstance(child, ir.RelationExpr))
-    return None
+    return next((unsupported[id(node)] for node in _tree(relation) if id(node) in unsupported), None) if unsupported else None
 
 
 def _operand(join: ir.Join, expression: ir.ScalarExpr) -> _Operand:

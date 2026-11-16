@@ -103,15 +103,8 @@ class _Lowered:
     bindings: tuple[_Binding, ...]
 
 
-@dataclass(frozen=True)
-class _Typing:
-    """How the values of a computed column compare: the four type fields of an
-    `ir.OutputColumn`, as a column declared with its type would have them."""
-
-    comparison_type: str
-    binary_text: bool
-    identity_comparison: bool
-    exact_numeric: bool
+# How the values of a computed column or a CAST compare.
+_Typing = ir.ValueTyping
 
 
 @dataclass
@@ -2467,7 +2460,10 @@ class IrParser:
                 ]
                 if composites:
                     function, arguments = self._composite_comparison(expression, function, arguments, composites, self._origin(expression, line or _source_line(expression)))
-                return ir.Call(origin=origin, function=function, arguments=arguments, description=description)
+                call = ir.Call(origin=origin, function=function, arguments=arguments, description=description)
+                if type(expression) is exp.Cast:
+                    call = replace(call, typing=self._cast_typing(expression, call))
+                return call
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             opaque = ir.OpaqueExpression(origin=origin, description=description)
             if isinstance(expression, exp.Window):

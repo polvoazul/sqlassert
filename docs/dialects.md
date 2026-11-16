@@ -329,6 +329,48 @@ certified by `scripts/certify_dialects.py`.
   engine (NULL keys form one partition, DuckDB probed). RANK, DENSE_RANK and
   NTILE repeat and claim nothing.
 
+## Expressions an ON equality binds
+
+For one row of a join's other input, an expression of that row's columns is
+one value, so an ON equality `m.c = f(o.x)` fixes the matched column `c` for
+each `o` row, if the comparison loses nothing (`rules/join_cardinality.py`,
+`_bound_columns`). `f` is any deterministic expression (`ir.determinants`:
+no volatile or user-defined function, aggregate, window or subquery); it
+need not be injective, nor `x` compared by identity, since it is one row.
+`-m.c = o.y` or `m.c + 1 = o.y` fixes `c` too, only because the matched side
+is injective in one exact column (`Builtin.injective`, the
+`checked_arithmetic` dialects: DuckDB, PostgreSQL, Trino, BigQuery, Redshift,
+Spark and Databricks; `injective(op)` in `docs/dialect-provenance.json`).
+A CAST is not injective, so `CAST(m.ts AS DATE) = o.day` binds nothing of `m`
+while `m.day = CAST(o.ts AS DATE)` binds `day`.
+
+Losing nothing is `_pins` of the bound column against the other operand's
+type (`equality._expression_typing`): the column compares by identity (or is
+a signed integer), and the operand is of its comparison type or a signed
+integer beside one. An operand has a type only where the IR says: a column's;
+a CAST's (`ir.Call.typing`, the claim of `Types of computed columns` above);
+a signed integer plus or minus an integer literal (`id + 1`, `10 - id`),
+which is a signed integer; the negation of a signed integer or a decimal,
+which has its type. A decimal plus a literal, a product, and every other call
+are untyped and bind nothing. A float binds nothing in either direction
+(`-0.0 = 0.0`, and a BIGINT compared with a DOUBLE rounds: 2^53 and 2^53 + 1
+are equal there). Probed on DuckDB 2.0.0 with `typeof`: `-x` is `x`'s type for
+TINYINT through HUGEINT, DECIMAL(10,2) and DOUBLE; `x + 1`, `10 - x` keep an
+INTEGER and a BIGINT; `DECIMAL(10,2) + 1` is DECIMAL(13,2) and `+ 0.5`
+DECIMAL(11,2) (untyped here); `i * 2` is INTEGER (untyped); `-i`, `i + 1` and
+`10 - i` raise on the least or greatest INTEGER instead of wrapping. Every
+other engine, from memory: negation keeps the operand's integer or decimal
+type (PostgreSQL's NUMERIC drops the precision, a value compare either way),
+and integer arithmetic with an integer literal is an integer type. In a
+dialect that is not `checked_arithmetic` (MySQL, Snowflake, SQLite, ClickHouse,
+Hive, Oracle) no Builtin is injective, so no arithmetic is typed or binds.
+
+IS NOT DISTINCT FROM also matches NULL to NULL, so it fixes a column non-null
+only where the other operand is never NULL: `ir.total` of it, over columns
+proved non-null. `=` never matches a NULL operand, so an expression that is
+NULL for a value (NULLIF, TRY_CAST, a CASE without ELSE) only removes
+matches and does not change `definite`; those are untyped anyway.
+
 ## Table functions
 
 A table function or UNNEST in FROM has the columns the dialect fixes for it

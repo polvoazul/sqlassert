@@ -292,13 +292,17 @@ def _both_inputs(
 
 
 def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
-    """Whether equality can pin the column without a lossy coercion."""
+    """Whether equality can pin the column without a lossy coercion: `value`
+    is a literal, a column, or an expression of known type (`_expression_typing`)."""
     if _binary_text(column).value:
         match value:
             case ir.Constant(value=ir.LiteralValue(type="string")):
                 return True
             case ir.ColumnRef(column=other):
                 return _binary_text(other).value
+            case ir.Call():
+                typing = _expression_typing(value)
+                return typing is not None and typing.binary_text
             case _:
                 return False
     if not (_identity_comparison(column).value or _signed_integer(column)):
@@ -307,6 +311,12 @@ def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
         case ir.ColumnRef(column=other):
             return _same_type(column, other) or (
                 _signed_integer(column) and _signed_integer(other)
+            )
+        case ir.Call():
+            typing = _expression_typing(value)
+            return typing is not None and (
+                typing.comparison_type == _comparison_type(column).value
+                or _signed_integer(column) and typing.comparison_type in _SIGNED_INTEGERS
             )
         case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)):
             return "e" not in text.lower() and (exact_numeric(column).value or _exact_arithmetic(column))
@@ -339,6 +349,58 @@ def _signed_integer(column: ir.OutputColumn) -> bool:
         and node.value.type == "numeric" and _small_integer(node.value.text)
         for node in column.scalar_expr.arguments
     )
+
+
+def _expression_typing(expression: ir.ScalarExpr) -> ir.ValueTyping | None:
+    """How the values of a call compare, where what the IR keeps of it says: a
+    CAST has the type it names (`ir.Call.typing`); exact arithmetic over a
+    signed integer column with integer literals (`id + 1`, `10 - id`) is a
+    signed integer, and the negation of a signed integer or a decimal has its
+    type. A decimal with a literal added is wider and a float is no exact
+    value: neither is typed, nor is any other call.
+
+    Provenance: DuckDB 2.0.0 `typeof` (`-x` is `x`'s type; `x + 1` of an
+    integer type keeps it; `DECIMAL(10,2) + 1` is `DECIMAL(13,2)`); other
+    engines from memory (docs/dialects.md, "Types of computed expressions")."""
+    match expression:
+        case ir.Call(typing=ir.ValueTyping() as typing):
+            return typing
+        case ir.Call(injective_argument=ir.ScalarExpr() as operand, arguments=arguments):
+            typing = _operand_typing(operand)
+            if typing is None:
+                return None
+            if typing.comparison_type in _SIGNED_INTEGERS and all(argument is operand or _small_integer_constant(argument) for argument in arguments):
+                return typing
+            if len(arguments) == 1 and typing.exact_numeric and typing.comparison_type.startswith("DECIMAL"):
+                return typing  # Negation.
+            return None
+        case _:
+            return None
+
+
+def _operand_typing(operand: ir.ScalarExpr) -> ir.ValueTyping | None:
+    """`_expression_typing` of a call, else of a column its declared type; a
+    signed integer a computation gives (`count(*)`, `id + 1`) is a BIGINT."""
+    match operand:
+        case ir.ColumnRef(column=column):
+            comparison_type = _comparison_type(column).value
+            if comparison_type is None and _signed_integer(column):
+                return ir.ValueTyping("BIGINT", False, True, True)
+            if comparison_type is None:
+                return None
+            return ir.ValueTyping(comparison_type, _binary_text(column).value, _identity_comparison(column).value, exact_numeric(column).value)
+        case ir.Call():
+            return _expression_typing(operand)
+        case _:
+            return None
+
+
+def _small_integer_constant(expression: ir.ScalarExpr) -> bool:
+    match expression:
+        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)):
+            return _small_integer(text)
+        case _:
+            return False
 
 
 def _same_set_types(operation: ir.SetOperation, columns: Iterable[ir.OutputColumn]) -> bool:
