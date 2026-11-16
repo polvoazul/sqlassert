@@ -325,23 +325,27 @@ SELECT * FROM t QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1 /**ASS
 CREATE TABLE t (k INTEGER, v INTEGER NOT NULL, z INTEGER);
 SELECT * EXCLUDE (z) FROM t QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1 /**ASSERT UNIQUE(k)**/  --~ PROVED
 
--- case: qualify_on_a_star_by_an_excluded_column_is_opaque
+-- The excluded key is a hidden output: no selected column determines it, so
+-- k stays no Unique Set, but the columns keep their facts.
+-- case: qualify_on_a_star_by_an_excluded_column_is_a_hidden_key
 CREATE TABLE t (k INTEGER, v INTEGER NOT NULL, z INTEGER);
 CREATE TABLE f (k INTEGER, g INTEGER);
 SELECT f.g
 FROM f
-/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY whose PARTITION BY key is not a selected column"
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN
     SELECT * EXCLUDE (z) FROM t QUALIFY row_number() OVER (PARTITION BY z ORDER BY v) = 1
+    /**ASSERT NOT NULL(v)**/  --~ PROVED
 ) AS s ON s.k = f.k
 
--- A bare partition key that two expanded columns answer to is not one output.
--- case: qualify_on_a_star_by_a_shared_column_name_is_opaque
+-- A bare partition key that two expanded columns answer to is not one output,
+-- nor one column of the input.
+-- case: qualify_on_a_star_by_a_shared_column_name_is_no_unique_set
 CREATE TABLE a (k INTEGER, v INTEGER NOT NULL);
 CREATE TABLE b (k INTEGER, w INTEGER);
 CREATE TABLE f (k INTEGER, g INTEGER);
 SELECT f.g
 FROM f
-/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY whose PARTITION BY key is not a selected column"
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN
     SELECT * FROM a JOIN b ON a.k = b.k QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1
 ) AS s ON s.v = f.k
 

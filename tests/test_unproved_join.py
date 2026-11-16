@@ -64,6 +64,16 @@ CASES = [
         UnprovedJoin("untyped-key", "opaque-relation", "a star over a USING join"),
     ),
     (
+        "key read through a QUALIFY that drops rows",
+        "SELECT a.id FROM a JOIN (SELECT k FROM b QUALIFY rank() OVER (ORDER BY id) = 1) AS m ON a.k = m.k",
+        UnprovedJoin("no-unique-set"),
+    ),
+    (
+        "partition key that is not selected",
+        "SELECT a.id FROM a JOIN (SELECT k FROM b QUALIFY row_number() OVER (PARTITION BY k, day ORDER BY id) = 1) AS m ON a.k = m.k",
+        UnprovedJoin("no-unique-set"),
+    ),
+    (
         "set operation key",
         "SELECT a.id FROM a JOIN (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b) AS s ON a.k = s.k",
         UnprovedJoin("untyped-key", "set-operation"),

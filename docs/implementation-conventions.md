@@ -156,6 +156,20 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   string literal with no `%`, `_`, or backslash, and no `ESCAPE`, lowers to
   `=` when the dialect's text compares byte for byte and the column is a
   declared `VARCHAR` or `TEXT` read without passing a set operation.
+- `ir/convert.py` lowers a QUALIFY or DISTINCT ON that is not over groups or
+  `DISTINCT` as the select's projection, and then by what it can prove of the
+  clause. `row_number() OVER (PARTITION BY k...) = 1` (no partition: one row in
+  all) and `DISTINCT ON (k...)` are a `QualifyByPartition`: a key that is not a
+  selected item is a hidden output of it (`HIDDEN_PARTITION`) that a Project
+  drops, as for a grouping key, so any selected columns that determine every
+  key are a Unique Set. A key is used only when it reads as one expression of
+  the input (`_partition_plan`): not a window, subquery, literal or call whose
+  value varies, and no bare name in it a select alias that is not that column.
+  Any other QUALIFY, or DISTINCT ON that cannot be read so, is an opaque
+  `Filter` over the projection (`_row_subset`): a row subset keeps every fact
+  that holds of each row or of any subset, and no fact that needs all of them
+  (Referential Coverage toward it). A select that aggregates without GROUP BY
+  or has a HAVING is one group, not rows: it stays opaque.
 - `discovery/` hydrates a SQL Program from a database catalog before the
   engine runs; the engine never sees it. `DatabaseKnowledgeFetcher` links the
   Program once without a connection to find the external Named Relations it

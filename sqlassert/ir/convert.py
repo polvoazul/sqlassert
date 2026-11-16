@@ -1755,13 +1755,18 @@ class IrParser:
 
     def _lower_qualify(
         self, lowered: _Lowered, select: exp.Select, items: list[Expr], qualify: exp.Qualify,
-    ) -> ir.QualifyByPartition | None:
-        window = _row_number_equals_one(qualify.this)
-        if window is None:
+    ) -> ir.RelationExpr | None:
+        """A non-grouped, non-DISTINCT select with a QUALIFY: `row_number() OVER
+        (PARTITION BY k...) = 1` keeps one row per partition (`_one_row_per_partition`),
+        any other QUALIFY drops rows for a reason not known. None for a select
+        that aggregates without a GROUP BY, which no projection stands for."""
+        if select.args.get("having") is not None or _only_star(items) or _aggregates(select):
             return None
-        order = window.args.get("order")
+        window = _row_number_equals_one(qualify.this)
+        order = window.args.get("order") if window is not None else None
         return self._one_row_per_partition(
-            lowered, select, items, window.args.get("partition_by") or (), order.expressions if order else (),
+            lowered, select, items, None if window is None else window.args.get("partition_by") or (),
+            order.expressions if order else (), qualify, qualify.this,
         )
 
     def _qualified(
@@ -1775,54 +1780,107 @@ class IrParser:
         qualify = select.args.get("qualify")
         if relation is None or not isinstance(qualify, exp.Qualify):
             return relation
-        origin = self._origin(qualify)
-        output_columns = _pass_output_columns(relation.output_columns, origin)
         window = _row_number_equals_one(qualify.this)
         if window is not None and grouped:  # Not over DISTINCT: its window sees the rows before it.
-            positions = _partition_positions(window.args.get("partition_by") or (), items)
-            if positions and len(relation.output_columns) == len(items):
+            plan = self._partition_plan(window.args.get("partition_by") or (), items, grouped=True)
+            if plan is not None and all(isinstance(key, int) for key in plan) and len(relation.output_columns) == len(items):
+                origin = self._origin(qualify)
+                output_columns = _pass_output_columns(relation.output_columns, origin)
                 return ir.QualifyByPartition(
                     origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
-                    partition_outputs=tuple(output_columns[position] for position in positions),
+                    partition_outputs=tuple(output_columns[key] for key in plan if isinstance(key, int)),
                 )
+        return self._row_subset(relation, qualify, qualify.this)
+
+    def _row_subset(self, relation: ir.RelationExpr, clause: Expr, dropping: Expr) -> ir.Filter:
+        """`relation` after `clause` dropped rows of it for a reason not
+        known (`dropping`, as written): an opaque Filter, which keeps every
+        fact of each row or of any subset of them, and none that needs them all."""
+        origin = self._origin(clause)
         return ir.Filter(
-            origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
-            predicate=ir.OpaqueExpression(origin=origin, description=qualify.this.sql(dialect=self.dialect)),
+            origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin),
+            is_schema_complete=relation.is_schema_complete, input=relation,
+            predicate=ir.OpaqueExpression(origin=origin, description=dropping.sql(dialect=self.dialect)),
         )
 
     def _lower_distinct_on(
         self, lowered: _Lowered, select: exp.Select, items: list[Expr], on: Expr,
-    ) -> ir.QualifyByPartition | None:
+    ) -> ir.RelationExpr | None:
         """`DISTINCT ON (k...)` keeps one row per distinct `k...`, like
         `QUALIFY ROW_NUMBER() OVER (PARTITION BY k...) = 1`. Its ORDER BY only
-        picks which row survives, and may name outputs, so it is not lowered."""
-        if select.args.get("qualify") is not None:
+        picks which row survives, and may name outputs, so it is not lowered.
+        A QUALIFY beside it drops rows first, and the one row per key is still
+        one: its Filter follows."""
+        if select.args.get("having") is not None or _only_star(items):
             return None
         keys = on.expressions if isinstance(on, exp.Tuple) else [on]
-        return self._one_row_per_partition(lowered, select, items, keys, ())
+        distinct = select.args["distinct"]
+        relation = self._one_row_per_partition(lowered, select, items, keys, (), distinct, distinct)
+        qualify = select.args.get("qualify")
+        return relation if qualify is None else self._row_subset(relation, qualify, qualify.this)
 
     def _one_row_per_partition(
-        self, lowered: _Lowered, select: exp.Select, items: list[Expr], partitions: Sequence[Expr], order: Sequence[exp.Ordered],
-    ) -> ir.QualifyByPartition | None:
-        """Every partition key must be a selected output: the Unique Set is stated on outputs."""
-        if not partitions or select.args.get("having") is not None or _only_star(items):
-            return None
+        self, lowered: _Lowered, select: exp.Select, items: list[Expr], partitions: Sequence[Expr] | None,
+        order: Sequence[exp.Ordered], clause: Expr, dropping: Expr,
+    ) -> ir.RelationExpr:
+        """The projection of `items` over `lowered`, keeping one row per
+        distinct value of the key expressions `partitions` (none: one row in
+        all), as `clause` does. A key that is not an item is a hidden output
+        of the operation, which a Project then drops, as for a grouping key
+        (`_lower_aggregate`): a selected set of columns that determines every
+        key still has one row per value. `partitions` None, or a key that
+        cannot be read as one input expression (`_partition_plan`), is any
+        other clause: a row subset, `dropping` as written."""
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
+        origin = self._origin(select)
+        plan = None if partitions is None else self._partition_plan(partitions, items)
+        if plan is None:
+            lowered, _ = self._join_scalar_subqueries(lowered, items)
+            return self._row_subset(self._project(lowered, items, origin), clause, dropping)
 
-        positions = _partition_positions(partitions, items)
-        if positions is None:
-            return None
-        output_columns = self._selected_output_columns(items, lowered)
-        partition_outputs = [output_columns[position] for position in positions]
+        hidden = [
+            exp.alias_(key.copy(), f"{HIDDEN_PARTITION}{len(items) + index}")
+            for index, key in enumerate(key for key in plan if not isinstance(key, int))
+        ]
+        output_columns = self._selected_output_columns([*items, *hidden], lowered)
+        hidden_outputs = iter(output_columns[len(items):])
+        partition_outputs = tuple(output_columns[key] if isinstance(key, int) else next(hidden_outputs) for key in plan)
         ordering = tuple(
             self._lower_expression(ordered.this, lowered.bindings, schema_complete=lowered.relation.is_schema_complete)
             for ordered in order
         )
-        return ir.QualifyByPartition(
-            origin=self._origin(select), output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
-            partition_outputs=tuple(partition_outputs), ordering=ordering,
+        qualified = ir.QualifyByPartition(
+            origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
+            partition_outputs=partition_outputs, ordering=ordering,
         )
+        if not hidden:
+            return qualified
+        return ir.Project(
+            origin=origin, output_columns=_pass_output_columns(output_columns[:len(items)], origin),
+            is_schema_complete=True, input=qualified,
+        )
+
+    def _partition_plan(self, partitions: Sequence[Expr], items: list[Expr], *, grouped: bool = False) -> list[int | Expr] | None:
+        """Each partition key as the position of the select item it is written
+        as, or else the key itself; None when one cannot be read as one
+        expression of the input, so the partition it makes is not known. A key
+        is read as written over the input's columns, so it must be the same
+        value wherever it is evaluated (not a window, subquery, aggregate
+        over rows, literal or a call whose value varies) and no bare name in it may be a select
+        alias that is not that column (`_reads_alias`). A star's column
+        (`meta["star"]`) is written as its bare or qualified name."""
+        plan: list[int | Expr] = []
+        for key in partitions:
+            if (
+                key.find(exp.Window, exp.Query, exp.Subquery) is not None
+                or (not grouped and key.find(exp.AggFunc) is not None)
+                or not self._repeatable(key) or _reads_alias(key, items)
+            ):
+                return None
+            item = _matching_output(key, items) or _star_output(key, items)
+            plan.append(key if item is None else next(index for index, other in enumerate(items) if other is item))
+        return plan
 
     def _selected_output_columns(self, items: list[Expr], lowered: _Lowered) -> tuple[ir.OutputColumn, ...]:
         columns = []
@@ -3157,22 +3215,19 @@ def _unsupported_select(select: exp.Select, items: list[Expr], star: str | None)
     `star` is why a star stayed one item although its columns are known."""
     qualify = select.args.get("qualify")
     distinct = select.args.get("distinct")
-    if distinct is not None and distinct.args.get("on") is not None:
-        return "DISTINCT ON with QUALIFY" if qualify is not None else "DISTINCT ON a key that is not a selected column"
-    if isinstance(qualify, exp.Qualify):
-        window = _row_number_equals_one(qualify.this)
-        if window is None:
-            return "a QUALIFY other than ROW_NUMBER() OVER (...) = 1"
-        if not window.args.get("partition_by"):
-            return "QUALIFY ROW_NUMBER() without PARTITION BY"
+    clause = "DISTINCT ON" if distinct is not None and distinct.args.get("on") is not None else "QUALIFY" if isinstance(qualify, exp.Qualify) else None
+    if clause is not None and grouping(select) is None:
         if select.args.get("having") is not None:
-            return "QUALIFY with HAVING"
+            return f"{clause} with HAVING"
         if _only_star(items):
-            return star or "QUALIFY on SELECT * over columns not all known"
-        return "QUALIFY whose PARTITION BY key is not a selected column"
+            return star or f"{clause} on SELECT * over columns not all known"
+        return f"{clause} beside an aggregate without GROUP BY"
     if star is not None and _only_star(items):
         return star
-    clauses = [name for key, name in (("distinct", "DISTINCT"), ("group", "GROUP BY"), ("having", "HAVING")) if select.args.get(key)]
+    clauses = [
+        name for key, name in (("distinct", "DISTINCT"), ("group", "GROUP BY"), ("having", "HAVING"), ("qualify", "QUALIFY"))
+        if select.args.get(key)
+    ]
     if any(_projection_star(item) is not None for item in select.expressions):
         clauses.append("*")
     return f"this SELECT form ({', '.join(clauses)})" if clauses else "this SELECT form"
@@ -3201,6 +3256,9 @@ _VALUES_DOMAIN_ROWS = 100
 
 # A grouping key not selected, kept as a hidden Aggregate output: no SQL name can match it.
 HIDDEN_GROUPING = "\0grouping"
+
+# A partition key not selected, kept as a hidden output of its QualifyByPartition: no SQL name can match it.
+HIDDEN_PARTITION = "\0partition"
 
 # An aggregate HAVING reads that no item writes, a hidden Aggregate output too.
 HIDDEN_AGGREGATE = "\0aggregate"
@@ -3351,7 +3409,7 @@ def _star_expansion(item: Expr, star: exp.Star, lowered: _Lowered) -> tuple[list
         if expression is None:
             catalog, _, db = binding.schema.rpartition(".")
             expression = exp.column(binding.column.name, binding.qualifier, db or None, catalog or None, quoted=True)
-            expression.meta["star"] = True  # `_partition_positions`: a name it writes may be this column's.
+            expression.meta["star"] = True  # `_partition_plan`: a name it writes may be this column's.
         if (target := renamed.get(index)) is not None:
             expression = exp.Alias(this=expression, alias=target.copy())
         columns.append(expression)
@@ -3383,22 +3441,27 @@ def _matching_output(group_expression: Expr, items: list[Expr]) -> Expr | None:
     )
 
 
-def _partition_positions(partitions: Sequence[Expr], items: list[Expr]) -> list[int] | None:
-    """The position of the select item each partition key is written as, or
-    None when one is not an item, or is a bare name another item is aliased
-    to (it may read that alias instead). A star's column (`meta["star"]`) is
-    written as its bare or qualified name."""
-    positions = []
-    for partition in partitions:
-        item = _matching_output(partition, items) or _star_output(partition, items)
-        if item is None:
-            return None
-        if isinstance(partition, exp.Column) and not partition.table and any(
-            other is not item and other.alias_or_name.lower() == partition.name.lower() for other in items
-        ):
-            return None
-        positions.append(next(index for index, other in enumerate(items) if other is item))
-    return positions
+def _reads_alias(key: Expr, items: list[Expr]) -> bool:
+    """Whether a bare name in `key` may read a select alias rather than the
+    input's column: some item is aliased that name and is not that column."""
+    for column in key.find_all(exp.Column):
+        if column.table:
+            continue
+        for item in items:
+            expression = _unaliased(item)
+            if item.alias_or_name.lower() == column.name.lower() and not (
+                isinstance(expression, exp.Column) and expression.name.lower() == column.name.lower()
+            ):
+                return True
+    return False
+
+
+def _aggregates(select: exp.Select) -> bool:
+    """Whether `select` computes an aggregate outside any window of its own."""
+    return any(
+        node.find_ancestor(exp.Window, exp.Select) is select
+        for item in select.expressions for node in item.find_all(exp.AggFunc)
+    )
 
 
 def _star_output(partition: Expr, items: list[Expr]) -> Expr | None:
@@ -3522,8 +3585,8 @@ def _row_number_equals_one(predicate: Expr) -> exp.Window | None:
     left, right = predicate.this, predicate.expression
     window = left if isinstance(left, exp.Window) else right if isinstance(right, exp.Window) else None
     literal = right if window is left else left
-    if window is None or not isinstance(window.this, exp.RowNumber):
-        return None
+    if window is None or not isinstance(window.this, exp.RowNumber) or window.args.get("alias") is not None:
+        return None  # A named window (`OVER w`, `OVER (w ...)`) may partition.
     if not isinstance(literal, exp.Literal) or literal.is_string or literal.this != "1":
         return None
     return window

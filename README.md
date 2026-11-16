@@ -715,7 +715,7 @@ Supported uniqueness proofs today:
 - `PRIMARY KEY` and `UNIQUE` constraints from `CREATE TABLE` declarations or IR-linked Knowledge.
 - `GROUP BY` subqueries, when the join covers the grouping keys.
 - `SELECT DISTINCT` subqueries, when the join covers the selected distinct columns.
-- `QUALIFY row_number() over (partition by ...) = 1` subqueries, when the join covers the partition keys.
+- `QUALIFY row_number() over (partition by ...) = 1` and `DISTINCT ON` subqueries, when the join covers columns that are, or determine, every partition key.
 - Views, CTEs, and subqueries that preserve one of the proofs above, including through their own joins.
 
 A view, CTE, or FROM subquery is lowered like the Root Select, joins and markers included, so its facts flow to every query that reads it. Every view is also a query of its own, checked whether or not anything reads it, so a file of views (a project's models, say) needs no Root Select. A marker in a CTE that nothing reads is reported as unanalyzed. Computed expressions and arbitrary subquery semantics are not guessed.

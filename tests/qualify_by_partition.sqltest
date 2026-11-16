@@ -78,3 +78,248 @@ FROM emp AS e
     SELECT DISTINCT deptno FROM dept QUALIFY sum(1) OVER () > 5
 ) AS d3
     ON e.deptno = d3.deptno
+
+-- A QUALIFY (or DISTINCT ON) that is not one row per selected partition key
+-- only drops rows of the projection: the select keeps its columns' lineage,
+-- types and facts of each row (a key of the input, NOT NULL, an Enumerated
+-- Domain), and loses every fact that needs all of them (a join onto it
+-- covering each left row).
+
+-- A partition key selected only through a cast is not an output.
+-- case: a_partition_key_selected_through_a_cast_keeps_the_rows_facts
+CREATE TABLE t (k INTEGER PRIMARY KEY, org VARCHAR NOT NULL, ts INTEGER);
+CREATE TABLE f (k INTEGER NOT NULL REFERENCES t (k), g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT k, CAST(org AS TEXT) AS org
+    FROM t
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY k, org ORDER BY ts DESC) = 1
+    /**ASSERT NOT NULL UNIQUE(k)**/  --~ PROVED
+    /**ASSERT NOT NULL(org)**/  --~ PROVED
+    /**ASSERT UNIQUE(org)**/  --~ UNKNOWN
+) AS s ON s.k = f.k
+/**ASSERT EXACTLY ONE**/ JOIN (  --~ UNKNOWN
+    SELECT k FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY k, org ORDER BY ts DESC) = 1
+) AS s2 ON s2.k = f.k
+
+-- A key of the input that is not the partition key stays unique only when it
+-- is the selected key: the partition key says nothing of the other columns.
+-- case: a_partition_key_that_is_not_selected_is_no_unique_set
+CREATE TABLE t (k INTEGER, org VARCHAR, ts INTEGER);
+SELECT k
+FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY k, org ORDER BY ts DESC) = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- Selected columns that determine each partition key are a Unique Set of the
+-- select: at most one row per value of the key, and the key is a function of them.
+-- case: selected_columns_that_determine_every_partition_key_are_unique
+CREATE TABLE c (id INTEGER PRIMARY KEY, org VARCHAR NOT NULL);
+CREATE TABLE u (k INTEGER NOT NULL, cid INTEGER NOT NULL REFERENCES c (id));
+CREATE TABLE f (k INTEGER, cid INTEGER, g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT u.k, c.id
+    FROM u JOIN c ON c.id = u.cid
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY u.k, c.org::varchar, c.id ORDER BY u.k) = 1
+    /**ASSERT UNIQUE(k, id)**/  --~ PROVED
+    /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+) AS s ON s.k = f.k AND s.id = f.cid
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN
+    SELECT u.k, c.id
+    FROM u JOIN c ON c.id = u.cid
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY u.k, c.org::varchar, c.id ORDER BY u.k) = 1
+) AS s2 ON s2.k = f.k
+
+-- A key not selected, written through a column the selected ones determine.
+-- case: a_partition_key_a_selected_column_determines_is_one_row_per_value
+CREATE TABLE c (id INTEGER PRIMARY KEY, org VARCHAR NOT NULL);
+CREATE TABLE u (k INTEGER NOT NULL, cid INTEGER NOT NULL);
+
+SELECT u.k, c.id
+FROM u JOIN c ON c.id = u.cid
+QUALIFY ROW_NUMBER() OVER (PARTITION BY u.k, c.org ORDER BY u.k) = 1
+/**ASSERT UNIQUE(k, id)**/  --~ PROVED
+
+-- The selected columns determine only some keys.
+-- case: selected_columns_that_leave_a_partition_key_free_are_not_unique
+CREATE TABLE c (id INTEGER PRIMARY KEY, org VARCHAR NOT NULL);
+CREATE TABLE u (k INTEGER NOT NULL, cid INTEGER NOT NULL);
+
+SELECT u.k
+FROM u JOIN c ON c.id = u.cid
+QUALIFY ROW_NUMBER() OVER (PARTITION BY u.k, c.id ORDER BY u.k) = 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- A bare name that may be a select alias is not read as the input's column.
+-- case: a_partition_key_that_may_be_a_select_alias_is_not_the_input_column
+CREATE TABLE t (k INTEGER, org INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v AS org
+FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY k, org ORDER BY ts) = 1
+/**ASSERT UNIQUE(k, org)**/  --~ UNKNOWN
+
+-- A key whose value varies between evaluations is no partition of the output.
+-- case: a_nondeterministic_partition_key_is_no_unique_set
+CREATE TABLE t (k INTEGER, ts INTEGER);
+SELECT random() AS r, k
+FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY random() ORDER BY ts) = 1
+/**ASSERT UNIQUE(r)**/  --~ UNKNOWN
+
+-- A numeric literal key is no column; it names no partition of the output.
+-- case: a_literal_partition_key_is_not_a_column
+CREATE TABLE t (k INTEGER, v INTEGER);
+SELECT v, k
+FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY k) = 1
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- Any other QUALIFY drops rows: a row subset keeps its columns' facts.
+-- case: a_qualify_that_is_not_one_row_per_partition_keeps_the_rows_facts
+CREATE TABLE t (k INTEGER PRIMARY KEY, status VARCHAR NOT NULL CHECK (status IN ('a', 'b')), ts INTEGER);
+CREATE TABLE f (k INTEGER NOT NULL REFERENCES t (k), g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT k, status FROM t QUALIFY RANK() OVER (ORDER BY ts) = 1
+    /**ASSERT NOT NULL(status)**/  --~ PROVED
+    /**ASSERT ENUM(status IN ('a', 'b'))**/  --~ PROVED
+) AS ranked ON ranked.k = f.k
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT k FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY status ORDER BY ts) <= 2
+) AS top_two ON top_two.k = f.k
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT k FROM t QUALIFY ts > min(ts) OVER ()
+) AS late ON late.k = f.k
+/**ASSERT EXACTLY ONE**/ JOIN (  --~ UNKNOWN
+    SELECT k FROM t QUALIFY ts > min(ts) OVER ()
+) AS late2 ON late2.k = f.k
+
+-- case: a_qualify_that_is_not_one_row_per_partition_is_no_unique_set
+CREATE TABLE t (k INTEGER, status VARCHAR, ts INTEGER);
+SELECT k, status
+FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY status ORDER BY ts) <= 2
+/**ASSERT UNIQUE(status)**/  --~ UNKNOWN
+
+-- ROW_NUMBER() = 1 over the whole select keeps at most one row.
+-- case: qualify_row_number_without_partition_by_keeps_at_most_one_row
+CREATE TABLE t (k INTEGER, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT k, v FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY v DESC) = 1
+) AS s ON s.k = f.k
+
+-- A named window may partition: it says nothing of the row count.
+-- case: qualify_row_number_over_a_named_window_may_partition
+CREATE TABLE t (k INTEGER, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN
+    SELECT k, v FROM t QUALIFY ROW_NUMBER() OVER w = 1 WINDOW w AS (PARTITION BY k ORDER BY v)
+) AS s ON s.v = f.k
+
+-- A window function beside the QUALIFY is evaluated over the rows before it,
+-- and is no fact of the select.
+-- case: a_window_function_in_the_select_list_is_not_modelled
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER NOT NULL);
+SELECT k, sum(v) OVER () AS total
+FROM t
+QUALIFY RANK() OVER (ORDER BY v) = 1
+/**ASSERT NOT NULL UNIQUE(k)**/  --~ PROVED
+/**ASSERT NOT NULL(total)**/  --~ UNKNOWN, unsupported-construct "a window function"
+
+-- A select that aggregates without GROUP BY, or has a HAVING, is one group,
+-- not a projection of rows.
+-- case: qualify_beside_an_aggregate_is_opaque
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY beside an aggregate without GROUP BY"
+    SELECT max(k) AS k FROM t QUALIFY RANK() OVER (ORDER BY max(k)) = 1
+) AS s ON s.k = f.k
+
+-- case: qualify_beside_having_is_opaque
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "QUALIFY with HAVING"
+    SELECT k FROM t HAVING k > 1 QUALIFY RANK() OVER (ORDER BY k) = 1
+) AS s ON s.k = f.k
+
+-- DISTINCT ON a key that is not selected: one row per value of it.
+-- case: distinct_on_a_key_the_selected_columns_determine_is_one_row_per_value
+CREATE TABLE c (id INTEGER PRIMARY KEY, org VARCHAR NOT NULL);
+CREATE TABLE u (k INTEGER NOT NULL, cid INTEGER NOT NULL);
+
+SELECT DISTINCT ON (u.k, c.org) u.k, c.id
+FROM u JOIN c ON c.id = u.cid
+ORDER BY u.k, c.org
+/**ASSERT UNIQUE(k, id)**/  --~ PROVED
+
+-- case: distinct_on_a_key_not_selected_keeps_the_rows_facts
+CREATE TABLE t (k INTEGER PRIMARY KEY, z INTEGER, v INTEGER NOT NULL);
+CREATE TABLE f (k INTEGER NOT NULL REFERENCES t (k), g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT DISTINCT ON (z) k, v FROM t ORDER BY z, v
+    /**ASSERT NOT NULL(v)**/  --~ PROVED
+    /**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+) AS s ON s.k = f.k
+/**ASSERT EXACTLY ONE**/ JOIN (  --~ UNKNOWN
+    SELECT DISTINCT ON (z) k FROM t ORDER BY z, v
+) AS s2 ON s2.k = f.k
+
+-- A literal is an output position in DISTINCT ON, not a constant.
+-- case: distinct_on_a_position_is_no_partition_key
+CREATE TABLE t (k INTEGER, v INTEGER);
+SELECT DISTINCT ON (1) k, v FROM t ORDER BY 1
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- A QUALIFY beside DISTINCT ON drops rows first; the one row per key stays.
+-- case: distinct_on_with_qualify_keeps_one_row_per_key
+CREATE TABLE t (k INTEGER, v INTEGER NOT NULL);
+SELECT DISTINCT ON (k) k, v
+FROM t
+QUALIFY RANK() OVER (ORDER BY v) = 1
+ORDER BY k
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT NOT NULL(v)**/  --~ PROVED
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- case: distinct_on_a_key_not_selected_beside_qualify_is_a_row_subset
+CREATE TABLE t (k INTEGER PRIMARY KEY, z INTEGER, v INTEGER NOT NULL);
+SELECT DISTINCT ON (z) k, v
+FROM t
+QUALIFY RANK() OVER (ORDER BY v) = 1
+ORDER BY z
+/**ASSERT NOT NULL UNIQUE(k)**/  --~ PROVED
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- DISTINCT ON with a HAVING but no GROUP BY is one group: opaque.
+-- case: distinct_on_with_having_is_opaque
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "DISTINCT ON with HAVING"
+    SELECT DISTINCT ON (k) k FROM t HAVING k > 1
+) AS s ON s.k = f.k

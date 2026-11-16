@@ -62,7 +62,7 @@ def test_an_aliased_partition_key_maps_the_unique_set_to_the_outer_column(orders
     assert report.proved
 
 
-def test_a_partition_key_absent_from_the_select_list_is_unsupported_and_unknown(orders_and_customers):
+def test_a_partition_key_absent_from_the_select_list_leaves_the_select_list_unknown(orders_and_customers):
     report = analyze(
         orders_and_customers
         + """
@@ -100,7 +100,7 @@ def test_a_qualification_that_can_retain_more_than_one_row_per_partition_is_unkn
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_rank_instead_of_row_number_is_unsupported_and_unknown(orders_and_customers):
+def test_rank_instead_of_row_number_is_unknown(orders_and_customers):
     report = analyze(
         orders_and_customers
         + """
@@ -119,7 +119,7 @@ def test_rank_instead_of_row_number_is_unsupported_and_unknown(orders_and_custom
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_a_qualify_predicate_with_no_window_function_is_unsupported_and_unknown(orders_and_customers):
+def test_a_qualify_predicate_with_no_window_function_is_unknown(orders_and_customers):
     report = analyze(
         orders_and_customers
         + """
@@ -138,7 +138,7 @@ def test_a_qualify_predicate_with_no_window_function_is_unsupported_and_unknown(
     assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
 
 
-def test_row_number_with_no_partition_by_is_unsupported_and_unknown(orders_and_customers):
+def test_row_number_with_no_partition_by_keeps_at_most_one_row(orders_and_customers):
     report = analyze(
         orders_and_customers
         + """
@@ -154,7 +154,7 @@ def test_row_number_with_no_partition_by_is_unsupported_and_unknown(orders_and_c
         """
     )
 
-    assert [assertion.outcome for assertion in report.assertions] == [Outcome.UNKNOWN]
+    assert report.proved  # One row in all, so no row of customers is repeated.
 
 
 def test_a_where_clause_before_qualify_does_not_block_the_proof(orders_and_customers):

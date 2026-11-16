@@ -646,7 +646,8 @@ class SetOperation(RelationExpr):
 
 
 class QualifyByPartition(RelationExpr):
-    """One row per partition: ``QUALIFY row_number() OVER (PARTITION BY ...) = 1`` or ``DISTINCT ON (...)``."""
+    """One row per partition: ``QUALIFY row_number() OVER (PARTITION BY ...) = 1`` or ``DISTINCT ON (...)``.
+    A partition key is an output column, possibly hidden (a Project over this drops it); no key is one row in all."""
 
     input: RelationExpr
     partition_outputs: tuple[OutputColumn, ...]

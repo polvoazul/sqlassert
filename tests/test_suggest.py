@@ -140,7 +140,7 @@ def test_a_join_inside_a_select_lowered_as_opaque_is_not_suggested():
 
 def test_suggest_skips_a_subquery_inside_an_opaque_select():
     sql = """
-    SELECT id FROM accounts
+    SELECT max(id) AS id FROM accounts
     WHERE id IN (SELECT user_id FROM users)
     QUALIFY ROW_NUMBER() OVER (PARTITION BY other ORDER BY id) = 1
     """
