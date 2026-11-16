@@ -10,12 +10,8 @@ from sqlassert.suggest import SuggestType
 from sqlassert.discovery.duckdb import DuckDBKnowledgeFetcher
 
 
-@pytest.mark.parametrize("query", [
-    "SELECT * REPLACE (0 AS a) FROM t",
-    "SELECT * EXCLUDE (a) FROM t",
-    "SELECT * FROM (SELECT b AS a, a AS a FROM t) AS s",
-])
-def test_a_marker_cannot_borrow_the_key_of_a_different_output(query):
+def test_a_marker_cannot_borrow_the_key_of_a_different_output():
+    query = "SELECT * FROM (SELECT b AS a, a AS a FROM t) AS s"
     report = analyze("CREATE TABLE t(a INT PRIMARY KEY, b INT); " + query + " /**ASSERT UNIQUE(a)**/")
     assert not report.assertions
     assert [diagnostic.code for diagnostic in report.diagnostics] == ["unresolved-asserted-column"]

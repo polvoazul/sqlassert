@@ -127,6 +127,8 @@ class IrParser:
     _reported_cycles: set[_Symbol] = field(default_factory=set)
     _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr | ir.SimpleCase]] = field(default_factory=list)
     _sited_cases: set[int] = field(default_factory=set)
+    _typed_cases: set[int] = field(default_factory=set)
+    _mixed_cases: list[tuple[AttachmentSite, str]] = field(default_factory=list)
     # Each scalar subquery lowered as a join, by id, and the qualifier of the
     # binding that holds its value.
     _scalar_values: dict[int, str] = field(default_factory=dict)
@@ -227,7 +229,8 @@ class IrParser:
         return IrConversionResult(
             ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
                 scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys),
-                set_operations=tuple(self._set_operations), unsupported=tuple(self._unsupported)),
+                set_operations=tuple(self._set_operations), unsupported=tuple(self._unsupported),
+                mixed_cases=tuple(self._mixed_cases)),
             tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
         )
 
@@ -699,7 +702,7 @@ class IrParser:
             bindings.setdefault(binding.name, binding)
         return _Lowered(lowered.relation, tuple(bindings.values()))
 
-    def _lower_values(self, values: exp.Values) -> ir.OpaqueRelation | None:
+    def _lower_values(self, values: exp.Values) -> ir.ValuesList | None:
         """`(VALUES (...), ...) AS t (a, ...)`: rows of literals, stated as
         Knowledge of its columns. A column is non-null when no row holds NULL
         there; its Enumerated Domain is its values, up to `_VALUES_DOMAIN_ROWS`
@@ -748,7 +751,7 @@ class IrParser:
             for position, first in enumerate(literal_rows) for second in literal_rows[position + 1:]
         ):
             self._knowledge.append(UniqueSet(columns=frozenset(columns)))
-        return ir.OpaqueRelation(origin=origin, output_columns=columns, is_schema_complete=True, description=values.sql(dialect=self.dialect))
+        return ir.ValuesList(origin=origin, output_columns=columns, is_schema_complete=True, description=values.sql(dialect=self.dialect))
 
     def _resolve_symbol(self, symbol: _Symbol) -> ir.NamedRelation:
         existing = self._named_relations.get(symbol)
@@ -1063,15 +1066,17 @@ class IrParser:
             opaque = self._opaque_relation(select, _selected_output_names(select))
             self._unsupported.append((opaque, "LATERAL VIEW"))
             return opaque
-        if any(
-            isinstance(star, exp.Star) and any(star.args.values())
-            for item in select.expressions for star in (item.this if isinstance(item, exp.Column) else item,)
-        ):
-            opaque = self._opaque_relation(select)
-            self._unsupported.append((opaque, "a modified star projection"))
-            return opaque
         keys = grouping(select)
-        calls = [call for item in select.expressions for call in _set_returning_calls(item, self.dialect)]
+        items = select.expressions
+        if any((star := _projection_star(item)) is not None and any(star.args.values()) for item in items):
+            plain = keys is None and not any(select.args.get(clause) for clause in ("distinct", "qualify", "having"))
+            expanded = _expand_modified_stars(items, lowered) if self.dialect == "duckdb" and plain else None
+            if expanded is None:
+                opaque = self._opaque_relation(select)
+                self._unsupported.append((opaque, "a modified star projection"))
+                return opaque
+            items = expanded
+        calls = [call for item in items for call in _set_returning_calls(item, self.dialect)]
         if calls:
             if keys is not None or isinstance(select.args.get("qualify"), exp.Qualify) or (
                 select.args.get("distinct") is not None and select.args["distinct"].args.get("on") is not None
@@ -1105,19 +1110,17 @@ class IrParser:
             if _star_only(select):
                 relation = lowered.relation
             else:
-                lowered, _ = self._join_scalar_subqueries(lowered, select.expressions)
-                relation = self._project(lowered, select.expressions, self._origin(select))
+                lowered, _ = self._join_scalar_subqueries(lowered, items)
+                relation = self._project(lowered, items, self._origin(select))
         if relation is None:
             opaque = self._opaque_relation(select, _selected_output_names(select))
-            construct = _unsupported_grouping(select)
-            if construct is not None:
-                self._unsupported.append((opaque, construct))
+            self._unsupported.append((opaque, _unsupported_grouping(select) or _unsupported_select(select)))
             return opaque
-        self._sort_keys[id(select)] = self._resolve_order(select, lowered.bindings, relation)
+        self._sort_keys[id(select)] = self._resolve_order(select, items, lowered.bindings, relation)
         return relation
 
     def _resolve_order(
-        self, select: exp.Select, bindings: tuple[_Binding, ...], relation: ir.RelationExpr
+        self, select: exp.Select, projections: list[Expr], bindings: tuple[_Binding, ...], relation: ir.RelationExpr
     ) -> tuple[ir.OutputColumn, ...] | None:
         """Each ORDER BY key as a column of the stage it sorts (see
         `Program.sort_keys`): a selected column by its name or position, else
@@ -1130,7 +1133,7 @@ class IrParser:
             return None  # Its ORDER BY picks the row each group keeps.
         scope = relation.input if isinstance(relation, ir.Project) else relation
         outputs = relation.output_columns
-        items = [item for item in select.expressions if not isinstance(item, exp.Star)]
+        items = [item for item in projections if not isinstance(item, exp.Star)]
         keys: list[ir.OutputColumn] = []
         for ordered in order.expressions:
             expression = ordered.this if isinstance(ordered, exp.Ordered) else ordered
@@ -1931,6 +1934,9 @@ class IrParser:
         def lower(node: Expr) -> ir.ScalarExpr:
             return self._lower_expression(node, bindings, schema_complete=schema_complete)
 
+        if isinstance(expression, exp.Case | exp.If) and id(expression) not in self._typed_cases:
+            self._typed_cases.add(id(expression))
+            self._check_case_types(expression, lower)
         if isinstance(expression, exp.Subquery) and id(expression) in self._scalar_values:
             qualifier = self._scalar_values[id(expression)]
             value = next((binding.column for binding in bindings if binding.qualifier == qualifier), None)
@@ -2190,6 +2196,43 @@ class IrParser:
                 return any(self._is_json(each, lower) for each in (node.args["true"], *([false] if false is not None else [])))
             case _:
                 return False
+
+    def _check_case_types(self, case: exp.Case | exp.If, lower: Callable[[Expr], ir.ScalarExpr]) -> None:
+        """Record `case` when its results have different declared types: the
+        engine casts them to a common type (or rejects the query), and a cast
+        may lose what told values apart (`'01'` and `'1'` both become 1, a
+        large BIGINT a rounded DOUBLE). Integer types only widen, so they mix
+        safely. A result whose type is not known is left out, never guessed."""
+        if isinstance(case, exp.Case):
+            results = [arm.args["true"] for arm in case.args.get("ifs") or ()] + [case.args.get("default")]
+        else:
+            results = [case.args.get("true"), case.args.get("false")]
+        kinds: dict[str, str] = {}
+        for result in results:
+            while isinstance(result, exp.Paren):
+                result = result.this
+            match result:
+                case exp.Column():
+                    kind = self._declared_type(lower(result))
+                case exp.Cast():
+                    kind = result.to
+                case exp.Literal(is_string=True):
+                    kinds.setdefault("text", "a text literal")
+                    continue
+                case _:
+                    continue
+            if kind is None:
+                continue
+            family = "integer" if kind.this in exp.DataType.INTEGER_TYPES else "text" if kind.this in exp.DataType.TEXT_TYPES else kind.this.name
+            kinds.setdefault(family, kind.sql(dialect=self.dialect))
+        select = case.find_ancestor(exp.Select)
+        if len(kinds) < 2 or select is None or (position := marker_position(select)) is None:
+            return
+        offset, line = position
+        self._mixed_cases.append((
+            AttachmentSite(_select_label(select), line, offset, True),
+            f"{written_sql(case, self.dialect)} mixes {' and '.join(kinds.values())}",
+        ))
 
     def _declared_type(self, expression: ir.ScalarExpr, *, through_sets: bool = True) -> exp.DataType | None:
         """The type a CREATE TABLE declares for the column `expression` reads,
@@ -3054,6 +3097,30 @@ def _unsupported_grouping(select: exp.Select) -> str | None:
     return None
 
 
+def _unsupported_select(select: exp.Select) -> str:
+    """The QUALIFY or DISTINCT ON form that makes `select` opaque, else the
+    clauses it is written with: one of them is not modelled in this form."""
+    qualify = select.args.get("qualify")
+    distinct = select.args.get("distinct")
+    if distinct is not None and distinct.args.get("on") is not None:
+        return "DISTINCT ON with QUALIFY" if qualify is not None else "DISTINCT ON a key that is not a selected column"
+    if isinstance(qualify, exp.Qualify):
+        window = _row_number_equals_one(qualify.this)
+        if window is None:
+            return "a QUALIFY other than ROW_NUMBER() OVER (...) = 1"
+        if not window.args.get("partition_by"):
+            return "QUALIFY ROW_NUMBER() without PARTITION BY"
+        if select.args.get("having") is not None:
+            return "QUALIFY with HAVING"
+        if _star_only(select):
+            return "QUALIFY on SELECT *"
+        return "QUALIFY whose PARTITION BY key is not a selected column"
+    clauses = [name for key, name in (("distinct", "DISTINCT"), ("group", "GROUP BY"), ("having", "HAVING")) if select.args.get(key)]
+    if any(_projection_star(item) is not None for item in select.expressions):
+        clauses.append("*")
+    return f"this SELECT form ({', '.join(clauses)})" if clauses else "this SELECT form"
+
+
 def _unsupported_source(source: Expr) -> str | None:
     """The FROM source construct that lowers opaque, if sqlassert does not support it yet."""
     if isinstance(source, exp.Lateral) or source.find(exp.Lateral) is not None:
@@ -3184,6 +3251,88 @@ def _expand_qualified_stars(items: list[Expr], lowered: _Lowered) -> list[Expr]:
                 continue
         expanded.append(item)
     return expanded
+
+
+def _projection_star(item: Expr) -> exp.Star | None:
+    star = item.this if isinstance(item, exp.Column) else item
+    return star if isinstance(star, exp.Star) else None
+
+
+def _star_column_name(column: Expr, bindings: list[_Binding]) -> str | None:
+    """Resolve a modifier's column against the original star's bindings."""
+    if not isinstance(column, exp.Column):
+        return None
+    schema, name = _schema_path(column), column.name.lower()
+    if any(
+        b.name == name and (not column.table or b.qualifier == column.table.lower())
+        and (not schema or b.schema == schema)
+        for b in bindings
+    ):
+        return name
+    return None
+
+
+def _expand_modified_stars(items: list[Expr], lowered: _Lowered) -> list[Expr] | None:
+    """Expand DuckDB's EXCLUDE, REPLACE and RENAME in the star's column order."""
+    if not lowered.relation.is_schema_complete:
+        return None
+    result: list[Expr] = []
+    renamed = False
+    for item in items:
+        star = _projection_star(item)
+        if star is None:
+            result.append(item)
+            continue
+        if star.args.get("ilike"):
+            return None
+        if isinstance(item, exp.Column):
+            schema = _schema_path(item)
+            bindings = [
+                b for b in lowered.bindings if b.qualifier == item.table.lower() and (not schema or b.schema == schema)
+            ]
+        else:
+            if any(b.shadowed for b in lowered.bindings):
+                return None  # USING merges names and changes the star's output order.
+            bindings = list(lowered.bindings)
+        names = {b.name for b in bindings}
+        if not names or len(names) != len(bindings):
+            return None
+        excluded = set()
+        for column in star.args.get("except_") or ():
+            name = _star_column_name(column, bindings)
+            if name is None:
+                return None
+            excluded.add(name)
+        replacements = {alias.alias.lower(): alias for alias in star.args.get("replace") or ()}
+        if not replacements.keys() <= names - excluded or len(replacements) != len(star.args.get("replace") or ()):
+            return None
+        renames: dict[str, exp.Identifier] = {}
+        for alias in star.args.get("rename") or ():
+            name = _star_column_name(alias.this, bindings)
+            target = alias.args.get("alias")
+            if (
+                name is None or name in excluded or name in replacements or name in renames
+                or not isinstance(target, exp.Identifier)
+            ):
+                return None
+            renames[name] = target
+        renamed |= bool(renames)
+        for binding in bindings:
+            if binding.name not in excluded:
+                expression = replacements.get(binding.name) or exp.column(
+                    binding.name, table=item.table if isinstance(item, exp.Column) else None, quoted=True,
+                    db=item.db if isinstance(item, exp.Column) else None,
+                    catalog=item.catalog if isinstance(item, exp.Column) else None,
+                )
+                if (target := renames.get(binding.name)) is not None:
+                    expression = exp.Alias(this=expression, alias=target.copy())
+                result.append(expression)
+    if renamed and (
+        any(not isinstance(item, exp.Alias | exp.Column) for item in result)
+        or len({item.alias_or_name.lower() for item in result}) != len(result)
+    ):
+        return None  # A downstream SELECT may see DuckDB's generated or deduplicated names.
+    return result or None
 
 
 def _star_only(select: exp.Select) -> bool:

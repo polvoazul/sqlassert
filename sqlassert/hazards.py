@@ -33,6 +33,10 @@ the proof that would have pinned it, which failed:
   non-null (the `LEFT JOIN ... IS NULL` form of it), an `EXCEPT` whose left
   rows all appear on the right. Whether the key is enforced is not asked:
   sqlassert trusts every key the SQL states.
+- A CASE (or IF) whose results have different declared types: the engine
+  casts them to a common type, and the cast may lose what told values apart
+  (`'01'` and `'1'` both become 1). Integer types only widen. A result whose
+  type is not known (a numeric literal, an expression) is left out.
 - A GROUP BY key the Select does not return, when the keys it returns do not
   determine it: output rows told apart only by a value not shown look like
   duplicates. Silent for the values of an IN, EXISTS or scalar subquery.
@@ -74,6 +78,7 @@ class Concern(Enum):
     ALWAYS_EMPTY = "Always empty"
     MANY_TO_MANY = "Many-to-many join"
     UNSELECTED_GROUPING = "Grouping key not selected"
+    MIXED_CASE = "Mixed CASE types"
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,10 @@ def hazards(
     for site, operation in program.set_operations:
         if operation in reachable and wanted(site) and operation.operator == "except":
             found.extend(_empty_except(site, operation, arena))
+    for site, mixed in program.mixed_cases:
+        if wanted(site):
+            message = f"{mixed}: the engine casts the results to a common type, which may lose what told values apart; cast each result explicitly"
+            found.append(Hazard(site, Concern.MIXED_CASE, message, Result(False, "The results of a CASE have different types")))
     for site, join in program.scalar_subqueries:
         if join in reachable and wanted(site):
             found.extend(_scalar_subquery(site, join))

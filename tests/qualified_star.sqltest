@@ -17,3 +17,58 @@ CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
 SELECT u.y
 FROM (SELECT a.* FROM t AS a UNION ALL SELECT 1, 2) AS u
 /**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: exclude_keeps_the_other_columns_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * EXCLUDE (y) FROM t /**ASSERT UNIQUE(x)**/  --~ PROVED
+
+-- case: an_excluded_column_is_absent_from_the_output
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * EXCLUDE (x) FROM t /**ASSERT UNIQUE(x)**/
+--~ unknown-asserted-column
+
+-- case: qualified_exclude_hides_the_base_column_and_keeps_the_join_column
+CREATE TABLE l (x INTEGER PRIMARY KEY, payload INTEGER);
+CREATE TABLE r (x INTEGER PRIMARY KEY, payload INTEGER NOT NULL);
+SELECT l.* EXCLUDE (payload), r.payload
+FROM l JOIN r USING (x)
+/**ASSERT UNIQUE(x)**/  --~ PROVED
+/**ASSERT NOT NULL(payload)**/  --~ PROVED
+
+-- case: replace_a_key_does_not_inherit_its_uniqueness
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER NOT NULL);
+SELECT * REPLACE (0 AS x) FROM t /**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+
+-- case: qualified_exclude_and_replace_use_the_original_input
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT t.* EXCLUDE (x) REPLACE (t.x AS y) FROM t /**ASSERT UNIQUE(y)**/  --~ PROVED
+
+-- case: rename_preserves_the_key_at_its_original_position
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT first_column
+FROM (SELECT t.* RENAME (t.x AS renamed) FROM t) AS s(first_column, second_column)
+/**ASSERT UNIQUE(first_column)**/  --~ PROVED
+
+-- case: renaming_columns_can_swap_their_names
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER);
+SELECT * RENAME (x AS y, y AS x) FROM t
+/**ASSERT UNIQUE(y)**/  --~ PROVED
+/**ASSERT UNIQUE(x)**/  --~ UNKNOWN
+
+-- case: rename_combines_with_exclude_and_replace_on_other_columns
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, z INTEGER);
+SELECT t.* EXCLUDE (z) REPLACE (0 AS y) RENAME (x AS "renamed key") FROM t
+/**ASSERT UNIQUE("renamed key")**/  --~ PROVED
+/**ASSERT NOT NULL(y)**/  --~ PROVED
+
+-- case: rename_cannot_resolve_a_star_with_unknown_columns
+SELECT * RENAME (x AS renamed) FROM external_table /**ASSERT UNIQUE(renamed)**/
+--~ undeclared-table
+--~ unresolved-asserted-column
+
+-- case: a_rename_collision_cannot_borrow_a_deduplicated_names_key
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, y_1 INTEGER UNIQUE NOT NULL);
+SELECT s.y_1 FROM (SELECT * RENAME (x AS y) FROM t) AS s
+/**ASSERT UNIQUE(y_1)**/
+--~ UNKNOWN
+--~ unsupported-construct "modified star projection"

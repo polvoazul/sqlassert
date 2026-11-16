@@ -29,6 +29,17 @@ appears once per matching row of the other, or once padded.
 A SEMI or ANTI join has no Join Cardinality: it outputs no right rows.
 _Avoid_: Unique join marker, duplicate check, 1:N
 
+**Unproved Join Reason**:
+Why a join has no proved Join Cardinality, the first that applies:
+`unsupported` (an input sqlassert does not model, or the join sits in an
+opaque SELECT), `unconstrained` (no ON equality between the inputs or to a
+constant: a cross or range join), `unresolved-key`, `untyped-key` (with
+where the type is lost: `values`, `computed`, `opaque-relation`,
+`set-operation`, `table`, `type-mismatch`), `expression-key`,
+`no-unique-set`. A diagnostic about a missing proof, never a claim about the
+data: an `unconstrained` join is not shown to be many to many.
+_Avoid_: Many-to-many join (for `unconstrained`), failure reason
+
 **Fan Trap**, **Chasm Trap**:
 An aggregate whose argument's rows a join may repeat (a Hazard). A Fan Trap
 is through a join that is not proved to be a Unique Join; a Chasm Trap through
@@ -303,7 +314,8 @@ failed Proof that would have pinned it: a Fan Trap or Chasm Trap, an unmarked
 join that may be many to many, a `LIMIT`
 that picks arbitrary rows among ties, a scalar subquery that may return more
 than one row, a join equality that casts, an exact equality of a float
-(a Float Equality), a query that never returns a row.
+(a Float Equality), a CASE whose results have different types (the
+common-type cast may lose information), a query that never returns a row.
 The SQL may be what its author meant. `suggest` lists Hazards last; the
 suggestion's type (`SuggestType`) is rewrite, rewrite with caveat, marker or
 hazard.

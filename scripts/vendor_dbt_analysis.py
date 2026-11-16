@@ -16,9 +16,10 @@ from yaml import safe_dump, safe_load
 from sqlassert_dbt.expectations import Expectation, expectations
 from sqlassert_dbt.manifest import Catalog, CatalogTable, Column, load_manifest
 from sqlassert import ir
+from sqlassert.ir.convert import _unsupported_source
 from sqlassert.properties import NonNullColumn, NonNullColumns, UniqueSet
 from sqlassert.python_engine import Engine
-from sqlassert.rules.join_cardinality import many_to_one_join, one_to_many_join
+from sqlassert.rules.join_cardinality import many_to_one_join, one_to_many_join, unproved_join
 from sqlassert_dbt.program import _canonical
 from sqlassert_dbt.project import _analysis
 
@@ -105,20 +106,21 @@ def join_statistics(models, dialect, analysis, ignored=frozenset(), *, intermedi
                         if statement.body.in_injected(offset):
                             continue
                         seen.add(join)
-                        kind = "UNKNOWN"
+                        site_entry = {"model": model_id, "branch": branch, "compiled_line": statement.local(site.line)}
+                        unproved = unproved_join(join)
                         if join.kind in {"semi", "anti"}:
-                            kind = "NOT_APPLICABLE"
-                        elif join in reachable:
-                            left_once = many_to_one_join(join).value
-                            right_once = one_to_many_join(join).value
-                            kind = {
-                                (True, True): "ONE_TO_ONE", (True, False): "MANY_TO_ONE",
-                                (False, True): "ONE_TO_MANY", (False, False): "UNKNOWN",
-                            }[bool(left_once), bool(right_once)]
-                        cardinalities.append({
-                            "model": model_id, "branch": branch, "compiled_line": statement.local(site.line),
-                            "cardinality": kind,
-                        })
+                            site_entry["cardinality"] = "NOT_APPLICABLE"
+                        elif unproved is not None:
+                            site_entry |= {"cardinality": "UNKNOWN", "reason": unproved.reason}
+                            if unproved.detail is not None:
+                                site_entry["detail"] = unproved.detail
+                            if unproved.construct is not None:
+                                site_entry["construct"] = unproved.construct
+                        else:
+                            site_entry["cardinality"] = {
+                                (True, True): "ONE_TO_ONE", (True, False): "MANY_TO_ONE", (False, True): "ONE_TO_MANY",
+                            }[bool(many_to_one_join(join).value), bool(one_to_many_join(join).value)]
+                        cardinalities.append(site_entry)
     for node in models:
         sql = node.get("pre_injected_sql") or node.get("compiled_code")
         if not sql or not dialect:
@@ -131,10 +133,22 @@ def join_statistics(models, dialect, analysis, ignored=frozenset(), *, intermedi
             continue
         for statement in filter(None, statements):
             for join in statement.find_all(exp.Join):
+                source = join.this
+                while isinstance(source, exp.Lateral):
+                    source = source.this
+                if isinstance(source, exp.Unnest):
+                    name = "UNNEST"
+                elif isinstance(source, exp.Table) and isinstance(source.this, exp.Anonymous) and source.this.name.upper() == "JSON_EACH":
+                    name = "JSON_EACH"
+                else:
+                    name = ""
+                if name:
+                    counts[name + ("*" if _unsupported_source(join.this) is not None else "")] += 1
+                    continue
                 parts = [join.method, join.side, join.kind]
                 if join.kind == "OUTER" and join.side:
                     parts.pop()
-                kind = " ".join(filter(None, parts)) or ("INNER" if join.args.get("on") or join.args.get("using") else "UNQUALIFIED")
+                kind = " ".join(filter(None, parts)) or ("INNER" if join.args.get("on") or join.args.get("using") else "CROSS")
                 counts[kind] += 1
     total = counts.total()
     cardinality_counts = Counter(join["cardinality"] for join in cardinalities)
@@ -148,6 +162,14 @@ def join_statistics(models, dialect, analysis, ignored=frozenset(), *, intermedi
         "by_cardinality": {
             kind: {"count": count, "percent": round(100 * count / cardinality_total, 2)}
             for kind, count in sorted(cardinality_counts.items())
+        },
+        "by_unknown_reason": {
+            reason: {"count": count, "percent": round(100 * count / cardinality_total, 2)}
+            for reason, count in sorted(Counter(
+                join["reason"] + (f" ({': '.join(join[key] for key in ('detail', 'construct') if key in join)})"
+                                  if "detail" in join or "construct" in join else "")
+                for join in cardinalities if "reason" in join
+            ).items())
         },
         "cardinality_sites": cardinalities,
     }

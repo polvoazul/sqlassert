@@ -94,4 +94,4 @@ SELECT emp.job AS job, count(*) AS c FROM emp GROUP BY job
 -- dialects disagree on which one GROUP BY reads.
 -- case: a_grouping_name_that_may_be_an_alias_stays_opaque
 SELECT upper(job) AS job, count(*) AS c FROM emp GROUP BY job
-/**ASSERT NOT NULL(c)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c)**/  --~ UNKNOWN, unsupported-construct "this SELECT form (GROUP BY)"

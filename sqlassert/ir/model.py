@@ -663,9 +663,14 @@ class RecursiveRelation(OpaqueRelation):
     relation_name: str
 
 
+class ValuesList(OpaqueRelation):
+    """`(VALUES (...), ...) AS t (a, ...)`: rows of written values, its
+    columns stated as Knowledge. No column has a declared type."""
+
+
 type AnyRelation = (
     NamedRelation | Alias | Join | Filter | Project | Limit | Aggregate | Distinct | SetOperation
-    | QualifyByPartition | OpaqueRelation | RecursiveRelation
+    | QualifyByPartition | OpaqueRelation | RecursiveRelation | ValuesList
 )
 
 
@@ -699,6 +704,10 @@ class Program:
     # opaque relation or value), with what it is: an assertion whose proof
     # reaches one says so when it stays UNKNOWN.
     unsupported: tuple[tuple[Node, str], ...] = ()
+    # Each CASE (or IF) whose results have different declared types, which
+    # the engine casts to a common type, sited on its Select Expression, with
+    # what it mixes (a Hazard).
+    mixed_cases: tuple[tuple[AttachmentSite, str], ...] = ()
     column_to_parent_relation_index: dict[OutputColumn, RelationExpr] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

@@ -80,7 +80,7 @@ WITH distinct_star AS (
 )
 SELECT *
 FROM customers
-/**ASSERT MANY TO ONE**/ JOIN distinct_star  --~ UNKNOWN
+/**ASSERT MANY TO ONE**/ JOIN distinct_star  --~ UNKNOWN, unsupported-construct "this SELECT form (DISTINCT, *)"
     ON customers.id = distinct_star.customer_id
 
 -- case: a_select_without_from_is_one_row__p1

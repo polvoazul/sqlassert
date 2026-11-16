@@ -6,6 +6,7 @@ only when the key changes, its time to live passes, or --force is given.
 """
 
 import argparse
+from base64 import urlsafe_b64encode
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from hashlib import sha256
 from importlib import metadata
 import inspect
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -237,7 +239,26 @@ def breakdown(results, key):
     for result in results:
         counts.update({kind: entry["count"] for kind, entry in result["joins"].get(key, {}).items()})
     total = counts.total()
-    return ", ".join(f"{kind} {count:,} ({100 * count / total:.2f}%)" for kind, count in sorted(counts.items())) or "—"
+    return ", ".join(f"{kind.replace('*', r'\*')} {count:,} ({100 * count / total:.2f}%)"
+                     for kind, count in sorted(counts.items())) or "—"
+
+
+# Who can act on a join with no proved cardinality: 1 nobody (no proof exists),
+# 2 the project (a fact is missing), 3 sqlassert (it loses or does not model something).
+UNKNOWN_MARKS = {
+    "unconstrained": "¹", "untyped-key (table)": "²", "untyped-key (type-mismatch)": "²", "no-unique-set": "²³",
+}
+
+
+def unknown_reasons(results):
+    """Unknown-cardinality reasons as (mark, reason, count), the ones nobody can act on last,
+    encoded so the Markdown table carries them to `render_html`, which links UNKNOWN to them."""
+    counts = Counter()
+    for result in results:
+        counts.update({reason: entry["count"] for reason, entry in result["joins"].get("by_unknown_reason", {}).items()})
+    marked = [(UNKNOWN_MARKS.get(reason, "³"), reason, count) for reason, count in counts.items()]
+    marked.sort(key=lambda item: (item[0] == "¹", -item[2], item[1]))
+    return f"⟦{urlsafe_b64encode(json.dumps(marked).encode()).decode()}⟧" if marked else ""
 
 
 def audit_cells(projects):
@@ -259,7 +280,7 @@ def audit_cells(projects):
     dates = sorted(fact["created"][:10] for fact in analyzed)
     # Proofs that assume warn-severity tests pass are conditional: say so.
     assumed = " (warn tests trusted)" if any(fact["key"]["settings"].get("trust_warn_tests") for fact in analyzed) else ""
-    return [f"{status}{assumed}", f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality"),
+    return [f"{status}{assumed}", f"{proved:,}/{total:,}", breakdown(data, "by_type"), breakdown(data, "by_cardinality") + unknown_reasons(data),
             *base_table_cells(tables), opaque_cell(data), f"`{', '.join(sqlassert)}` {dates[-1]}"]
 
 
@@ -343,7 +364,11 @@ def render_html(repositories, rows):
         (fact := project["analyze"]) and fact["status"] == "ok" for project in rows[name][1].values()
     ))
     ordered_repositories = {name: repositories[name] for name in ordered}
-    table = markdown.render(markdown_table(ordered_repositories, rows, audit=True))
+    table = re.sub(
+        r"UNKNOWN ([\d,]+ \([\d.]+%\))(.*?)⟦([\w=-]+)⟧",
+        r'<a href="#" class="why-unknown" data-reasons="\3">UNKNOWN \1</a>\2',
+        markdown.render(markdown_table(ordered_repositories, rows, audit=True)),
+    )
     generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     return f"""<!doctype html>
 <html lang="en">
@@ -374,6 +399,9 @@ def render_html(repositories, rows):
     .column-guide dt {{ font-weight: 650; }}
     .column-guide dd {{ margin: .2rem 0 .8rem; }}
     footer {{ margin-top: 2rem; color: #5a6878; font-size: .85rem; }}
+    dialog {{ border: 1px solid #c9d3de; border-radius: 8px; padding: 1rem 1.25rem; max-width: min(90vw, 70rem); }}
+    dialog table {{ width: 100%; }}
+    dialog td:nth-child(n+3) {{ text-align: right; font-variant-numeric: tabular-nums; }}
   </style>
 </head>
 <body>
@@ -409,6 +437,20 @@ def render_html(repositories, rows):
         By default, upstream tests are facts only when their failure stops the build (severity error).</dd>
       <dt>Join forms and cardinality</dt>
       <dd>Counts pooled over analyzed projects, with separate totals for SQL forms and sqlassert proof sites.</dd>
+      <dd>An asterisk marks a join source that sqlassert treats as opaque.</dd>
+      <dt>Why unknown (click UNKNOWN in Join cardinality)</dt>
+      <dd>Marks say who can act: <sup>1</sup> nobody, no proof exists (listed last); <sup>2</sup> the project, by supplying a
+        missing fact (a type, a key); <sup>3</sup> sqlassert, which loses or does not model something. <sup>23</sup> is either.
+        After a colon, the construct sqlassert does not support that is behind the reason.</dd>
+      <dd>Why a join has no proved cardinality, the first that applies:
+        <code>unsupported</code> (a table function, UNNEST or LATERAL input, or a join inside a SELECT sqlassert reads as opaque),
+        <code>unconstrained</code> (no ON equality between the inputs or to a constant: a cross or range join; no key can make it unique),
+        <code>unresolved-key</code> (an equality operand that does not resolve or is not modelled),
+        <code>untyped-key</code> (a column = column equality whose types do not compare by identity; in parentheses, where the type is lost:
+        <code>values</code>, <code>computed</code>, <code>opaque-relation</code>, <code>set-operation</code>, <code>table</code> with no declared type,
+        or <code>type-mismatch</code>),
+        <code>expression-key</code> (only expressions are compared, not columns),
+        <code>no-unique-set</code> (the equated columns are a unique key of neither input).</dd>
       <dt>Base tables typed</dt>
       <dd>Base tables are the data entering the project: sources, seeds and snapshots the analyzed models read whose every read column has a known type, from a
         contract, the catalog or base facts. A join equality on an untyped column proves nothing, since an implicit
@@ -425,6 +467,13 @@ def render_html(repositories, rows):
     </dl>
     <p>A dash in a dbt column means the checkout has no dbt project, or the fact is not extracted yet.</p>
   </section>
+  <dialog id="why-unknown">
+    <form method="dialog" style="float: right"><button>Close</button></form>
+    <h2>Why unknown</h2>
+    <p>Marks say who can act: <sup>1</sup> nobody, no proof exists; <sup>2</sup> the project, by supplying a missing
+      fact; <sup>3</sup> sqlassert. See the column guide for each reason.</p>
+    <table><thead><tr><th>Mark</th><th>Reason</th><th>Joins</th><th>%</th></tr></thead><tbody></tbody></table>
+  </dialog>
   <footer>Generated {generated} by <code>scripts/audit.py</code>.</footer>
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script src="https://cdn.datatables.net/2.3.5/js/dataTables.min.js"></script>
@@ -441,6 +490,26 @@ def render_html(repositories, rows):
         }}
       }}
       new DataTable(table, {{ order: [], paging: false, autoWidth: false }});
+      const dialog = document.getElementById("why-unknown");
+      let reasons = null;
+      document.addEventListener("click", event => {{
+        const link = event.target.closest(".why-unknown");
+        if (!link) return;
+        event.preventDefault();
+        const rows = JSON.parse(atob(link.dataset.reasons.replaceAll("-", "+").replaceAll("_", "/")));
+        const total = rows.reduce((sum, row) => sum + row[2], 0);
+        if (reasons) reasons.destroy();
+        const body = dialog.querySelector("tbody");
+        body.replaceChildren(...rows.map(([mark, reason, count]) => {{
+          const row = body.insertRow();
+          for (const value of [mark, reason, count.toLocaleString(), (100 * count / total).toFixed(1)]) row.insertCell().textContent = value;
+          row.cells[0].dataset.order = mark === "¹" ? 9 : mark.length;
+          row.cells[2].dataset.order = row.cells[3].dataset.order = count;
+          return row;
+        }}));
+        reasons = new DataTable(dialog.querySelector("table"), {{ order: [], paging: false, searching: false, info: false }});
+        dialog.showModal();
+      }});
       // Scroll only the table, not the search box DataTables adds above it.
       document.querySelector(".report").classList.remove("scroll");
       table.parentElement.classList.add("scroll");

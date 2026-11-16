@@ -223,6 +223,52 @@ def test_a_join_equality_without_an_implicit_cast_is_not_a_hazard(on: str):
     assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").hazards == ()
 
 
+# Mixed CASE types ---------------------------------------------------------------
+
+MIXED = """
+CREATE TABLE m (b BIGINT, i INTEGER, x DOUBLE, t VARCHAR, u VARCHAR, flag BOOLEAN);
+"""
+
+
+def mixed_cases(sql: str) -> list[str]:
+    return [hazard.message for hazard in suggest(MIXED + sql).hazards if hazard.concern is Concern.MIXED_CASE]
+
+
+@pytest.mark.parametrize(
+    ("case", "mixes"),
+    [
+        ("CASE WHEN flag THEN b ELSE x END", "BIGINT and DOUBLE"),
+        ("CASE WHEN flag THEN i ELSE '01' END", "INT and a text literal"),
+        ("CASE WHEN flag THEN t ELSE CAST(i AS DOUBLE) END", "TEXT and DOUBLE"),
+        ("IF(flag, i, x)", "INT and DOUBLE"),
+    ],
+    ids=["bigint and double", "integer and text literal", "text and cast", "if"],
+)
+def test_a_case_whose_results_have_different_types_is_a_hazard(case: str, mixes: str):
+    assert [message.split(": ")[0].endswith(f"mixes {mixes}") for message in mixed_cases(f"SELECT {case} AS v FROM m")] == [True]
+
+
+def test_a_large_bigint_mixed_with_a_double_loses_its_value_on_data():
+    connection = duckdb.connect()
+    connection.execute(MIXED + "INSERT INTO m (b, x, flag) VALUES (9007199254740993, 0, true);")
+    assert connection.execute("SELECT CASE WHEN flag THEN b ELSE x END = 9007199254740992 FROM m").fetchone() == (True,)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "CASE WHEN flag THEN t ELSE u END",
+        "CASE WHEN flag THEN i ELSE b END",
+        "CASE WHEN flag THEN t END",
+        "CASE WHEN flag THEN i ELSE 1 END",
+        "CASE WHEN flag THEN CAST(i AS DOUBLE) ELSE x END",
+    ],
+    ids=["same type", "integers widen", "else null", "numeric literal", "explicit cast"],
+)
+def test_a_case_whose_results_share_a_type_is_not_a_hazard(case: str):
+    assert mixed_cases(f"SELECT {case} AS v FROM m") == []
+
+
 # Float equality -------------------------------------------------------------------
 
 FLOATS = """
