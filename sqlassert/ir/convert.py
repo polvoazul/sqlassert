@@ -710,7 +710,9 @@ class IrParser:
         Set when no two of its values may compare equal (`1` and `1.0` may,
         and `'a'` and `'A'` unless text compares by identity), and so are all
         columns together when no two rows may. A column with any other
-        expression states nothing. Without column names it stays opaque."""
+        expression states nothing. A column of literals alone has the type
+        its literals give it (`_values_type`); one with an expression has
+        none. Without column names it stays opaque."""
         from sqlassert.rules.domain import _may_coincide
 
         alias = values.args.get("alias")
@@ -719,9 +721,18 @@ class IrParser:
         if not names or not rows or any(len(row) != len(names) for row in rows):
             return None
         origin = self._origin(values)
+        literal_rows: list[list[ir.LiteralValue | None]] = [
+            [None if isinstance(item, exp.Null) else literal_value(item) for item in row] for row in rows
+        ]
+        literal_columns = [
+            all(isinstance(row[index], exp.Null) or literal_value(row[index]) is not None for row in rows) for index in range(len(names))
+        ]
         columns = tuple(
-            ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.OpaqueExpression(origin=origin, description=f"VALUES column {name}"))
-            for name in names
+            self._values_column(
+                ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.OpaqueExpression(origin=origin, description=f"VALUES column {name}")),
+                [row[index] for row in literal_rows] if literal_columns[index] else None,
+            )
+            for index, name in enumerate(names)
         )
         binary = self.semantics.text_is_binary
 
@@ -730,13 +741,10 @@ class IrParser:
             known = [item for item in items if item is not None]
             return all(not _may_coincide(first, second, binary) for index, first in enumerate(known) for second in known[index + 1:])
 
-        literal_rows: list[list[ir.LiteralValue | None]] = []
-        for row in rows:
-            literal_rows.append([None if isinstance(item, exp.Null) else literal_value(item) for item in row])
         for index, column in enumerate(columns):
-            written = [row[index] for row in rows]
-            if not all(isinstance(item, exp.Null) or literal_value(item) is not None for item in written):
+            if not literal_columns[index]:
                 continue  # Some value is an expression: nothing is stated.
+            written = [row[index] for row in rows]
             items = [row[index] for row in literal_rows]
             if not any(isinstance(item, exp.Null) for item in written):
                 self._knowledge.append(NonNullColumn(column=column))
@@ -745,13 +753,59 @@ class IrParser:
                 self._knowledge.append(EnumeratedDomain(column=column, values=present))
             if distinct(items):
                 self._knowledge.append(UniqueSet(columns=frozenset({column})))
-        literal = all(all(isinstance(item, exp.Null) or literal_value(item) is not None for item in row) for row in rows)
-        if literal and len(columns) > 1 and all(
+        if all(literal_columns) and len(columns) > 1 and all(
             any(one is None or other is None or not _may_coincide(one, other, binary) for one, other in zip(first, second, strict=True))
             for position, first in enumerate(literal_rows) for second in literal_rows[position + 1:]
         ):
             self._knowledge.append(UniqueSet(columns=frozenset(columns)))
         return ir.ValuesList(origin=origin, output_columns=columns, is_schema_complete=True, description=values.sql(dialect=self.dialect))
+
+    def _values_column(self, column: ir.OutputColumn, literals: list[ir.LiteralValue | None] | None) -> ir.OutputColumn:
+        """`column` of a VALUES list, typed as a column declared with the type
+        its literals give it (`literals`: None where a row is NULL, the whole
+        list None where some row is an expression), so equality binds it as it
+        binds a declared one: text by identity only where the dialect's text
+        does, an integer to any other integer."""
+        kind = None if literals is None else self._values_type(literals)
+        if kind is None:
+            return column
+        definition = exp.ColumnDef(kind=kind)
+        return replace(
+            column, binary_text=self._is_binary_text(definition), comparison_type=self._comparison_type(definition),
+            identity_comparison=self._identity_comparison(definition), exact_numeric=self._exact_numeric(definition),
+        )
+
+    def _values_type(self, literals: list[ir.LiteralValue | None]) -> exp.DataType | None:
+        """The type a VALUES column of these literals (None for NULL) has in
+        the dialect (`DialectSemantics.values_types`), None when it is not
+        certain: no literal but NULL, literals of two kinds (the engine casts
+        one to the other, or raises), a boolean, an exponent, a number whose
+        type the engines spell apart (`0.5`, a whole part of 0, is DECIMAL(2, 1)
+        in DuckDB and MySQL, DECIMAL(1, 1) in Trino and Spark), or one beyond
+        BIGINT or 18 digits either side of the point (DOUBLE, DECIMAL or
+        HUGEINT, by engine)."""
+        types = dict(self.semantics.values_types)
+        present = [literal for literal in literals if literal is not None]
+        if not present:
+            return None
+        if all(literal.type == "string" for literal in present):
+            name = types.get("string")
+        elif all(literal.type == "numeric" and _VALUES_INTEGER.fullmatch(literal.text) for literal in present):
+            values = [int(literal.text) for literal in present]
+            if all(-(2**31) <= value < 2**31 for value in values):
+                name = types.get("integer")
+            elif all(-(2**63) <= value < 2**63 for value in values):
+                name = types.get("bigint")
+            else:
+                return None
+        elif all(literal.type == "numeric" and _VALUES_DECIMAL.fullmatch(literal.text) for literal in present):
+            # Each literal is DECIMAL(whole + scale, scale); a column holds the widest of both.
+            parts = [literal.text.removeprefix("-").split(".") for literal in present]
+            whole, scale = max(len(part[0]) for part in parts), max(len(part[1]) for part in parts)
+            name = f"{types['decimal']}({whole + scale}, {scale})" if "decimal" in types else None
+        else:
+            return None
+        return None if name is None else exp.DataType.build(name, dialect=self.dialect)
 
     def _resolve_symbol(self, symbol: _Symbol) -> ir.NamedRelation:
         existing = self._named_relations.get(symbol)
@@ -3253,6 +3307,9 @@ def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
 
 # Rows of a VALUES list past which its columns get no Enumerated Domain.
 _VALUES_DOMAIN_ROWS = 100
+# The integers and decimals whose VALUES column type `_values_type` is certain of.
+_VALUES_INTEGER = re.compile(r"-?[0-9]{1,19}")
+_VALUES_DECIMAL = re.compile(r"-?[1-9][0-9]{0,17}\.[0-9]{1,18}")
 
 # A grouping key not selected, kept as a hidden Aggregate output: no SQL name can match it.
 HIDDEN_GROUPING = "\0grouping"

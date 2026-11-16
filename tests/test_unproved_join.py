@@ -37,13 +37,24 @@ CASES = [
     ("range join", "SELECT a.id FROM a JOIN b ON a.ts >= b.start_ts AND a.ts < b.end_ts", UnprovedJoin("unconstrained")),
     ("ambiguous column", "SELECT a.id FROM a JOIN missing AS m ON ts = m.k", UnprovedJoin("unresolved-key")),
     (
-        "VALUES key",
-        "SELECT a.id FROM a JOIN (VALUES (1), (2)) AS v (k) ON a.k = v.k",
+        "VALUES key of mixed literals",
+        "SELECT a.id FROM a JOIN (VALUES (1), (1.5)) AS v (k) ON a.k = v.k",
         UnprovedJoin("untyped-key", "values"),
     ),
     (
+        "VALUES key that is an expression",
+        "SELECT a.id FROM a JOIN (VALUES (1 + 1), (3)) AS v (k) ON a.k = v.k",
+        UnprovedJoin("untyped-key", "values"),
+    ),
+    (
+        "typed VALUES key against a decimal",
+        "SELECT a.id FROM a JOIN (VALUES (1), (2)) AS v (k) ON a.amount = v.k",
+        UnprovedJoin("untyped-key", "type-mismatch"),
+    ),
+    ("typed VALUES key", "SELECT a.id FROM a JOIN (VALUES (1), (2)) AS v (k) ON a.k = v.k", None),
+    (
         "computed key",
-        "SELECT a.id FROM a JOIN (SELECT CAST(date_trunc('month', ts) AS DATE) AS day FROM a) AS m ON m.day = a.id",
+        "SELECT a.id FROM a JOIN (SELECT date_trunc('month', ts) AS day FROM a) AS m ON m.day = a.id",
         UnprovedJoin("untyped-key", "computed"),
     ),
     (

@@ -110,6 +110,18 @@ class DialectSemantics:
     # `sha2(x, n)` where `n` is free is NULL for an unsupported `n` in MySQL,
     # Spark and Hive, so `SHA2` is claimed only where the length is fixed.
     hash_functions: tuple[str, ...] = ()
+    # The type a VALUES column has when every non-NULL value in it is a
+    # literal of one kind (NULL does not change it), by kind, as the engine
+    # names the type (`values_type(KIND)=TYPE`): "string"; "integer", each
+    # value within INTEGER's range; "bigint", each within BIGINT's and one
+    # beyond INTEGER's (the column has its widest row's type); "decimal", each
+    # written `d.f` with a whole part that does not start with 0, a type
+    # DECIMAL(p, s) of the widest whole part and scale. A kind not listed, a
+    # column of mixed kinds, of any other literal (a boolean, an exponent, a
+    # whole part 0, an integer beyond BIGINT) and of any expression stay untyped.
+    # A string type claims only that it is text: whether it compares by
+    # identity is `text_is_binary`, as for a declared column.
+    values_types: tuple[tuple[str, str], ...] = ()
 
     @property
     def rely(self) -> bool:
@@ -140,6 +152,7 @@ _SPARK = DialectSemantics(
     # Tentative. Not SHA2: `sha2(x, n)` is NULL for an unsupported `n`.
     result_types=(("MD5", "STRING"), ("SHA", "STRING")),
     hash_functions=("MD5", "SHA"),
+    values_types=(("string", "string"), ("integer", "int"), ("bigint", "bigint"), ("decimal", "decimal")),
 )
 
 _SEMANTICS: dict[str, DialectSemantics] = {
@@ -161,6 +174,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
             *((node, "BIGINT") for node in ("Length", "StrPosition", "Year", "Month", "Day")),
         ),
         hash_functions=("MD5", "SHA", "SHA2"),
+        values_types=(("string", "VARCHAR"), ("integer", "INTEGER"), ("bigint", "BIGINT"), ("decimal", "DECIMAL")),
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,
@@ -178,6 +192,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # `sha256(x)` returns bytea: SHA2Digest. No Postgres SQL parses to SHA or SHA2.
         result_types=(("MD5", "TEXT"), ("SHA2Digest", "BYTEA")),
         hash_functions=("MD5", "SHA2Digest"),
+        # A numeric literal with a point is an unscaled NUMERIC: no decimal is claimed.
+        values_types=(("string", "text"), ("integer", "integer"), ("bigint", "bigint")),
     ),
     "mysql": DialectSemantics(
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
@@ -200,6 +216,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         set_operations_all=True,  # Since 8.0.31.
         # No type function to certify result types with. Not SHA2: its length is free.
         hash_functions=("MD5", "SHA"),
+        # Every integer literal is a BIGINT. MySQL spells a row `ROW(...)`, which is not lowered.
+        values_types=(("string", "varchar"), ("integer", "bigint"), ("bigint", "bigint"), ("decimal", "decimal")),
     ),
     "snowflake": DialectSemantics(
         # Not `checked_arithmetic`: its docs never say integer overflow raises.
@@ -295,6 +313,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # `md5`/`sha1`/`sha256` take and return VARBINARY.
         result_types=(("MD5Digest", "VARBINARY"), ("SHA", "VARBINARY"), ("SHA2Digest", "VARBINARY")),
         hash_functions=("MD5Digest", "SHA", "SHA2Digest"),
+        # A string is `varchar(n)` for its longest value.
+        values_types=(("string", "varchar"), ("integer", "integer"), ("bigint", "bigint"), ("decimal", "decimal")),
     ),
 }
 

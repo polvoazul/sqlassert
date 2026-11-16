@@ -23,7 +23,12 @@ LOCAL_ENGINES = {"duckdb", "sqlite", "postgres", "mysql", "clickhouse", "trino"}
 DOCUMENTED_ONLY = {("mysql", "foreign_key_engines:ndb"), ("mysql", "foreign_key_engines:ndbcluster")}
 # Facts of a documented dialect certified on an engine: Spark 4.3 runs locally,
 # but only these were probed there.
-ENGINE_CERTIFIED = {("spark", name) for name in ("checked_sum", "skips_null(greatest)", "skips_null(least)", "strict([])")}
+ENGINE_CERTIFIED = {
+    ("spark", name) for name in (
+        "checked_sum", "skips_null(greatest)", "skips_null(least)", "strict([])",
+        "values_type(string)=string", "values_type(integer)=int", "values_type(bigint)=bigint", "values_type(decimal)=decimal",
+    )
+}
 
 
 def _script() -> ModuleType:

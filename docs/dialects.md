@@ -50,6 +50,20 @@ before dialects were listed; see "Not done").
 | primary / unique keys | enforced | enforced | enforced | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | foreign keys | enforced | enforced | enforced (InnoDB, NDB; not inline) | `RELY` | unenforced | `RELY` | unenforced | none (unenforced) |
 | `EXCEPT ALL`, `INTERSECT ALL` (`set_operations_all`) | yes | yes | yes (8.0.31) | no | no | yes | no | yes |
+| VALUES column of literals (`values_types`) | string, integer, bigint, decimal | string, integer, bigint (no decimal: an unscaled NUMERIC) | string, bigint for every integer, decimal (`ROW(...)` rows not lowered) | none (not certified) | none (no VALUES) | Spark string, int, bigint, decimal (engine); Databricks the same from memory | none (no column list) | string, integer, bigint, decimal |
+
+A VALUES column whose non-NULL values are literals of one kind is typed as
+the engine types it (`DialectSemantics.values_types`, probed as
+`values_type(KIND)=TYPE`), and then equality binds it as it binds a declared
+column: text by identity only where `text_is_binary` holds, an integer to any
+other signed integer, a decimal to a decimal of the same `DECIMAL(p, s)`. An
+integer is INTEGER within its range (BIGINT in MySQL) and BIGINT up to BIGINT's
+range; a decimal is typed only when written `d.f` with a whole part not
+starting with 0 (`0.5` is DECIMAL(2, 1) in DuckDB and MySQL, DECIMAL(1, 1) in
+Trino and Spark) and at most 18 digits either side of the point. Mixed kinds
+(the engine casts or raises), NULL alone, a boolean, an exponent (DOUBLE), an
+integer beyond BIGINT (HUGEINT, DECIMAL, NUMERIC or BIGINT UNSIGNED by engine)
+and any expression stay untyped.
 
 Also: SQLite foreign keys are unenforced (`PRAGMA foreign_keys` is off by
 default) and its primary keys may be NULL (only an `INTEGER PRIMARY KEY` may
@@ -268,12 +282,50 @@ keys), the dialect proves a subset of what DuckDB would, so the DuckDB
 oracle's judgement of the same rules covers it. The `.sqltest` cases in each dialect
 (`tests/dialect_*.sqltest`) pin each flag's effect.
 
+## Types of computed columns
+
+A select item (projected, a grouping key, a DISTINCT or QUALIFY item) has the
+type of a column declared with it when its expression's type is known. The
+type says how values compare, never that the expression is injective. These
+claims have no flag: they hold under every setting of every dialect, or the
+construct stays untyped. Provenance: DuckDB 2.0.0, probed with `typeof` (the
+cases are in `tests/computed_select_item_types.sqltest`); every other engine
+"from memory". None is in `docs/dialect-provenance.json`: no flag is
+certified by `scripts/certify_dialects.py`.
+
+- `CAST(x AS T)` and `TRY_CAST` (a failure is NULL, which equals nothing) are of
+  type `T`, as a column declared `T` is: identity comparison, binary text and
+  exact numeric follow `DialectSemantics` (`text_is_binary`, `unscaled_decimal`,
+  `zoned_timestamp_is_instant`), so a cast to TIMESTAMP WITH TIME ZONE is
+  identical only where it is an instant (not Trino, Snowflake, Oracle). To
+  text, only the cast of a number of a declared type: a cast of text may keep
+  the operand's collation (Postgres), which is not modelled. Standard SQL in
+  every dialect; SQLite has no column types (a declared one is an affinity, a
+  cast to `DATE` is `NUMERIC`), where a declared column is typed by the same
+  rule, so the claim is no weaker there than for columns.
+- `CASE`, `IF`, `COALESCE` (`NVL`, `IFNULL`) and `NULLIF` whose non-NULL
+  results (a missing ELSE and a NULL literal are none) are all of one type
+  that compares by identity are of that type: the standard's union type of
+  identical types, in every dialect. Results that are signed integer types of
+  different widths, or integer literals (within INT) beside them, are an
+  integer type, labelled by the widest (DuckDB: `CASE WHEN c THEN smallint_col
+  ELSE 0 END` is SMALLINT and `COALESCE(int_col, bigint_col)` BIGINT, both an
+  integer type; engines differ in which, none in being exact). A string literal
+  beside text compared by identity is text: DuckDB VARCHAR (probed); Postgres
+  resolves the literal as the column's type and Trino as `varchar(n)`, from
+  memory, and no other dialect is `text_is_binary`. Results of different
+  types, a decimal or boolean literal, a nested CASE, and a cast to text stay
+  untyped: the hazard `Mixed CASE types` is for the differing ones.
+  `NULLIF(a, b)` is read as a CASE over `a` and `b`: DuckDB returns the type of
+  `a` (`NULLIF(int, 1.5)` is INTEGER), but another engine may compare in the
+  common type.
+
 ## Certifying facts
 
 Every claim a dialect's flags make, every Builtin fact
 (`strict(op)`, `total(op)`, `injective(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
 derives from them, and every function result type (`result_type(Node)=TYPE`,
-from `DialectSemantics.result_types`) has a provenance in `docs/dialect-provenance.json`:
+from `DialectSemantics.result_types`, and `values_type(KIND)=TYPE`, from `values_types`) has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
 version or date}` when read in the engine's documentation, and, only for a
 dialect with no local engine, `{"tentative": why}` when stated from memory,

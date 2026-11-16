@@ -229,6 +229,10 @@
     "total(||)": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-null-semantics", "read": "updated 2026-09-11"},
     "total(~)": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/parameters/ansi_mode", "read": "updated 2026-09-11, ANSI_MODE TRUE (default)"},
     "unscaled_decimal=False": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-datatypes", "read": "cited 2026-11-08, not fetched"},
+    "values_type(bigint)=bigint": {"tentative": "from memory: an inline table's column takes the type of its literals as in Spark (INT or BIGINT by size, DECIMAL(p, s) for a decimal, STRING); Databricks documents each literal's type"},
+    "values_type(decimal)=decimal": {"tentative": "from memory: an inline table's column takes the type of its literals as in Spark (INT or BIGINT by size, DECIMAL(p, s) for a decimal, STRING); Databricks documents each literal's type"},
+    "values_type(integer)=int": {"tentative": "from memory: an inline table's column takes the type of its literals as in Spark (INT or BIGINT by size, DECIMAL(p, s) for a decimal, STRING); Databricks documents each literal's type"},
+    "values_type(string)=string": {"tentative": "from memory: an inline table's column takes the type of its literals as in Spark (INT or BIGINT by size, DECIMAL(p, s) for a decimal, STRING); Databricks documents each literal's type"},
     "zoned_timestamp_is_instant": {"doc": "https://docs.databricks.com/aws/en/sql/language-manual/data-types/timestamp-type", "read": "read 2026-11-08"}
   },
   "duckdb": {
@@ -334,6 +338,10 @@
     "total(~)": {"engine": ["duckdb 2.0.0"]},
     "unique_keys=enforced": {"engine": ["duckdb 2.0.0"]},
     "unscaled_decimal=False": {"engine": ["duckdb 2.0.0"]},
+    "values_type(bigint)=BIGINT": {"engine": ["duckdb 2.0.0"]},
+    "values_type(decimal)=DECIMAL": {"engine": ["duckdb 2.0.0"]},
+    "values_type(integer)=INTEGER": {"engine": ["duckdb 2.0.0"]},
+    "values_type(string)=VARCHAR": {"engine": ["duckdb 2.0.0"]},
     "zoned_timestamp_is_instant": {"engine": ["duckdb 2.0.0"]}
   },
   "hive": {
@@ -457,6 +465,10 @@
     "total(~)": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
     "unique_keys=enforced": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
     "unscaled_decimal=False": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]},
+    "values_type(bigint)=bigint": {"engine": ["mysql 8.4.13"]},
+    "values_type(decimal)=decimal": {"engine": ["mysql 8.4.13"]},
+    "values_type(integer)=bigint": {"engine": ["mysql 8.4.13"]},
+    "values_type(string)=varchar": {"engine": ["mysql 8.4.13"]},
     "zoned_timestamp_is_instant": {"engine": ["mysql 8.4.13", "mysql 9.7.4"]}
   },
   "oracle": {
@@ -603,6 +615,9 @@
     "total(||)": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
     "total(~)": {"engine": ["postgres 18.6"], "undefined": ["postgres 16.15", "postgres 17.11"]},
     "unique_keys=enforced": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]},
+    "values_type(bigint)=bigint": {"engine": ["postgres 18.6"]},
+    "values_type(integer)=integer": {"engine": ["postgres 18.6"]},
+    "values_type(string)=text": {"engine": ["postgres 18.6"]},
     "zoned_timestamp_is_instant": {"engine": ["postgres 16.15", "postgres 17.11", "postgres 18.6"]}
   },
   "redshift": {
@@ -822,6 +837,10 @@
     "total(upper)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-functions-builtin.html", "read": "cited 2026-11-11, not fetched"},
     "total(||)": {"doc": "https://spark.apache.org/docs/latest/sql-ref-null-semantics.html", "read": "Spark 4.3.0"},
     "unscaled_decimal=False": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "Spark 4.3.0, cited 2026-11-08, not fetched"},
+    "values_type(bigint)=bigint": {"engine": ["spark 4.3.0"]},
+    "values_type(decimal)=decimal": {"engine": ["spark 4.3.0"]},
+    "values_type(integer)=int": {"engine": ["spark 4.3.0"]},
+    "values_type(string)=string": {"engine": ["spark 4.3.0"]},
     "zoned_timestamp_is_instant": {"doc": "https://spark.apache.org/docs/latest/sql-ref-datatypes.html", "read": "read 2026-11-08"}
   },
   "sqlite": {
@@ -969,6 +988,10 @@
     "total(|)": {"engine": ["trino 484"]},
     "total(||)": {"engine": ["trino 484"]},
     "total(~)": {"engine": ["trino 484"]},
-    "unscaled_decimal=False": {"engine": ["trino 484"]}
+    "unscaled_decimal=False": {"engine": ["trino 484"]},
+    "values_type(bigint)=bigint": {"engine": ["trino 484"]},
+    "values_type(decimal)=decimal": {"engine": ["trino 484"]},
+    "values_type(integer)=integer": {"engine": ["trino 484"]},
+    "values_type(string)=varchar": {"engine": ["trino 484"]}
   }
 }

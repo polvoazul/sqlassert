@@ -119,7 +119,10 @@ class Fact:
 def facts(dialect: str, meaning: DialectSemantics | None = None) -> tuple[Fact, ...]:
     """Every claim `meaning` (the dialect's semantics by default) makes, each with its probe."""
     meaning = semantics(dialect) if meaning is None else meaning
-    found = [*_builtin_facts(dialect, meaning), *_flag_facts(dialect, meaning), *_result_type_facts(dialect, meaning)]
+    found = [
+        *_builtin_facts(dialect, meaning), *_flag_facts(dialect, meaning), *_result_type_facts(dialect, meaning),
+        *_values_type_facts(dialect, meaning),
+    ]
     return tuple(sorted(found, key=lambda fact: fact.name))
 
 
@@ -474,7 +477,7 @@ _RESULT_TYPE_CALLS: dict[str, tuple[str, ...]] = {
     "Day": ("day(DATE '2020-01-01')", "day(TIMESTAMP '2020-01-01')"),
 }
 # The engine's function naming a value's type, as a template.
-_TYPE_OF = {"duckdb": "typeof({})", "postgres": "pg_typeof({})::text", "trino": "typeof({})"}
+_TYPE_OF = {"duckdb": "typeof({})", "postgres": "pg_typeof({})::text", "trino": "typeof({})", "spark": "typeof({})", "databricks": "typeof({})"}
 # An engine rejecting a call's argument types at bind time: no program has that call.
 _BIND_ERROR = r"(?i)no function matches|unexpected parameters \(.*\) for function|function .*\(.*\) does not exist"
 
@@ -506,6 +509,61 @@ def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact
             for index, call in enumerate(calls)
         )
         yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", checks)
+
+
+# The literal rows of a VALUES column, by kind of literal (`DialectSemantics.values_types`):
+# each row list is a column the engine types from its literals, with the type it
+# must have. A type parameter is `(p, s)` for a decimal, read from the literals.
+_VALUES_SAMPLES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "string": (("'a'", "'bc'"), ("'a'", "NULL"), ("'1'", "'2'")),
+    "integer": (("1", "2"), ("-2147483648", "2147483647"), ("NULL", "1")),
+    "bigint": (("1", "2147483648"), ("-2147483649",), ("9223372036854775807",), ("-9223372036854775808", "NULL")),
+    "decimal": (
+        ("1.5",), ("1.5", "10.25"), ("1.50",), ("-1.5",), ("1.5", "NULL"), ("123456789012345678.123456789012345678",),
+    ),
+}
+_DECIMAL_PARTS = re.compile(r"-?([0-9]+)\.([0-9]+)")
+
+
+def _values_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
+    """Each claimed VALUES column type, probed over literals of its kind: the
+    engine's own name for the column's type (its type function, or for MySQL the
+    column of a table made from the VALUES list) is the claimed one, or the
+    claimed one with parameters (`varchar(2)`, `decimal(4,2)`)."""
+    for kind, type_name in meaning.values_types:
+        checks = []
+        for rows in _VALUES_SAMPLES[kind]:
+            expected = type_name.lower()
+            if kind == "decimal":
+                parts = [match.groups() for row in rows if (match := _DECIMAL_PARTS.fullmatch(row))]
+                whole, scale = max(len(part[0]) for part in parts), max(len(part[1]) for part in parts)
+                expected = f"{expected}({whole + scale},{scale})"
+            checks.append(_values_type_check(dialect, rows, expected, exact=kind != "string"))
+        yield Fact(f"values_type({kind})={type_name}", f"drop {kind} from values_types in dialects.py", tuple(checks))
+
+
+def _values_type_check(dialect: str, rows: tuple[str, ...], expected: str, *, exact: bool) -> Check:
+    """The type of the one column of a VALUES list of `rows` is `expected`
+    (lower case, no spaces), or, unless `exact`, `expected` with parameters."""
+    # MySQL spells a row `ROW(...)`; SQLite has no column list for a VALUES list.
+    values = ", ".join(f"ROW({row})" if dialect == "mysql" else f"({row})" for row in rows)
+    if dialect == "sqlite":
+        return Check("", "true", problem="sqlite has no column list for a VALUES list: no program has one")
+
+    def matches(type_text: str) -> str:
+        shown = f"replace(lower({type_text}), ' ', '')"
+        return f"CASE WHEN {shown} = '{expected}'" + ("" if exact else f" OR {shown} LIKE '{expected}(%'") + " THEN 1 ELSE 0 END"
+
+    source = f"(VALUES {values}) AS v (c)"
+    if dialect == "mysql":
+        table = "sqlassert_probe_values"
+        column = f"SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '{table}' AND column_name = 'c'"
+        return Check(
+            f"SELECT {matches(f'({column})')}", "true", setup=(f"CREATE TABLE {table} AS SELECT * FROM {source}",), tables=(table,),
+        )
+    if dialect not in _TYPE_OF:
+        return Check("", "true", problem=f"{dialect} has no type function")
+    return Check(f"SELECT {matches(_TYPE_OF[dialect].format('c'))} FROM {source} LIMIT 1", "true")
 
 
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
