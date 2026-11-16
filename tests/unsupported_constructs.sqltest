@@ -91,3 +91,74 @@ SELECT e.empno FROM emp e LATERAL VIEW explode(array(1, 2)) x AS n
 -- dialect: clickhouse
 SELECT empno, main.max(sal) AS m FROM emp GROUP BY empno
 /**ASSERT UNIQUE(empno)**/  --~ PROVED
+
+-- Every relation sqlassert lowers opaque for a construct it does not model says
+-- which, whether it is a SELECT form, a FROM source or modifier, a join kind, or
+-- a set operation or query body. A missing fact (a table with no CREATE) has its
+-- own warning and is not one of these.
+
+-- case: a_set_operation_input_that_is_not_a_select_is_named
+SELECT empno FROM emp UNION ALL (DESCRIBE emp)
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "DESCRIBE as a query body"
+
+-- case: a_view_body_that_is_not_a_select_is_named
+CREATE VIEW v AS VALUES (1, 2);
+SELECT * FROM v /**ASSERT UNIQUE(column0)**/  --~ UNKNOWN
+--~ unsupported-construct "a VALUES list as a query body"
+
+-- case: a_values_list_without_column_names_is_named
+SELECT * FROM (VALUES (1, 2)) /**ASSERT UNIQUE(column0)**/  --~ UNKNOWN
+--~ unsupported-construct "a VALUES list without column names"
+
+-- case: a_pivot_is_named
+SELECT * FROM emp PIVOT (count(*) FOR job IN ('CLERK')) /**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "PIVOT"
+
+-- case: a_tablesample_is_named
+SELECT empno FROM emp TABLESAMPLE (10 PERCENT) /**ASSERT NOT NULL(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "TABLESAMPLE"
+
+-- case: time_travel_is_named
+-- dialect: bigquery
+SELECT empno FROM emp FOR SYSTEM_TIME AS OF '2020-01-01' /**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "time travel"
+
+-- UNION BY NAME is modelled for DuckDB only, over one UNION whose inputs name
+-- each column once (DuckDB rejects the rest). Snowflake documents it too,
+-- matching quoted names exactly (docs.snowflake.com, query operators); BigQuery
+-- has BY NAME and CORRESPONDING with modes (from memory); Databricks's set
+-- operator page has no BY NAME (read on docs.databricks.com).
+
+-- case: union_by_name_in_another_dialect_is_named
+-- dialect: snowflake
+SELECT empno FROM emp UNION ALL BY NAME SELECT empno FROM emp
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "UNION BY NAME in snowflake"
+
+-- case: union_by_name_with_a_repeated_column_name_is_named
+SELECT empno, empno FROM emp UNION ALL BY NAME SELECT empno FROM emp
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "UNION BY NAME with a repeated column name"
+
+-- case: union_by_name_with_a_mode_is_named
+SELECT empno FROM emp UNION ALL CORRESPONDING SELECT empno FROM emp
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "UNION BY NAME with a mode or column list"
+
+-- case: intersect_by_name_is_named
+SELECT empno FROM emp INTERSECT ALL BY NAME SELECT empno FROM emp
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "INTERSECT BY NAME"
+
+-- A column list or an undeclared table leaves the pairing to a missing fact.
+-- case: union_by_name_over_an_undeclared_table_is_not_blamed_on_the_construct
+SELECT empno FROM emp UNION ALL BY NAME SELECT * FROM unknown_table
+--~ undeclared-table "unknown_table"
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+
+-- case: an_unknown_join_kind_is_named
+-- dialect: clickhouse
+SELECT e.empno FROM emp e ARRAY JOIN e.empno AS x
+/**ASSERT UNIQUE(empno)**/  --~ UNKNOWN
+--~ unsupported-construct "ARRAY JOIN in ClickHouse"

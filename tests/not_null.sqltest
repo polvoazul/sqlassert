@@ -187,6 +187,12 @@ FROM c
 WITH c AS (SELECT id FROM users UNION BY NAME SELECT id FROM users)
 SELECT id
 FROM c
+/**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: not_null_is_not_guessed__union_by_name_nullable_in_one_input
+WITH c AS (SELECT id FROM users UNION BY NAME SELECT nickname AS id FROM users)
+SELECT id
+FROM c
 /**ASSERT NOT NULL(id)**/  --~ UNKNOWN
 
 -- case: not_null_is_not_guessed__intersect_nullable_in_both

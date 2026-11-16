@@ -167,7 +167,7 @@ def unproved_join(join: ir.Join) -> UnprovedJoin | None:
     if join.kind in {"semi", "anti"}:
         return None
     if join not in _reachable():
-        return UnprovedJoin("unsupported")
+        return UnprovedJoin("unsupported", construct=_unsupported_under(join))
     if many_to_one_join(join).value or one_to_many_join(join).value:
         return None
     for relation in (join.left, join.right):

@@ -360,6 +360,33 @@ never taken to read it, since either may name a column of its own. That rows of
 the left input are repeated, none or several times (a LEFT JOIN: at least once),
 is what no key survives.
 
+## UNION BY NAME
+
+DuckDB's `UNION [ALL] BY NAME` pairs the inputs' columns by name, not position.
+`IrParser._align_by_name` lowers it to the positional UNION it means: each input
+read as the output's columns in order, a column the input lacks as a NULL
+literal (no type, nullable). Probed on DuckDB 2.0.0: the output is the left
+input's columns in its order, then the right's that the left lacks in its
+order; names match without regard to case (`SELECT 1 AS X UNION ALL BY NAME
+SELECT 3 AS x` is `X`, the left's spelling); a column one input lacks is NULL
+there; matched columns of different types widen (`INTEGER` and `VARCHAR` give
+`VARCHAR`), which the pairing's comparison-type check already refuses to type.
+DuckDB rejects, probed, `INTERSECT BY NAME`, `EXCEPT BY NAME`, `CORRESPONDING`,
+`BY NAME ON (...)`, a `FULL` or `INNER` mode, and a column name written twice
+in an input; all of these lower opaque and report `unsupported-construct`.
+
+| | UNION BY NAME |
+| --- | --- |
+| DuckDB 2.0.0 | modelled, as above (probed) |
+| Snowflake | documented: matched by identifier (unquoted names without regard to case, quoted ones exactly), output in order of first appearance left to right, a column in one input only filled with NULL (docs.snowflake.com, query operators). Not modelled: its quoted-name rule differs from the case-insensitive match used here; reported `unsupported-construct` |
+| BigQuery | from memory: `BY NAME` and `CORRESPONDING` with `INNER`, `FULL`, `LEFT` modes and a `BY (columns)` list. Not modelled, reported |
+| Databricks | the set operator reference lists no `BY NAME` (read on docs.databricks.com); not modelled, reported |
+| Postgres, MySQL, Redshift, Trino | from memory: no `BY NAME`; not probed. Not modelled, reported |
+
+SQLGlot parses `BY NAME` and `CORRESPONDING` for every dialect, so the dialect
+is checked in `_align_by_name`, not by the parser. A flag in `DialectSemantics`
+would replace that check if another dialect is modelled.
+
 ## Certifying facts
 
 Every claim a dialect's flags make, every Builtin fact

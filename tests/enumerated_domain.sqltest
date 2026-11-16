@@ -465,7 +465,14 @@ FROM u
 WITH u AS (SELECT 'new' AS s FROM orders UNION BY NAME SELECT 'paid' AS s FROM orders)
 SELECT s
 FROM u
-/**ASSERT ENUM(s IN ('new', 'paid'))**/  --~ UNKNOWN
+/**ASSERT ENUM(s IN ('new', 'paid'))**/  --~ PROVED
+
+-- A column one UNION BY NAME input lacks is NULL on its rows, outside every domain.
+-- case: a_domain_flows_through_set_operations__union_by_name_with_a_column_in_one_input
+WITH u AS (SELECT 'new' AS s FROM orders UNION ALL BY NAME SELECT 'paid' AS t FROM orders)
+SELECT s
+FROM u
+/**ASSERT ENUM(s IN ('new'))**/  --~ PROVED
 
 -- case: a_domain_flows_through_set_operations__intersect_bounded_by_the_right
 WITH u AS (SELECT status FROM orders INTERSECT SELECT 'paid' FROM orders)

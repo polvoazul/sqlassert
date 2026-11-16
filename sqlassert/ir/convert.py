@@ -157,6 +157,8 @@ class IrParser:
     _site_sort_keys: list[tuple[AttachmentSite, tuple[ir.OutputColumn, ...] | None]] = field(default_factory=list)
     _set_operations: list[tuple[AttachmentSite, ir.SetOperation]] = field(default_factory=list)
     _unsupported: list[tuple[ir.Node, str]] = field(default_factory=list)
+    # Joins written inside a SELECT that lowered opaque, with its construct.
+    _orphan_joins: list[tuple[ir.Join, str]] = field(default_factory=list)
     # Columns made up for names a query uses: of a table with no CREATE, or an
     # opaque relation (`_guessed`), and those a declared table does not have (`_absent`).
     _guessed: set[ir.OutputColumn] = field(default_factory=set)
@@ -240,13 +242,18 @@ class IrParser:
 
         named_relations = tuple(self._named_relations.get(symbol) or self._unresolved_named_relation(symbol) for symbol in self._symbols)
         warnings = [*self._undeclared_table_warnings(), *self._warnings, *self._composite_warnings()]
-        return IrConversionResult(
-            ir.Program(named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
-                scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys),
-                set_operations=tuple(self._set_operations), unsupported=tuple(self._unsupported),
-                mixed_cases=tuple(self._mixed_cases)),
-            tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)),
+        program = ir.Program(
+            named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
+            scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys),
+            set_operations=tuple(self._set_operations), unsupported=tuple(self._unsupported),
+            mixed_cases=tuple(self._mixed_cases),
         )
+        if self._orphan_joins:
+            # A join inside a Named Relation first lowered under an opaque SELECT is still in the program.
+            reachable = frozenset(program.nodes())
+            orphans = tuple((join, construct) for join, construct in self._orphan_joins if join not in reachable)
+            program = replace(program, unsupported=(*program.unsupported, *orphans))
+        return IrConversionResult(program, tuple(self._knowledge), tuple(self._diagnostics), tuple(dict.fromkeys(warnings)))
 
     def _undeclared_table_warnings(self) -> list[Diagnostic]:
         return [
@@ -565,15 +572,17 @@ class IrParser:
             return None
         query = unwrapped
         if isinstance(query, exp.SetOperation):
-            left = self._lower_query(query.this)
-            right = self._lower_query(query.expression)
-            if left is None:
-                left = self._opaque_relation(query.this)
-            if right is None:
-                right = self._opaque_relation(query.expression)
+            left, right = (self._lower_arm(arm) for arm in (query.this, query.expression))
             origin = self._origin(query)
-            by_name = bool(query.args.get("by_name"))
-            if by_name:
+            unpaired, construct = False, None
+            if query.args.get("by_name"):
+                aligned = self._align_by_name(query, left, right)
+                if isinstance(aligned, tuple):
+                    left, right = aligned
+                else:
+                    unpaired, construct = True, aligned
+            if unpaired:
+                # The inputs' columns cannot be paired: the output is each name either input has, nothing known of it.
                 names: dict[str, str] = {}
                 for column in (*left.output_columns, *right.output_columns):
                     names.setdefault(column.name.lower(), column.name)
@@ -584,8 +593,10 @@ class IrParser:
             relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=_SET_OPERATORS[type(query)], left=left, right=right, distinct=bool(query.args.get("distinct")),
-                by_name=by_name,
+                unpaired=unpaired,
             )
+            if construct is not None:
+                self._unsupported.append((relation, construct))
             last = _last_select(query.this)
             position = marker_position(last) if last is not None else None
             if relation.operator != "union" and position is not None:
@@ -605,6 +616,64 @@ class IrParser:
             return None
         return self._lower_select(query)
 
+    def _lower_arm(self, arm: exp.Query) -> ir.RelationExpr:
+        """One input of a set operation; one that is not a SELECT or set
+        operation (a VALUES list) lowers opaque, and is reported."""
+        relation = self._lower_query(arm)
+        if relation is None:
+            relation = self._opaque_relation(arm)
+            self._unsupported.append((relation, _unlowered_query(arm)))
+        return relation
+
+    def _align_by_name(
+        self, query: exp.SetOperation, left: ir.RelationExpr, right: ir.RelationExpr
+    ) -> tuple[ir.RelationExpr, ir.RelationExpr] | str | None:
+        """A DuckDB `UNION [ALL] BY NAME` as the positional one it means: each
+        input is read as the output's columns in order, a column the input
+        lacks as NULL. The output is the left input's columns, then the
+        right's that the left lacks, names matching without regard to case,
+        the left's spelling kept; a column in one input only is NULL on the
+        other's rows, so no type is known of it and it may be NULL.
+
+        Returns None where the pairing needs a fact missing (an input whose
+        columns are not all known), else, when the form is not modelled, the
+        construct to report: another set operator (DuckDB rejects them), a
+        dialect other than DuckDB (Snowflake documents it too, with quoted
+        names matched exactly), a CORRESPONDING or ON list, or a column name
+        written twice in an input (DuckDB rejects that)."""
+        operator = type(query).__name__.upper()
+        if not isinstance(query, exp.Union):
+            return f"{operator} BY NAME"
+        if self.dialect != "duckdb":
+            return f"UNION BY NAME in {self.dialect}"
+        if query.args.get("on") or query.args.get("side") or query.args.get("kind"):
+            return "UNION BY NAME with a mode or column list"
+        if not (left.is_schema_complete and right.is_schema_complete):
+            return None
+        names = [[column.name.lower() for column in relation.output_columns] for relation in (left, right)]
+        if any(len(set(side)) != len(side) for side in names):
+            return "UNION BY NAME with a repeated column name"
+        spelled = {column.name.lower(): column.name for column in (*right.output_columns, *left.output_columns)}
+        output = [*names[0], *(name for name in names[1] if name not in names[0])]
+        origin = self._origin(query)
+
+        def read(relation: ir.RelationExpr, own: list[str]) -> ir.RelationExpr:
+            if own == output:
+                return relation
+            by_name = {column.name.lower(): column for column in relation.output_columns}
+            return ir.Project(
+                origin=origin, is_schema_complete=True, input=relation,
+                output_columns=tuple(
+                    ir.OutputColumn(
+                        origin=origin, name=spelled[name],
+                        scalar_expr=ir.ColumnRef(origin=origin, column=by_name[name]) if name in by_name else ir.NullLiteral(origin=origin),
+                    )
+                    for name in output
+                ),
+            )
+
+        return read(left, names[0]), read(right, names[1])
+
     def _lower_select(self, select: exp.Select) -> ir.RelationExpr | None:
         source = _from_source(select)
         if source is None:
@@ -617,11 +686,37 @@ class IrParser:
         elif any(join.args.get("method") == "NATURAL" for join in _all_joins(select)):
             relation = self._opaque_relation(select, _selected_output_names(select))
         else:
+            start = len(self._attachment_sites)
             lowered = self._lower_source(source)
             for join in select.args.get("joins") or ():
                 lowered = self._lower_join(lowered, join)
+            lowered = self._sampled(lowered, select)
             relation = self._lower_select_tail(lowered, select)
+            self._name_orphan_joins(relation, start)
         return self._finish_select(relation, select)
+
+    def _sampled(self, lowered: _Lowered, select: exp.Select) -> _Lowered:
+        """DuckDB's `USING SAMPLE` keeps some of the rows of the FROM clause's
+        output, before WHERE and grouping (probed on DuckDB 2.0.0: `WHERE g = 1
+        USING SAMPLE 10 ROWS` samples the table, then filters): a row subset."""
+        sample = select.args.get("sample")
+        if sample is None:
+            return lowered
+        relation = self._row_subset(lowered.relation, sample, sample)
+        remapped = dict(zip(lowered.relation.output_columns, relation.output_columns))
+        return _Lowered(relation, tuple(replace(binding, column=remapped[binding.column]) for binding in lowered.bindings))
+
+    def _name_orphan_joins(self, relation: ir.RelationExpr, start: int) -> None:
+        """A SELECT that lowered opaque discards the joins written inside it
+        (`start`: the attachment sites before it). Each is named after the
+        construct that made the SELECT opaque, so a join that is no part of the
+        program is reported under it (`unproved_join`); `parse` keeps those
+        that are still unreachable at the end."""
+        if not isinstance(relation, ir.OpaqueRelation):
+            return
+        construct = next((construct for node, construct in reversed(self._unsupported) if node is relation), None)
+        if construct is not None:
+            self._orphan_joins.extend((node, construct) for _, node in self._attachment_sites[start:] if isinstance(node, ir.Join))
 
     def _finish_select(self, relation: ir.RelationExpr, select: exp.Select) -> ir.RelationExpr:
         relation = self._lower_limit(relation, select)
@@ -650,7 +745,7 @@ class IrParser:
     def _lower_source(self, source: Expr) -> _Lowered:
         if any(source.args.get(key) for key in ("pivots", "sample", "version", "changes")):
             relation = self._opaque_relation(source, self._source_required.get(id(source), set()))
-            self._unsupported.append((relation, "a FROM modifier that changes the input rows"))
+            self._unsupported.append((relation, _unsupported_modifier(source)))
             return self._alias(relation, source.alias_or_name, self._origin(source))
         if _is_named_table(source):
             symbol = self._table_symbols[id(source)]
@@ -688,9 +783,7 @@ class IrParser:
         if columns is not None:
             return self._lower_table_function(source, columns)
         opaque = self._opaque_relation(source, self._source_required.get(id(source), set()))
-        construct = _unsupported_source(source)
-        if construct is not None:
-            self._unsupported.append((opaque, construct))
+        self._unsupported.append((opaque, _unsupported_source(source) or _unlowered_source(source)))
         return self._alias(opaque, source.alias_or_name or "opaque", self._origin(source))
 
     def _table_function_columns(self, source: Expr) -> tuple[str, ...] | None:
@@ -890,6 +983,8 @@ class IrParser:
             self._resolving.discard(symbol)
         if body is None:
             body = self._opaque_relation(symbol.body or exp.Table(this=symbol.name), symbol.required_columns)
+            written = symbol.body or (symbol.statement.args.get("expression") if symbol.statement is not None else None)
+            self._unsupported.append((body, _unlowered_query(written)))
         output_columns = self._aliased_outputs(body, symbol.origin, symbol.column_aliases)
         named = ir.NamedRelation(
             origin=symbol.origin,
@@ -1111,6 +1206,8 @@ class IrParser:
             for column in input_columns
         }
         relation = ir.OpaqueRelation(origin=origin, output_columns=tuple(opaque.values()), is_schema_complete=False, description=description)
+        keywords = " ".join(part for part in (join.args.get("method"), join.side, join.kind, "JOIN") if part)
+        self._unsupported.append((relation, keywords + (" in ClickHouse" if self.dialect == "clickhouse" else "")))
         return _Lowered(relation, tuple(
             replace(binding, column=opaque[binding.column]) for binding in left.bindings + right.bindings
         ))
@@ -3493,6 +3590,37 @@ def _table_function_name(source: Expr, dialect: str) -> str | None:
         call = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", source.this.sql(dialect=dialect))
         return call.group(1).lower() if call else None
     return None
+
+
+def _unsupported_modifier(source: Expr) -> str:
+    """The FROM modifier that changes `source`'s rows, which lowers it opaque."""
+    pivots = source.args.get("pivots")
+    if pivots:
+        return "UNPIVOT" if pivots[0].args.get("unpivot") else "PIVOT"
+    if source.args.get("sample"):
+        return "TABLESAMPLE"
+    if source.args.get("version"):
+        return "time travel (FOR SYSTEM_TIME or VERSION AS OF)"
+    return "CHANGES"
+
+
+def _unlowered_query(body: Expr | None) -> str:
+    """What stands where a query body is expected but is not a SELECT or set
+    operation, which is not lowered."""
+    while isinstance(body, exp.Subquery):
+        body = body.this
+    if body is None:
+        return "a CTE or view body that is not a SELECT or set operation"
+    return "a VALUES list as a query body" if isinstance(body, exp.Values) else f"{body.key.upper()} as a query body"
+
+
+def _unlowered_source(source: Expr) -> str:
+    """Why a FROM source no other construct names lowers opaque."""
+    if isinstance(source, exp.Values):
+        return "a VALUES list without column names"
+    if isinstance(source, exp.Subquery):
+        return _unlowered_query(source)
+    return f"a {source.key.upper()} source in FROM"
 
 
 def _unsupported_source(source: Expr) -> str | None:

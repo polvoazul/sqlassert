@@ -633,19 +633,21 @@ class Distinct(RelationExpr):
 
 class SetOperation(RelationExpr):
     """UNION, INTERSECT, or EXCEPT. Output columns refer to the left input;
-    `arms` pairs each with the right input's column at its position."""
+    `arms` pairs each with the right input's column at its position. A
+    `UNION BY NAME` is lowered to that form (convert's `_align_by_name`)."""
 
     operator: SetOperator
     left: RelationExpr
     right: RelationExpr
     distinct: bool = True
-    by_name: bool = False
+    unpaired: bool = False
 
     def arms(self, column: OutputColumn) -> tuple[OutputColumn, OutputColumn] | None:
         """The left and right input columns `column` is computed from, or None
-        when the inputs pair by name (`UNION BY NAME`) or differ in width (an
-        unanalyzed input whose columns are unknown)."""
-        if self.by_name or len(self.left.output_columns) != len(self.right.output_columns):
+        when the inputs do not pair by position: `unpaired` (a form of `BY
+        NAME` the IR does not model) or a different width (an input whose
+        columns are unknown)."""
+        if self.unpaired or len(self.left.output_columns) != len(self.right.output_columns):
             return None
         position = self.output_columns.index(column)
         return self.left.output_columns[position], self.right.output_columns[position]

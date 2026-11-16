@@ -15,3 +15,4 @@ CREATE TABLE t (id INTEGER PRIMARY KEY, arr INTEGER[]);
 SELECT t.id FROM t /**ASSERT MANY TO ONE**/ ARRAY JOIN arr
 --~ unanalyzed-assertion
 /**ASSERT NOT NULL(id)**/  --~ UNKNOWN
+--~ unsupported-construct "ARRAY JOIN in ClickHouse"

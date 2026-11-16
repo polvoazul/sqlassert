@@ -32,13 +32,25 @@ SELECT a FROM c /**ASSERT UNIQUE(a)**/ --~ UNKNOWN
 -- case: unpivot_can_repeat_an_input_key
 CREATE TABLE t(a INT PRIMARY KEY, b INT, c INT);
 SELECT a FROM t UNPIVOT(val FOR name IN (b,c)) /**ASSERT UNIQUE(a)**/ --~ UNKNOWN
---~ unsupported-construct "FROM modifier"
+--~ unsupported-construct "UNPIVOT"
 
 -- case: sampling_can_remove_a_foreign_key_target
 CREATE TABLE p(id INT PRIMARY KEY);
 CREATE TABLE c(id INT NOT NULL REFERENCES p(id));
 SELECT c.id FROM c /**ASSERT EXACTLY ONE**/ JOIN p TABLESAMPLE BERNOULLI(0 PERCENT) ON p.id = c.id --~ UNKNOWN
---~ unsupported-construct "FROM modifier"
+--~ unsupported-construct "TABLESAMPLE"
+
+-- DuckDB's USING SAMPLE takes rows of the FROM clause's output (probed on
+-- DuckDB 2.0.0), so a sampled select is a row subset: it keeps a key, and no
+-- Referential Coverage onto it.
+-- case: using_sample_can_remove_a_foreign_key_target
+CREATE TABLE p(id INT PRIMARY KEY);
+CREATE TABLE c(id INT NOT NULL REFERENCES p(id));
+SELECT c.id FROM c /**ASSERT EXACTLY ONE**/ JOIN (SELECT * FROM p USING SAMPLE 10%) s ON s.id = c.id --~ UNKNOWN
+
+-- case: using_sample_keeps_a_key_of_its_input
+CREATE TABLE p(id INT PRIMARY KEY, v INT);
+SELECT * FROM p USING SAMPLE 3 ROWS /**ASSERT UNIQUE(id)**/ --~ PROVED
 
 -- case: union_by_name_includes_right_only_outputs
 CREATE TABLE t(a INT, b INT);

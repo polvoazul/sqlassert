@@ -59,7 +59,7 @@ CASES = [
     (
         "inside an opaque SELECT",
         "SELECT a.k, unnest([1, 2]) AS v FROM a JOIN b ON a.id = b.id GROUP BY a.k",
-        UnprovedJoin("unsupported"),
+        UnprovedJoin("unsupported", construct="a set-returning function beside GROUP BY, QUALIFY or DISTINCT ON"),
     ),
     ("cross join", "SELECT a.id FROM a CROSS JOIN b", UnprovedJoin("unconstrained")),
     ("range join", "SELECT a.id FROM a JOIN b ON a.ts >= b.start_ts AND a.ts < b.end_ts", UnprovedJoin("unconstrained")),
@@ -113,8 +113,18 @@ CASES = [
         UnprovedJoin("no-unique-set"),
     ),
     (
-        "set operation key",
-        "SELECT a.id FROM a JOIN (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b) AS s ON a.k = s.k",
+        "set operation key typed in both inputs by name",
+        "SELECT s.id FROM (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b) AS s JOIN b ON b.id = s.id",
+        None,
+    ),
+    (
+        "set operation key present in one input only",
+        "SELECT a.id FROM a JOIN (SELECT id FROM a UNION ALL BY NAME SELECT k FROM b) AS s ON a.k = s.k",
+        UnprovedJoin("untyped-key", "computed"),
+    ),
+    (
+        "set operation key whose inputs do not pair",
+        "SELECT a.id FROM a JOIN (SELECT * FROM a UNION ALL BY NAME SELECT * FROM missing) AS s ON a.k = s.k",
         UnprovedJoin("untyped-key", "set-operation"),
     ),
     ("undeclared table key", "SELECT a.id FROM a JOIN missing AS m ON a.k = m.k", UnprovedJoin("untyped-key", "table")),

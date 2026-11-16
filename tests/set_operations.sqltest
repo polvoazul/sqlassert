@@ -71,3 +71,128 @@ WITH ks AS (SELECT k FROM a UNION SELECT k FROM b)
 SELECT ks.k, a.v FROM ks
 /**ASSERT MANY TO ONE**/ LEFT JOIN a ON a.k = ks.k  --~ UNKNOWN
 
+
+-- A set operation over star arms pairs its output columns with each input's,
+-- by position, so a key it passes keeps its type whatever the arms spell.
+
+-- case: star_arms_pair_by_position_so_a_join_on_their_key_binds
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, s VARCHAR);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, s VARCHAR);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL SELECT * FROM b)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- case: star_arms_with_added_items_pair_by_position
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, s VARCHAR);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, s VARCHAR);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT *, 1 AS z FROM a UNION ALL SELECT *, 2 AS z FROM b)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- case: star_arms_of_ctes_and_nested_set_operations_pair_by_position
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, s VARCHAR);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, s VARCHAR);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH x AS (SELECT * FROM a), y AS (SELECT * FROM b),
+u AS ((SELECT * FROM x UNION ALL SELECT * FROM y) UNION ALL SELECT * FROM x)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- UNION BY NAME (DuckDB) reads each input as the output's columns, a column
+-- one input lacks as NULL: the output is the left input's columns, then the
+-- right's it lacks, names matched without regard to case. Probed on DuckDB 2.0.0:
+-- `SELECT k, id FROM a UNION ALL BY NAME SELECT id, k FROM b` is (k, id);
+-- `SELECT * FROM a UNION ALL BY NAME SELECT * FROM b` is a's columns then b's
+-- own, NULL where an input has none; `SELECT 1 AS X UNION ALL BY NAME SELECT 3
+-- AS x` is `X`.
+
+-- case: union_by_name_star_arms_pair_by_name_so_a_join_on_their_key_binds
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, extra BIGINT);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, other BIGINT);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- case: union_by_name_pairs_columns_written_in_another_order
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT id, k FROM a UNION ALL BY NAME SELECT k, id FROM b)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- case: union_by_name_matches_names_without_regard_to_case
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE b (id INTEGER PRIMARY KEY, K INTEGER);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- case: union_by_name_chain_pairs_every_step
+-- (`z` is only in the third input, `k` in all three.)
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b UNION ALL BY NAME SELECT k, k AS z FROM b)
+SELECT u.k, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.k  --~ PROVED
+
+-- case: union_by_name_of_two_types_may_widen_so_a_join_on_the_column_does_not_bind
+-- DuckDB: `SELECT id, k FROM a UNION ALL BY NAME SELECT id, k FROM t1` with a
+-- VARCHAR `id` in t1 has a VARCHAR `id`.
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE t1 (id VARCHAR, k INTEGER);
+CREATE TABLE d (k INTEGER PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM t1)
+SELECT u.id, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.id  --~ UNKNOWN
+
+-- case: a_column_in_one_union_by_name_input_only_is_null_in_the_other_and_untyped
+-- Both columns are NOT NULL and typed in their own input, yet `extra` is NULL on
+-- every row of b: the output is nullable and has no type to bind a key with.
+CREATE TABLE a (id INTEGER PRIMARY KEY, extra BIGINT NOT NULL);
+CREATE TABLE b (id INTEGER PRIMARY KEY, other BIGINT NOT NULL);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT * FROM u /**ASSERT NOT NULL(extra)**/  --~ UNKNOWN
+
+-- case: a_column_in_one_union_by_name_input_only_is_null_in_the_other__second_input
+CREATE TABLE a (id INTEGER PRIMARY KEY, extra BIGINT NOT NULL);
+CREATE TABLE b (id INTEGER PRIMARY KEY, other BIGINT NOT NULL);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT * FROM u /**ASSERT NOT NULL(other)**/  --~ UNKNOWN
+
+-- case: a_column_in_both_union_by_name_inputs_is_non_null_when_it_is_in_each
+CREATE TABLE a (id INTEGER PRIMARY KEY, extra BIGINT NOT NULL);
+CREATE TABLE b (id INTEGER PRIMARY KEY, other BIGINT NOT NULL);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT * FROM u /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: a_key_present_in_one_union_by_name_input_only_does_not_bind_a_join
+CREATE TABLE a (id INTEGER PRIMARY KEY, extra BIGINT NOT NULL);
+CREATE TABLE b (id INTEGER PRIMARY KEY, other BIGINT NOT NULL);
+CREATE TABLE d (k BIGINT PRIMARY KEY, v INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT u.extra, d.v FROM u
+/**ASSERT MANY TO ONE**/ LEFT JOIN d ON d.k = u.extra  --~ UNKNOWN
+
+-- case: union_all_by_name_keeps_no_key_of_its_inputs
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM b)
+SELECT * FROM u /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: union_by_name_distinct_makes_its_columns_a_unique_set
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, extra BIGINT);
+CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, other BIGINT);
+WITH u AS (SELECT * FROM a UNION BY NAME SELECT * FROM b)
+SELECT * FROM u /**ASSERT UNIQUE(id, k, extra, other)**/  --~ PROVED
+
+-- case: union_by_name_over_an_undeclared_table_is_a_missing_fact_not_an_unsupported_construct
+CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
+WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM unk)
+--~ undeclared-table "unk"
+SELECT * FROM u /**ASSERT NOT NULL(k)**/  --~ UNKNOWN

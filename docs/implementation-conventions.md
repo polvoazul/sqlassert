@@ -123,6 +123,20 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   types, followed through pass-through columns; unknown and mixed types do not
   rely on SQL's implicit casts. Column-to-column domain narrowing uses the same
   check. Set operations do not supply comparison types from their left arm.
+  A DuckDB `UNION [ALL] BY NAME` is lowered to a positional set operation
+  (`_align_by_name`: each input read as the output's columns in order, a
+  missing one as a NULL literal), so its columns pair, type and null like any
+  other's; any other `BY NAME` form is an `unpaired` set operation whose
+  columns have no arms (docs/dialects.md).
+- Every relation `ir/convert.py` lowers opaque because it does not model a
+  construct is recorded in `Program.unsupported` with that construct's name: a
+  SELECT form, a FROM source or modifier, a join kind, a set operation form or
+  a query body that is not a SELECT. A missing fact (a table with no `CREATE`,
+  columns not all known) is not one: it has its own warning. A NATURAL join is
+  diagnosed by the parser (`unsupported-natural-join`) for every statement,
+  not recorded. A join written inside a SELECT that lowered opaque is no part
+  of the program; it is recorded under that construct when the program is
+  built, if nothing else reaches it (`_name_orphan_joins`).
   A computed select item is typed the same way when its expression has a known
   type (`IrParser._output_column`): a CAST, a call with a dialect-fixed result
   type, a CASE, IF, COALESCE or NULLIF whose results share one type
