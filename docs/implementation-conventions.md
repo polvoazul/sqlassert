@@ -115,9 +115,40 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   c ON ...) ON ...`, is a join input whose sources keep their names
   (`_nested_join`). With an alias, `(b JOIN c ON ...) AS x`, it is a relation
   of its own that hides b and c and has each of their columns under its own
-  name (`_alias_join`); a name two columns share is opaque, since DuckDB
-  renames the second and other dialects leave it ambiguous, and so is every
-  name when a source's columns are not all known.
+  name, in the order of a star over the join (`_alias_join`); every name is
+  opaque when a source's columns are not all known.
+- A derived table (a subquery, CTE, view or aliased join) names the first of a
+  repeated output name by it and gives each repeat an internal name,
+  `__duplicate_column_<name>_<n>` (`ir/names.py`, applied in
+  `_aliased_outputs`), because DuckDB renames the repeats `k_1`, `k_2`, ... (and a
+  real `k_1` in the way `k_1_1`) and other engines reject or rename them
+  otherwise: which column `s.k_1` is depends on the engine. So no reference binds an
+  internal name, and none binds a name `<repeated>_<digits>` of that derived
+  table (`_Binding.repeated`, `_renamed`): it lowers opaque and warns
+  `ambiguous-duplicate-column` (a warning about the SQL itself,
+  `diagnostics.SQL_WARNINGS`, which a connection cannot answer). A star over
+  the table expands the internal names unchanged, so the repeat is carried into
+  the next relation, and no modifier or marker names a renamed column
+  (`_register_column_markers`, `_columns_named`, `suggest`'s `nameable`).
+- `*` over `a JOIN b USING (c1, c2)` selects each USING column once, as the
+  merged column `_merge_using` binds (the left input's for INNER and LEFT, the
+  right's for RIGHT, `COALESCE` for FULL), and the two inputs' own columns
+  otherwise. `_merge_using` keeps `_Lowered.bindings` in the order a star
+  selects them, which a star expands directly (a shadowed binding, one side of
+  a USING column, only a qualified `a.*` or `a.k` reads): in standard SQL the
+  USING columns first in USING order, then the left input's others, then the
+  right's; where the dialect keeps a USING column at its left input's position
+  (`using_column_stays_in_place`: DuckDB, SQLite) each merged column stands in
+  its left column's place. A USING name that is not one column of each input
+  leaves the join's columns unknown. A lone `*` passes its input through
+  unchanged except over a USING join, which needs a Project.
+- Each star of a select list expands on its own (`_expand_stars`): one that
+  cannot (`_star_expansion`: a column that cannot be named unambiguously) stays
+  one opaque item beside the others' columns, and is recorded as unsupported
+  when the input's columns are all known. A modified one (EXCLUDE, REPLACE,
+  RENAME) that cannot makes the select opaque, since its modifiers cannot be
+  honoured and the names it leaves out or adds are those another item may
+  repeat.
 - Table columns carry a `typing` (`ir.ValueTyping`: comparison type, text by
   identity, identity comparison, exact numeric, floating) when their declared
   type has value equality without collation. `rules/value_typing.py` decides
@@ -136,6 +167,14 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   missing one as a NULL literal), so its columns pair, type and null like any
   other's; any other `BY NAME` form is an `unpaired` set operation whose
   columns have no arms (docs/dialects.md).
+- A reference to a recursive CTE or view from its own recursive arm is a
+  `RecursiveRelation` (opaque: its rows are unknown). The engine fixes each
+  column's type from the base case, so its `typed_by` names, per column, the
+  base case's column (`_recursion_types`: matched by the CTE's column aliases,
+  else the base case's names, once the base case is lowered); `scalar_typing`
+  reads the base column's type through it, and nothing else: no value, NULL,
+  key, domain or lineage crosses (docs/dialects.md, "Types of computed
+  expressions").
 - Every relation `ir/convert.py` lowers opaque because it does not model a
   construct is recorded in `Program.unsupported` with that construct's name: a
   SELECT form, a FROM source or modifier, a join kind, a set operation form or
@@ -194,24 +233,35 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   so the schema is complete and the other join input's names, types and facts
   survive; a call whose columns are unknown stays an incomplete opaque
   relation recorded as unsupported (`_unsupported_source`), and LATERAL is
-  not lowered. An INNER, LEFT or CROSS join of one whose arguments read the
+  not lowered (so Snowflake's `LATERAL FLATTEN` and Spark's `LATERAL VIEW`
+  never reach the table functions). An alias with no column list names the one
+  column only of a function in `DialectSemantics.alias_named_table_functions`. An INNER, LEFT or CROSS join of one whose arguments read the
   left input sets `Join.lateral` (`_reads_left`: plain columns only, none in a
   subquery or lambda): each of its rows belongs to one left row, so
   `one_to_many_join` holds, while the left rows it repeats keep no key.
 - `ir/convert.py` lowers a QUALIFY or DISTINCT ON that is not over groups or
   `DISTINCT` as the select's projection, and then by what it can prove of the
-  clause. `row_number() OVER (PARTITION BY k...) = 1` (no partition: one row in
-  all) and `DISTINCT ON (k...)` are a `QualifyByPartition`: a key that is not a
+  clause. A QUALIFY conjunct `row_number() OVER (PARTITION BY k...) = 1` (no
+  partition: one row in all; the first such conjunct when there are several)
+  and `DISTINCT ON (k...)` are a `QualifyByPartition`: a key that is not a
   selected item is a hidden output of it (`HIDDEN_PARTITION`) that a Project
   drops, as for a grouping key, so any selected columns that determine every
   key are a Unique Set. A key is used only when it reads as one expression of
   the input (`_partition_plan`): not a window, subquery, literal or call whose
   value varies, and no bare name in it a select alias that is not that column.
-  Any other QUALIFY, or DISTINCT ON that cannot be read so, is an opaque
-  `Filter` over the projection (`_row_subset`): a row subset keeps every fact
+  The other conjuncts of that QUALIFY follow as an opaque `Filter` (the window
+  sees every row first, and they only drop rows), so the key stays a Unique Set
+  and nothing needing every row (Referential Coverage) survives. A literal
+  PARTITION BY key is read as no partition and recorded as the construct
+  `a constant PARTITION BY key` (and a Hazard). Any other QUALIFY, or DISTINCT
+  ON that cannot be read so, is an opaque `Filter` over the projection
+  (`_row_subset`): a row subset keeps every fact
   that holds of each row or of any subset, and no fact that needs all of them
   (Referential Coverage toward it). A select that aggregates without GROUP BY
-  or has a HAVING is one group, not rows: it stays opaque.
+  or has a HAVING is one group, not rows: it stays opaque. DuckDB's
+  `GROUP BY ALL` groups by the select items that contain no aggregate or window
+  (`sql_parse.grouping`), so with only aggregates it is one group; beside a star
+  or a subquery its keys are unknown and the select is opaque (`GROUP BY ALL`).
 - `ir/convert.py` states one more fact of a window: a select item that is
   exactly `row_number() OVER (PARTITION BY k...)` (no named window, not inside
   an expression) is Knowledge, `NonNullColumn(rn)` and the Unique Set

@@ -161,7 +161,7 @@ An explicit report that part of a SQL program could not be analyzed, such as an 
 _Avoid_: Error, warning, validation failure, unknown
 
 **Connection Warning**:
-A Diagnostic reported apart, in `Report.warnings`, when the SQL alone lacks a fact a database connection would supply: a table with no `CREATE`, or an unqualified column more than one undeclared source may own. The affected facts are unknown; the warning names the fix. It never fails a Report, and `analyze_database` emits none ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)). `Report.warnings` also carries the other facts the SQL leaves open: a key or foreign key the dialect does not enforce (`unenforced-constraint`; `RELY` or `trust_unenforced_keys`, on by default, makes it a Property Declaration, never Knowledge, and then no warning is reported), a CHECK constraint whose shape states no Enumerated Domain (`ignored-check-constraint`), a comparison of a `CAST` of a timestamp that keeps its zone (`zoned-timestamp-cast`: Trino's), a comparison of a composite column or `CAST` whose elements may be NULL (`composite-comparison`), and a proved Property that holds trivially because a column it names is always NULL (`always-null-column`, once per column: an empty Enumerated Domain satisfies every ENUM and EXHAUSTIVE, and NULL exempts a row from a Unique Set, a dependency's determinant, Referential Coverage and Non-Null Elements). The last four are about the SQL itself, so `analyze_database` keeps them.
+A Diagnostic reported apart, in `Report.warnings`, when the SQL alone lacks a fact a database connection would supply: a table with no `CREATE`, or an unqualified column more than one undeclared source may own. The affected facts are unknown; the warning names the fix. It never fails a Report, and `analyze_database` emits none ([ADR 0005](docs/adr/0005-analyze-sql-without-a-connection.md)). `Report.warnings` also carries the other facts the SQL leaves open: a key or foreign key the dialect does not enforce (`unenforced-constraint`; `RELY` or `trust_unenforced_keys`, on by default, makes it a Property Declaration, never Knowledge, and then no warning is reported), a CHECK constraint whose shape states no Enumerated Domain (`ignored-check-constraint`), a comparison of a `CAST` of a timestamp that keeps its zone (`zoned-timestamp-cast`: Trino's), a comparison of a composite column or `CAST` whose elements may be NULL (`composite-comparison`), a name that may be one the engine gave a repeated column of a derived table (`ambiguous-duplicate-column`: DuckDB names the repeats of `k` `k_1`, `k_2`, ..., so `s.k_1` is not a real `k_1` and binds nothing), and a proved Property that holds trivially because a column it names is always NULL (`always-null-column`, once per column: an empty Enumerated Domain satisfies every ENUM and EXHAUSTIVE, and NULL exempts a row from a Unique Set, a dependency's determinant, Referential Coverage and Non-Null Elements). The last five are about the SQL itself, so `analyze_database` keeps them.
 
 **Non-Null Elements**:
 A Property of composite columns (ARRAY, ROW, MAP): no element of a listed
@@ -342,7 +342,10 @@ join that may be many to many, a `LIMIT`
 that picks arbitrary rows among ties, a scalar subquery that may return more
 than one row, an equality that is not an Exact Comparison, because it casts
 text or involves a float (a Lossy Comparison), a CASE whose results have different types (the
-common-type cast may lose information), a query that never returns a row.
+common-type cast may lose information), a query that never returns a row,
+a strange construct (a star beside GROUP BY, QUALIFY beside an aggregate with
+no GROUP BY, a constant PARTITION BY key: read from the syntax, with no proof
+to fail).
 The SQL may be what its author meant. `suggest` lists Hazards last; the
 suggestion's type (`SuggestType`) is rewrite, rewrite with caveat, marker or
 hazard.

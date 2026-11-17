@@ -332,6 +332,25 @@ certified by `scripts/certify_dialects.py`.
   engine (NULL keys form one partition, DuckDB probed). RANK, DENSE_RANK and
   NTILE repeat and claim nothing.
 
+- A column of a recursive CTE (or view) has the type of the base case's column
+  (`RecursiveRelation.typed_by`): the recursive arm reads it typed, and so does
+  every reference to the CTE. DuckDB casts the recursive arm to the base case's
+  type (probed on DuckDB 2.0.0: base `1::INTEGER`, recursive arm `n * 1.5`, gives
+  an INTEGER column with the values 2, 3, 5). Every other modelled dialect is
+  read the same way, from memory and not probed: Postgres rejects an arm of
+  another type, MySQL infers the columns' types from the base case alone, and
+  for Trino, BigQuery, Snowflake, Spark, Databricks, Redshift and Hive it is
+  the assumption that they do one or the other. Typing only: the base
+  case's values, NULLs, keys, domains and lineage are not shared, since the
+  recursive rows differ. The CTE's own column (the set operation's) is typed
+  where both its arms are, so a passed-through column is, and `n + 1` over an
+  INTEGER `n` is; an arm that computes another type leaves it untyped, though
+  the engine would cast it. With several base arms (`a UNION b UNION
+  recursive`) the base case is the set operation of them, typed where they share a
+  type. A column alias list (`r(a, b)`) names the base case's columns by
+  position; a base case whose columns are not all known, or whose name appears
+  twice, types nothing.
+
 ## Expressions an ON equality binds
 
 For one row of a join's other input, an expression of that row's columns is
@@ -401,6 +420,51 @@ proved non-null. `=` never matches a NULL operand, so an expression that is
 NULL for a value (NULLIF, TRY_CAST, a CASE without ELSE) only removes
 matches and does not change `definite`; those are untyped anyway.
 
+## Stars and names
+
+Two facts about the names a SELECT's output has decide whether a column can be
+bound by name or position. DuckDB and SQLite are probed
+(`tests/test_using_star_probe.py`, DuckDB 2.0.0 and SQLite 3.50.4); every other
+engine is **from memory**, not probed, and the standard is assumed (an owner decision).
+
+**Star over a USING join.** `*` over `a JOIN b USING (c1, c2)` has each USING
+column once, as the merged column (the left input's for INNER and LEFT, the
+right's for RIGHT, `COALESCE(a.c, b.c)` for FULL), and then the inputs' other
+columns; `a.*` keeps all of a's columns, `a.k` included. Where the merged
+column sits is the engines' difference:
+
+| | DuckDB, SQLite | every other engine modelled |
+|---|---|---|
+| `*` over `a(x, k, m) JOIN b(y, m, k, z) USING (k)` | `x, k, m, y, m, z`: the column stays at its left input's position and the right input's is dropped (probed; `USING (m, k)` is `x, k, m, y, z`, the order of the inputs, not of the list; a nested `JOIN c USING (k)` merges the same `k`) | `k, x, m, y, m, z`: the USING columns first, in USING-list order, then the left input's others, then the right's (SQL standard; from memory) |
+| `DialectSemantics.using_column_stays_in_place` | `True` | `False` |
+
+MySQL's manual orders the coalesced columns by their order in the first table,
+which differs from the standard when the USING list is in another order (from
+memory; one more case where the two orders disagree, and only then). A USING
+name that is not one column of each input (or is a name an engine may have
+renamed, below) leaves the join's columns unknown: a star over it stays
+unexpanded.
+
+**Duplicate output names of a derived table.** A subquery, CTE, view or
+aliased join whose outputs repeat a name:
+
+| | |
+|---|---|
+| DuckDB | renames the later ones `k_1`, `k_2`, ... (case-insensitively: `k`, `K` gives `K_1`), and a real `k_1` in the way becomes `k_1_1` (probed: `SELECT 1 AS k, 2 AS k, 3 AS k_1` is `k, k_1, k_1_1`; `k, k_1, k` is `k, k_1, k_2`; a view and a CTE the same) |
+| SQLite | renames the later ones `k:1` (probed) |
+| Postgres, MySQL, Redshift, Snowflake, BigQuery, Databricks / Spark, Trino | from memory: reject a reference to the repeated name as ambiguous (MySQL rejects the derived table itself); none is known to rename |
+
+So which column `s.k_1` is depends on the engine, and the real `k_1` is not
+`s.k_1` in DuckDB. sqlassert treats every dialect like DuckDB where that is
+sound for the others too: the first column of a name keeps it, each repeat
+has an internal name no reference writes (`__duplicate_column_k_1`), and
+any reference to `<repeated>_<digits>` (or `<repeated>:<digits>`) in that derived table binds
+nothing and warns `ambiguous-duplicate-column`. The warning is a new code,
+not `ambiguous-column`, whose message is about columns a connection would
+supply; this one is about the SQL, which a connection cannot answer, so
+`analyze_database` keeps it. A reference that is an error in an engine
+needs no meaning there.
+
 ## Table functions
 
 A table function or UNNEST in FROM has the columns the dialect fixes for it
@@ -408,23 +472,68 @@ A table function or UNNEST in FROM has the columns the dialect fixes for it
 and its rows nothing is known of: an opaque relation, no key, no dependency,
 no type. `SELECT *` over the call returns exactly those columns whatever its
 arguments; an alias column list renames the leading ones (a longer list is
-ignored), and an alias with no list names the one column of a one-column
-function (DuckDB: `range(3) AS r` has column `r`, though `r.range` also
-resolves, which is not modelled). A function not listed, an UNNEST of several
-arguments or `WITH ORDINALITY`, and any function of another dialect keep
+ignored), and an alias with no list names the one column of a function in
+`DialectSemantics.alias_named_table_functions` (DuckDB: `range(3) AS r` has
+column `r`, though `r.range` also resolves, which is not modelled; not Spark's
+`range(3) AS r`, whose column stays `id`). A function not listed, an UNNEST of
+several arguments or `WITH ORDINALITY`, and any function of another dialect keep
 columns unknown: an incomplete schema, so an unqualified name beside it is an
 `ambiguous-column` warning, and the call is an `unsupported-construct`.
 
-| | DuckDB 2.0.0 | SQLite 3.50.4 | the rest |
-| --- | --- | --- | --- |
-| `json_each`, `json_tree` | `key`, `value`, `type`, `atom`, `id`, `parent`, `fullkey`, `path` (probed, also with a path argument) | the same (probed with `pragma_table_info`; no alias column list exists) | not claimed (from memory: Postgres's `jsonb_each` and `jsonb_array_elements` name their columns by function and type, Snowflake's `FLATTEN`, Trino's and Spark's `UNNEST` and `explode` by the element type); each to probe or cite before it is added |
-| `range`, `generate_series` | one column, named like the function (`range`, `generate_series`) | none | not claimed (Postgres's `generate_series` column is named like the function or the alias) |
-| `unnest` of one argument | one column `unnest`; DuckDB's FROM-clause UNNEST takes a list only | none | not claimed |
+| | DuckDB 2.0.0 | SQLite 3.50.4 | BigQuery | Redshift | Spark, Databricks |
+| --- | --- | --- | --- | --- | --- |
+| `json_each`, `json_tree` | `key`, `value`, `type`, `atom`, `id`, `parent`, `fullkey`, `path` (probed, also with a path argument) | the same (probed with `pragma_table_info`; no alias column list exists) | | | |
+| `range`, `generate_series` | one column, named like the function (`range`, `generate_series`) | none | | | `range`: the one column `id` whatever the alias (from memory) |
+| `unnest` of one argument | one column `unnest`; DuckDB's FROM-clause UNNEST takes a list only | none | `UNNEST(xs) AS x`: the one column `x` (from memory) | `FROM t, t.xs AS x`, a SUPER array: the one column `x` (from memory) | |
+
+SQLGlot reads BigQuery's `UNNEST(xs) AS x` and Redshift's `t.xs AS x` as an
+UNNEST whose alias is a column list, so the column is named by it; unaliased,
+the engine's column has no name, and the one named `unnest` here is never
+read. Both engines spread an array of structs (an element that is an object,
+in Redshift) over the struct's fields in a `SELECT *`, where this is one
+column: a field is then an unresolved name (opaque, as any name the schema
+does not have), never a wrong one, and a star's width differs, so a set
+operation pairs its columns only where the widths agree, and those are opaque.
+Provenance of every claim in those columns:
+from memory, `tentative` in `docs/dialect-provenance.json`. No engine is
+probed (decision: claims beyond what is already probed are made from memory).
+
+Not claimed, each from memory, and why:
+
+- Postgres `generate_series`, `unnest`, `regexp_split_to_table` (one column,
+  named by the alias if written, else by the function: `chooseScalarFunctionAlias`),
+  `jsonb_array_elements`, `json_array_elements` and their `_text` forms (one
+  column `value`, whatever the alias, because the function has a named OUT
+  parameter), `jsonb_each`, `json_each` and their `_text` forms (`key`,
+  `value`). Postgres runs locally, so every fact of it must be probed on an
+  engine (`tests/test_dialect_certification.py`: a local engine's fact may not
+  be `tentative` or `doc`, and `DOCUMENTED_ONLY` lists only what no local engine
+  can run), and `scripts/certify_dialects.py` has no Postgres probe of table
+  functions. Postgres's `unnest` of an array of a composite type also spreads
+  the type's fields over columns.
+- Trino `UNNEST`: a local engine again, and its columns have no name unless an
+  alias column list gives them (an alias alone names none, so `unnest` would
+  stay out of `alias_named_table_functions`).
+- Spark and Databricks `explode`, `posexplode`, `inline`, `stack`: `col`, or
+  `key` and `value` of a map, by the argument's type, which the SQL alone does
+  not give. `LATERAL VIEW explode(...)`, Spark's usual form, is a `Lateral`
+  that sqlassert does not lower (LATERAL is unsupported).
+- Snowflake `FLATTEN` (`SEQ`, `KEY`, `PATH`, `INDEX`, `VALUE`, `THIS`) is
+  written `LATERAL FLATTEN(input => ...)`, which SQLGlot parses as a `Lateral`
+  (it fills the six column names in as the alias list), or `TABLE(FLATTEN(...))`,
+  a `TableFromRows`. Neither is a table function source, so LATERAL blocks it
+  until LATERAL is lowered (issue 42). A bare `FLATTEN(...)` in FROM, which
+  SQLGlot does parse as a call, is not claimed: it is not a form Snowflake's
+  docs show, from memory.
+- ClickHouse `numbers(n)` (`number`; local engine, no probe) and MySQL's
+  `JSON_TABLE` (its columns are written in the call).
 
 Whatever the columns, a call whose arguments read a column of the join's left
 input is evaluated once per left row (an implicit LATERAL: DuckDB, probed;
 from memory Postgres, SQLite, Trino's `CROSS JOIN UNNEST`, BigQuery's
-`, UNNEST(t.arr)`), so each of
+`, UNNEST(t.arr)`, Redshift's `, t.arr AS x`; Spark and Databricks need the
+`LATERAL` keyword, which is not lowered, so their `range` is never taken to read
+the left input), so each of
 its rows belongs to one left row: the join is One To Many (`Join.lateral`),
 for INNER, LEFT and CROSS joins; DuckDB rejects a RIGHT or FULL join that
 reads the left input. A call whose argument holds a subquery or a lambda is

@@ -167,6 +167,11 @@ SELECT a, b FROM wide WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVE
 CREATE TABLE wide (a BIGINT, b BIGINT);
 SELECT a, b FROM wide WHERE b = a + 1 /**ASSERT DETERMINES(b -> a)**/  --~ PROVED
 
+-- case: an_equality_through_a_float_expression_loses_values__bigint_times_a_decimal_literal
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = a * 1.5 /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+/**ASSERT DETERMINES(b -> a)**/  --~ UNKNOWN
+
 -- case: an_equality_through_a_float_expression_loses_values__cast_to_double
 CREATE TABLE wide (a BIGINT, b BIGINT);
 SELECT a, b FROM wide WHERE b = CAST(a AS DOUBLE) /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN

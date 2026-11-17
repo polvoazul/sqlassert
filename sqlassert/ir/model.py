@@ -705,9 +705,16 @@ class OpaqueRelation(RelationExpr):
 
 
 class RecursiveRelation(OpaqueRelation):
-    """An explicit unsupported recursive reference, represented without a cycle."""
+    """An explicit unsupported recursive reference, represented without a cycle.
+
+    Its rows and values are unknown, but the engine fixes each column's type
+    from the base case, so `typed_by` is, per output column, the base case's
+    column whose type it takes (None when it has none: an untyped base column
+    is read through it). Typing only: no value, NULL, key, domain or lineage
+    is shared, since the recursive rows differ from the base case's."""
 
     relation_name: str
+    typed_by: tuple[OutputColumn | None, ...] = ()
 
 
 class ValuesList(OpaqueRelation):

@@ -579,15 +579,16 @@ _TABLE_FUNCTION_CALLS: dict[str, tuple[str, ...]] = {
 def _table_function_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
     """Each claimed table function's columns: `SELECT *` over it returns
     exactly them, in order; an alias column list renames the leading ones and,
-    for a function with one column, an alias alone names it. DuckDB asks
-    DESCRIBE, SQLite `pragma_table_info` (which has no alias column list)."""
+    for a function in `alias_named_table_functions`, an alias alone names its
+    one column. DuckDB asks DESCRIBE, SQLite `pragma_table_info` (which has no
+    alias column list); no other dialect has a probe."""
     for name, columns in meaning.table_functions:
         claimed = ",".join(columns)
         checks: list[Check] = []
-        for call in _TABLE_FUNCTION_CALLS[name] if dialect == "duckdb" else _TABLE_FUNCTION_CALLS[name][:1]:
-            if dialect == "duckdb":
+        if dialect == "duckdb":
+            for call in _TABLE_FUNCTION_CALLS[name]:
                 variants = [("", claimed), (" AS a(x)", ",".join(("x", *columns[1:])))]
-                if len(columns) == 1:
+                if name in meaning.alias_named_table_functions:
                     variants.append((" AS r", "r"))
                 checks.extend(
                     Check(
@@ -597,12 +598,12 @@ def _table_function_facts(dialect: str, meaning: DialectSemantics) -> Iterable[F
                     )
                     for alias, expected in variants
                 )
-            elif dialect == "sqlite":
-                checks.append(Check(
-                    f"SELECT CASE WHEN (SELECT group_concat(name) FROM pragma_table_info('{name}')) = '{claimed}' THEN 1 ELSE 0 END", "true",
-                ))
-            else:
-                checks.append(Check("", "true", problem=f"no probe of {dialect} table functions"))
+        elif dialect == "sqlite":
+            checks.append(Check(
+                f"SELECT CASE WHEN (SELECT group_concat(name) FROM pragma_table_info('{name}')) = '{claimed}' THEN 1 ELSE 0 END", "true",
+            ))
+        else:
+            checks.append(Check("", "true", problem=f"no probe of {dialect} table functions"))
         yield Fact(f"table_function({name})={claimed}", f"drop {name} from table_functions in dialects.py", tuple(checks))
 
 

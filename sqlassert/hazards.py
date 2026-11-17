@@ -41,6 +41,14 @@ the proof that would have pinned it, which failed:
 - A GROUP BY key the Select does not return, when the keys it returns do not
   determine it: output rows told apart only by a value not shown look like
   duplicates. Silent for the values of an IN, EXISTS or scalar subquery.
+- A strange construct, one the SQL standard rejects or that no author means,
+  which sqlassert lowers opaque or as a row subset: a star in a GROUP BY
+  select (the star selects columns that are neither grouped nor aggregated,
+  unless every one is a grouping key; DuckDB's `GROUP BY ALL` is another
+  construct), a QUALIFY beside an aggregate without GROUP BY (it keeps or
+  drops the one result row), and a constant PARTITION BY key in a QUALIFY's
+  window (a literal is one partition). Read from the syntax, so they are
+  reported wherever the Select is, with no proof to fail.
 
 A hazard is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
@@ -57,7 +65,7 @@ from sqlglot import exp
 
 from sqlassert.diagnostics import quoted, quoted_all
 from sqlassert import ir
-from sqlassert.ir.convert import HIDDEN_GROUPING
+from sqlassert.ir.convert import HIDDEN_GROUPING, _aggregates, _constant_partition_keys, _projection_star
 from sqlassert.rewrites import SuggestType, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
@@ -79,6 +87,9 @@ class Concern(Enum):
     MANY_TO_MANY = "Many-to-many join"
     UNSELECTED_GROUPING = "Grouping key not selected"
     MIXED_CASE = "Mixed CASE types"
+    STAR_IN_GROUPING = "Star with GROUP BY"
+    QUALIFY_BESIDE_AGGREGATE = "QUALIFY beside an aggregate"
+    CONSTANT_PARTITION = "Constant partition key"
 
 
 @dataclass(frozen=True)
@@ -118,8 +129,10 @@ def hazards(
         grouped = _grouped(aggregate)
         if grouped is not None and grouped in reachable:
             found.extend(_traps(site, grouped, join_labels))
-            if site.trailing and isinstance(node, exp.Select) and _rows_are_read(node):
-                found.extend(_unselected_grouping(site, grouped))
+            if site.trailing and isinstance(node, exp.Select) and _rows_are_read(node) and not _has_star(node):
+                found.extend(_unselected_grouping(site, grouped))  # A star may select the key.
+        if site.trailing and aggregate in reachable and isinstance(node, exp.Select):
+            found.extend(_strange_constructs(site, node, grouped))
         if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
             found.extend(_lossy_comparisons(site, _filter_conjuncts(aggregate), compared))
@@ -153,6 +166,49 @@ def _rows_are_read(select: exp.Select) -> bool:
         return False
     subquery = select.find_ancestor(exp.Subquery)
     return subquery is None or isinstance(subquery.parent, exp.From | exp.Join)
+
+
+def _has_star(select: exp.Select) -> bool:
+    return any(_projection_star(item) is not None for item in select.expressions)
+
+
+def _strange_constructs(site: AttachmentSite, select: exp.Select, grouped: ir.Aggregate | None) -> list[Hazard]:
+    """The constructs `select` is written with that are odd whatever the
+    schema: a star beside GROUP BY, a QUALIFY beside an aggregate without
+    GROUP BY, and a constant PARTITION BY key. Each is read from the syntax."""
+    found: list[Hazard] = []
+    group, qualify = select.args.get("group"), select.args.get("qualify")
+    if isinstance(group, exp.Group) and not group.args.get("all") and _has_star(select) and not _star_is_all_keys(select, group, grouped):
+        message = (
+            "SELECT * with GROUP BY selects every column, and the SQL standard rejects any that is neither grouped nor aggregated. "
+            "This is probably a mistake: list the grouped columns and the aggregates instead of the star"
+        )
+        found.append(Hazard(site, Concern.STAR_IN_GROUPING, message, Result(True, "a star is selected beside GROUP BY")))
+    if isinstance(qualify, exp.Qualify) and group is None and _aggregates(select):
+        message = (
+            "QUALIFY beside an aggregate without GROUP BY filters the one row the aggregate returns, keeping it or dropping it. "
+            "This is probably a mistake: filter it with HAVING, or GROUP BY a key to rank the groups"
+        )
+        found.append(Hazard(site, Concern.QUALIFY_BESIDE_AGGREGATE, message, Result(True, "QUALIFY filters the one row of a scalar aggregate")))
+    if isinstance(qualify, exp.Qualify):
+        for key in _constant_partition_keys(qualify, select):
+            message = (
+                f"PARTITION BY {key.sql()} is a constant, so every row is in one partition and the window partitions nothing. "
+                "This is probably a mistake: partition by a column, or drop PARTITION BY"
+            )
+            found.append(Hazard(site, Concern.CONSTANT_PARTITION, message, Result(True, "a window partitions by a constant")))
+    return found
+
+
+def _star_is_all_keys(select: exp.Select, group: exp.Group, grouped: ir.Aggregate | None) -> bool:
+    """Whether every star of `select` is a plain `*` over input columns that are all
+    grouping keys written as column names: that select is standard SQL."""
+    stars = [item for item in select.expressions if _projection_star(item) is not None]
+    if grouped is None or not grouped.input.is_schema_complete or any(not isinstance(star, exp.Star) or any(star.args.values()) for star in stars):
+        return False
+    keys = {key.name.lower() for key in group.expressions if isinstance(key, exp.Column)}
+    columns = grouped.input.output_columns
+    return bool(columns) and all(column.name.lower() in keys for column in columns)
 
 
 def _unselected_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[Hazard]:

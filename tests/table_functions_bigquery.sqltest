@@ -1,0 +1,47 @@
+-- UNNEST in BigQuery: `UNNEST(xs) AS x` has the one column `x`
+-- (`DialectSemantics.table_functions`, from memory: no engine probed), and
+-- reads the left input in `, UNNEST(t.arr)` and `CROSS JOIN UNNEST(t.arr)`
+-- as DuckDB's does. SQLGlot reads the alias as a column list.
+-- dialect: bigquery
+
+CREATE TABLE t (id INT64 NOT NULL, k INT64 NOT NULL, arr ARRAY<INT64>, PRIMARY KEY (id) NOT ENFORCED);
+CREATE TABLE u (uid INT64 NOT NULL, label STRING, PRIMARY KEY (uid) NOT ENFORCED);
+
+-- case: a_correlated_unnest_repeats_no_unnest_row
+SELECT t.id, x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(t.arr) AS x  --~ PROVED
+
+-- case: a_comma_unnest_repeats_a_key_of_the_input
+SELECT t.id, x FROM t, UNNEST(t.arr) AS x /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_left_unnest_is_one_to_many
+SELECT t.id, x FROM t
+/**ASSERT ONE TO MANY**/ LEFT JOIN UNNEST(t.arr) AS x ON TRUE  --~ PROVED
+
+-- case: a_correlated_unnest_is_not_many_to_one
+SELECT t.id, x FROM t
+/**ASSERT MANY TO ONE**/ CROSS JOIN UNNEST(t.arr) AS x  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated_by_the_cross_join_unnest
+SELECT t.id, x FROM t CROSS JOIN UNNEST(t.arr) AS x /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: the_unnest_column_is_named_by_the_alias_so_the_inputs_names_resolve
+-- `k` is not the unnest's: it is t's, so a later join on it binds.
+SELECT k, x FROM t CROSS JOIN UNNEST(t.arr) AS x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = k  --~ PROVED
+
+-- case: a_qualified_input_key_binds_through_the_unnest
+SELECT t.k, x FROM t, UNNEST(t.arr) AS x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = t.k  --~ PROVED
+
+-- case: a_name_the_alias_gives_is_the_unnests_not_the_inputs
+-- `x` is also a column of `v`: the engine rejects the bare name, so it is opaque.
+CREATE TABLE v (x INT64 NOT NULL, w INT64);
+SELECT x FROM t CROSS JOIN UNNEST(t.arr) AS x CROSS JOIN v /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: an_unnest_column_is_not_known_non_null
+SELECT t.id, x FROM t CROSS JOIN UNNEST(t.arr) AS x /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: an_unnest_with_an_offset_has_no_known_columns_but_is_still_one_to_many
+SELECT t.id FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(t.arr) AS x WITH OFFSET AS pos  --~ PROVED

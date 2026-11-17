@@ -1,0 +1,197 @@
+-- A recursive CTE (or view): its recursive arm reads the CTE itself, which is
+-- opaque (rows nothing is known of), but the engine fixes each column's type
+-- from the base case (`RecursiveRelation.typed_by`; DuckDB casts the recursive
+-- arm to it, probed on 2.0.0; other dialects from memory). Typing only: a join
+-- on a column the CTE passes through binds it, and no value, NULL, key,
+-- domain or lineage of the base case is shared with the recursive rows.
+
+CREATE TABLE tree (id INTEGER PRIMARY KEY, parent INTEGER, label VARCHAR NOT NULL);
+CREATE TABLE leaf (id INTEGER PRIMARY KEY, root INTEGER, name VARCHAR);
+
+-- case: a_passed_through_recursive_column_is_typed_by_the_base_case
+-- UNION removes duplicates, so the CTE's columns together are a Unique Set,
+-- and `root` is bound by the join with `id`.
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ PROVED
+
+-- case: the_recursive_arm_alone_is_no_proof
+-- Without the passed-through column in the key the base case's type is no
+-- uniqueness: `r.root` is typed, not unique.
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.root = r.root  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+-- case: a_recursive_column_may_still_be_null
+-- The recursive rows differ from the base case's: its NOT NULL is not theirs.
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT id, root FROM r
+/**ASSERT NOT NULL(root)**/  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+-- case: a_recursive_column_is_not_known_unique
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT id, root FROM r
+/**ASSERT UNIQUE(root)**/  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+-- case: union_all_binds_the_columns_but_leaves_no_unique_set
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION ALL
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: a_column_alias_list_names_the_base_cases_columns_by_position
+WITH RECURSIVE r (a, b) AS (
+    SELECT id, id FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.b FROM tree AS t JOIN r ON t.parent = r.a
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.a AND leaf.root = r.b  --~ PROVED
+
+-- case: the_alias_list_not_the_base_cases_names_are_the_ctes
+-- The base case's `root` is the CTE's `b`: each is read by position.
+WITH RECURSIVE r (a, b) AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.b FROM tree AS t JOIN r ON t.parent = r.a
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.a AND leaf.root = r.b  --~ PROVED
+
+-- case: several_base_arms_share_a_type_when_every_arm_has_it
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT id, id AS root FROM tree WHERE parent = 0
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ PROVED
+
+-- case: several_base_arms_of_different_types_type_nothing
+-- The engine would cast the arms to a common type, which is not modelled.
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT id, CAST(id AS BIGINT) AS root FROM tree WHERE parent = 0
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: an_untyped_base_column_stays_untyped
+-- `missing` has no CREATE: nothing is known of its column types, so `r.root`
+-- binds nothing even where the other side is typed.
+WITH RECURSIVE r AS (
+    SELECT id, root FROM missing
+    --~ undeclared-table "missing"
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: a_base_column_of_another_type_is_not_bound_to_the_column_it_is_joined_with
+-- `label` is text, `leaf.root` an integer: the comparison casts, so it binds nothing.
+WITH RECURSIVE r AS (
+    SELECT id, label AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: a_computed_base_column_has_its_expressions_type
+WITH RECURSIVE r AS (
+    SELECT id, id + 1 AS nxt FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.nxt FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.nxt  --~ PROVED
+
+-- case: a_recursive_arm_that_computes_a_column_types_it_by_the_base_case_when_both_agree
+-- DuckDB: `n + 1` over an INTEGER `n` is an INTEGER.
+WITH RECURSIVE r (n) AS (
+    SELECT 1::INTEGER
+    UNION
+    SELECT n + 1 FROM r WHERE n < 10
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ PROVED
+
+-- case: a_recursive_arm_of_another_type_leaves_the_ctes_column_untyped
+-- DuckDB probed: base `1::INTEGER`, arm `n * 1.5` gives an INTEGER column
+-- (2, 3, 5). The set operation's arms differ here, so it stays untyped: sound,
+-- and not as strong as the engine.
+WITH RECURSIVE r (n) AS (
+    SELECT 1::INTEGER
+    UNION
+    SELECT n * 1.5 FROM r WHERE n < 10
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: a_recursive_view_over_a_recursive_cte_is_typed_too
+CREATE VIEW descendants AS
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT t.id, r.root FROM tree AS t JOIN r ON t.parent = r.id
+)
+SELECT id, root FROM r;
+
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN descendants AS d ON leaf.id = d.id AND leaf.root = d.root  --~ PROVED
+
+-- case: a_reference_that_renames_the_columns_itself_is_not_typed
+-- The recursive reference's own column list is not read, so its columns are not
+-- matched to the base case's: the arm's `q` is untyped, so is the CTE's `root`.
+WITH RECURSIVE r AS (
+    SELECT id, id AS root FROM tree WHERE parent IS NULL
+    UNION
+    SELECT x.p, r2.q FROM tree AS x(p, parent, label) JOIN r AS r2 (p, q) ON x.parent = r2.p
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"

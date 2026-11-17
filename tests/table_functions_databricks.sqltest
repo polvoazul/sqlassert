@@ -1,0 +1,9 @@
+-- Databricks reads `range(n)` as Spark does: the one column `id`, whatever the alias.
+-- dialect: databricks
+
+CREATE TABLE t (tid BIGINT NOT NULL, r BIGINT NOT NULL, PRIMARY KEY (tid) RELY);
+CREATE TABLE u (uid BIGINT NOT NULL, PRIMARY KEY (uid) RELY);
+
+-- case: the_alias_does_not_name_the_column_so_a_name_it_matches_is_the_inputs
+SELECT r FROM t CROSS JOIN range(3) AS r
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = r  --~ PROVED

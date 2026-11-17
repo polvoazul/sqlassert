@@ -1,0 +1,26 @@
+-- Unnesting a SUPER array in Redshift, `FROM t, t.arr AS x`, which SQLGlot
+-- reads as an UNNEST whose alias is a column list: the one column `x`
+-- (`DialectSemantics.table_functions`, from memory: no engine probed), read
+-- from the left input. A comma join has no marker site, so the join is
+-- checked through what follows it.
+-- dialect: redshift
+
+CREATE TABLE t (id INT NOT NULL, k INT NOT NULL, arr SUPER, PRIMARY KEY (id));
+CREATE TABLE u (uid INT NOT NULL, label VARCHAR(20), PRIMARY KEY (uid));
+
+-- case: a_navigation_in_a_join_clause_is_read_as_a_table
+-- SQLGlot reads only the comma form as an UNNEST: `LEFT JOIN t.arr AS x` is
+-- the table `arr` of schema `t`, which has no CREATE.
+SELECT t.id FROM t
+/**ASSERT ONE TO MANY**/ LEFT JOIN t.arr AS x ON TRUE  --~ UNKNOWN
+--~ undeclared-table "t.arr"
+
+-- case: a_key_of_the_input_is_repeated_by_the_navigation
+SELECT t.id, x FROM t, t.arr AS x /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: the_navigated_column_is_named_by_the_alias_so_the_inputs_names_resolve
+SELECT k, x FROM t, t.arr AS x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = k  --~ PROVED
+
+-- case: a_navigated_column_is_not_known_non_null
+SELECT t.id, x FROM t, t.arr AS x /**ASSERT NOT NULL(x)**/  --~ UNKNOWN

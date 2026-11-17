@@ -187,6 +187,9 @@ def _grouped(relation: ir.RelationExpr, node: exp.Select) -> ir.Aggregate | None
     (`_lower_aggregate`), and the Filter that is its HAVING, all under the
     Filter of a DISTINCT ON, which keeps one group per key."""
     distinct = node.args.get("distinct")
+    group = node.args.get("group")
+    if isinstance(group, exp.Group) and group.args.get("all"):
+        return None  # Its keys are written nowhere: no edit can place a rewrite.
     if isinstance(relation, ir.Filter) and distinct is not None and distinct.args.get("on") is not None:
         relation = relation.input
     if isinstance(relation, ir.Project):

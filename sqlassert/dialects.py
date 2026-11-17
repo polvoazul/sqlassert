@@ -74,6 +74,11 @@ class DialectSemantics:
     greatest: GreatestMeaning = None
     # `xs[i]` (an element of a list, array, map or struct) is NULL when `xs` is.
     subscript_strict: bool = False
+    # `*` over `a JOIN b USING (k)` keeps the USING column at its left input's
+    # position (DuckDB, SQLite: probed). Standard SQL lists the USING columns
+    # first, in the USING list's order, then the left input's others, then the
+    # right's (docs/dialects.md, "Stars and names").
+    using_column_stays_in_place: bool = False
     unique_keys: KeyTrust = "enforced"
     foreign_keys: KeyTrust = "enforced"
     # CHECK constraints. Where the dialect has none (Snowflake, BigQuery,
@@ -133,11 +138,19 @@ class DialectSemantics:
     # function (or UNNEST, as `unnest`) of one argument list, by lower-case
     # name (`table_function(NAME)=COLUMNS`): whatever its arguments, and
     # whether or not the alias lists column names, which rename the leading
-    # columns. A function with one column and an alias with no column list
-    # names it by the alias, as DuckDB does (`range(3) AS r` is the column
-    # `r`). A function not listed, an UNNEST of several arguments or WITH
-    # ORDINALITY has columns not known without the data or the engine.
+    # columns. A function not listed, an UNNEST of several arguments or WITH
+    # ORDINALITY has columns not known without the data or the engine. So has
+    # one whose columns follow its argument's type: Spark's `explode` has `col`
+    # for an array and `key`, `value` for a map. An UNNEST of a list of
+    # structs is the one exception no entry can state: it is one column here
+    # (named by the alias), though BigQuery and Redshift spread the struct's
+    # fields over columns (docs/dialects.md).
     table_functions: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # The one-column functions of `table_functions` whose column an alias with
+    # no column list names, as DuckDB does (`range(3) AS r` is the column `r`).
+    # Not one whose column the engine names itself (Spark's `range(3) AS r` is
+    # still `id`).
+    alias_named_table_functions: tuple[str, ...] = ()
 
     @property
     def rely(self) -> bool:
@@ -170,6 +183,10 @@ _SPARK = DialectSemantics(
     hash_functions=("MD5", "SHA"),
     values_types=(("string", "string"), ("integer", "int"), ("bigint", "bigint"), ("decimal", "decimal")),
     literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
+    # Tentative. `range(n)` has the one column `id`, whatever its alias. Not
+    # `explode`, `posexplode` or `inline`: an array, a map or a struct gives
+    # different columns, and the SQL alone does not say which it reads.
+    table_functions=(("range", ("id",)),),
 )
 
 # What `json_each` and `json_tree` return, in DuckDB and SQLite alike.
@@ -186,6 +203,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat_ws="skips-null",
         greatest="skips-null",
         subscript_strict=True,
+        using_column_stays_in_place=True,
         set_operations_all=True,
         result_types=(
             *((node, "VARCHAR") for node in (
@@ -200,6 +218,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
             ("json_each", _JSON_TABLE_COLUMNS), ("json_tree", _JSON_TABLE_COLUMNS),
             ("range", ("range",)), ("generate_series", ("generate_series",)), ("unnest", ("unnest",)),
         ),
+        alias_named_table_functions=("range", "generate_series", "unnest"),
     ),
     "postgres": DialectSemantics(
         checked_arithmetic=True,
@@ -277,6 +296,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         hash_functions=("MD5", "MD5Digest", "SHA1Digest", "SHA2Digest"),
         # A decimal is written `NUMERIC '0.1'`: `0.1` is a FLOAT64.
         literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
+        # Tentative. `UNNEST(xs) AS x` has the one column `x` (SQLGlot reads the alias as a column list).
+        table_functions=(("unnest", ("unnest",)),),
     ),
     "redshift": DialectSemantics(
         checked_arithmetic=True,
@@ -291,6 +312,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR")),
         hash_functions=("MD5", "SHA"),
         literal_types=(("decimal", "DECIMAL"),),
+        # Tentative. Unnesting a SUPER array, `FROM t, t.xs AS x`, has the one column `x` (SQLGlot reads it as an UNNEST).
+        table_functions=(("unnest", ("unnest",)),),
     ),
     "databricks": replace(
         _SPARK, checked_division=True, casts_raise=True,
@@ -309,6 +332,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "sqlite": DialectSemantics(
         pipes="strict",
         concat_ws="skips-null",
+        using_column_stays_in_place=True,
         # Foreign keys are checked only under `PRAGMA foreign_keys = ON`, off by default.
         foreign_keys="unenforced",
         # Only an INTEGER PRIMARY KEY (the rowid) is never NULL.

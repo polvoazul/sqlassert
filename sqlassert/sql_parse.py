@@ -1061,9 +1061,15 @@ def grouping(select: exp.Select) -> list[Expr] | None:
     window, with no GROUP BY) or `GROUP BY ()`. The empty grouping set groups
     by nothing, so `GROUP BY (), a` is `GROUP BY a`. GROUPING SETS, ROLLUP and
     CUBE are not in the list: the caller checks the Group for them. An
-    aggregate under QUALIFY is None: QUALIFY lowers it.
+    aggregate under QUALIFY is None: QUALIFY lowers it. `GROUP BY ALL` groups
+    by the select items that contain no aggregate or window.
     """
     group = select.args.get("group")
+    if isinstance(group, exp.Group) and group.args.get("all"):
+        return [
+            item.this if isinstance(item, exp.Alias) else item for item in select.expressions
+            if item.find(exp.AggFunc, exp.Window) is None
+        ]
     if isinstance(group, exp.Group):
         return [expression for expression in group.expressions if not (isinstance(expression, exp.Tuple) and not expression.expressions)]
     if select.args.get("qualify") is None and any(

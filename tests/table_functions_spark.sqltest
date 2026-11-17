@@ -1,0 +1,37 @@
+-- `range(n)` in Spark and Databricks has the one column `id`, whatever its
+-- alias (`DialectSemantics.table_functions`, from memory: no engine probed),
+-- so an alias alone does not name it as DuckDB's does
+-- (`alias_named_table_functions`); an alias column list does. Spark's
+-- `explode`, `posexplode` and `inline` have columns the argument's type
+-- decides (an array's `col`, a map's `key` and `value`): not known. A
+-- table function reads the left input only under `LATERAL` here, which is
+-- not lowered, so none is taken to.
+-- dialect: spark
+
+CREATE TABLE t (tid BIGINT NOT NULL, r BIGINT NOT NULL, arr ARRAY<BIGINT>, PRIMARY KEY (tid) RELY);
+CREATE TABLE u (uid BIGINT NOT NULL, PRIMARY KEY (uid) RELY);
+
+-- case: the_alias_does_not_name_the_column_so_a_name_it_matches_is_the_inputs
+-- Were the column named `r` the bare `r` would be ambiguous (and opaque).
+SELECT r FROM t CROSS JOIN range(3) AS r
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = r  --~ PROVED
+
+-- case: the_columns_name_id_so_the_inputs_names_resolve
+SELECT r, tid FROM t CROSS JOIN range(3)
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = r  --~ PROVED
+
+-- case: a_name_the_function_shares_with_the_input_is_ambiguous
+CREATE TABLE w (id BIGINT NOT NULL, x BIGINT);
+SELECT id FROM w CROSS JOIN range(3) AS r /**ASSERT NOT NULL(id)**/  --~ UNKNOWN
+
+-- case: an_alias_column_list_renames_the_column
+-- `id` is now the input's alone.
+CREATE TABLE w (id BIGINT NOT NULL, x BIGINT);
+SELECT id FROM w CROSS JOIN range(3) AS r (n) /**ASSERT NOT NULL(id)**/  --~ PROVED
+
+-- case: a_cross_join_of_range_repeats_a_key_of_the_input
+SELECT tid FROM t CROSS JOIN range(3) AS r /**ASSERT UNIQUE(tid)**/  --~ UNKNOWN
+
+-- case: explode_has_columns_the_argument_decides
+SELECT tid FROM t CROSS JOIN explode(array(1, 2)) AS e /**ASSERT UNIQUE(tid)**/  --~ UNKNOWN
+--~ unsupported-construct "a table function"

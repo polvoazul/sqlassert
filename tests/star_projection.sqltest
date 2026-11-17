@@ -71,12 +71,20 @@ SELECT * RENAME (x AS renamed) FROM external_table /**ASSERT UNIQUE(renamed)**/
 --~ undeclared-table
 --~ unresolved-asserted-column
 
+-- The rename makes two columns named y. A derived table renames the second
+-- (DuckDB: y_1), and a real y_1 is then renamed again, so `s.y_1` is not the
+-- column written y_1: it binds nothing (docs/dialects.md, "Duplicate output names").
 -- case: a_rename_collision_cannot_borrow_a_deduplicated_names_key
 CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, y_1 INTEGER UNIQUE NOT NULL);
 SELECT s.y_1 FROM (SELECT * RENAME (x AS y) FROM t) AS s
-/**ASSERT UNIQUE(y_1)**/
---~ UNKNOWN
---~ unsupported-construct "modified star projection"
+--~ ambiguous-duplicate-column "'y_1'"
+/**ASSERT UNIQUE(y_1)**/  --~ UNKNOWN
+
+-- The first y is the renamed key, which the derived table names y.
+-- case: a_rename_collision_keeps_the_first_name_of_the_derived_table
+CREATE TABLE t (x INTEGER PRIMARY KEY, y INTEGER, y_1 INTEGER UNIQUE NOT NULL);
+SELECT s.y FROM (SELECT * RENAME (x AS y) FROM t) AS s
+/**ASSERT UNIQUE(y)**/  --~ PROVED
 
 -- A star beside other items.
 
@@ -143,34 +151,134 @@ FROM f
 /**ASSERT MANY TO ONE**/ JOIN (SELECT *, 1 AS w FROM a JOIN s1.a ON a.id = s1.a.id) AS s ON s.x = f.k  --~ UNKNOWN
 --~ unsupported-construct "a star whose columns cannot each be named unambiguously"
 
--- case: a_star_over_a_derived_table_of_a_duplicated_name_stays_unexpanded
+-- A derived table that repeats a name names its first column by it, and the
+-- star over it selects each column once: the first as `k`, the others under
+-- the internal names that carry the repeat on (`ir/names.py`).
+-- case: a_star_over_a_derived_table_of_a_duplicated_name_reads_its_first_column
 CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
 CREATE TABLE f (k INTEGER, g INTEGER);
 SELECT f.g
 FROM f
-/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "a star whose columns cannot each be named unambiguously"
-    SELECT *, 1 AS w FROM (SELECT a.k, b.k FROM t AS a JOIN t AS b ON true) AS d
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT *, 1 AS w FROM (SELECT a.k, b.k FROM t AS a JOIN t AS b ON a.k = b.k) AS d
 ) AS s ON s.k = f.k
 
--- Over a USING join the star's columns are ordered by dialect: it stays one
--- item, and an assertion that reaches it says so.
--- case: a_star_over_a_using_join_stays_unexpanded_and_is_reported
-CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
-CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+-- case: a_star_over_a_derived_table_of_a_duplicated_name_keeps_the_repeat_ambiguous
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
 CREATE TABLE f (k INTEGER, g INTEGER);
 SELECT f.g
 FROM f
-/**ASSERT MANY TO ONE**/ JOIN (SELECT *, 1 AS w FROM a JOIN b USING (k)) AS s ON s.k = f.k  --~ UNKNOWN
---~ unsupported-construct "a star over a USING join"
+/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN
+    SELECT *, 1 AS w FROM (SELECT a.k, b.k FROM t AS a JOIN t AS b ON a.k = b.k) AS d
+) AS s ON s.k_1 = f.k
+--~ ambiguous-duplicate-column "'k_1'"
 
--- case: a_lone_star_over_a_using_join_is_reported
+-- A star over a USING join selects each USING column once, first, then the
+-- left input's other columns, then the right's (standard SQL; DuckDB and
+-- SQLite keep the column at its left input's position, as another case
+-- shows). The merged column is the left's for INNER and LEFT, the right's for
+-- RIGHT and a COALESCE for FULL.
+-- case: a_star_over_a_using_join_keeps_the_merged_key
 CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
 CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
 CREATE TABLE f (k INTEGER, g INTEGER);
 SELECT f.g
 FROM f
-/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM a JOIN b USING (k)) AS s ON s.x = f.k  --~ UNKNOWN
---~ unsupported-construct "a star over a USING join"
+/**ASSERT MANY TO ONE**/ JOIN (SELECT *, 1 AS w FROM a JOIN b USING (k)) AS s ON s.k = f.k  --~ PROVED
+
+-- case: a_lone_star_over_a_using_join_keeps_the_merged_key
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM a JOIN b USING (k)) AS s ON s.k = f.k  --~ PROVED
+
+-- case: a_lone_star_over_a_left_join_using_keeps_the_left_key
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM a LEFT JOIN b USING (k)) AS s ON s.k = f.k  --~ PROVED
+
+-- case: a_lone_star_over_a_right_join_using_keeps_the_right_key
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM a RIGHT JOIN b USING (k)) AS s ON s.k = f.k  --~ PROVED
+
+-- The merged column of a FULL JOIN is COALESCE(a.k, b.k): never NULL where a.k
+-- is not, and the star carries it on.
+-- case: a_lone_star_over_a_full_join_using_carries_the_coalesced_column
+CREATE TABLE a (k INTEGER NOT NULL, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+SELECT s.k, s.x FROM (SELECT * FROM a FULL JOIN b USING (k)) AS s
+/**ASSERT NOT NULL(k)**/  --~ PROVED
+/**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- Nested USING joins merge the column once: `k` of the outer join is the
+-- merged one of the inner join.
+-- case: a_star_over_nested_using_joins_keeps_the_merged_key
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE c (k INTEGER PRIMARY KEY, z INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (SELECT * FROM a JOIN b USING (k) JOIN c USING (k)) AS s ON s.k = f.k  --~ PROVED
+
+-- The positions are the star's: the USING column once, then each input's others.
+-- A star that kept both k would make y2 the right input's k, a key.
+-- case: a_star_over_a_using_join_has_the_standard_columns_in_order
+-- dialect: postgres
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+SELECT k2, x2, y2 FROM (SELECT * FROM a JOIN b USING (k)) AS s (k2, x2, y2)
+/**ASSERT NOT NULL(k2)**/  --~ PROVED
+/**ASSERT NOT NULL(x2)**/  --~ PROVED
+/**ASSERT NOT NULL(y2)**/  --~ UNKNOWN
+
+-- Standard SQL puts the USING columns first, in the USING list's order,
+-- wherever they are in the inputs: a(x, k, m), b(y, m, k) USING (m, k) is
+-- m, k, x, y. Where the position decides, only x is nullable and unequal.
+-- case: the_using_columns_lead_in_the_using_lists_order
+-- dialect: postgres
+CREATE TABLE a (x INTEGER, k INTEGER NOT NULL, m INTEGER NOT NULL);
+CREATE TABLE b (y INTEGER NOT NULL, m INTEGER NOT NULL, k INTEGER NOT NULL);
+SELECT c1, c2, c3, c4 FROM (SELECT * FROM a JOIN b USING (m, k)) AS s (c1, c2, c3, c4)
+/**ASSERT NOT NULL(c1)**/  --~ PROVED
+/**ASSERT NOT NULL(c2)**/  --~ PROVED
+/**ASSERT NOT NULL(c3)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c4)**/  --~ PROVED
+
+-- DuckDB (and SQLite) keep a USING column at its left input's position, and
+-- drop the right input's: a(x, k, m), b(y, m, k, z) USING (k) is x, k, m, y, m, z.
+-- case: duckdb_keeps_a_using_column_at_its_left_inputs_position
+CREATE TABLE a (x INTEGER, k INTEGER NOT NULL, m INTEGER);
+CREATE TABLE b (y INTEGER, m INTEGER, k INTEGER NOT NULL, z INTEGER);
+SELECT c1, c2 FROM (SELECT * FROM a JOIN b USING (k)) AS s (c1, c2, c3, c4, c5, c6)
+/**ASSERT NOT NULL(c1)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c2)**/  --~ PROVED
+
+-- case: standard_sql_puts_the_using_column_first
+-- dialect: postgres
+CREATE TABLE a (x INTEGER, k INTEGER NOT NULL, m INTEGER);
+CREATE TABLE b (y INTEGER, m INTEGER, k INTEGER NOT NULL, z INTEGER);
+SELECT c1, c2 FROM (SELECT * FROM a JOIN b USING (k)) AS s (c1, c2, c3, c4, c5, c6)
+/**ASSERT NOT NULL(c1)**/  --~ PROVED
+/**ASSERT NOT NULL(c2)**/  --~ UNKNOWN
+
+-- The alias of a parenthesized USING join has the star's columns too.
+-- case: an_aliased_using_join_has_each_column_once
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (a JOIN b USING (k)) AS s ON s.k = f.k  --~ PROVED
 
 -- case: a_qualified_star_over_a_using_join_is_expanded
 CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
@@ -250,6 +358,58 @@ CREATE TABLE l (x INTEGER PRIMARY KEY, payload INTEGER);
 CREATE TABLE r (x INTEGER PRIMARY KEY, payload INTEGER NOT NULL);
 SELECT * EXCLUDE (l.payload), 1 AS one FROM l JOIN r ON l.x = r.x
 /**ASSERT NOT NULL(payload)**/  --~ PROVED
+
+-- Each star expands on its own: one that cannot stays one opaque item beside
+-- the columns of the others, modified or not. d's star is over two unaliased
+-- tables of one name, which no item can name unambiguously; u's expands.
+-- case: a_modified_star_expands_beside_a_star_that_cannot
+CREATE SCHEMA s1;
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE s1.a (id INTEGER PRIMARY KEY, z INTEGER);
+CREATE TABLE u (id INTEGER PRIMARY KEY, v INTEGER NOT NULL, z INTEGER);
+SELECT d.*, u.* EXCLUDE (z)
+FROM (SELECT *, 1 AS w FROM a JOIN s1.a ON a.id = s1.a.id) AS d JOIN u ON d.w = u.id
+/**ASSERT NOT NULL(v)**/  --~ PROVED
+
+-- case: a_renamed_column_beside_a_star_that_cannot_expand_keeps_its_new_name
+CREATE SCHEMA s1;
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE s1.a (id INTEGER PRIMARY KEY, z INTEGER);
+CREATE TABLE u (id INTEGER PRIMARY KEY, v INTEGER NOT NULL, z INTEGER);
+SELECT d.*, u.* RENAME (v AS vv)
+FROM (SELECT *, 1 AS w FROM a JOIN s1.a ON a.id = s1.a.id) AS d JOIN u ON d.w = u.id
+/**ASSERT NOT NULL(vv)**/  --~ PROVED
+
+-- case: an_excluded_column_beside_a_star_that_cannot_expand_is_absent
+CREATE SCHEMA s1;
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE s1.a (id INTEGER PRIMARY KEY, z INTEGER);
+CREATE TABLE u (id INTEGER PRIMARY KEY, v INTEGER NOT NULL, z INTEGER);
+SELECT d.*, u.* EXCLUDE (v)
+FROM (SELECT *, 1 AS w FROM a JOIN s1.a ON a.id = s1.a.id) AS d JOIN u ON d.w = u.id
+/**ASSERT NOT NULL(v)**/
+--~ unknown-asserted-column "v"
+
+-- A modified star that cannot expand cannot be honoured either: which names the
+-- select outputs (what it excludes or renames another item may repeat) is
+-- unknown, so the whole select is opaque; only this case.
+-- case: a_modified_star_that_cannot_expand_makes_the_select_opaque
+CREATE SCHEMA s1;
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE s1.a (id INTEGER PRIMARY KEY, z INTEGER);
+CREATE TABLE u (id INTEGER PRIMARY KEY, v INTEGER NOT NULL, z INTEGER);
+SELECT d.* EXCLUDE (z), u.v AS uv
+FROM (SELECT *, 1 AS w FROM a JOIN s1.a ON a.id = s1.a.id) AS d JOIN u ON d.w = u.id
+/**ASSERT NOT NULL(uv)**/
+--~ unresolved-asserted-column "uv"
+
+-- A qualified star over a USING join keeps the side's USING column, beside the
+-- other side's: the derived table names the first k, and the repeat is carried on.
+-- case: qualified_stars_over_a_using_join_keep_both_sides_columns
+CREATE TABLE a (k INTEGER NOT NULL, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+SELECT s.k FROM (SELECT a.*, b.* FROM a LEFT JOIN b USING (k)) AS s
+/**ASSERT NOT NULL(k)**/  --~ PROVED
 
 -- DISTINCT.
 
@@ -349,15 +509,15 @@ FROM f
     SELECT * FROM a JOIN b ON a.k = b.k QUALIFY row_number() OVER (PARTITION BY k ORDER BY v) = 1
 ) AS s ON s.v = f.k
 
--- case: qualify_on_a_star_over_a_using_join_is_reported
+-- case: qualify_on_a_star_over_a_using_join_partitions_by_the_merged_column
 CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
 CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
 CREATE TABLE f (k INTEGER, g INTEGER);
 SELECT f.g
 FROM f
-/**ASSERT MANY TO ONE**/ JOIN (  --~ UNKNOWN, unsupported-construct "a star over a USING join"
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
     SELECT * FROM a JOIN b USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY y) = 1
-) AS s ON s.x = f.k
+) AS s ON s.k = f.k
 
 -- case: qualify_on_a_star_over_an_undeclared_table_stays_unknown
 CREATE TABLE f (k INTEGER, g INTEGER);

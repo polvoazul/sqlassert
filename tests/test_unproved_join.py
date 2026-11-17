@@ -93,15 +93,15 @@ CASES = [
     ),
     (
         "opaque SELECT",
-        "SELECT a.id FROM a JOIN (SELECT * FROM b JOIN f USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1) AS m "
+        "SELECT a.id FROM a JOIN (SELECT b.id, b.k, unnest([1, 2]) AS v FROM b JOIN f ON f.x = b.id GROUP BY b.id, b.k) AS m "
         "ON a.k = m.k",
-        UnprovedJoin("unsupported", construct="a star over a USING join"),
+        UnprovedJoin("unsupported", construct="a set-returning function beside GROUP BY, QUALIFY or DISTINCT ON"),
     ),
     (
         "key read from an opaque SELECT",
-        "SELECT a.id FROM a JOIN (SELECT k FROM (SELECT * FROM b JOIN f USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1)) "
+        "SELECT a.id FROM a JOIN (SELECT k FROM (SELECT b.id, b.k, unnest([1, 2]) AS v FROM b JOIN f ON f.x = b.id GROUP BY b.id, b.k)) "
         "AS m ON a.k = m.k",
-        UnprovedJoin("untyped-key", "opaque-relation", "a star over a USING join"),
+        UnprovedJoin("untyped-key", "opaque-relation", "a set-returning function beside GROUP BY, QUALIFY or DISTINCT ON"),
     ),
     (
         "key read through a QUALIFY that drops rows",
@@ -129,6 +129,28 @@ CASES = [
         UnprovedJoin("untyped-key", "set-operation"),
     ),
     ("undeclared table key", "SELECT a.id FROM a JOIN missing AS m ON a.k = m.k", UnprovedJoin("untyped-key", "table")),
+    # A recursive CTE's column has its base case's type: a typed one binds, an untyped one loses its type where the base case does.
+    (
+        "recursive CTE key typed by its base case",
+        "WITH RECURSIVE r AS (SELECT id, k FROM a UNION ALL SELECT r.id, r.k FROM r) SELECT a.id FROM a JOIN r ON a.k = r.k",
+        UnprovedJoin("no-unique-set", "cascade", "a recursive CTE or view"),
+    ),
+    (
+        "recursive CTE key whose base case is an undeclared table",
+        "WITH RECURSIVE r AS (SELECT id, k FROM missing UNION ALL SELECT r.id, r.k FROM r) SELECT a.id FROM a JOIN r ON a.k = r.k",
+        UnprovedJoin("untyped-key", "table"),
+    ),
+    (
+        "recursive CTE key whose base case is a float",
+        "WITH RECURSIVE r AS (SELECT k FROM f UNION ALL SELECT r.k FROM r) SELECT a.id FROM a JOIN r ON a.k = r.k",
+        UnprovedJoin("untyped-key", "type-mismatch"),
+    ),
+    (
+        "recursive CTE key whose base case is computed",
+        "WITH RECURSIVE r AS (SELECT id, date_trunc('month', ts) AS k FROM a UNION ALL SELECT r.id, r.k FROM r) "
+        "SELECT a.id FROM a JOIN r ON a.ts = r.k",
+        UnprovedJoin("untyped-key", "computed"),
+    ),
     ("type mismatch", "SELECT a.id FROM a JOIN f ON a.k = f.k", UnprovedJoin("untyped-key", "type-mismatch")),
     # An expression that binds a column is no expression-key: what is left is what binds nothing.
     ("cast key binds the matched column", "SELECT a.id FROM a JOIN b ON b.day = CAST(a.ts AS DATE)", UnprovedJoin("no-unique-set", "undeclared-key")),
@@ -179,15 +201,15 @@ CASES = [
     ),
     (
         "cascade: an unsupported construct below, with an unproved join",
-        "SELECT a.id FROM a JOIN (SELECT * FROM b JOIN f USING (k) QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1) AS m "
+        "SELECT a.id FROM a JOIN (SELECT b.id, b.k, unnest([1, 2]) AS v FROM b JOIN f ON f.x = b.id GROUP BY b.id, b.k) AS m "
         "ON a.id = m.id JOIN b AS c ON c.k = a.k",
-        UnprovedJoin("no-unique-set", "cascade", "a star over a USING join"),
+        UnprovedJoin("no-unique-set", "cascade", "a set-returning function beside GROUP BY, QUALIFY or DISTINCT ON"),
     ),
     (
         "cascade: only an unsupported construct below",
-        "SELECT a.id FROM a JOIN (SELECT CAST(k AS INTEGER) AS k FROM (SELECT * FROM b JOIN f USING (k) "
-        "QUALIFY row_number() OVER (PARTITION BY k ORDER BY id) = 1)) AS m ON a.k = m.k",
-        UnprovedJoin("no-unique-set", "cascade", "a star over a USING join"),
+        "SELECT a.id FROM a JOIN (SELECT CAST(k AS INTEGER) AS k FROM (SELECT b.id, b.k, unnest([1, 2]) AS v FROM b JOIN f ON f.x = b.id "
+        "GROUP BY b.id, b.k)) AS m ON a.k = m.k",
+        UnprovedJoin("no-unique-set", "cascade", "a set-returning function beside GROUP BY, QUALIFY or DISTINCT ON"),
     ),
 ]
 
@@ -195,3 +217,21 @@ CASES = [
 @pytest.mark.parametrize(("label", "sql", "expected"), CASES, ids=[label for label, _, _ in CASES])
 def test_unproved_join(label: str, sql: str, expected: UnprovedJoin | None):
     assert classify(sql) == expected
+
+
+# A table function or UNNEST of a dialect reading the left input is One To Many (proved: no reason). Comma joins
+# have no marker site to assert, so this asks the analysis directly.
+FUNCTION_DIALECTS = [
+    ("bigquery", "SELECT t.id FROM t, UNNEST(t.arr) AS x", "CREATE TABLE t (id INT64 NOT NULL, arr ARRAY<INT64>, PRIMARY KEY (id) NOT ENFORCED);"),
+    ("bigquery", "SELECT t.id FROM t CROSS JOIN UNNEST(t.arr) AS x", "CREATE TABLE t (id INT64 NOT NULL, arr ARRAY<INT64>, PRIMARY KEY (id) NOT ENFORCED);"),
+    ("redshift", "SELECT t.id FROM t, t.arr AS x", "CREATE TABLE t (id INT NOT NULL, arr SUPER, PRIMARY KEY (id));"),
+]
+
+
+@pytest.mark.parametrize(("dialect", "sql", "schema"), FUNCTION_DIALECTS, ids=[sql for _, sql, _ in FUNCTION_DIALECTS])
+def test_a_correlated_function_of_another_dialect_is_one_to_many(dialect: str, sql: str, schema: str):
+    conversion = IrParser(dialect).parse(SqlParser(dialect).parse(schema + sql))
+    joins = [relation for relation in conversion.program.relations() if isinstance(relation, ir.Join)]
+    assert len(joins) == 1 and joins[0].lateral
+    with Engine().session(conversion.program, conversion.knowledge):
+        assert unproved_join(joins[0]) is None

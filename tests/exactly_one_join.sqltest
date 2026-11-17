@@ -714,3 +714,13 @@ FROM coded
 /**ASSERT EXACTLY ONE**/ JOIN codes
 --~ UNKNOWN "UNKNOWN: At most one match" "UNKNOWN: Non-null left columns"
     ON coded.code IS NOT DISTINCT FROM codes.code
+
+-- A semi join's lossy equality leaves the left value out of the right column's coverage:
+-- DuckDB casts the text, so '01' IN (SELECT 1) holds but p.t has no '01'.
+-- case: a_semi_join_through_a_lossy_equality_does_not_carry_coverage
+CREATE TABLE p (t VARCHAR PRIMARY KEY);
+CREATE TABLE r (id INTEGER PRIMARY KEY REFERENCES p (t));
+CREATE TABLE c (x VARCHAR NOT NULL);
+WITH s AS (SELECT x FROM c WHERE x IN (SELECT id FROM r))
+SELECT s.x FROM s
+/**ASSERT EXACTLY ONE**/ JOIN p ON p.t = s.x  --~ UNKNOWN

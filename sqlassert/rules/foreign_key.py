@@ -27,6 +27,7 @@ from sqlassert.properties import ReferentialCoverage
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
 from sqlassert.rules.equality import _equal_columns
 from sqlassert.rules.uniqueness import unique_set
+from sqlassert.rules.value_typing import exact_comparison
 
 type _Columns = tuple[ir.OutputColumn, ...]
 
@@ -103,7 +104,8 @@ def _referencing_side(
 def _semi_join(join: ir.Join, columns: _Columns, referenced_columns: _Columns) -> list[Result[bool]]:
     """A semi join keeps a row only when some right row satisfies ON, so
     columns ON equates with right columns take those columns' values: coverage
-    of the right columns, as one tuple, covers them (`x IN (SELECT id ...)`)."""
+    of the right columns, as one tuple, covers them (`x IN (SELECT id ...)`),
+    when the equality compares without a lossy coercion (`exact_comparison`)."""
     partners: list[list[tuple[ir.OutputColumn, ir.Equality]]] = []
     for column in columns:
         match column.scalar_expr:
@@ -117,6 +119,7 @@ def _semi_join(join: ir.Join, columns: _Columns, referenced_columns: _Columns) -
             for own, other in ((conjunct.left, conjunct.right), (conjunct.right, conjunct.left))
             if isinstance(own, ir.ColumnRef) and own.column is upstream
             and isinstance(other, ir.ColumnRef) and other.column in join.right.output_columns
+            and exact_comparison(own, other).value  # A lossy `=` leaves the left value out of the right column's.
         ]
         if not found:
             return []

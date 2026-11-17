@@ -32,6 +32,7 @@ from sqlassert.diagnostics import Diagnostic
 from sqlassert.edits import Edit
 from sqlassert.rewrites import Rewrite, SuggestType, RewriteKind, rewrites
 from sqlassert.ir.convert import IrConversionResult, IrParser
+from sqlassert.ir.names import nameable
 from sqlassert.hazards import Concern, Hazard, hazards
 from sqlassert.main import DEFAULT_DIALECT
 from sqlassert.properties import (
@@ -366,9 +367,9 @@ def _column_sets(columns: tuple[ir.OutputColumn, ...], max_size: int) -> Iterato
 
 
 def _nameable_columns(relation: ir.RelationExpr) -> tuple[ir.OutputColumn, ...]:
-    """Output columns a marker names unambiguously: named, and named once."""
-    names = [column.name.lower() for column in relation.output_columns]
-    return tuple(column for column in relation.output_columns if column.name and names.count(column.name.lower()) == 1)
+    """Output columns a marker names unambiguously: named, named once, and not
+    a name an engine may give a repeated column (`ir/names.py`)."""
+    return nameable(relation.output_columns)
 
 
 def _identity(item: Property) -> tuple:

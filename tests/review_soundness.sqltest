@@ -90,3 +90,120 @@ SELECT d.id FROM c AS d(id) /**ASSERT UNIQUE(id)**/ --~ PROVED
 CREATE TABLE t(a INT);
 WITH RECURSIVE c AS (SELECT a FROM t), t AS (SELECT 1 AS a)
 SELECT a FROM c /**ASSERT UNIQUE(a)**/ --~ UNKNOWN
+
+-- GROUP BY ALL groups by the items that contain no aggregate: it is not one group,
+-- so only those items are a Unique Set.
+-- case: group_by_all_groups_by_the_items_that_are_not_aggregates
+CREATE TABLE t(k INT, x INT);
+SELECT k, count(*) AS n FROM t GROUP BY ALL
+/**ASSERT UNIQUE(k)**/ --~ PROVED
+/**ASSERT UNIQUE(n)**/ --~ UNKNOWN
+
+-- case: group_by_all_with_only_aggregates_is_one_group
+CREATE TABLE t(k INT, x INT);
+SELECT count(*) AS n, max(x) AS m FROM t GROUP BY ALL /**ASSERT UNIQUE(n)**/ --~ PROVED
+
+-- A star or a subquery leaves the keys unknown.
+-- case: group_by_all_beside_a_star_is_opaque
+CREATE TABLE t(k INT, x INT);
+SELECT *, count(*) AS n FROM t GROUP BY ALL /**ASSERT UNIQUE(n)**/ --~ UNKNOWN, unsupported-construct "GROUP BY ALL"
+
+-- A derived table that repeats an output name: DuckDB names the repeats k_1,
+-- k_2, ... (and renames a real k_1 that is in the way), so `s.k_1` is the second
+-- k, not the column written k_1. No reference by such a name binds, and each
+-- warns; the first k is still k. (Probed on DuckDB 2.0: `SELECT * FROM (SELECT 1
+-- AS k, 2 AS k, 3 AS k_1)` has the columns k, k_1, k_1_1.)
+-- case: a_duplicate_output_name_renames_the_second_so_k_1_is_not_the_real_k_1
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT s.k_1 FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- case: the_real_k_1_is_k_1_1_in_the_engine_so_that_name_binds_nothing_either
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT s.k_1_1 FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s
+--~ ambiguous-duplicate-column "'k_1_1'"
+/**ASSERT UNIQUE(k_1_1)**/ --~ UNKNOWN
+
+-- case: the_first_of_a_duplicated_name_keeps_it
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT s.k FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s
+/**ASSERT UNIQUE(k)**/ --~ PROVED
+
+-- case: an_unqualified_renamed_name_binds_nothing
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT k_1 FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- case: a_duplicate_output_name_of_a_cte_renames_the_second
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+WITH c AS (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1)
+SELECT c.k_1 FROM c
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- case: a_duplicate_output_name_of_a_view_renames_the_second
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+CREATE VIEW v AS SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1;
+SELECT v.k_1 FROM v
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- case: a_duplicate_output_name_of_an_aliased_join_renames_the_second
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT x.k_1 FROM (a JOIN b ON a.k = b.k_1) AS x
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- case: the_first_of_a_duplicated_name_of_an_aliased_join_keeps_it
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT x.k FROM (a JOIN b ON a.k = b.k_1) AS x
+/**ASSERT UNIQUE(k)**/ --~ PROVED
+
+-- A star over the derived table must not hand the real k_1 to a later query
+-- under the name the engine gave the repeat: the repeat is carried on.
+-- case: a_star_over_a_duplicate_does_not_let_the_next_query_bind_k_1
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT t.k_1 FROM (SELECT * FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s) t
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- case: a_marker_on_a_star_over_a_duplicate_cannot_name_k_1
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT * FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s
+/**ASSERT UNIQUE(k_1)**/
+--~ unresolved-asserted-column "ambiguous"
+
+-- DuckDB's EXCLUDE (k_1) drops the repeated k, not the real k_1: the modifier
+-- cannot be honoured, so the select is opaque.
+-- case: a_modifier_cannot_name_a_renamed_column
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT s.k FROM (SELECT * EXCLUDE (k_1) FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) s) AS s
+/**ASSERT UNIQUE(k)**/ --~ UNKNOWN
+--~ unsupported-construct "modified star projection"
+
+-- A column alias list replaces names by position; the names it leaves keep the repeat.
+-- case: a_column_alias_list_does_not_hide_the_repeat_of_the_names_it_leaves
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER, k_1 INTEGER PRIMARY KEY);
+SELECT s.k_1 FROM (SELECT a.k, b.k, b.k_1 FROM a JOIN b ON a.k = b.k_1) AS s (first_k)
+--~ ambiguous-duplicate-column "'k_1'"
+/**ASSERT UNIQUE(k_1)**/ --~ UNKNOWN
+
+-- Each repeat is a name of its own, so a name repeated three times is renamed twice.
+-- case: a_name_repeated_three_times_keeps_only_the_first
+CREATE TABLE t (k INTEGER PRIMARY KEY, v INTEGER);
+SELECT s.k FROM (SELECT t.k, t.v AS k, t.v AS k FROM t) s
+/**ASSERT UNIQUE(k)**/ --~ PROVED

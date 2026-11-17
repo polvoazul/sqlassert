@@ -79,8 +79,16 @@ def scalar_typing(expression: ir.ScalarExpr) -> Result[ir.ValueTyping | None]:
 def _column_typing(column: ir.OutputColumn) -> Result[ir.ValueTyping | None]:
     """The type of a column: the one it is declared with, else its expression's.
     A set operation's column has its inputs' when they share it, not the left
-    input's: the engine would cast one to the other."""
+    input's: the engine would cast one to the other. A recursive reference's
+    column has its base case's (`RecursiveRelation.typed_by`): the engine fixes
+    the type there, and nothing else about its values is known."""
     relation = column.get_relation(current_arena().program)
+    if isinstance(relation, ir.RecursiveRelation):
+        base = relation.typed_by[relation.output_columns.index(column)] if relation.typed_by else None
+        if base is None:
+            return _unknown(column, "The base case of the recursion has no such column")
+        typing = _column_typing(base)
+        return Result(typing.value, "A recursive CTE's column has the type of its base case", (column,), [typing])
     if isinstance(relation, ir.SetOperation):
         if (arms := relation.arms(column)) is not None:
             left, right = (_column_typing(arm) for arm in arms)

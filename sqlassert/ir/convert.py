@@ -8,7 +8,6 @@ a fresh Alias, while all occurrences share one memoized NamedRelation.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from collections.abc import Callable, Iterable, Sequence, Set
 from dataclasses import dataclass, field, replace
 from functools import cache
@@ -19,6 +18,7 @@ from sqlglot import Expr, exp
 from sqlassert import diagnostics as diag
 from sqlassert import ir
 from sqlassert.dialects import DialectSemantics, semantics
+from sqlassert.ir.names import derived_names, may_be_renamed, repeated_names
 from sqlassert.diagnostics import Diagnostic, quoted, quoted_all
 from sqlassert.properties import (
     EnumeratedDomain, ExactlyOneJoin, ExhaustiveCase, ForeignKey, FunctionalDependency, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullElements, NonNullUniqueSet,
@@ -70,6 +70,10 @@ class _Binding:
     # Hidden from unqualified names: a USING column's input sides, which an
     # unqualified name reads merged (`_merge_using`).
     shadowed: bool = False
+    # The lower-case names the derived table this column is of repeats
+    # (`ir/names.py`): a name `<repeated>_<digits>` may be one the engine gave
+    # a repeat, so no reference binds it.
+    repeated: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,9 @@ class IrParser:
     _source_expressions: dict[int, Expr] = field(default_factory=dict)
     _named_relations: dict[_Symbol, ir.NamedRelation] = field(default_factory=dict)
     _resolving: set[_Symbol] = field(default_factory=set)
+    # The base case of each recursive CTE or view being resolved, once lowered:
+    # what a reference to it from the recursive arm takes its types from.
+    _recursion_bases: dict[_Symbol, ir.RelationExpr] = field(default_factory=dict)
     _knowledge: list[Property] = field(default_factory=list)
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _declarations: list[Property] = field(default_factory=list)
@@ -166,6 +173,8 @@ class IrParser:
     _constraint_references: list[_ConstraintReference] = field(default_factory=list)
     # Constraints an ALTER TABLE ... NOT VALID added: rows already there were never checked.
     _unvalidated: set[int] = field(default_factory=set)
+    # The USING columns merged so far, for the qualifier of each one's binding.
+    _using_columns: int = 0
 
     @property
     def semantics(self) -> DialectSemantics:
@@ -558,7 +567,9 @@ class IrParser:
             return None
         query = unwrapped
         if isinstance(query, exp.SetOperation):
-            left, right = (self._lower_arm(arm) for arm in (query.this, query.expression))
+            left = self._lower_arm(query.this)
+            self._note_recursion_base(query, left)
+            right = self._lower_arm(query.expression)
             origin = self._origin(query)
             unpaired, construct = False, None
             if query.args.get("by_name"):
@@ -601,6 +612,16 @@ class IrParser:
         if not isinstance(query, exp.Select):
             return None
         return self._lower_select(query)
+
+    def _note_recursion_base(self, query: exp.SetOperation, base: ir.RelationExpr) -> None:
+        """`query` is the body of a CTE or view being resolved: its left input,
+        lowered, is the base case, which the recursive arm (lowered next) reads
+        by name. A `BY NAME` set operation pairs columns by name, not position."""
+        if query.args.get("by_name"):
+            return
+        for symbol in self._resolving:
+            if _unwrap_query(symbol.body) is query:
+                self._recursion_bases[symbol] = base
 
     def _lower_arm(self, arm: exp.Query) -> ir.RelationExpr:
         """One input of a set operation; one that is not a SELECT or set
@@ -751,7 +772,7 @@ class IrParser:
             lowered = self._lower_source(first)
             for join in joins:
                 lowered = self._lower_join(lowered, join)
-            return lowered if source.alias == "" else self._alias_join(lowered.relation, source)
+            return lowered if source.alias == "" else self._alias_join(lowered, source)
 
         if isinstance(source, exp.Subquery):
             relation = self._lower_query(source)
@@ -783,12 +804,13 @@ class IrParser:
         """A table function or UNNEST in FROM with known columns: rows nothing
         is known of (how many, or what they hold) under those columns, so
         no key, dependency or type of theirs, and no fact of the input a join
-        repeats it onto, is lost. The alias names the leading columns, or the
-        one column of a one-column function."""
+        repeats it onto, is lost. The alias's column list names the leading
+        columns; an alias alone names the one column of a function the dialect
+        says it names (`DialectSemantics.alias_named_table_functions`)."""
         origin = self._origin(source)
         name = _table_function_name(source, self.dialect)
         assert name is not None
-        names = _column_aliases(source) or ((source.alias,) if len(columns) == 1 and source.alias else ())
+        names = _column_aliases(source) or ((source.alias,) if name in self.semantics.alias_named_table_functions and source.alias else ())
         relation = ir.OpaqueRelation(
             origin=origin, is_schema_complete=True, description=source.sql(dialect=self.dialect),
             output_columns=tuple(
@@ -817,31 +839,27 @@ class IrParser:
                     return True
         return False
 
-    def _alias_join(self, join: ir.RelationExpr, source: Expr) -> _Lowered:
+    def _alias_join(self, lowered: _Lowered, source: Expr) -> _Lowered:
         """`(a JOIN b ...) AS x`: a relation of its own, which hides the names
-        of a and b and has each of their columns under its own name. A name
-        two columns share each dialect resolves differently (DuckDB renames
-        the second `x_1`, others reject reading it), so its columns are
-        opaque, the first one readable by that name; every name is, when a
-        source's columns are not all known."""
+        of a and b and has each of their columns under its own name, in the
+        order of a star over the join (a USING column once). Like any derived
+        table it names the first of a repeated name only (`_aliased_outputs`);
+        every name is opaque when a source's columns are not all known."""
         origin = self._origin(source)
-        counts = Counter(column.name.lower() for column in join.output_columns)
+        join = lowered.relation
+        star = [binding.column for binding in lowered.bindings if not binding.shadowed]
         relation = join
-        if not join.is_schema_complete or any(count > 1 for count in counts.values()):
+        if not join.is_schema_complete:
             outputs = tuple(
-                ir.OutputColumn(
-                    origin=origin, name=column.name,
-                    scalar_expr=ir.ColumnRef(origin=origin, column=column) if join.is_schema_complete and counts[column.name.lower()] == 1
-                    else ir.OpaqueExpression(origin=origin, description=f"{source.alias}.{column.name}"),
-                )
+                ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.OpaqueExpression(origin=origin, description=f"{source.alias}.{column.name}"))
                 for column in join.output_columns
             )
-            relation = ir.Project(origin=origin, output_columns=outputs, is_schema_complete=join.is_schema_complete, input=join)
-        lowered = self._alias(relation, source.alias, origin, column_aliases=_column_aliases(source))
-        bindings: dict[str, _Binding] = {}
-        for binding in lowered.bindings:
-            bindings.setdefault(binding.name, binding)
-        return _Lowered(lowered.relation, tuple(bindings.values()))
+            relation = ir.Project(origin=origin, output_columns=outputs, is_schema_complete=False, input=join)
+        elif len(star) != len(join.output_columns):
+            # A USING join: its columns are those a star selects.
+            outputs = tuple(ir.OutputColumn(origin=origin, name=column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column)) for column in star)
+            relation = ir.Project(origin=origin, output_columns=outputs, is_schema_complete=True, input=join)
+        return self._alias(relation, source.alias, origin, column_aliases=_column_aliases(source))
 
     def _lower_values(self, values: exp.Values) -> ir.ValuesList | None:
         """`(VALUES (...), ...) AS t (a, ...)`: rows of literals, stated as
@@ -963,6 +981,7 @@ class IrParser:
             body = self._lower_query(symbol.body) if symbol.body is not None else None
         finally:
             self._resolving.discard(symbol)
+            self._recursion_bases.pop(symbol, None)
         if body is None:
             body = self._opaque_relation(symbol.body or exp.Table(this=symbol.name), symbol.required_columns)
             written = symbol.body or (symbol.statement.args.get("expression") if symbol.statement is not None else None)
@@ -1064,29 +1083,62 @@ class IrParser:
 
     def _recursive_relation(self, symbol: _Symbol, source: Expr) -> ir.RecursiveRelation:
         origin = self._origin(source)
+        output_columns = self._opaque_output_columns(symbol.required_columns, origin)
         relation = ir.RecursiveRelation(
             origin=origin,
-            output_columns=self._opaque_output_columns(symbol.required_columns, origin),
+            output_columns=output_columns,
             is_schema_complete=False,
             description=source.sql(dialect=self.dialect),
             relation_name=symbol.name,
+            typed_by=self._recursion_types(symbol, source, output_columns),
         )
         self._unsupported.append((relation, "a recursive CTE or view"))
         return relation
 
+    def _recursion_types(
+        self, symbol: _Symbol, source: Expr, output_columns: tuple[ir.OutputColumn, ...]
+    ) -> tuple[ir.OutputColumn | None, ...]:
+        """For each column a recursive reference reads, the base case's column
+        it is typed by: the engine fixes a recursive CTE's column types from the
+        base case (DuckDB casts the recursive arm to them; Postgres rejects a
+        mismatch). The CTE's names are its column aliases, else the base
+        case's names, matched by name; none where the base case is not known
+        (the reference sits in the base case) or its columns are not all known
+        (positions, and so aliases, are a guess), where the reference renames
+        the columns itself, or where a name is written twice."""
+        base = self._recursion_bases.get(symbol)
+        if base is None or not base.is_schema_complete or _column_aliases(source):
+            return (None,) * len(output_columns)
+        names = [
+            symbol.column_aliases[index].lower() if index < len(symbol.column_aliases) else column.name.lower()
+            for index, column in enumerate(base.output_columns)
+        ]
+        return tuple(
+            base.output_columns[names.index(column.name.lower())] if names.count(column.name.lower()) == 1 else None
+            for column in output_columns
+        )
+
     def _aliased_outputs(self, source: ir.RelationExpr, origin: Origin, names: tuple[str, ...]) -> tuple[ir.OutputColumn, ...]:
+        """The columns of a derived table over `source`, named by `names`
+        (a column alias list) and then `source`'s own names. A name repeated
+        names its first column only: the engine renames the others (DuckDB:
+        `k`, `k_1`), so each has an internal name no reference writes
+        (`ir/names.py`)."""
         if names and not source.is_schema_complete:
             # Guessed source columns have no reliable positions.
-            return self._opaque_output_columns(names, origin)
+            return self._opaque_output_columns(derived_names(names), origin)
+        written = [names[index] if index < len(names) else column.name for index, column in enumerate(source.output_columns)]
         return tuple(
-            ir.OutputColumn(origin=origin, name=names[index] if index < len(names) else column.name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
-            for index, column in enumerate(source.output_columns)
+            ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.ColumnRef(origin=origin, column=column))
+            for name, column in zip(derived_names(written), source.output_columns)
         )
 
     def _alias(self, source: ir.RelationExpr, name: str, origin: Origin, schema: str = "", column_aliases: tuple[str, ...] = ()) -> _Lowered:
         output_columns = self._aliased_outputs(source, origin, column_aliases)
         alias = ir.Alias(origin=origin, output_columns=output_columns, is_schema_complete=source.is_schema_complete, source=source, name=name)
-        return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output, schema) for output in output_columns))
+        # A column alias list may replace an internal name, not the repeat it records.
+        repeated = repeated_names(column.name for column in source.output_columns) | repeated_names(column.name for column in output_columns)
+        return _Lowered(alias, tuple(_Binding(name.lower(), output.name.lower(), output, schema, repeated=repeated) for output in output_columns))
 
     def _lower_join(self, left: _Lowered, join: exp.Join) -> _Lowered:
         right = self._lower_source(join.this)
@@ -1136,42 +1188,62 @@ class IrParser:
         for a RIGHT JOIN, and `coalesce(left.k, right.k)` for a FULL JOIN,
         where either side may be padded. An unqualified `k` reads it, so a
         later `USING (k)` or `WHERE k = ...` sees one column; `a.k` and `b.k`
-        still read their own side."""
+        still read their own side.
+
+        The bindings are in the order a star over the join selects them (the
+        shadowed ones, which a star skips, stay for `a.k` and `a.*`): the
+        merged columns first in USING order, then the left input's columns,
+        then the right's (standard SQL); or each at its left column's place
+        where the dialect keeps it there (`using_column_stays_in_place`). A
+        USING name that is not one column of each input leaves the join's
+        columns unknown, as the engine's are then not these."""
         bindings = list(lowered.bindings)
-        merged: list[_Binding] = []
-        coalesced: list[tuple[str, ir.OutputColumn, ir.OutputColumn]] = []
+        merging: list[tuple[int, str, int]] = []
+        unmerged = False
         for identifier in join.args.get("using") or ():
             name = identifier.name.lower()
             sides = [
                 [index for index in (range(left_count) if left else range(left_count, len(bindings)))
-                 if bindings[index].name == name and not bindings[index].shadowed and not bindings[index].qualifier.startswith(_SCALAR_QUALIFIER)]
+                 if bindings[index].name == name and not bindings[index].shadowed and not bindings[index].qualifier.startswith(_SCALAR_QUALIFIER)
+                 and not may_be_renamed(bindings[index].repeated, name)]
                 for left in (True, False)
             ]
             if any(len(side) != 1 for side in sides):
-                continue  # Not one column on each side: leave the names as they are.
+                unmerged = True
+                continue
             (mine,), (theirs,) = sides
             for index in (mine, theirs):
                 bindings[index] = replace(bindings[index], shadowed=True)
-            if kind == "full":
-                coalesced.append((name, bindings[mine].column, bindings[theirs].column))
-            else:
-                column = bindings[theirs if kind == "right" else mine].column
-                merged.append(_Binding(_USING_QUALIFIER, name, column))
+            merging.append((mine, name, theirs))
         relation = lowered.relation
-        if coalesced:
+        values: tuple[ir.OutputColumn, ...] = ()
+        if (kind == "full" and merging) or (unmerged and relation.is_schema_complete):
             passed = _pass_output_columns(relation.output_columns, origin)
             remapped = dict(zip(relation.output_columns, passed))
-            values = tuple(
-                ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.Coalesce(origin=origin, arguments=(
-                    ir.ColumnRef(origin=origin, column=remapped[first]), ir.ColumnRef(origin=origin, column=remapped[second]),
-                )))
-                for name, first, second in coalesced
-            )
-            relation = ir.Project(origin=origin, output_columns=(*passed, *values), is_schema_complete=relation.is_schema_complete, input=relation)
             bindings = [replace(binding, column=remapped[binding.column]) for binding in bindings]
-            merged = [replace(binding, column=remapped[binding.column]) for binding in merged]
-            merged += [_Binding(_USING_QUALIFIER, name, value) for (name, _, _), value in zip(coalesced, values)]
-        return _Lowered(relation, (*bindings, *merged))
+            if kind == "full":
+                values = tuple(
+                    ir.OutputColumn(origin=origin, name=name, scalar_expr=ir.Coalesce(origin=origin, arguments=(
+                        ir.ColumnRef(origin=origin, column=bindings[mine].column), ir.ColumnRef(origin=origin, column=bindings[theirs].column),
+                    )))
+                    for mine, name, theirs in merging
+                )
+            relation = ir.Project(
+                origin=origin, output_columns=(*passed, *values), is_schema_complete=relation.is_schema_complete and not unmerged, input=relation,
+            )
+        merged: list[tuple[int, _Binding]] = []
+        for position, (mine, name, theirs) in enumerate(merging):
+            column = values[position] if kind == "full" else bindings[theirs if kind == "right" else mine].column
+            self._using_columns += 1
+            merged.append((mine, _Binding(f"{_USING_QUALIFIER}{self._using_columns}", name, column)))
+        if self.semantics.using_column_stays_in_place:
+            at = dict(merged)
+            ordered = []
+            for index, binding in enumerate(bindings):
+                ordered.extend((at[index], binding) if index in at else (binding,))
+        else:
+            ordered = [*(binding for _, binding in merged), *bindings]
+        return _Lowered(relation, tuple(ordered))
 
     def _opaque_join(self, left: _Lowered, right: _Lowered, join: exp.Join, origin: Origin) -> _Lowered:
         """A join whose kind is not modelled: every column it outputs is opaque,
@@ -1256,11 +1328,14 @@ class IrParser:
         """`items` with each star (`*`, `t.*`, with DuckDB's EXCLUDE, REPLACE
         and RENAME) as the columns it selects, when every input column is
         known (`_star_expansion`); and why a star stayed one item although
-        they are, which the caller reports. None for a modified star that
-        cannot be expanded: its columns are not those of the input, so the
-        select is opaque. A star in a GROUP BY select is left as it is."""
-        modified = any(any(star.args.values()) for item in items if (star := _projection_star(item)) is not None)
-        if modified and (self.dialect != "duckdb" or grouped or not lowered.relation.is_schema_complete):
+        they are, which the caller reports. Each star expands on its own: one
+        that cannot is an opaque item beside the others' columns. Not a
+        modified one: its modifiers cannot be honoured, so which names the
+        select outputs (an excluded or renamed column is no longer, or now, a
+        name another item may repeat) is unknown, and the select is opaque
+        (None). A star in a GROUP BY select is left as it is."""
+        stars = [star for item in items if (star := _projection_star(item)) is not None]
+        if any(any(star.args.values()) for star in stars) and (self.dialect != "duckdb" or grouped or not lowered.relation.is_schema_complete):
             return None
         if not lowered.relation.is_schema_complete:
             return items, None  # Connection Warnings say which columns are missing.
@@ -1275,18 +1350,16 @@ class IrParser:
             if columns is None:
                 expanded.append(item)
             elif isinstance(columns, str):
-                if modified:
+                assert star is not None
+                if any(star.args.values()):
                     return None
                 expanded.append(item)
                 unexpanded = unexpanded or columns
             else:
                 expanded.extend(columns[0])
                 renamed |= columns[1]
-        if renamed and (
-            any(not isinstance(item, exp.Alias | exp.Column) for item in expanded)
-            or len({item.alias_or_name.lower() for item in expanded}) != len(expanded)
-        ):
-            return None  # A downstream SELECT may see DuckDB's generated or deduplicated names.
+        if renamed and any(not isinstance(item, exp.Alias | exp.Column) for item in expanded):
+            return None  # A downstream SELECT may see DuckDB's generated names, which a renamed column may repeat.
         return expanded, unexpanded
 
     def _lower_select_tail(self, lowered: _Lowered, select: exp.Select) -> ir.RelationExpr:
@@ -1336,17 +1409,9 @@ class IrParser:
         else:
             if select.args.get("where") is not None:
                 lowered = self._filter(lowered, select.args["where"])
-            if _star_only(select):
+            if _star_only(select) and (not lowered.relation.is_schema_complete or not any(binding.shadowed for binding in lowered.bindings)):
                 relation = lowered.relation  # Exact whatever the columns are called.
-                if unexpanded != _USING_STAR:
-                    unexpanded = None
-                else:
-                    # The input's columns are a USING join's, not the star's: a new relation to carry the construct.
-                    origin = self._origin(select)
-                    relation = ir.Project(
-                        origin=origin, output_columns=_pass_output_columns(relation.output_columns, origin),
-                        is_schema_complete=relation.is_schema_complete, input=relation,
-                    )
+                unexpanded = None
             else:
                 lowered, _ = self._join_scalar_subqueries(lowered, items)
                 relation = self._project(lowered, items, self._origin(select))
@@ -1391,7 +1456,7 @@ class IrParser:
                         if binding.name == name and (binding.qualifier == expression.table.lower() if expression.table else not binding.shadowed)
                         and (not schema or binding.schema == schema)
                     ]
-                    if len(bound) == 1:
+                    if len(bound) == 1 and _renamed(bindings, expression.table.lower(), schema, name) is None:
                         key = _carrying(bound[0].column, scope)
                 case _:
                     pass
@@ -1496,10 +1561,14 @@ class IrParser:
             qualifier, schema = column.table.lower(), _schema_path(column)
             for scope, bindings in (("inner", inner.bindings), ("outer", outer.bindings)):
                 if any(binding.qualifier == qualifier and (not schema or binding.schema == schema) for binding in bindings):
+                    if self._reads_renamed(column, bindings, qualifier, schema, self._origin(column, _source_line(column))):
+                        return None
                     return one(scope, [
                         binding for binding in bindings
                         if binding.qualifier == qualifier and (not schema or binding.schema == schema) and binding.name == name
                     ])
+            return None
+        if self._reads_renamed(column, (*inner.bindings, *outer.bindings), "", "", self._origin(column, _source_line(column))):
             return None
         inner_named = [binding for binding in inner.bindings if binding.name == name and not binding.shadowed and self._owns(binding) != "no"]
         outer_named = [binding for binding in outer.bindings if binding.name == name and not binding.shadowed and self._owns(binding) != "no"]
@@ -1948,18 +2017,22 @@ class IrParser:
     def _lower_qualify(
         self, lowered: _Lowered, select: exp.Select, items: list[Expr], qualify: exp.Qualify,
     ) -> ir.RelationExpr | None:
-        """A non-grouped, non-DISTINCT select with a QUALIFY: `row_number() OVER
-        (PARTITION BY k...) = 1` keeps one row per partition (`_one_row_per_partition`),
-        any other QUALIFY drops rows for a reason not known. None for a select
-        that aggregates without a GROUP BY, which no projection stands for."""
+        """A non-grouped, non-DISTINCT select with a QUALIFY: a conjunct
+        `row_number() OVER (PARTITION BY k...) = 1` keeps at most one row per
+        partition (`_one_row_per_partition`), any other QUALIFY drops rows for
+        a reason not known. None for a select that aggregates without a GROUP
+        BY, which no projection stands for."""
         if select.args.get("having") is not None or _only_star(items) or _aggregates(select):
             return None
-        window = _row_number_equals_one(qualify.this)
+        found = _row_number_equals_one(qualify.this)
+        window, others = found if found is not None else (None, [])
         order = window.args.get("order") if window is not None else None
-        return self._one_row_per_partition(
+        relation = self._one_row_per_partition(
             lowered, select, items, None if window is None else window.args.get("partition_by") or (),
-            order.expressions if order else (), qualify, qualify.this,
+            order.expressions if order else (), qualify, qualify.this, rest=exp.and_(*others) if others else None,
         )
+        self._note_constant_partition(relation, qualify, select)
+        return relation
 
     def _qualified(
         self, relation: ir.RelationExpr | None, select: exp.Select, items: list[Expr], *, grouped: bool,
@@ -1972,17 +2045,28 @@ class IrParser:
         qualify = select.args.get("qualify")
         if relation is None or not isinstance(qualify, exp.Qualify):
             return relation
-        window = _row_number_equals_one(qualify.this)
-        if window is not None and grouped:  # Not over DISTINCT: its window sees the rows before it.
+        found = _row_number_equals_one(qualify.this)
+        if found is not None and grouped:  # Not over DISTINCT: its window sees the rows before it.
+            window, others = found
             plan = self._partition_plan(window.args.get("partition_by") or (), items, grouped=True)
             if plan is not None and all(isinstance(key, int) for key in plan) and len(relation.output_columns) == len(items):
                 origin = self._origin(qualify)
                 output_columns = _pass_output_columns(relation.output_columns, origin)
-                return ir.QualifyByPartition(
+                kept = ir.QualifyByPartition(
                     origin=origin, output_columns=output_columns, is_schema_complete=True, input=relation,
                     partition_outputs=tuple(output_columns[key] for key in plan if isinstance(key, int)),
                 )
-        return self._row_subset(relation, qualify, qualify.this)
+                return kept if not others else self._row_subset(kept, qualify, exp.and_(*others))
+        subset = self._row_subset(relation, qualify, qualify.this)
+        self._note_constant_partition(subset, qualify, select)
+        return subset
+
+    def _note_constant_partition(self, relation: ir.RelationExpr, qualify: exp.Qualify, select: exp.Select) -> None:
+        """Records `relation`, the select after its QUALIFY, as not modelled
+        when a window of the QUALIFY partitions by a constant: its one
+        partition is read as an unknown row subset (`_partition_plan`)."""
+        if _constant_partition_keys(qualify, select):
+            self._unsupported.append((relation, _CONSTANT_PARTITION))
 
     def _row_subset(self, relation: ir.RelationExpr, clause: Expr, dropping: Expr) -> ir.Filter:
         """`relation` after `clause` dropped rows of it for a reason not
@@ -2013,7 +2097,7 @@ class IrParser:
 
     def _one_row_per_partition(
         self, lowered: _Lowered, select: exp.Select, items: list[Expr], partitions: Sequence[Expr] | None,
-        order: Sequence[exp.Ordered], clause: Expr, dropping: Expr,
+        order: Sequence[exp.Ordered], clause: Expr, dropping: Expr, rest: Expr | None = None,
     ) -> ir.RelationExpr:
         """The projection of `items` over `lowered`, keeping one row per
         distinct value of the key expressions `partitions` (none: one row in
@@ -2022,7 +2106,10 @@ class IrParser:
         (`_lower_aggregate`): a selected set of columns that determines every
         key still has one row per value. `partitions` None, or a key that
         cannot be read as one input expression (`_partition_plan`), is any
-        other clause: a row subset, `dropping` as written."""
+        other clause: a row subset, `dropping` as written. `rest`, the other
+        conjuncts of a QUALIFY beside the one that keeps one row per
+        partition, drop rows after it (a QUALIFY evaluates its whole
+        predicate on the windowed rows): an opaque Filter follows."""
         if select.args.get("where") is not None:
             lowered = self._filter(lowered, select.args["where"])
         origin = self._origin(select)
@@ -2046,12 +2133,11 @@ class IrParser:
             origin=origin, output_columns=output_columns, is_schema_complete=True, input=lowered.relation,
             partition_outputs=partition_outputs, ordering=ordering,
         )
-        if not hidden:
-            return qualified
-        return ir.Project(
+        kept: ir.RelationExpr = qualified if not hidden else ir.Project(
             origin=origin, output_columns=_pass_output_columns(output_columns[:len(items)], origin),
             is_schema_complete=True, input=qualified,
         )
+        return kept if rest is None else self._row_subset(kept, clause, rest)
 
     def _partition_plan(self, partitions: Sequence[Expr], items: list[Expr], *, grouped: bool = False) -> list[int | Expr] | None:
         """Each partition key as the position of the select item it is written
@@ -2336,6 +2422,23 @@ class IrParser:
                 keyed.add(alias)
         return lambda column: column in grouping or occurrence(column)[0] in keyed
 
+    def _reads_renamed(self, column: exp.Column, bindings: Iterable[_Binding], qualifier: str, schema: str, origin: Origin) -> bool:
+        """Whether `column` may name a column the engine renamed, one of a
+        derived table that repeats a name (`_renamed`): it then binds nothing,
+        and warns, since which column it is depends on the engine."""
+        found = None if column.meta.get("star") else _renamed(bindings, qualifier, schema, column.name.lower())
+        if found is None:
+            return False  # A star's expansion names each column by exactly its own binding.
+        table, repeated = found
+        self._warnings.append(Diagnostic(
+            diag.AMBIGUOUS_DUPLICATE_COLUMN,
+            f"column {quoted(column.name)} may be one the engine renamed: {table} outputs the name {quoted(repeated)} more than once, "
+            f"and DuckDB names the repeats {quoted(repeated + '_1')}, {quoted(repeated + '_2')}, ... (another engine rejects them or names them otherwise), "
+            "so which column it reads depends on the engine: give the repeated columns distinct aliases",
+            origin if origin.line is not None else replace(origin, line=_source_line(column)),
+        ))
+        return True
+
     def _lower_expression(
         self, expression: Expr, bindings: tuple[_Binding, ...], *, schema_complete: bool = False, line: int | None = None
     ) -> ir.ScalarExpr:
@@ -2377,10 +2480,14 @@ class IrParser:
                     binding for binding in bindings
                     if binding.qualifier == expression.table.lower() and binding.name == expression.name.lower() and (not schema or binding.schema == schema)
                 ]
+                if self._reads_renamed(expression, bindings, expression.table.lower(), schema, origin):
+                    matches = []
             elif schema_complete or len({
                 binding.qualifier for binding in bindings if not binding.qualifier.startswith((_SCALAR_QUALIFIER, _USING_QUALIFIER))
             }) == 1:
                 matches = [binding for binding in bindings if binding.name == expression.name.lower() and not binding.shadowed]
+                if self._reads_renamed(expression, bindings, "", "", origin):
+                    matches = []
             else:
                 matches = []
                 sources = ", ".join(dict.fromkeys(binding.qualifier for binding in bindings))
@@ -2725,12 +2832,14 @@ class IrParser:
 
     def _register_column_markers(self, relation: ir.RelationExpr, select: exp.Query) -> None:
         by_name = {output.name.lower(): output for output in relation.output_columns}
-        ambiguous = {name for name, count in Counter(output.name.lower() for output in relation.output_columns).items() if count > 1}
+        # A name the output repeats (a star over a derived table that does: its repeats have internal names) is ambiguous.
+        repeated = repeated_names(output.name for output in relation.output_columns)
         for marker in column_markers(select):
             kind, columns, line = marker.kind, marker.columns, marker.span.line
             self._handled_column_markers.add(id(marker))
             origin = Origin.marked(select.sql(dialect=self.dialect), marker.span)
-            duplicates = [column for column in (*columns, *marker.dependent) if column.lower() in ambiguous]
+            # So is a name an engine may give a repeat (`k_1` beside two `k`).
+            duplicates = [column for column in (*columns, *marker.dependent) if column.lower() in repeated or may_be_renamed(repeated, column)]
             if duplicates:
                 self._diagnostics.append(Diagnostic(
                     diag.UNRESOLVED_ASSERTED_COLUMN, f"output names {quoted_all(duplicates)} are ambiguous; use distinct aliases", origin,
@@ -2884,7 +2993,8 @@ class IrParser:
 
     def _columns_named(self, relation: ir.RelationExpr, names: Iterable[str]) -> tuple[ir.OutputColumn, ...] | None:
         by_name = {column.name.lower(): column for column in relation.output_columns}
-        columns = [by_name.get(name.lower()) for name in names]
+        repeated = repeated_names(column.name for column in relation.output_columns)
+        columns = [None if may_be_renamed(repeated, name) else by_name.get(name.lower()) for name in names]
         found = tuple(column for column in columns if column is not None)
         return found if len(found) == len(columns) else None
 
@@ -3093,7 +3203,8 @@ class IrParser:
         return None
 
     def _origin(self, node: Expr, line: int | None = None) -> Origin:
-        return Origin(SQL, written_sql(node, self.dialect), line)
+        # A star's expansion names a merged USING column by a qualifier no SQL can write (`_merge_using`).
+        return Origin(SQL, written_sql(node, self.dialect).replace(_USING_QUALIFIER, "using"), line)
 
 
 def _pass_output_columns(inputs: tuple[ir.OutputColumn, ...], origin: Origin) -> tuple[ir.OutputColumn, ...]:
@@ -3529,6 +3640,8 @@ def _unsupported_grouping(select: exp.Select) -> str | None:
     group = select.args.get("group")
     if group is None:
         return None
+    if group.args.get("all") and any(_projection_star(item) is not None or item.find(exp.Subquery) for item in select.expressions):
+        return "GROUP BY ALL"  # Its keys are the items, which a star or a subquery leaves unknown.
     for key, name in (("grouping_sets", "GROUPING SETS"), ("rollup", "ROLLUP"), ("cube", "CUBE"), ("totals", "WITH TOTALS")):
         if group.args.get(key):
             return name
@@ -3687,9 +3800,9 @@ HIDDEN_AGGREGATE = "\0aggregate"
 # A USING column's merged binding (`_merge_using`): no qualifier can name it.
 _USING_QUALIFIER = "\0using"
 # The constructs a star that stays one select item is reported as.
-_USING_STAR = "a star over a USING join"
 _UNNAMEABLE_STAR = "a star whose columns cannot each be named unambiguously"
 _GROUPED_STAR = "a star in a GROUP BY select"
+_CONSTANT_PARTITION = "a constant PARTITION BY key"
 
 # A scalar subquery's value binding: no SQL name can match it.
 _SCALAR_QUALIFIER = "\0scalar"
@@ -3787,16 +3900,19 @@ def _star_expansion(item: Expr, star: exp.Star, lowered: _Lowered) -> tuple[list
 
     Each item names its column by qualifier, schema and name, and no other
     column of the input may answer to that (two sources may share a column
-    name, an unaliased table is named with its schema, a derived table with
-    two columns of one name has one binding): the lowering of the item
-    resolves by exactly those parts. Modifiers (DuckDB's) act on the star's
-    own columns, each named by exactly one of them."""
+    name, an unaliased table is named with its schema): the lowering of the
+    item resolves by exactly those parts. A derived table's repeat has an
+    internal name (`ir/names.py`), which the item keeps, so that the next
+    relation carries the repeat on. Modifiers (DuckDB's) act on the star's own
+    columns, each named by exactly one of them, never by a name an engine may
+    have given a repeat."""
     bindings = lowered.bindings
     if isinstance(item, exp.Column):
+        # `a.*` selects all of a's columns, a USING column's own side included.
         schema = _schema_path(item)
         bindings = tuple(b for b in bindings if b.qualifier == item.table.lower() and (not schema or b.schema == schema))
-    elif any(b.shadowed for b in bindings):
-        return _USING_STAR  # USING merges names and changes the star's output order, by dialect.
+    else:
+        bindings = tuple(b for b in bindings if not b.shadowed)  # A USING column once, where `_merge_using` put it.
     covered = {b.column for b in lowered.bindings}
     if (
         not bindings or any(b.name == "*" for b in bindings) or not all(column in covered for column in lowered.relation.output_columns)
@@ -3805,6 +3921,8 @@ def _star_expansion(item: Expr, star: exp.Star, lowered: _Lowered) -> tuple[list
         return _UNNAMEABLE_STAR
 
     def find(name: str, qualifier: str = "", schema: str = "") -> int | None:
+        if _renamed(bindings, qualifier, schema, name) is not None:
+            return None  # May be a name the engine gave a repeated column.
         found = [index for index, b in enumerate(bindings) if _named((b,), qualifier or b.qualifier, name, schema)]
         return found[0] if len(found) == 1 else None
 
@@ -3840,6 +3958,21 @@ def _star_expansion(item: Expr, star: exp.Star, lowered: _Lowered) -> tuple[list
 def _named(bindings: Iterable[_Binding], qualifier: str, name: str, schema: str) -> list[_Binding]:
     """The bindings a column written `schema.qualifier.name` reads."""
     return [b for b in bindings if b.qualifier == qualifier and b.name == name and (not schema or b.schema == schema)]
+
+
+def _renamed(bindings: Iterable[_Binding], qualifier: str, schema: str, name: str) -> tuple[str, str] | None:
+    """The derived table's qualifier and the repeated name that `name` may
+    be a rename of, when a column written `schema.qualifier.name` (no
+    qualifier: of any source) is of the form `<repeated>_<digits>`, in a
+    derived table that repeats the name: which column it reads is then the
+    engine's (`ir/names.py`)."""
+    for binding in bindings:
+        if qualifier and (binding.qualifier != qualifier or (schema and binding.schema != schema)):
+            continue
+        base = next((base for base in sorted(binding.repeated) if may_be_renamed((base,), name)), None)
+        if base is not None:
+            return binding.qualifier, base
+    return None
 
 
 def _star_only(select: exp.Select) -> bool:
@@ -4000,7 +4133,21 @@ def _reads_ungrouped_column(lowered: ir.ScalarExpr, determined: Callable[[ir.Out
     return False
 
 
-def _row_number_equals_one(predicate: Expr) -> exp.Window | None:
+def _row_number_equals_one(predicate: Expr) -> tuple[exp.Window, list[Expr]] | None:
+    """The first conjunct of a QUALIFY's `predicate` that is `row_number() OVER
+    (...) = 1`, with the other conjuncts. Every conjunct is evaluated on the
+    windowed rows and the other conjuncts only drop rows, so the rows kept are
+    at most the one per partition that conjunct leaves. A second such conjunct
+    over another partition is one of the others: it too bounds the rows, but
+    only the first is read as a Unique Set."""
+    conjuncts = _filter_conjuncts(predicate)
+    for index, conjunct in enumerate(conjuncts):
+        if (window := _row_number_is_one(conjunct)) is not None:
+            return window, conjuncts[:index] + conjuncts[index + 1:]
+    return None
+
+
+def _row_number_is_one(predicate: Expr) -> exp.Window | None:
     if not isinstance(predicate, exp.EQ):
         return None
     left, right = predicate.this, predicate.expression
@@ -4011,6 +4158,15 @@ def _row_number_equals_one(predicate: Expr) -> exp.Window | None:
     if not isinstance(literal, exp.Literal) or literal.is_string or literal.this != "1":
         return None
     return window
+
+
+def _constant_partition_keys(qualify: exp.Qualify, select: exp.Select) -> list[Expr]:
+    """The literals among the PARTITION BY keys of the windows of `select`'s
+    QUALIFY (not those of a subquery in it): a constant is one partition."""
+    return [
+        key for window in qualify.find_all(exp.Window) if window.find_ancestor(exp.Select) is select
+        for key in window.args.get("partition_by") or () if isinstance(key.unnest(), exp.Literal | exp.Boolean | exp.Null)
+    ]
 
 
 def _row_number_window(expression: Expr) -> exp.Window | None:

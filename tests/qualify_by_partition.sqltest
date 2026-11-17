@@ -171,13 +171,21 @@ FROM t
 QUALIFY ROW_NUMBER() OVER (PARTITION BY random() ORDER BY ts) = 1
 /**ASSERT UNIQUE(r)**/  --~ UNKNOWN
 
--- A numeric literal key is no column; it names no partition of the output.
+-- A literal key is no column; it names no partition of the output. It is one
+-- partition, which is odd enough to be recorded (and a Hazard: tests/test_hazards.py).
 -- case: a_literal_partition_key_is_not_a_column
 CREATE TABLE t (k INTEGER, v INTEGER);
 SELECT v, k
 FROM t
 QUALIFY ROW_NUMBER() OVER (PARTITION BY 1 ORDER BY k) = 1
-/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN, unsupported-construct "a constant PARTITION BY key"
+
+-- case: a_string_literal_partition_key_is_recorded_too
+CREATE TABLE t (k INTEGER, v INTEGER);
+SELECT v, k
+FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY 'a', k ORDER BY v) = 1
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN, unsupported-construct "a constant PARTITION BY key"
 
 -- Any other QUALIFY drops rows: a row subset keeps its columns' facts.
 -- case: a_qualify_that_is_not_one_row_per_partition_keeps_the_rows_facts
@@ -218,6 +226,82 @@ FROM f
 /**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
     SELECT k, v FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY v DESC) = 1
 ) AS s ON s.k = f.k
+
+-- A QUALIFY is evaluated on the windowed rows, and its other conjuncts only
+-- drop rows: `row_number() = 1 AND p` keeps at most one row per partition.
+-- case: qualify_row_number_with_other_conjuncts_keeps_at_most_one_row_per_partition
+CREATE TABLE t (k INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) = 1 AND v > 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- case: qualify_row_number_after_another_conjunct_keeps_one_row_per_partition
+CREATE TABLE t (k INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v FROM t
+QUALIFY v > 1 AND ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: qualify_row_number_in_parentheses_beside_other_conjuncts_keeps_one_row_per_partition
+CREATE TABLE t (k INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v FROM t
+QUALIFY (ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) = 1) AND v > 1 AND ts IS NOT NULL
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: qualify_row_number_without_partition_by_beside_other_conjuncts_keeps_at_most_one_row
+CREATE TABLE t (k INTEGER, v INTEGER);
+CREATE TABLE f (k INTEGER, g INTEGER);
+SELECT f.g
+FROM f
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT k, v FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY v DESC) = 1 AND k > 1
+) AS s ON s.v = f.k
+
+-- An OR keeps rows the row number drops; so does a row number that is not one.
+-- case: qualify_row_number_in_an_or_is_no_unique_set
+CREATE TABLE t (k INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) = 1 OR v > 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: qualify_row_number_up_to_one_beside_other_conjuncts_is_no_unique_set
+CREATE TABLE t (k INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) <= 1 AND v > 1
+/**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- The other conjuncts drop rows after the partition keeps one: a join onto
+-- it is many to one, and no longer covers every key.
+-- case: qualify_row_number_with_other_conjuncts_may_miss_a_key
+CREATE TABLE dept (deptno INTEGER PRIMARY KEY, ts INTEGER);
+CREATE TABLE emp (empno INTEGER PRIMARY KEY, deptno INTEGER NOT NULL REFERENCES dept (deptno));
+SELECT e.empno
+FROM emp AS e
+/**ASSERT MANY TO ONE**/ JOIN (  --~ PROVED
+    SELECT deptno FROM dept QUALIFY ROW_NUMBER() OVER (PARTITION BY deptno ORDER BY ts) = 1 AND ts > 5
+) AS d ON e.deptno = d.deptno
+/**ASSERT EXACTLY ONE**/ JOIN (  --~ UNKNOWN
+    SELECT deptno FROM dept QUALIFY ROW_NUMBER() OVER (PARTITION BY deptno ORDER BY ts) = 1 AND ts > 5
+) AS d2 ON e.deptno = d2.deptno
+
+-- Two row numbers of different partitions: only the first is a Unique Set
+-- (the second is one of the other conjuncts, an opaque row subset).
+-- case: qualify_with_two_row_numbers_reads_the_first
+CREATE TABLE t (k INTEGER, v INTEGER, ts INTEGER);
+SELECT k, v FROM t
+QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY ts) = 1 AND ROW_NUMBER() OVER (PARTITION BY v ORDER BY ts) = 1
+/**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT UNIQUE(v)**/  --~ UNKNOWN
+
+-- Over groups the same: the HAVING-like conjunct only drops groups.
+-- case: qualify_over_groups_with_other_conjuncts_keeps_one_row_per_partition
+CREATE TABLE emp (empno INTEGER PRIMARY KEY, deptno INTEGER, job VARCHAR);
+SELECT deptno, job, count(*) AS n
+FROM emp
+GROUP BY deptno, job
+QUALIFY row_number() OVER (PARTITION BY job ORDER BY count(*) DESC) = 1 AND n > 1
+/**ASSERT UNIQUE(job)**/  --~ PROVED
+/**ASSERT UNIQUE(n)**/  --~ UNKNOWN
 
 -- A named window may partition: it says nothing of the row count.
 -- case: qualify_row_number_over_a_named_window_may_partition

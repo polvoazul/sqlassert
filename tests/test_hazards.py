@@ -470,3 +470,136 @@ def test_a_trap_under_having_is_still_a_hazard():
 def test_an_aggregate_only_having_writes_is_checked_for_traps_too():
     # count(*) counts the many-to-many join's rows, which decides the groups kept.
     assert concerns(FAN + " HAVING count(*) > 0") == [Concern.FAN_TRAP, Concern.FAN_TRAP]
+
+
+# Strange constructs ---------------------------------------------------------------
+
+STRANGE = """
+CREATE TABLE s (k INTEGER PRIMARY KEY, x INTEGER, y INTEGER);
+CREATE TABLE pair (a INTEGER, b INTEGER);
+"""
+STRANGE_CONCERNS = (Concern.STAR_IN_GROUPING, Concern.QUALIFY_BESIDE_AGGREGATE, Concern.CONSTANT_PARTITION)
+
+
+def strange(sql: str) -> list[Concern]:
+    """The strange-construct hazards of `sql`, and the unselected-grouping ones, which a star must not add."""
+    return [
+        hazard.concern for hazard in suggest(STRANGE + sql).hazards
+        if hazard.concern in (*STRANGE_CONCERNS, Concern.UNSELECTED_GROUPING)
+    ]
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT *, count(*) AS n FROM s GROUP BY k",
+    "SELECT s.*, count(*) AS n FROM s GROUP BY k",
+    "SELECT * FROM s GROUP BY k",
+    "SELECT * FROM pair GROUP BY a",
+    "SELECT * EXCLUDE (b) FROM pair GROUP BY a, b",  # A modified star is not read as all keys.
+    "SELECT * FROM unknown_table GROUP BY a",  # Its columns are unknown.
+    "SELECT * FROM (SELECT *, count(*) AS n FROM s GROUP BY k) AS g",
+])
+def test_a_star_in_a_group_by_select_is_a_hazard(sql: str):
+    assert strange(sql) == [Concern.STAR_IN_GROUPING]
+
+
+def test_a_star_in_a_group_by_select_says_what_is_odd_and_how_to_write_it():
+    [hazard] = [h for h in suggest(STRANGE + "SELECT *, count(*) AS n FROM s GROUP BY k").hazards]
+    assert hazard.concern is Concern.STAR_IN_GROUPING and hazard.site.label == "Root Select"
+    assert hazard.message == (
+        "SELECT * with GROUP BY selects every column, and the SQL standard rejects any that is neither grouped nor aggregated. "
+        "This is probably a mistake: list the grouped columns and the aggregates instead of the star"
+    )
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM pair GROUP BY a, b",  # Every column is a key: standard SQL.
+    "SELECT * FROM pair WHERE a > 0 GROUP BY a, b",
+    "SELECT k, count(*) AS n FROM s GROUP BY k",
+    "SELECT *, count(*) OVER () AS n FROM s",  # A star with no GROUP BY.
+    "SELECT * FROM s",
+    # DuckDB's GROUP BY ALL groups by every item that is not an aggregate: a different construct.
+    "SELECT x, count(*) AS n FROM s GROUP BY ALL",
+    "SELECT *, count(*) AS n FROM s GROUP BY ALL",
+])
+def test_a_star_with_every_column_grouped_or_no_star_in_group_by_is_not_a_hazard(sql: str):
+    assert strange(sql) == []
+
+
+def test_duckdb_rejects_a_star_beside_group_by_even_when_a_key_determines_the_rest():
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE s (k INTEGER PRIMARY KEY, x INTEGER); INSERT INTO s VALUES (1, 1)")
+    with pytest.raises(duckdb.BinderException):
+        connection.execute("SELECT *, count(*) FROM s GROUP BY k")
+    assert connection.execute("SELECT * FROM s GROUP BY k, x").fetchall() == [(1, 1)]
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT count(*) AS n FROM s QUALIFY row_number() OVER () = 1",
+    "SELECT max(x) AS m FROM s QUALIFY row_number() OVER (ORDER BY max(x)) = 1",
+    "SELECT count(*) AS n, 1 AS one FROM s QUALIFY n > 0",
+    "SELECT * FROM (SELECT count(*) AS n FROM s QUALIFY row_number() OVER () = 1) AS c",
+])
+def test_a_qualify_beside_an_aggregate_without_group_by_is_a_hazard(sql: str):
+    assert strange(sql) == [Concern.QUALIFY_BESIDE_AGGREGATE]
+
+
+def test_a_qualify_beside_an_aggregate_says_what_is_odd_and_how_to_write_it():
+    [hazard] = suggest(STRANGE + "SELECT count(*) AS n FROM s QUALIFY row_number() OVER () = 1").hazards
+    assert hazard.concern is Concern.QUALIFY_BESIDE_AGGREGATE
+    assert hazard.message == (
+        "QUALIFY beside an aggregate without GROUP BY filters the one row the aggregate returns, keeping it or dropping it. "
+        "This is probably a mistake: filter it with HAVING, or GROUP BY a key to rank the groups"
+    )
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT x, count(*) AS n FROM s GROUP BY x QUALIFY row_number() OVER (ORDER BY count(*)) = 1",
+    "SELECT x, y FROM s QUALIFY row_number() OVER (PARTITION BY x ORDER BY y) = 1",
+    "SELECT x, sum(y) OVER () AS total FROM s QUALIFY total > 1",  # A window aggregate is no aggregate of the select.
+    "SELECT count(*) AS n FROM s HAVING count(*) > 1",
+])
+def test_a_qualify_with_group_by_or_no_aggregate_is_not_a_hazard(sql: str):
+    assert strange(sql) == []
+
+
+def test_duckdb_runs_a_qualify_beside_an_aggregate_on_its_one_row():
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE s (x INTEGER); INSERT INTO s VALUES (1), (2)")
+    assert connection.execute("SELECT count(*) AS n FROM s QUALIFY row_number() OVER () = 1").fetchall() == [(2,)]
+    assert connection.execute("SELECT count(*) AS n FROM s QUALIFY row_number() OVER () = 2").fetchall() == []
+
+
+@pytest.mark.parametrize(("sql", "key"), [
+    ("SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY 1 ORDER BY x) = 1", "1"),
+    ("SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY 'a' ORDER BY x) = 1", "'a'"),
+    ("SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY (1), x ORDER BY y) = 1", "(1)"),
+    ("SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x, TRUE ORDER BY y) = 1 AND y > 0", "TRUE"),
+    ("SELECT x, y FROM s QUALIFY rank() OVER (PARTITION BY 0 ORDER BY y) = 1", "0"),
+    ("SELECT x FROM s WHERE x IN (SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY 1) = 1)", "1"),
+])
+def test_a_constant_partition_key_in_a_qualify_is_a_hazard(sql: str, key: str):
+    [hazard] = suggest(STRANGE + sql).hazards
+    assert hazard.concern is Concern.CONSTANT_PARTITION
+    assert hazard.message == (
+        f"PARTITION BY {key} is a constant, so every row is in one partition and the window partitions nothing. "
+        "This is probably a mistake: partition by a column, or drop PARTITION BY"
+    )
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x ORDER BY y) = 1",
+    "SELECT x FROM s QUALIFY row_number() OVER (ORDER BY y) = 1",  # No partition: written plainly.
+    "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x + 1 ORDER BY y) = 1",
+    "SELECT x, count(*) AS n FROM s GROUP BY x QUALIFY row_number() OVER (PARTITION BY x ORDER BY n) = 1",
+    # A literal in the ORDER BY, or a window outside a QUALIFY, is not read as a partition key.
+    "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x ORDER BY 1) = 1",
+    "SELECT x, row_number() OVER (PARTITION BY 1 ORDER BY y) AS rn FROM s",
+])
+def test_a_partition_by_a_column_or_none_is_not_a_hazard(sql: str):
+    assert strange(sql) == []
+
+
+def test_duckdb_reads_a_constant_partition_as_one_partition():
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE s (x INTEGER); INSERT INTO s VALUES (1), (2), (3)")
+    assert connection.execute("SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY 1 ORDER BY x) = 1").fetchall() == [(1,)]
