@@ -23,7 +23,13 @@ is proved through it, and a marker inside it is reported
 - [ ] **Recursive CTEs and views** are `RecursiveRelation` (opaque): a
   recursive relation is a genuine fixpoint, which the memoized engine and its
   strata cannot compute.
-- [ ] **`LATERAL` and `UNNEST` sources** are opaque.
+- [ ] **`LATERAL` subqueries** are opaque:
+  `t LEFT JOIN LATERAL (SELECT * FROM u WHERE u.t_id = t.id ORDER BY ts DESC
+  LIMIT 1) AS l ON true`. Lowered as a correlated join it would always be a
+  One To Many Join (each of its rows comes from one left row, like a table
+  function that reads the left input, `Join.lateral`), and also Many To One
+  when its body ends in `LIMIT 1`. Table functions and `UNNEST` whose columns
+  the dialect fixes are modelled since 2026-11-16.
 - [ ] **Column lineage** and per-column unique status as a first-class output.
 - [ ] **`ALTER TABLE ... ADD COLUMN`** is `unsupported-statement`: only
   migration-style programs use it, and the statement's diagnostic already

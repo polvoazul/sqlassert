@@ -26,6 +26,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [69. Real-world SQL corpora, run through the oracle as they are](0069-real-world-sql-corpora.md) — open (P3, deferred: DuckDB logic tests, TPC-H/TPC-DS, public dbt projects, VeriEQL's LeetCode pairs; unblocks 11 and 27 Part 2)
 - [70. Hidden Join Fanout: decide whether many-to-many joins should be a Hazard by default](0070-decide-whether-to-warn-on-hidden-join-fanout-by-default.md) — open (P2, blocked by M11)
 - [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
+- [73. Pending lowering and classification decisions](0073-pending-lowering-and-classification-decisions.md) — open (P3, needs decisions: QUALIFY and windows, VALUES, computed types, table functions, set operations, join keys, Unproved Join Reason)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse, Trino certified; Spark 4.3 partly: CAST and zoned-timestamp probes left)
 
 ## Order
@@ -42,12 +43,14 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
   unchanged), which unblocks #11
   and #27 Part 2.
 - **P3:** #39 (smaller lowering gaps).
+- **P3, needs decisions:** #73 (pending lowering and classification
+  decisions, each with alternatives).
 - **P3, provisional (not prioritized yet):** #60-67.
 - **Integrations:** #44 (v1: `check` CLI, dialects, dbt) is done; the rest of
   #43 is backlog.
 - **P4, not planned:** #42 (lowering support v2): window functions (and
   #33's CTE part, which needs them), recursive CTEs, column lineage, LATERAL
-  and UNNEST, ADD COLUMN, scalar subqueries in grouped select lists and in ON.
+  subqueries, ADD COLUMN, scalar subqueries in grouped select lists and in ON.
 - **P4, not planned:** #59 (UDFs and UDTFs in Postgres, Spark and Hive: a
   SETOF function or a UDTF in a select list repeats rows; IMMUTABLE and STRICT
   facts; from CREATE FUNCTION and the catalog).
