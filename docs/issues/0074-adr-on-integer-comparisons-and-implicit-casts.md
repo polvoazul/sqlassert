@@ -6,6 +6,13 @@
 - **Created:** 2026-11-16
 - **Related:** [73: pending lowering and classification decisions](0073-pending-lowering-and-classification-decisions.md), [46: certify dialect facts](0046-certify-dialect-facts.md)
 
+**Decided:** [ADR 0007](../adr/0007-exact-comparisons-assume-values-in-range.md)
+(values stay in range, overflow not modelled; exact numbers of any width or
+scale compare exactly; any float or implicit text-to-number conversion is a
+Hazard; string literals beside dates are fine; literal types certified with
+each engine's type function). Remaining: align the code and
+`docs/dialects.md`, add the literal type probes.
+
 `sqlassert/rules/value_typing.py` types every scalar expression
 (`scalar_typing`) and answers one question for every equality
 (`exact_comparison`): do the two sides compare without a lossy coercion? Join
