@@ -27,6 +27,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [70. Hidden Join Fanout: decide whether many-to-many joins should be a Hazard by default](0070-decide-whether-to-warn-on-hidden-join-fanout-by-default.md) — open (P2, blocked by M11)
 - [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
 - [73. Pending lowering and classification decisions](0073-pending-lowering-and-classification-decisions.md) — open (P3, needs decisions: QUALIFY and windows, VALUES, computed types, table functions, set operations, join keys, Unproved Join Reason)
+- [74. ADR: when an equality compares exactly (integer arithmetic and implicit casts)](0074-adr-on-integer-comparisons-and-implicit-casts.md) — open (P2, needs an ADR)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse, Trino certified; Spark 4.3 partly: CAST and zoned-timestamp probes left)
 
 ## Order
@@ -38,6 +39,8 @@ Priorities (each issue's **Priority** bullet, `P<n> (<status>): <why>`, holds th
 reasoning; its **Theme** and **Blocked by** bullets place it on the local tracker):
 
 - **P1:** none open. #41 and #38 are done.
+- **P2, needs an ADR:** #74 (when an equality compares exactly: integer
+  arithmetic per dialect, decimals, literal types, implicit casts).
 - **P3, needs downloaded corpora:** #69 (DuckDB logic tests, TPC-H/TPC-DS,
   public dbt projects, VeriEQL's LeetCode pairs, run through the oracle
   unchanged), which unblocks #11
