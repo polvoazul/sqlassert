@@ -1,0 +1,80 @@
+-- UNNEST in Trino, from memory (`DialectSemantics.table_functions`; no engine
+-- probed): `UNNEST(xs) AS u(x)` of one array has the one column `x` (Trino
+-- requires the column list to name every column, and without one the column is
+-- anonymous), so an alias alone does not name it. In `CROSS JOIN UNNEST(t.xs)`
+-- and `LEFT JOIN UNNEST(t.xs) ... ON true` the argument reads the input, so
+-- each row belongs to one input row: ONE TO MANY. An array of rows or a map has
+-- more columns (the column list then names more than one), several arguments
+-- and WITH ORDINALITY have more: none is modelled. Trino has no key
+-- constraints; the keys written here are Property Declarations.
+-- dialect: trino
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, xs ARRAY(INTEGER), m MAP(VARCHAR, INTEGER));
+CREATE TABLE u (uid INTEGER PRIMARY KEY, label VARCHAR);
+CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER NOT NULL, xs ARRAY(INTEGER));
+
+-- case: a_cross_join_unnest_repeats_no_unnest_row
+SELECT t.id, e.x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN UNNEST(t.xs) AS e(x)  --~ PROVED
+
+-- case: a_left_join_unnest_is_one_to_many
+SELECT t.id, e.x FROM t
+/**ASSERT ONE TO MANY**/ LEFT JOIN UNNEST(t.xs) AS e(x) ON true  --~ PROVED
+
+-- case: a_comma_unnest_repeats_a_key_of_the_input
+SELECT t.id, e.x FROM t, UNNEST(t.xs) AS e(x) /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_correlated_unnest_is_not_many_to_one
+SELECT t.id, e.x FROM t
+/**ASSERT MANY TO ONE**/ CROSS JOIN UNNEST(t.xs) AS e(x)  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated_by_the_unnest
+SELECT t.id, e.x FROM t CROSS JOIN UNNEST(t.xs) AS e(x) /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_later_join_through_the_inputs_typed_key_is_many_to_one
+SELECT t.k, e.x FROM t CROSS JOIN UNNEST(t.xs) AS e(x)
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = t.k  --~ PROVED
+
+-- case: an_unqualified_name_beside_the_unnest_is_the_inputs
+-- `k` is not the unnest's: it is t's, with t's type, so a later join on it binds.
+SELECT k, x FROM t CROSS JOIN UNNEST(t.xs) AS e(x)
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = k  --~ PROVED
+
+-- case: the_unnest_column_is_untyped_so_it_binds_nothing
+SELECT x FROM t CROSS JOIN UNNEST(t.xs) AS e(x)
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x  --~ UNKNOWN
+
+-- case: a_name_the_column_list_gives_is_the_unnests_not_the_inputs
+-- `x` is a's and the unnest's: Trino rejects the bare name, so it is opaque.
+SELECT x FROM a CROSS JOIN UNNEST(a.xs) AS e(x) /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: a_name_the_unnest_does_not_have_is_the_inputs
+SELECT x FROM a CROSS JOIN UNNEST(a.xs) AS e(y) /**ASSERT NOT NULL(x)**/  --~ PROVED
+
+-- case: an_alias_without_a_column_list_names_no_column
+-- The alias is no column name in Trino, so `x` is a's alone.
+SELECT x FROM a CROSS JOIN UNNEST(a.xs) AS x /**ASSERT NOT NULL(x)**/  --~ PROVED
+
+-- case: the_input_columns_keep_their_dependencies_and_non_null
+SELECT t.id, t.k, e.x FROM t CROSS JOIN UNNEST(t.xs) AS e(x)
+/**ASSERT NOT NULL(k)**/  --~ PROVED
+/**ASSERT DETERMINES(id -> k)**/  --~ PROVED
+
+-- case: an_unnest_column_is_not_known_non_null
+SELECT t.id, e.x FROM t CROSS JOIN UNNEST(t.xs) AS e(x) /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: an_unnest_of_a_map_has_two_columns_not_modelled
+-- The column list of two names says the call returns more than the one column.
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN UNNEST(t.m) AS e(k, v)  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"
+
+-- case: an_unnest_of_several_arguments_is_not_modelled
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN UNNEST(t.xs, t.xs) AS e(x, y)  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"
+
+-- case: an_unnest_with_ordinality_is_not_modelled
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN UNNEST(t.xs) WITH ORDINALITY AS e(x, i)  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"

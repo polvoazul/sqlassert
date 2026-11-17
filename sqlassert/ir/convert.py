@@ -123,6 +123,8 @@ class IrParser:
     # The base case of each recursive CTE or view being resolved, once lowered:
     # what a reference to it from the recursive arm takes its types from.
     _recursion_bases: dict[_Symbol, ir.RelationExpr] = field(default_factory=dict)
+    # Those of them a recursive arm read: their body's set operation is recursive.
+    _recursed: set[_Symbol] = field(default_factory=set)
     _knowledge: list[Property] = field(default_factory=list)
     _assertions: list[ir.Assertion] = field(default_factory=list)
     _declarations: list[Property] = field(default_factory=list)
@@ -590,7 +592,7 @@ class IrParser:
             relation = ir.SetOperation(
                 origin=self._origin(query), output_columns=output_columns, is_schema_complete=left.is_schema_complete and right.is_schema_complete,
                 operator=_SET_OPERATORS[type(query)], left=left, right=right, distinct=bool(query.args.get("distinct")),
-                unpaired=unpaired,
+                unpaired=unpaired, recursive=self._is_recursion(query),
             )
             if construct is not None:
                 self._unsupported.append((relation, construct))
@@ -622,6 +624,13 @@ class IrParser:
         for symbol in self._resolving:
             if _unwrap_query(symbol.body) is query:
                 self._recursion_bases[symbol] = base
+
+    def _is_recursion(self, query: exp.SetOperation) -> bool:
+        """Whether `query`, lowered, is the body of a CTE or view whose
+        recursive arm read it: only then does the engine type its columns from
+        the base case (a body that never reads itself is an ordinary set
+        operation, whose arms are cast to a common type)."""
+        return any(symbol in self._recursed and _unwrap_query(symbol.body) is query for symbol in self._resolving)
 
     def _lower_arm(self, arm: exp.Query) -> ir.RelationExpr:
         """One input of a set operation; one that is not a SELECT or set
@@ -798,7 +807,10 @@ class IrParser:
         dialect fixes them (`DialectSemantics.table_functions`); None for any
         other source and for a call whose columns are not known."""
         name = _table_function_name(source, self.dialect)
-        return None if name is None else dict(self.semantics.table_functions).get(name)
+        columns = None if name is None else dict(self.semantics.table_functions).get(name)
+        # An alias column list longer than the columns claimed says the call
+        # returns more (an UNNEST of a map, or of an array of rows).
+        return None if columns is None or len(_column_aliases(source)) > len(columns) else columns
 
     def _lower_table_function(self, source: Expr, columns: tuple[str, ...]) -> _Lowered:
         """A table function or UNNEST in FROM with known columns: rows nothing
@@ -982,6 +994,7 @@ class IrParser:
         finally:
             self._resolving.discard(symbol)
             self._recursion_bases.pop(symbol, None)
+            self._recursed.discard(symbol)
         if body is None:
             body = self._opaque_relation(symbol.body or exp.Table(this=symbol.name), symbol.required_columns)
             written = symbol.body or (symbol.statement.args.get("expression") if symbol.statement is not None else None)
@@ -1084,6 +1097,8 @@ class IrParser:
     def _recursive_relation(self, symbol: _Symbol, source: Expr) -> ir.RecursiveRelation:
         origin = self._origin(source)
         output_columns = self._opaque_output_columns(symbol.required_columns, origin)
+        if symbol in self._recursion_bases:
+            self._recursed.add(symbol)
         relation = ir.RecursiveRelation(
             origin=origin,
             output_columns=output_columns,
@@ -3675,11 +3690,12 @@ def _unsupported_select(select: exp.Select, items: list[Expr], star: str | None)
 def _table_function_name(source: Expr, dialect: str) -> str | None:
     """The lower-case name a FROM source calls: a table function as the
     dialect writes the call, `unnest` for an UNNEST of one argument without
-    ordinality. None for any other source, a qualified function, and an UNNEST
-    of several arguments or with ordinality (its columns are not fixed)."""
+    ordinality. None for any other source, a qualified function (it may be the
+    user's own), and an UNNEST of several arguments or a call with ordinality
+    (its columns are not fixed)."""
     if isinstance(source, exp.Unnest):
         return "unnest" if len(source.expressions) == 1 and not source.args.get("offset") else None
-    if isinstance(source, exp.Table) and isinstance(source.this, exp.Func):
+    if isinstance(source, exp.Table) and isinstance(source.this, exp.Func) and not (source.db or source.args.get("ordinality")):
         call = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", source.this.sql(dialect=dialect))
         return call.group(1).lower() if call else None
     return None
@@ -4159,11 +4175,12 @@ def _row_number_is_one(predicate: Expr) -> exp.Window | None:
     return window
 
 
-def _constant_partition_keys(qualify: exp.Qualify, select: exp.Select) -> list[Expr]:
-    """The literals among the PARTITION BY keys of the windows of `select`'s
-    QUALIFY (not those of a subquery in it): a constant is one partition."""
+def _constant_partition_keys(clause: Expr, select: exp.Select) -> list[Expr]:
+    """The literals among the PARTITION BY keys of the windows in `clause`
+    that belong to `select` (not those of a subquery in it): a constant is
+    one partition."""
     return [
-        key for window in qualify.find_all(exp.Window) if window.find_ancestor(exp.Select) is select
+        key for window in clause.find_all(exp.Window) if window.find_ancestor(exp.Select) is select
         for key in window.args.get("partition_by") or () if isinstance(key.unnest(), exp.Literal | exp.Boolean | exp.Null)
     ]
 

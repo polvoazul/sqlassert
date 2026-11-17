@@ -600,7 +600,8 @@ conjuncts. Two exceptions to plan for:
   (apply), so the outer input sits below the subquery and the DAG holds
   ([issue 23](issues/done/0023-close-ir-lowering-gaps.md)).
 - **Recursive CTEs** are a genuine fixpoint. They stay opaque (but for the column
-  types, which come from the base case: `RecursiveRelation.typed_by`);
+  types, which come from the base case: `RecursiveRelation.typed_by` and
+  `SetOperation.recursive`);
   supporting them needs bespoke fixpoint machinery, not strata.
 
 Self joins are fine: each side is its own `Alias`, and closure delegation is

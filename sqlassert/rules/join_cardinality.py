@@ -319,8 +319,8 @@ def _operand(join: ir.Join, expression: ir.ScalarExpr) -> _Operand:
 
 def _type_loss(column: ir.OutputColumn) -> tuple[TypeLoss, ir.RelationExpr] | None:
     """Where `column` loses the type equality needs to bind it, following
-    plain column references (and set operation arms, and a recursive
-    reference's base case) down to the first column that is not one: `table` for a table column with no declared
+    plain column references (and set operation arms, only the base case's for a
+    recursive CTE, and a recursive reference's base case) down to the first column that is not one: `table` for a table column with no declared
     type (no CREATE, or none in the catalog), else the kind of relation or
     expression that computes it without a type compared by identity. None
     when that column keeps its type. With the relation that column is of."""
@@ -329,7 +329,7 @@ def _type_loss(column: ir.OutputColumn) -> tuple[TypeLoss, ir.RelationExpr] | No
         arms = relation.arms(column)
         if arms is None:
             return "set-operation", relation
-        return _type_loss(arms[0]) or _type_loss(arms[1])
+        return _type_loss(arms[0]) if relation.recursive else _type_loss(arms[0]) or _type_loss(arms[1])
     if isinstance(relation, ir.RecursiveRelation) and relation.typed_by and (base := relation.typed_by[relation.output_columns.index(column)]):
         return _type_loss(base)
     match column.scalar_expr:

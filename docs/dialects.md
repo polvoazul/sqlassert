@@ -332,24 +332,27 @@ certified by `scripts/certify_dialects.py`.
   engine (NULL keys form one partition, DuckDB probed). RANK, DENSE_RANK and
   NTILE repeat and claim nothing.
 
-- A column of a recursive CTE (or view) has the type of the base case's column
-  (`RecursiveRelation.typed_by`): the recursive arm reads it typed, and so does
-  every reference to the CTE. DuckDB casts the recursive arm to the base case's
-  type (probed on DuckDB 2.0.0: base `1::INTEGER`, recursive arm `n * 1.5`, gives
-  an INTEGER column with the values 2, 3, 5). Every other modelled dialect is
-  read the same way, from memory and not probed: Postgres rejects an arm of
-  another type, MySQL infers the columns' types from the base case alone, and
-  for Trino, BigQuery, Snowflake, Spark, Databricks, Redshift and Hive it is
-  the assumption that they do one or the other. Typing only: the base
-  case's values, NULLs, keys, domains and lineage are not shared, since the
-  recursive rows differ. The CTE's own column (the set operation's) is typed
-  where both its arms are, so a passed-through column is, and `n + 1` over an
-  INTEGER `n` is; an arm that computes another type leaves it untyped, though
-  the engine would cast it. With several base arms (`a UNION b UNION
-  recursive`) the base case is the set operation of them, typed where they share a
+- A column of a recursive CTE (or view) has exactly the type of the base case's
+  column, whatever the recursive arm computes, in every dialect: the recursive
+  arm reads it typed (`RecursiveRelation.typed_by`), the CTE's own column, the
+  set operation's, takes the base case's type alone (`SetOperation.recursive`),
+  and so does every reference to the CTE. DuckDB casts the recursive arm to the
+  base case's type (probed on DuckDB 2.0.0: base `1::INTEGER`, recursive arm
+  `n * 1.5`, gives an INTEGER column with the values 2, 3, 5). Every other
+  modelled dialect is read the same way, from memory and not probed: Postgres
+  rejects an arm of another type, MySQL infers the columns' types from the base
+  case alone, and for Trino, BigQuery, Snowflake, Spark, Databricks, Redshift
+  and Hive it is the assumption that they do one or the other. Typing only: the
+  base case's values, NULLs, keys, domains and lineage are not shared, since the
+  recursive rows differ; both arms still contribute them to the CTE's own
+  column. With several base arms (`a UNION b UNION recursive`) the base case is
+  the set operation of them, typed where they share a type, as any non-recursive
+  set operation is. A body that never reads itself (`WITH RECURSIVE` with no
+  self-reference) is an ordinary set operation, typed where both arms share a
   type. A column alias list (`r(a, b)`) names the base case's columns by
   position; a base case whose columns are not all known, or whose name appears
-  twice, types nothing.
+  twice, types no reference to the CTE from its recursive arm (the CTE's own
+  column is still typed by position).
 
 ## Expressions an ON equality binds
 
@@ -477,20 +480,30 @@ A table function or UNNEST in FROM has the columns the dialect fixes for it
 (`DialectSemantics.table_functions`, probed as `table_function(NAME)=COLUMNS`),
 and its rows nothing is known of: an opaque relation, no key, no dependency,
 no type. `SELECT *` over the call returns exactly those columns whatever its
-arguments; an alias column list renames the leading ones (a longer list is
-ignored), and an alias with no list names the one column of a function in
+arguments; an alias column list renames the leading ones, and an alias with no
+list names the one column of a function in
 `DialectSemantics.alias_named_table_functions` (DuckDB: `range(3) AS r` has
 column `r`, though `r.range` also resolves, which is not modelled; not Spark's
 `range(3) AS r`, whose column stays `id`). A function not listed, an UNNEST of
-several arguments or `WITH ORDINALITY`, and any function of another dialect keep
-columns unknown: an incomplete schema, so an unqualified name beside it is an
-`ambiguous-column` warning, and the call is an `unsupported-construct`.
+several arguments or `WITH ORDINALITY` (also on a function call), a
+schema-qualified function (it may be the user's own), a call whose alias column
+list is longer than its claimed columns (it returns more: an UNNEST of a map or
+of an array of rows) and any function of another dialect keep columns unknown:
+an incomplete schema, so an unqualified name beside it is an `ambiguous-column`
+warning, and the call is an `unsupported-construct`.
 
 | | DuckDB 2.0.0 | SQLite 3.50.4 | BigQuery | Redshift | Spark, Databricks |
 | --- | --- | --- | --- | --- | --- |
 | `json_each`, `json_tree` | `key`, `value`, `type`, `atom`, `id`, `parent`, `fullkey`, `path` (probed, also with a path argument) | the same (probed with `pragma_table_info`; no alias column list exists) | | | |
 | `range`, `generate_series` | one column, named like the function (`range`, `generate_series`) | none | | | `range`: the one column `id` whatever the alias (from memory) |
 | `unnest` of one argument | one column `unnest`; DuckDB's FROM-clause UNNEST takes a list only | none | `UNNEST(xs) AS x`: the one column `x` (from memory) | `FROM t, t.xs AS x`, a SUPER array: the one column `x` (from memory) | |
+
+| | Postgres | Trino |
+| --- | --- | --- |
+| `generate_series`, `unnest` of one array, `regexp_split_to_table` | one column named by the function, or by an alias with no column list (a function that returns a base type: `chooseScalarFunctionAlias`), renamed by a column list (from memory) | |
+| `jsonb_array_elements`, `json_array_elements` and their `_text` forms | the one column `value`, whatever the alias (a single named OUT parameter wins over the alias), renamed by a column list (from memory) | |
+| `jsonb_each`, `json_each` and their `_text` forms | the columns `key`, `value`: a record of the OUT parameters, so an alias with no column list names no column (from memory) | |
+| `UNNEST(xs) AS u(x)` of one array | (above) | the one column `x`; the column list must name every column, and without it the column is anonymous, so an alias alone names none (from memory) |
 
 SQLGlot reads BigQuery's `UNNEST(xs) AS x` and Redshift's `t.xs AS x` as an
 UNNEST whose alias is a column list, so the column is named by it; unaliased,
@@ -504,22 +517,22 @@ Provenance of every claim in those columns:
 from memory, `tentative` in `docs/dialect-provenance.json`. No engine is
 probed (decision: claims beyond what is already probed are made from memory).
 
+Postgres and Trino are local engines, so each of their facts must be probed on
+an engine (`tests/test_dialect_certification.py`: a local engine's fact may not
+be `tentative` or `doc`), and these are `tentative` until it is: the test fails
+for both dialects until `scripts/certify_dialects.py postgres` and `trino` have
+run (it reads the columns of a table made `AS SELECT * FROM` each call, with and
+without an alias and with a column list). Postgres's and Trino's `unnest` of an
+array of a composite type also spreads its fields over columns, where this is
+one column, as in BigQuery and Redshift above, and a Trino `UNNEST` of a map has
+`key` and `value`: an alias column list of more than one name reads as that and
+is not modelled; without a list, as for an unaliased one, the star's width
+differs. Postgres's explicit `LATERAL unnest(...)` is a `Lateral`, which is not
+lowered (LATERAL is unsupported): only the implicit form (`FROM t, unnest(t.xs)`,
+`CROSS JOIN unnest(t.xs)`) is modelled.
+
 Not claimed, each from memory, and why:
 
-- Postgres `generate_series`, `unnest`, `regexp_split_to_table` (one column,
-  named by the alias if written, else by the function: `chooseScalarFunctionAlias`),
-  `jsonb_array_elements`, `json_array_elements` and their `_text` forms (one
-  column `value`, whatever the alias, because the function has a named OUT
-  parameter), `jsonb_each`, `json_each` and their `_text` forms (`key`,
-  `value`). Postgres runs locally, so every fact of it must be probed on an
-  engine (`tests/test_dialect_certification.py`: a local engine's fact may not
-  be `tentative` or `doc`, and `DOCUMENTED_ONLY` lists only what no local engine
-  can run), and `scripts/certify_dialects.py` has no Postgres probe of table
-  functions. Postgres's `unnest` of an array of a composite type also spreads
-  the type's fields over columns.
-- Trino `UNNEST`: a local engine again, and its columns have no name unless an
-  alias column list gives them (an alias alone names none, so `unnest` would
-  stay out of `alias_named_table_functions`).
 - Spark and Databricks `explode`, `posexplode`, `inline`, `stack`: `col`, or
   `key` and `value` of a map, by the argument's type, which the SQL alone does
   not give. `LATERAL VIEW explode(...)`, Spark's usual form, is a `Lateral`

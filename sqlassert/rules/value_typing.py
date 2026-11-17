@@ -83,7 +83,9 @@ def scalar_typing(expression: ir.ScalarExpr) -> Result[ir.ValueTyping | None]:
 def _column_typing(column: ir.OutputColumn) -> Result[ir.ValueTyping | None]:
     """The type of a column: the one it is declared with, else its expression's.
     A set operation's column has its inputs' when they share it, not the left
-    input's: the engine would cast one to the other. A recursive reference's
+    input's: the engine would cast one to the other; a recursive CTE's has its
+    base case's (the left input's) whatever the recursive arm computes, since
+    the engine casts the arm to it or rejects a mismatch. A recursive reference's
     column has its base case's (`RecursiveRelation.typed_by`): the engine fixes
     the type there, and nothing else about its values is known."""
     relation = column.get_relation(current_arena().program)
@@ -95,6 +97,9 @@ def _column_typing(column: ir.OutputColumn) -> Result[ir.ValueTyping | None]:
         return Result(typing.value, "A recursive CTE's column has the type of its base case", (column,), [typing])
     if isinstance(relation, ir.SetOperation):
         if (arms := relation.arms(column)) is not None:
+            if relation.recursive:
+                base = _column_typing(arms[0])
+                return Result(base.value, "A recursive CTE's column has the type of its base case, whatever the recursive arm computes", (column,), [base])
             left, right = (_column_typing(arm) for arm in arms)
             first, second = left.value, right.value
             if first is not None and second is not None and first.comparison_type == second.comparison_type:

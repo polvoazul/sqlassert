@@ -174,7 +174,11 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   else the base case's names, once the base case is lowered); `scalar_typing`
   reads the base column's type through it, and nothing else: no value, NULL,
   key, domain or lineage crosses (docs/dialects.md, "Types of computed
-  expressions").
+  expressions"). The CTE's own column is typed the same way: a SetOperation
+  that convert marks `recursive` (its left input is the base case and a
+  recursive arm read the CTE: `_is_recursion`) has the base column's type
+  whatever the recursive arm computes, in `_column_typing` and `_type_loss`;
+  any other set operation is typed only where its arms agree.
 - Every relation `ir/convert.py` lowers opaque because it does not model a
   construct is recorded in `Program.unsupported` with that construct's name: a
   SELECT form, a FROM source or modifier, a join kind, a set operation form or

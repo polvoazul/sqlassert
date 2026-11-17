@@ -1,0 +1,166 @@
+-- Table functions in FROM (PostgreSQL), from memory (`DialectSemantics.table_functions`:
+-- `generate_series`, `unnest` of one array, `regexp_split_to_table`,
+-- `jsonb_array_elements` and its `json`, `_text` forms, `jsonb_each` and its
+-- `json`, `_text` forms; no engine probed). Each is rows nothing is known of
+-- under columns the engine fixes: a function that returns a base type has the
+-- one column named by the function, or by an alias with no column list
+-- (`alias_named_table_functions`); one with OUT parameters has theirs
+-- (`value`; `key`, `value`) whatever the alias, and an alias column list renames
+-- the leading ones. A function in `FROM t, f(t.x)` reads the input implicitly
+-- (LATERAL is optional for a function), so each of its rows belongs to one
+-- input row: ONE TO MANY. A call whose columns are not known (several
+-- arguments, WITH ORDINALITY, a schema-qualified name, an alias column list
+-- longer than the columns it has) is not modelled.
+-- dialect: postgres
+
+CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER NOT NULL, doc JSONB, arr INTEGER[], s TEXT NOT NULL);
+CREATE TABLE u (uid INTEGER PRIMARY KEY, label TEXT);
+CREATE TABLE a (id INTEGER PRIMARY KEY, r INTEGER NOT NULL, value INTEGER NOT NULL, doc JSONB, s TEXT NOT NULL);
+
+-- case: a_correlated_unnest_repeats_no_unnest_row
+SELECT t.id, x FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN unnest(t.arr) AS x  --~ PROVED
+
+-- case: a_left_joined_unnest_is_one_to_many_too
+SELECT t.id, x FROM t
+/**ASSERT ONE TO MANY**/ LEFT JOIN unnest(t.arr) AS x ON true  --~ PROVED
+
+-- case: a_correlated_unnest_is_not_many_to_one
+SELECT t.id, x FROM t
+/**ASSERT MANY TO ONE**/ CROSS JOIN unnest(t.arr) AS x  --~ UNKNOWN
+
+-- case: a_key_of_the_input_is_repeated_by_the_unnest
+SELECT t.id, x FROM t, unnest(t.arr) AS x /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_later_join_through_the_inputs_typed_key_is_many_to_one
+-- `k` is not the unnest's: it is t's, with t's type, so it binds `u.uid`.
+SELECT t.k, x FROM t, unnest(t.arr) AS x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = t.k  --~ PROVED
+
+-- case: an_unqualified_name_beside_the_function_is_the_inputs
+SELECT k, x FROM t, unnest(t.arr) AS x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = k  --~ PROVED
+
+-- case: a_function_column_is_untyped_so_it_binds_nothing
+SELECT x FROM t, unnest(t.arr) AS x
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = x  --~ UNKNOWN
+
+-- case: the_input_columns_keep_their_dependencies_and_non_null
+SELECT t.id, t.k, x FROM t, unnest(t.arr) AS x
+/**ASSERT NOT NULL(k)**/  --~ PROVED
+/**ASSERT DETERMINES(id -> k)**/  --~ PROVED
+
+-- case: a_function_column_is_not_known_non_null
+SELECT t.id, x FROM t, unnest(t.arr) AS x /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
+
+-- case: an_unnest_without_an_alias_has_the_column_unnest
+SELECT t.k FROM t, unnest(t.arr)
+/**ASSERT MANY TO ONE**/ JOIN u ON u.uid = t.k  --~ PROVED
+
+-- case: an_unnest_column_list_names_its_column
+-- `r` is an alias list name, so the bare `r` is the unnest's, not a's.
+SELECT r FROM a, unnest(ARRAY[1, 2]) AS e(r) /**ASSERT NOT NULL(r)**/  --~ UNKNOWN
+
+-- case: an_alias_names_the_unnest_column_so_a_bare_name_it_matches_is_ambiguous
+-- `r` is the unnest's and a's: PostgreSQL rejects the bare name, so it is opaque.
+SELECT r FROM a, unnest(ARRAY[1, 2]) AS r /**ASSERT NOT NULL(r)**/  --~ UNKNOWN
+
+-- case: a_name_the_unnest_does_not_have_is_the_inputs
+SELECT r FROM a, unnest(ARRAY[1, 2]) AS e /**ASSERT NOT NULL(r)**/  --~ PROVED
+
+-- case: an_alias_names_generate_series_column
+SELECT r FROM a, generate_series(1, 3) AS r /**ASSERT NOT NULL(r)**/  --~ UNKNOWN
+
+-- case: generate_series_without_an_alias_has_the_column_generate_series
+SELECT r FROM a, generate_series(1, 3) /**ASSERT NOT NULL(r)**/  --~ PROVED
+
+-- case: generate_series_is_a_cross_join_of_unknown_rows_unless_it_reads_the_input
+SELECT t.id, g FROM t, generate_series(1, 3) AS g /**ASSERT UNIQUE(id)**/  --~ UNKNOWN
+
+-- case: a_correlated_generate_series_is_one_to_many
+SELECT t.id, g FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN generate_series(1, t.k) AS g  --~ PROVED
+
+-- case: regexp_split_to_table_is_named_by_its_alias
+SELECT r FROM a, regexp_split_to_table(a.s, ',') AS r /**ASSERT NOT NULL(r)**/  --~ UNKNOWN
+
+-- case: regexp_split_to_table_without_an_alias_is_named_by_the_function
+SELECT r FROM a, regexp_split_to_table(a.s, ',') /**ASSERT NOT NULL(r)**/  --~ PROVED
+
+-- case: a_correlated_regexp_split_to_table_is_one_to_many
+SELECT t.id, p FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN regexp_split_to_table(t.s, ',') AS p  --~ PROVED
+
+-- case: jsonb_array_elements_has_the_column_value_whatever_the_alias
+-- The alias `r` does not name it, so `value` is ambiguous with a's own.
+SELECT value FROM a, jsonb_array_elements(a.doc) AS r /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: the_alias_of_jsonb_array_elements_is_not_a_column
+-- `r` is a's, as the function has no column of that name.
+SELECT r FROM a, jsonb_array_elements(a.doc) AS r /**ASSERT NOT NULL(r)**/  --~ PROVED
+
+-- case: a_column_list_renames_the_column_of_jsonb_array_elements
+SELECT value FROM a, jsonb_array_elements(a.doc) AS e(v) /**ASSERT NOT NULL(value)**/  --~ PROVED
+
+-- case: a_correlated_jsonb_array_elements_is_one_to_many
+SELECT t.id, e.value FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN jsonb_array_elements(t.doc) AS e  --~ PROVED
+
+-- case: json_array_elements_has_the_column_value
+SELECT value FROM a, json_array_elements(a.doc) AS e /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: the_text_forms_have_the_column_value
+SELECT value FROM a, jsonb_array_elements_text(a.doc) AS e /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: the_json_text_form_has_the_column_value
+SELECT value FROM a, json_array_elements_text(a.doc) AS e /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: jsonb_each_has_the_columns_key_and_value
+SELECT t.id, e.key, e.value FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN jsonb_each(t.doc) AS e  --~ PROVED
+
+-- case: jsonb_each_columns_are_not_named_by_the_alias
+-- `key` is a function column, so a bare `key` resolves to it (u has none): not
+-- known non-null, and `s`, a's own, is.
+SELECT s, key FROM a, jsonb_each(a.doc) AS e /**ASSERT NOT NULL(s)**/  --~ PROVED
+/**ASSERT NOT NULL(key)**/  --~ UNKNOWN
+
+-- case: jsonb_each_shares_its_value_column_with_a_s_own
+SELECT value FROM a, jsonb_each(a.doc) AS e /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: a_column_list_renames_the_leading_columns_of_jsonb_each
+-- `value` is no longer the function's: it is a's.
+SELECT value FROM a, jsonb_each(a.doc) AS e(k) /**ASSERT NOT NULL(value)**/  --~ UNKNOWN
+
+-- case: json_each_and_the_text_forms_have_key_and_value
+SELECT t.id FROM t
+/**ASSERT ONE TO MANY**/ CROSS JOIN json_each(t.doc::json) AS e  --~ PROVED
+/**ASSERT ONE TO MANY**/ CROSS JOIN jsonb_each_text(t.doc) AS f  --~ PROVED
+/**ASSERT ONE TO MANY**/ CROSS JOIN json_each_text(t.doc::json) AS g  --~ PROVED
+
+-- case: an_unnest_of_several_arguments_is_not_modelled
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN unnest(t.arr, t.arr) AS e(x, y)  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"
+
+-- case: a_function_with_ordinality_has_columns_not_modelled
+-- Its extra column is not among the function's.
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN generate_series(1, 3) WITH ORDINALITY AS g(x, i)  --~ UNKNOWN
+--~ unsupported-construct "a table function"
+
+-- case: a_column_list_longer_than_the_columns_says_the_call_returns_more
+-- An array of rows spreads its fields over columns.
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN unnest(t.arr) AS e(x, y)  --~ UNKNOWN
+--~ unsupported-construct "UNNEST"
+
+-- case: a_schema_qualified_function_may_be_the_users_own
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN public.generate_series(1, 3) AS g  --~ UNKNOWN
+--~ unsupported-construct "a table function"
+
+-- case: a_function_not_listed_is_not_modelled
+SELECT t.id FROM t
+/**ASSERT UNIQUE(id)**/ CROSS JOIN jsonb_path_query(t.doc, '$') AS g  --~ UNKNOWN
+--~ unsupported-construct "a table function"

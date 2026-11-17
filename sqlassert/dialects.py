@@ -243,6 +243,22 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         values_types=(("string", "text"), ("integer", "integer"), ("bigint", "bigint")),
         # A numeric constant with a point or an exponent is a NUMERIC (an unscaled one).
         literal_types=(("decimal", "numeric"), ("exponent", "numeric")),
+        # Tentative (from memory, no engine probed). A function returning a base
+        # type has one column, named by the function or, for an alias with no
+        # column list, by the alias (`alias_named_table_functions`); one with a
+        # single named OUT parameter has that name whatever the alias
+        # (`jsonb_array_elements(x) AS r` is `value`), and one with several is
+        # a record of them. Not an array of rows (`unnest` spreads its fields),
+        # not several arguments (`unnest(a, b)`), not `WITH ORDINALITY`.
+        table_functions=(
+            ("generate_series", ("generate_series",)), ("unnest", ("unnest",)),
+            ("regexp_split_to_table", ("regexp_split_to_table",)),
+            *((name, ("value",)) for name in (
+                "jsonb_array_elements", "json_array_elements", "jsonb_array_elements_text", "json_array_elements_text",
+            )),
+            *((name, ("key", "value")) for name in ("jsonb_each", "json_each", "jsonb_each_text", "json_each_text")),
+        ),
+        alias_named_table_functions=("generate_series", "unnest", "regexp_split_to_table"),
     ),
     "mysql": DialectSemantics(
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
@@ -387,6 +403,13 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # A string is `varchar(n)` for its longest value.
         values_types=(("string", "varchar"), ("integer", "integer"), ("bigint", "bigint"), ("decimal", "decimal")),
         literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
+        # Tentative (from memory, no engine probed). `UNNEST(xs) AS u(x)` of one
+        # array has the one column `x`: Trino requires a column list to name it
+        # (an unaliased column has no name), and rejects one of another length.
+        # Not an array of rows (one column per field), a map (`k`, `v`), several
+        # arguments, nor `WITH ORDINALITY`; an alias list longer than one name
+        # reads as one of those.
+        table_functions=(("unnest", ("unnest",)),),
     ),
 }
 

@@ -578,13 +578,40 @@ def _literal_type_check(dialect: str, literal: str, expected: str) -> Check:
     return Check(f"SELECT {matches(_LITERAL_TYPE_OF[dialect].format(literal))}", "true")
 
 
-# Calls of each table function the dialects claim, with the argument lists the engine accepts.
-_TABLE_FUNCTION_CALLS: dict[str, tuple[str, ...]] = {
-    "json_each": ("json_each('[1]')", "json_each('{\"a\": [1]}', '$.a')"),
-    "json_tree": ("json_tree('[1]')", "json_tree('{\"a\": [1]}', '$.a')"),
-    "range": ("range(3)", "range(1, 10, 2)"),
-    "generate_series": ("generate_series(1, 3)", "generate_series(5)"),
-    "unnest": ("unnest([1, 2])",),
+# Calls of each table function a dialect claims, with the argument lists its
+# engine accepts (SQLite has no call: `pragma_table_info` names the function).
+_TABLE_FUNCTION_CALLS: dict[str, dict[str, tuple[str, ...]]] = {
+    "duckdb": {
+        "json_each": ("json_each('[1]')", "json_each('{\"a\": [1]}', '$.a')"),
+        "json_tree": ("json_tree('[1]')", "json_tree('{\"a\": [1]}', '$.a')"),
+        "range": ("range(3)", "range(1, 10, 2)"),
+        "generate_series": ("generate_series(1, 3)", "generate_series(5)"),
+        "unnest": ("unnest([1, 2])",),
+    },
+    "postgres": {
+        "generate_series": ("generate_series(1, 3)", "generate_series(1, 10, 2)"),
+        "unnest": ("unnest(ARRAY[1, 2])",),
+        "regexp_split_to_table": ("regexp_split_to_table('a,b', ',')",),
+        "jsonb_array_elements": ("jsonb_array_elements('[1]'::jsonb)",),
+        "json_array_elements": ("json_array_elements('[1]'::json)",),
+        "jsonb_array_elements_text": ("jsonb_array_elements_text('[1]'::jsonb)",),
+        "json_array_elements_text": ("json_array_elements_text('[1]'::json)",),
+        "jsonb_each": ("jsonb_each('{\"a\": 1}'::jsonb)",),
+        "json_each": ("json_each('{\"a\": 1}'::json)",),
+        "jsonb_each_text": ("jsonb_each_text('{\"a\": 1}'::jsonb)",),
+        "json_each_text": ("json_each_text('{\"a\": 1}'::json)",),
+    },
+    "trino": {"unnest": ("UNNEST(ARRAY[1, 2])",)},
+}
+
+# The query that lists, in order, the columns of the probe table a CREATE TABLE
+# AS over the call makes, joined by commas, in the dialects that have no DESCRIBE
+# of a query (`_table_function_facts`).
+_COLUMN_LIST_SQL = {
+    "postgres": "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns "
+    "WHERE table_schema = current_schema() AND table_name = '{table}'",
+    "trino": "SELECT array_join(array_agg(column_name ORDER BY ordinal_position), ',') FROM information_schema.columns "
+    "WHERE table_schema = current_schema AND table_name = '{table}'",
 }
 
 
@@ -592,24 +619,21 @@ def _table_function_facts(dialect: str, meaning: DialectSemantics) -> Iterable[F
     """Each claimed table function's columns: `SELECT *` over it returns
     exactly them, in order; an alias column list renames the leading ones and,
     for a function in `alias_named_table_functions`, an alias alone names its
-    one column. DuckDB asks DESCRIBE, SQLite `pragma_table_info` (which has no
-    alias column list); no other dialect has a probe."""
+    one column (any other keeps its own names). DuckDB asks DESCRIBE, SQLite
+    `pragma_table_info` (which has no alias column list), Postgres and Trino the
+    columns of a table made from the call. Trino's unaliased UNNEST has an
+    anonymous column, so only a column list is probed there. No other dialect
+    has a probe."""
     for name, columns in meaning.table_functions:
         claimed = ",".join(columns)
         checks: list[Check] = []
-        if dialect == "duckdb":
-            for call in _TABLE_FUNCTION_CALLS[name]:
-                variants = [("", claimed), (" AS a(x)", ",".join(("x", *columns[1:])))]
-                if name in meaning.alias_named_table_functions:
-                    variants.append((" AS r", "r"))
-                checks.extend(
-                    Check(
-                        f"SELECT CASE WHEN (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM {call}{alias})) = '{expected}' "
-                        "THEN 1 ELSE 0 END",
-                        "true",
-                    )
-                    for alias, expected in variants
-                )
+        if dialect in ("duckdb", "postgres", "trino"):
+            variants = [] if dialect == "trino" else [("", claimed)]
+            variants.append((" AS a(x)", ",".join(("x", *columns[1:]))))
+            if dialect != "trino":
+                variants.append((" AS r", "r" if name in meaning.alias_named_table_functions else claimed))
+            for call in _TABLE_FUNCTION_CALLS[dialect][name]:
+                checks.extend(_table_function_check(dialect, f"{call}{alias}", expected) for alias, expected in variants)
         elif dialect == "sqlite":
             checks.append(Check(
                 f"SELECT CASE WHEN (SELECT group_concat(name) FROM pragma_table_info('{name}')) = '{claimed}' THEN 1 ELSE 0 END", "true",
@@ -617,6 +641,21 @@ def _table_function_facts(dialect: str, meaning: DialectSemantics) -> Iterable[F
         else:
             checks.append(Check("", "true", problem=f"no probe of {dialect} table functions"))
         yield Fact(f"table_function({name})={claimed}", f"drop {name} from table_functions in dialects.py", tuple(checks))
+
+
+def _table_function_check(dialect: str, source: str, expected: str) -> Check:
+    """`SELECT *` over `source`, a table function call with its alias, has the
+    columns `expected` (comma-separated, in order)."""
+    if dialect == "duckdb":
+        return Check(
+            f"SELECT CASE WHEN (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM {source})) = '{expected}' THEN 1 ELSE 0 END", "true",
+        )
+    table = "sqlassert_probe_function"
+    columns = _COLUMN_LIST_SQL[dialect].format(table=table)
+    return Check(
+        f"SELECT CASE WHEN ({columns}) = '{expected}' THEN 1 ELSE 0 END", "true",
+        setup=(f"CREATE TABLE {table} AS SELECT * FROM {source}",), tables=(table,),
+    )
 
 
 def _flag_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:

@@ -672,13 +672,21 @@ class Distinct(RelationExpr):
 class SetOperation(RelationExpr):
     """UNION, INTERSECT, or EXCEPT. Output columns refer to the left input;
     `arms` pairs each with the right input's column at its position. A
-    `UNION BY NAME` is lowered to that form (convert's `_align_by_name`)."""
+    `UNION BY NAME` is lowered to that form (convert's `_align_by_name`).
+
+    `recursive` is the body of a recursive CTE or view: the left input is the
+    base case and the right one reads the relation itself. The engine fixes
+    each output column's type from the base case, whatever the recursive arm
+    computes (it casts the arm, or rejects a mismatch), so the type of a
+    column is its base case column's. Typing only: values, NULLs, keys and
+    domains still come from both inputs."""
 
     operator: SetOperator
     left: RelationExpr
     right: RelationExpr
     distinct: bool = True
     unpaired: bool = False
+    recursive: bool = False
 
     def arms(self, column: OutputColumn) -> tuple[OutputColumn, OutputColumn] | None:
         """The left and right input columns `column` is computed from, or None

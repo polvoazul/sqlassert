@@ -1,9 +1,11 @@
 -- A recursive CTE (or view): its recursive arm reads the CTE itself, which is
 -- opaque (rows nothing is known of), but the engine fixes each column's type
 -- from the base case (`RecursiveRelation.typed_by`; DuckDB casts the recursive
--- arm to it, probed on 2.0.0; other dialects from memory). Typing only: a join
--- on a column the CTE passes through binds it, and no value, NULL, key,
--- domain or lineage of the base case is shared with the recursive rows.
+-- arm to it, probed on 2.0.0; other dialects from memory). The CTE's own column
+-- has exactly the base case's type, whatever the recursive arm computes
+-- (`SetOperation.recursive`). Typing only: a join on a column the CTE passes
+-- through binds it, and no value, NULL, key, domain or lineage of the base case
+-- is shared with the recursive rows.
 
 CREATE TABLE tree (id INTEGER PRIMARY KEY, parent INTEGER, label VARCHAR NOT NULL);
 CREATE TABLE leaf (id INTEGER PRIMARY KEY, root INTEGER, name VARCHAR);
@@ -156,10 +158,10 @@ SELECT leaf.id
 FROM leaf
 /**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ PROVED
 
--- case: a_recursive_arm_of_another_type_leaves_the_ctes_column_untyped
+-- case: a_recursive_arm_of_another_type_leaves_the_ctes_column_the_base_cases
 -- DuckDB probed: base `1::INTEGER`, arm `n * 1.5` gives an INTEGER column
--- (2, 3, 5). The set operation's arms differ here, so it stays untyped: sound,
--- and not as strong as the engine.
+-- (2, 3, 5). The CTE's column has exactly the base case's type whatever the
+-- arm computes (decimal arithmetic here), so it binds `leaf.id`.
 WITH RECURSIVE r (n) AS (
     SELECT 1::INTEGER
     UNION
@@ -167,7 +169,77 @@ WITH RECURSIVE r (n) AS (
 )
 SELECT leaf.id
 FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ PROVED
+
+-- case: a_recursive_arm_of_a_float_type_leaves_the_ctes_column_the_base_cases
+WITH RECURSIVE r (n) AS (
+    SELECT 1::INTEGER
+    UNION
+    SELECT n * 1.5e0 FROM r WHERE n < 10
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ PROVED
+
+-- case: a_recursive_arm_of_a_text_type_leaves_the_ctes_column_the_base_cases
+-- The column is an INTEGER, so it binds an integer key; the arm's text is no
+-- type of it.
+WITH RECURSIVE r (n) AS (
+    SELECT 1::INTEGER
+    UNION
+    SELECT CAST(n AS VARCHAR) FROM r WHERE n < 10
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ PROVED
+
+-- case: an_untyped_base_makes_the_ctes_column_untyped_whatever_the_arm_computes
+-- The arm is typed (an INTEGER), the base case is not: the column has the base
+-- case's type, which is unknown.
+WITH RECURSIVE r (n) AS (
+    SELECT root FROM missing
+    --~ undeclared-table "missing"
+    UNION
+    SELECT 1::INTEGER FROM r
+)
+SELECT leaf.id
+FROM leaf
 /**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: several_base_arms_of_different_types_type_the_column_nothing_whatever_the_arm_computes
+-- The base case is the union of its arms, typed only where they agree.
+WITH RECURSIVE r (n) AS (
+    SELECT id FROM tree WHERE parent IS NULL
+    UNION
+    SELECT CAST(id AS BIGINT) FROM tree WHERE parent = 0
+    UNION
+    SELECT n + 1 FROM r WHERE n < 10
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ UNKNOWN
+--~ unsupported-construct "a recursive CTE or view"
+
+-- case: a_union_that_never_reads_itself_is_an_ordinary_one
+-- `RECURSIVE` without a self-reference: the arms differ, so the column is untyped.
+WITH RECURSIVE r (n) AS (
+    SELECT id FROM tree WHERE parent IS NULL
+    UNION
+    SELECT CAST(id AS BIGINT) FROM tree WHERE parent = 0
+)
+SELECT leaf.id
+FROM leaf
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.n  --~ UNKNOWN
+
+-- case: a_recursive_cte_with_a_decimal_arm_still_shares_no_nullability_with_its_base_case
+-- Typing only: the base case's `n` is not NULL, the recursive rows' is not known.
+WITH RECURSIVE r (n) AS (
+    SELECT 1::INTEGER
+    UNION ALL
+    SELECT n * 1.5 FROM r
+)
+SELECT n FROM r /**ASSERT NOT NULL(n)**/  --~ UNKNOWN
 --~ unsupported-construct "a recursive CTE or view"
 
 -- case: a_recursive_view_over_a_recursive_cte_is_typed_too
@@ -183,9 +255,9 @@ SELECT leaf.id
 FROM leaf
 /**ASSERT MANY TO ONE**/ JOIN descendants AS d ON leaf.id = d.id AND leaf.root = d.root  --~ PROVED
 
--- case: a_reference_that_renames_the_columns_itself_is_not_typed
--- The recursive reference's own column list is not read, so its columns are not
--- matched to the base case's: the arm's `q` is untyped, so is the CTE's `root`.
+-- case: a_reference_that_renames_the_columns_itself_does_not_change_the_ctes_types
+-- The recursive reference's own column list is not read, so the arm's `q` is
+-- untyped; the CTE's `root` has the base case's type all the same.
 WITH RECURSIVE r AS (
     SELECT id, id AS root FROM tree WHERE parent IS NULL
     UNION
@@ -193,5 +265,4 @@ WITH RECURSIVE r AS (
 )
 SELECT leaf.id
 FROM leaf
-/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ UNKNOWN
---~ unsupported-construct "a recursive CTE or view"
+/**ASSERT MANY TO ONE**/ JOIN r ON leaf.id = r.id AND leaf.root = r.root  --~ PROVED
