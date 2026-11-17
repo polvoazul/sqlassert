@@ -17,4 +17,4 @@ The rule, the same in every dialect:
 
 Out of scope: the caveat a suggested rewrite gives when moving arithmetic onto a narrower type (`sum(b) + 1` to `b + 1`). That is advice about a query that may fail, not a fact an equality proves, so it keeps its overflow wording.
 
-Superseded: the per-dialect gating of arithmetic typing on `checked_arithmetic`; the `Builtin` rule that only checked arithmetic is injective; integers of different widths, and an exact literal against a decimal, as the only exact comparisons across types. Work: [issue 74](../issues/0074-adr-on-integer-comparisons-and-implicit-casts.md).
+Superseded: the per-dialect gating of arithmetic typing on `checked_arithmetic`; the `Builtin` rule that only checked arithmetic is injective; integers of different widths, and an exact literal against a decimal, as the only exact comparisons across types. Work: [issue 74](../issues/done/0074-adr-on-integer-comparisons-and-implicit-casts.md).

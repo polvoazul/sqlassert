@@ -1,17 +1,20 @@
 # 74. ADR: when an equality compares exactly (integer arithmetic and implicit casts)
 
-- **State:** open
-- **Priority:** P2 (needs an ADR): The single comparison rule (`exact_comparison`) now gates every fact an equality gives; its dialect choices were made ad hoc and lose sound proofs.
+- **State:** done 2026-11-17
 - **Theme:** soundness
 - **Created:** 2026-11-16
-- **Related:** [73: pending lowering and classification decisions](0073-pending-lowering-and-classification-decisions.md), [46: certify dialect facts](0046-certify-dialect-facts.md)
+- **Related:** [73: pending lowering and classification decisions](../0073-pending-lowering-and-classification-decisions.md), [46: certify dialect facts](../0046-certify-dialect-facts.md)
 
-**Decided:** [ADR 0007](../adr/0007-exact-comparisons-assume-values-in-range.md)
+**Decided:** [ADR 0007](../../adr/0007-exact-comparisons-assume-values-in-range.md)
 (values stay in range, overflow not modelled; exact numbers of any width or
 scale compare exactly; any float or implicit text-to-number conversion is a
 Hazard; string literals beside dates are fine; literal types certified with
-each engine's type function). Remaining: align the code and
-`docs/dialects.md`, add the literal type probes.
+each engine's type function). Done: `exact_comparison`,
+`scalar_typing`, `DialectSemantics` and `docs/dialects.md` follow it;
+`literal_type(KIND)=TYPE` facts are probed (DuckDB, SQLite, PostgreSQL,
+MySQL, ClickHouse, Trino, Spark) or cited (Databricks, BigQuery, Hive,
+Oracle); Snowflake and Redshift claim none; `tests/exact_comparisons.sqltest`
+covers each decision per dialect.
 
 `sqlassert/rules/value_typing.py` types every scalar expression
 (`scalar_typing`) and answers one question for every equality

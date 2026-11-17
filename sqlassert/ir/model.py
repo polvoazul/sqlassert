@@ -81,12 +81,10 @@ class Builtin:
     even then (`n % 0` in DuckDB). Unless `total` is None, a strict parameter
     is total.
 
-    A `checked` one is arithmetic that raises an error on overflow instead of
-    wrapping, saturating, or turning to a float: integers give an integer.
-
     An `injective` one is one-to-one in its single argument that is not an
     integer or decimal literal, when that argument is an integer or decimal:
-    `a + 1`, `10 - a`, `-a`. Only where the arithmetic is `checked`.
+    `a + 1`, `10 - a`, `-a`. Values are assumed to stay in range, so how the
+    dialect overflows does not matter (ADR 0007).
 
     A `rejecting` parameter makes the value never TRUE (FALSE or NULL)
     whenever its argument is NULL, though perhaps not NULL: `x > ANY (...)`
@@ -108,10 +106,8 @@ class Builtin:
     rejecting: tuple[bool, ...] = field(default=(), kw_only=True)
     skips_null: bool = field(default=False, kw_only=True)
     true_only_if_argument: bool = field(default=False, kw_only=True)
-    checked: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
-        assert self.checked or not self.injective, f"{self.name}: only checked arithmetic is injective"
         assert self.total is None or len(self.total) == len(self.strict), f"{self.name}: one total flag per parameter"
         assert not self.rejecting or len(self.rejecting) == len(self.strict), f"{self.name}: one rejecting flag per parameter"
         assert not self.skips_null or self.total is None, f"{self.name}: skipping NULLs, it is not total in each argument"
@@ -166,7 +162,9 @@ class ValueTyping:
     text under a case-insensitive collation), whether it is `exact_numeric` (an
     integer or decimal), whether it is `floating` (REAL, FLOAT, DOUBLE), and
     its `integer` width rank when it is a signed integer type (TINYINT 0, up;
-    unsigned types are none). An expression whose type is not known has no
+    unsigned types are none), whether it is `text` (any character type, in any
+    collation the dialect ships as default), and whether it is `temporal` (a
+    date, time or timestamp). An expression whose type is not known has no
     ValueTyping."""
 
     comparison_type: str
@@ -175,6 +173,8 @@ class ValueTyping:
     exact_numeric: bool
     floating: bool = False
     integer: int | None = None
+    text: bool = False
+    temporal: bool = False
 
 
 class Call(ScalarExpr):

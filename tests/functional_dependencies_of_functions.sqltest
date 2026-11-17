@@ -168,8 +168,9 @@ CREATE TABLE wide (a BIGINT, b BIGINT);
 SELECT a, b FROM wide WHERE b = a + 1 /**ASSERT DETERMINES(b -> a)**/  --~ PROVED
 
 -- case: an_equality_through_a_float_expression_loses_values__bigint_times_a_decimal_literal
+-- a * 1.5 is an exact DECIMAL, compared by value with b; `*` is not injective, so b does not determine a.
 CREATE TABLE wide (a BIGINT, b BIGINT);
-SELECT a, b FROM wide WHERE b = a * 1.5 /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+SELECT a, b FROM wide WHERE b = a * 1.5 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
 /**ASSERT DETERMINES(b -> a)**/  --~ UNKNOWN
 
 -- case: an_equality_through_a_float_expression_loses_values__cast_to_double
@@ -247,6 +248,7 @@ SELECT a, n FROM ci WHERE a = length(n) /**ASSERT DETERMINES(n -> a)**/  --~ UNK
 -- case: a_column_equal_to_a_function_is_determined_by_its_arguments__under_or
 SELECT a, b FROM f WHERE b = a + 1 OR b = a /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
 
--- case: injectivity_needs_arithmetic_that_raises_on_overflow
+-- case: injectivity_holds_where_overflow_does_not_raise
+-- SQLite turns an overflow into a REAL; values are assumed to stay in range (ADR 0007).
 -- dialect: sqlite
-SELECT id + 1 AS k, b FROM f /**ASSERT DETERMINES(k -> b)**/  --~ UNKNOWN
+SELECT id + 1 AS k, b FROM f /**ASSERT DETERMINES(k -> b)**/  --~ PROVED

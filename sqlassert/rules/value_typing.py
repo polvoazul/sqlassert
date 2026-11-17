@@ -12,11 +12,15 @@ those is derived here, so no two places can disagree about an expression.
 `exact_comparison(left, right)` asks whether `left = right` compares their
 values with no lossy coercion: both types are known, and either both are text
 compared by identity, or both are of one type whose equal values are
-identical, or both are integers (an integer of any width compares by value
-with any other), or one is an exact number literal and the other an integer or
-decimal. Every consumer of an equality reads this answer: what an equality
-pins or binds, the Equality Groups it merges, and the Hazard of a comparison
-that is not exact. An unknown type gives no fact.
+identical, or both are exact numbers (integers of any width, decimals of any
+scale, exact literals: the engine compares them by value), or one is a string
+literal and the other a date, time or timestamp compared by identity (the
+literal is read as that type). Every consumer of an equality reads this
+answer: what an equality pins or binds, the Equality Groups it merges, and
+the Hazard of a comparison that is not exact. An unknown type gives no fact.
+
+Values are assumed to stay in range (ADR 0007): how a dialect overflows
+changes no type here.
 """
 
 from __future__ import annotations
@@ -98,6 +102,7 @@ def _column_typing(column: ir.OutputColumn) -> Result[ir.ValueTyping | None]:
                     first.comparison_type, first.binary_text and second.binary_text,
                     first.identity_comparison and second.identity_comparison, first.exact_numeric and second.exact_numeric,
                     first.floating and second.floating, first.integer if first.integer == second.integer else None,
+                    first.text and second.text, first.temporal and second.temporal,
                 )
                 return Result(shared, "Both inputs of the set operation share the type", (column,), [left, right])
         return _unknown(column, "The inputs of the set operation do not share a type")
@@ -110,8 +115,9 @@ def _common_typing(expression: ir.ScalarExpr, results: Sequence[ir.ScalarExpr]) 
     """The type of an expression that returns one of `results` (or NULL): the
     one they share (the NULLs take it); among integer types the widest, an
     integer type being all that every engine promotes them to; a string
-    literal beside text compared by identity is that text. None when a result
-    has no known type, or the types differ (the Hazard `Mixed CASE types`)."""
+    literal beside text compared by identity, or beside a date, time or
+    timestamp, is that type. None when a result has no known type, or the
+    types differ (the Hazard `Mixed CASE types`)."""
     values = [result for result in results if not isinstance(result, ir.NullLiteral)]
     literals = [value for value in values if isinstance(value, ir.Constant) and value.value is not None and value.value.type == "string"]
     typed = [scalar_typing(value) for value in values if not any(value is literal for literal in literals)]
@@ -127,8 +133,8 @@ def _common_typing(expression: ir.ScalarExpr, results: Sequence[ir.ScalarExpr]) 
         return Result(first.value, "Every result is a string literal", (expression,), [first])
     premises = typed
     if literals:
-        if not all(typing.binary_text for typing in known):
-            return _unknown(expression, "A string literal beside a type that is not text compared by identity")
+        if not all(typing.binary_text or typing.temporal for typing in known):
+            return _unknown(expression, "A string literal beside a type that is not text compared by identity, nor a date or time")
     if len(set(known)) == 1:
         return Result(known[0], "The results share a type", (expression,), premises)
     if (widest := _widest_integer(known)) is not None:
@@ -137,15 +143,14 @@ def _common_typing(expression: ir.ScalarExpr, results: Sequence[ir.ScalarExpr]) 
 
 
 def _arithmetic_typing(call: ir.Call) -> Result[ir.ValueTyping | None]:
-    """The type of `+`, `-`, `*` or negation over typed operands.
+    """The type of `+`, `-`, `*` or negation over typed operands, in every
+    dialect: values are assumed to stay in range (ADR 0007), so overflow does
+    not change it.
 
-    A float operand makes the result a float, in every dialect. Otherwise only
-    where the dialect's arithmetic is checked (`Builtin.checked`: it raises on
-    overflow instead of wrapping, saturating or turning to a float): integers
-    give an integer; the negation of an integer or decimal has its type; a
-    decimal with an integer or decimal literal added or subtracted is a
-    decimal, whose precision is not claimed (it is wider). Any other call has
-    no known type.
+    A float operand makes the result a float. Integers give the widest
+    integer; the negation of an exact number has its type; any other
+    arithmetic over exact numbers is a decimal, whose precision is not
+    claimed. Any other call has no known type.
 
     Provenance: DuckDB 2.0.0 `typeof` (`-x` is `x`'s type; `x + 1`, `x * 2` of an
     integer type keep it; `DECIMAL(10,2) + 1` is `DECIMAL(13,2)`); other engines
@@ -160,15 +165,13 @@ def _arithmetic_typing(call: ir.Call) -> Result[ir.ValueTyping | None]:
     floats = [typing for typing in known if typing.floating]
     if floats:
         return Result(floats[0], "A float operand makes the arithmetic a float", (call,), operands)
-    if not call.function.checked:
-        return _unknown(call, "The dialect's arithmetic is not checked")
     if (widest := _widest_integer(known)) is not None:
-        return Result(widest, "Checked integer arithmetic over integers is an integer", (call,), operands)
-    if len(known) == 1 and known[0].exact_numeric:
-        return Result(known[0], "Negation keeps the type of an integer or decimal", (call,), operands)
-    if call.injective_argument is not None and all(typing.exact_numeric for typing in known):
-        return Result(_DECIMAL_EXPRESSION, "A decimal with an exact literal added is a decimal", (call,), operands)
-    return _unknown(call, "No type is claimed for this arithmetic")
+        return Result(widest, "Integer arithmetic over integers is an integer", (call,), operands)
+    if not all(typing.exact_numeric for typing in known):
+        return _unknown(call, "An operand is not a number")
+    if len(known) == 1:
+        return Result(known[0], "Negation keeps the type of an exact number", (call,), operands)
+    return Result(_DECIMAL_EXPRESSION, "Arithmetic over exact numbers is a decimal", (call,), operands)
 
 
 @analysis(Stratum.COMPARISON)
@@ -188,10 +191,10 @@ def exact_comparison(left: ir.ScalarExpr, right: ir.ScalarExpr) -> Result[bool]:
         return Result(True, "Text compared by identity on both sides", (left, right), premises)
     if a.identity_comparison and b.identity_comparison and a.comparison_type == b.comparison_type:
         return Result(True, "Both sides have one type whose equal values are identical", (left, right), premises)
-    if a.integer is not None and b.integer is not None:
-        return Result(True, "Integers compare by value whatever their width", (left, right), premises)
-    if _exact_literal(left, a) and b.exact_numeric or _exact_literal(right, b) and a.exact_numeric:
-        return Result(True, "An integer or decimal literal compares by value with an integer or decimal", (left, right), premises)
+    if a.exact_numeric and b.exact_numeric:
+        return Result(True, "Exact numbers compare by value whatever their width or scale", (left, right), premises)
+    if _string_literal(left) and b.temporal and b.identity_comparison or _string_literal(right) and a.temporal and a.identity_comparison:
+        return Result(True, "A string literal is read as the date or time it is compared with", (left, right), premises)
     return Result(False, "The comparison may coerce a side and lose what tells values apart", (left, right), premises)
 
 
@@ -203,11 +206,10 @@ def _widest_integer(typings: Sequence[ir.ValueTyping]) -> ir.ValueTyping | None:
     return max(typings, key=lambda typing: typing.integer or 0)
 
 
-def _exact_literal(expression: ir.ScalarExpr, typing: ir.ValueTyping) -> bool:
-    """An integer or decimal literal: a number that is no float."""
-    match expression:
-        case ir.Constant(value=ir.LiteralValue(type="numeric")):
-            return not typing.floating
+def _string_literal(expression: ir.ScalarExpr) -> bool:
+    match expression.closed:
+        case ir.Constant(value=ir.LiteralValue(type="string")):
+            return True
         case _:
             return False
 

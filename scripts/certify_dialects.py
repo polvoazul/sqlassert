@@ -121,7 +121,7 @@ def facts(dialect: str, meaning: DialectSemantics | None = None) -> tuple[Fact, 
     meaning = semantics(dialect) if meaning is None else meaning
     found = [
         *_builtin_facts(dialect, meaning), *_flag_facts(dialect, meaning), *_result_type_facts(dialect, meaning),
-        *_values_type_facts(dialect, meaning), *_table_function_facts(dialect, meaning),
+        *_values_type_facts(dialect, meaning), *_literal_type_facts(dialect, meaning), *_table_function_facts(dialect, meaning),
     ]
     return tuple(sorted(found, key=lambda fact: fact.name))
 
@@ -279,19 +279,13 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
         label = builtin.name
         guards = _spell(call(ordinary), label, dialect)
 
-        def probe(arguments: Sequence[Expr], expect: Expect, exact: int | None = None, accepted_error: str = "") -> Iterable[Check]:
-            """One check per way to write the call, guarded by the same way with ordinary arguments.
-            With `exact`, the check passes when the call raises or returns exactly that
-            integer, as text (a float is not exact): an engine may widen the type (DuckDB 2.0 returns `-MIN` as a HUGEINT)."""
+        def probe(arguments: Sequence[Expr], expect: Expect, accepted_error: str = "") -> Iterable[Check]:
+            """One check per way to write the call, guarded by the same way with ordinary arguments."""
             spellings = _spell(call(arguments), label, dialect)
             if not spellings:
                 yield Check("", expect, problem=f"no {dialect} SQL parses to {node.__name__}")
             for key, text in spellings.items():
-                query = (
-                    f"SELECT CASE WHEN CAST(({text}) AS VARCHAR(40)) = '{exact}' THEN 1 ELSE 0 END" if exact is not None
-                    else _is_null(text) if expect == "true"
-                    else _is_not_null(text)
-                )
+                query = _is_null(text) if expect == "true" else _is_not_null(text)
                 yield Check(query, expect, guard=(f"SELECT {guards[key]}",) if key in guards else (), accepted_error=accepted_error)
 
         strict_positions = [i for i, flag in enumerate(strict) if flag]
@@ -311,9 +305,6 @@ def _builtin_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
                 for check in probe(null_at(ordinary, [j for j in range(count) if j != i]), "error or true", accepted_error=_DATA_ERROR)
             )
             yield Fact(f"skips_null({label})", "greatest=None", checks)
-        if builtin.injective:
-            checks = tuple(check for case in shape.overflow for check in probe(case, "error or true", exact=_exact(label, case), accepted_error=_OVERFLOW_ERROR))
-            yield Fact(f"injective({label})", "checked_arithmetic=False", checks)
 
 
 # The messages of an error that is the engine checking a value: integer overflow, a
@@ -328,16 +319,6 @@ _DATA_ERROR = (
     # Trino's type errors: a known operator or function given an argument of the wrong type.
     r"|cannot apply operator|unexpected parameters \(.*\) for function|must evaluate to a|cannot check if"
 )
-_LEAST, _GREATEST = -(2**63), 2**63 - 1
-_EXACT = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b, "unary -": lambda a: -a}
-
-
-def _exact(name: str, case: Sequence[Expr]) -> int:
-    """The mathematically exact result of an overflow case."""
-    operands = [_LEAST if argument is _BIGINT_MIN else _GREATEST if argument is _BIGINT_MAX else int(argument.name) for argument in case]
-    return _EXACT[name](*operands)
-
-
 # Spellings SQLGlot does not write but parses to the Builtin's node.
 _SPELLINGS: dict[str, tuple[str, ...]] = {"//": ("{0} DIV {1}",)}
 
@@ -564,6 +545,37 @@ def _values_type_check(dialect: str, rows: tuple[str, ...], expected: str, *, ex
     if dialect not in _TYPE_OF:
         return Check("", "true", problem=f"{dialect} has no type function")
     return Check(f"SELECT {matches(_TYPE_OF[dialect].format('c'))} FROM {source} LIMIT 1", "true")
+
+
+# Number literals of each kind (`DialectSemantics.literal_types`), as written in SQL.
+_LITERAL_SAMPLES: dict[str, tuple[str, ...]] = {"decimal": ("0.1", "1.5", "-123.456"), "exponent": ("1e0", "2.5E3", "1e-2")}
+# The type function of a literal: the dialect's own (`_TYPE_OF`), SQLite's
+# storage class, ClickHouse's type name.
+_LITERAL_TYPE_OF = {**_TYPE_OF, "sqlite": "typeof({})", "clickhouse": "toTypeName({})"}
+
+
+def _literal_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact]:
+    """Each claimed number literal type, probed over literals of its kind: the
+    engine's own name for the type (its type function, or for MySQL the column
+    of a table made from the literal) is the claimed one, or the claimed one
+    with parameters (`decimal(2,1)`)."""
+    for kind, type_name in meaning.literal_types:
+        checks = tuple(_literal_type_check(dialect, literal, type_name.lower()) for literal in _LITERAL_SAMPLES[kind])
+        yield Fact(f"literal_type({kind})={type_name}", f"drop {kind} from literal_types in dialects.py", checks)
+
+
+def _literal_type_check(dialect: str, literal: str, expected: str) -> Check:
+    def matches(type_text: str) -> str:
+        shown = f"replace(lower({type_text}), ' ', '')"
+        return f"CASE WHEN {shown} = '{expected}' OR {shown} LIKE '{expected}(%' THEN 1 ELSE 0 END"
+
+    if dialect == "mysql":
+        table = "sqlassert_probe_literal"
+        column = f"SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '{table}' AND column_name = 'c'"
+        return Check(f"SELECT {matches(f'({column})')}", "true", setup=(f"CREATE TABLE {table} AS SELECT {literal} AS c",), tables=(table,))
+    if dialect not in _LITERAL_TYPE_OF:
+        return Check("", "true", problem=f"{dialect} has no type function")
+    return Check(f"SELECT {matches(_LITERAL_TYPE_OF[dialect].format(literal))}", "true")
 
 
 # Calls of each table function the dialects claim, with the argument lists the engine accepts.

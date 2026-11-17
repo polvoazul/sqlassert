@@ -160,7 +160,7 @@ def test_equality_groups_sit_above_null_sources():
     assert Stratum.NON_NULL < Stratum.EQUALITY_GROUP < Stratum.FUNCTIONAL_DEPENDENCY
 
 
-@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b DOUBLE", "a BIGINT, b DECIMAL(10, 2)"])
+@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b DOUBLE"])
 def test_equalities_requiring_casts_do_not_merge(columns: str):
     parsed = IrParser("duckdb").parse(SqlParser("duckdb").parse(
         f"CREATE TABLE values_ ({columns}); SELECT a, b FROM values_ WHERE a = b"
@@ -169,10 +169,13 @@ def test_equalities_requiring_casts_do_not_merge(columns: str):
         assert all(len(group) == 1 for group in _equality_groups(parsed.root).value.groups)
 
 
-def test_integers_of_different_widths_merge():
-    # An integer compares by value with any other integer: no value is lost.
+@pytest.mark.parametrize(
+    "columns", ["a INTEGER, b BIGINT", "a BIGINT, b DECIMAL(10, 2)", "a DECIMAL(10, 2), b DECIMAL(12, 4)", "a UBIGINT, b BIGINT"],
+)
+def test_exact_numbers_of_any_width_or_scale_merge(columns: str):
+    # Exact numbers compare by value whatever their width or scale (ADR 0007).
     parsed = IrParser("duckdb").parse(SqlParser("duckdb").parse(
-        "CREATE TABLE values_ (a INTEGER, b BIGINT); SELECT a, b FROM values_ WHERE a = b"
+        f"CREATE TABLE values_ ({columns}); SELECT a, b FROM values_ WHERE a = b"
     )).program
     with Engine().session(parsed):
         assert [len(group) for group in _equality_groups(parsed.root).value.groups] == [2]

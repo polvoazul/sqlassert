@@ -1,0 +1,90 @@
+-- When an equality compares exactly (ADR 0007), in each dialect: values are
+-- assumed to stay in range, exact numbers compare by value whatever their
+-- width or scale, a float never compares exactly, and a string literal beside
+-- a date is read as that date.
+CREATE TABLE n (a BIGINT, b BIGINT, i INTEGER, p2 DECIMAL(10, 2), p4 DECIMAL(12, 4), x DOUBLE, d DATE, t VARCHAR(10));
+
+-- case: integer_arithmetic_binds__duckdb
+SELECT a, b FROM n WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: integer_arithmetic_binds__mysql
+-- MySQL's `-x` of the least BIGINT is a DECIMAL: an overflow, not modelled.
+-- dialect: mysql
+SELECT a, b FROM n WHERE b = -a /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: integer_arithmetic_binds__snowflake
+-- dialect: snowflake
+SELECT a, b FROM n WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: integer_arithmetic_binds__clickhouse
+-- ClickHouse wraps on overflow: not modelled.
+-- dialect: clickhouse
+SELECT a, b FROM n WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: integer_arithmetic_binds__hive
+-- dialect: hive
+SELECT a, b FROM n WHERE b = a * 2 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: integer_arithmetic_binds__sqlite
+-- SQLite turns an overflow into a REAL: not modelled.
+-- dialect: sqlite
+SELECT a, b FROM n WHERE b = a - 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+/**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: integer_arithmetic_binds__oracle
+-- dialect: oracle
+SELECT a, b FROM n WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: decimals_of_different_scales_compare_by_value
+SELECT p2, p4 FROM n WHERE p4 = p2 /**ASSERT DETERMINES(p2 -> p4)**/  --~ PROVED
+/**ASSERT DETERMINES(p4 -> p2)**/  --~ PROVED
+
+-- case: decimal_arithmetic_compares_by_value
+SELECT p2, p4 FROM n WHERE p4 = p2 * 3 /**ASSERT DETERMINES(p2 -> p4)**/  --~ PROVED
+
+-- case: an_integer_and_a_decimal_compare_by_value
+SELECT i, p2 FROM n WHERE p2 = i /**ASSERT DETERMINES(i -> p2)**/  --~ PROVED
+
+-- case: an_unsigned_integer_compares_by_value
+-- dialect: mysql
+CREATE TABLE u (k BIGINT UNSIGNED, a BIGINT);
+SELECT k, a FROM u WHERE a = k /**ASSERT DETERMINES(k -> a)**/  --~ PROVED
+
+-- case: a_float_never_compares_exactly
+SELECT a, x FROM n WHERE x = a /**ASSERT DETERMINES(a -> x)**/  --~ UNKNOWN
+
+-- case: a_decimal_literal_pins__duckdb
+SELECT i, p2 FROM n WHERE p2 = 0.1 /**ASSERT DETERMINES(i -> p2)**/  --~ PROVED
+
+-- case: an_exponent_literal_pins__postgres
+-- dialect: postgres
+SELECT i, p2 FROM n WHERE p2 = 1e0 /**ASSERT DETERMINES(i -> p2)**/  --~ PROVED
+
+-- case: an_exponent_literal_is_a_float__duckdb
+SELECT i, p2 FROM n WHERE p2 = 1e0 /**ASSERT DETERMINES(i -> p2)**/  --~ UNKNOWN
+
+-- case: a_decimal_literal_is_a_float__bigquery
+-- dialect: bigquery
+SELECT i, p2 FROM n WHERE p2 = 0.1 /**ASSERT DETERMINES(i -> p2)**/  --~ UNKNOWN
+
+-- case: a_decimal_literal_is_a_float__sqlite
+-- dialect: sqlite
+SELECT i, p2 FROM n WHERE p2 = 0.1 /**ASSERT DETERMINES(i -> p2)**/  --~ UNKNOWN
+
+-- case: a_string_literal_pins_a_date
+SELECT i, d FROM n WHERE d = '2024-01-01' /**ASSERT DETERMINES(i -> d)**/  --~ PROVED
+
+-- case: a_string_literal_pins_a_date__mysql
+-- dialect: mysql
+SELECT i, d FROM n WHERE d = '2024-01-01' /**ASSERT DETERMINES(i -> d)**/  --~ PROVED
+
+-- case: a_string_literal_does_not_pin_a_number
+SELECT i, a FROM n WHERE a = '5' /**ASSERT DETERMINES(i -> a)**/  --~ UNKNOWN
+
+-- case: text_against_a_number_binds_nothing__mysql
+-- dialect: mysql
+SELECT i, t FROM n WHERE t = i /**ASSERT DETERMINES(i -> t)**/  --~ UNKNOWN

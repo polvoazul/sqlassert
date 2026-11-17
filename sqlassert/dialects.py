@@ -41,8 +41,9 @@ type GreatestMeaning = Literal["strict", "skips-null"] | None
 
 @dataclass(frozen=True)
 class DialectSemantics:
-    # `+`, `-`, `*`, unary `-` and CAST raise an error on overflow or a bad
-    # value rather than wrapping, saturating, or returning NULL.
+    # `+`, `-`, `*`, unary `-` and CAST of non-null values are never NULL: a
+    # bad value raises an error. Only NULL reasoning reads it: types and
+    # injectivity assume values stay in range in every dialect (ADR 0007).
     checked_arithmetic: bool = False
     # `/`, integer division and `%` by zero raise an error rather than return NULL.
     checked_division: bool = False
@@ -120,6 +121,8 @@ class DialectSemantics:
     # written with a point (`0.1`), and "exponent", one written with an exponent
     # (`1e0`). An exact type compares by value; a float rounds. A literal of a
     # kind not listed has no type claimed, so it types and binds nothing.
+    # Certified with the engine's type function (`scripts/certify_dialects.py`);
+    # an exact type needs that probe or a cited doc (ADR 0007).
     # An integer literal is an INT where it fits, else a BIGINT, in every dialect.
     literal_types: tuple[tuple[str, str], ...] = ()
     # The type a VALUES column has when every non-NULL value in it is a
@@ -239,7 +242,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # A numeric literal with a point is an unscaled NUMERIC: no decimal is claimed.
         values_types=(("string", "text"), ("integer", "integer"), ("bigint", "bigint")),
         # A numeric constant with a point or an exponent is a NUMERIC (an unscaled one).
-        literal_types=(("decimal", "DECIMAL"), ("exponent", "DECIMAL")),
+        literal_types=(("decimal", "numeric"), ("exponent", "numeric")),
     ),
     "mysql": DialectSemantics(
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
@@ -278,7 +281,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative (docs/dialect-provenance.json). `md5_binary` is MD5Digest.
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR"), ("MD5Digest", "BINARY")),
         hash_functions=("MD5", "SHA", "MD5Digest"),
-        literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
+        # No literal type is claimed: the docs state none for `1.5`, and give `1e10` an exact NUMBER(11,0).
     ),
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
@@ -311,7 +314,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative.
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR")),
         hash_functions=("MD5", "SHA"),
-        literal_types=(("decimal", "DECIMAL"),),
+        # No literal type is claimed: the docs call `1.5` both a floating-point and a decimal literal.
         # Tentative. Unnesting a SUPER array, `FROM t, t.xs AS x`, has the one column `x` (SQLGlot reads it as an UNNEST).
         table_functions=(("unnest", ("unnest",)),),
     ),
@@ -338,6 +341,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Only an INTEGER PRIMARY KEY (the rowid) is never NULL.
         primary_key_not_null=False,
         table_functions=(("json_each", _JSON_TABLE_COLUMNS), ("json_tree", _JSON_TABLE_COLUMNS)),
+        # A number with a point or an exponent is a REAL, a float.
+        literal_types=(("decimal", "real"), ("exponent", "real")),
     ),
     # A ClickHouse primary key orders and indexes a table; it never rejects a duplicate.
     # Its `MD5`/`SHA1`/`SHA256` return FixedString bytes, wrapped in Nullable
@@ -345,9 +350,13 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     # type is claimed.
     "clickhouse": DialectSemantics(
         concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced", hash_functions=("MD5Digest", "SHA", "SHA2"),
-        literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
+        literal_types=(("decimal", "Float64"), ("exponent", "Float64")),
     ),
-    "oracle": DialectSemantics(empty_string_is_null=True),
+    "oracle": DialectSemantics(
+        empty_string_is_null=True,
+        # A number literal without an `f` or `d` suffix is a NUMBER, point or exponent alike.
+        literal_types=(("decimal", "NUMBER"), ("exponent", "NUMBER")),
+    ),
     # Trino has no constraint but NOT NULL: its CREATE TABLE rejects a key, so
     # one in the SQL describes a table some other engine holds.
     "trino": DialectSemantics(

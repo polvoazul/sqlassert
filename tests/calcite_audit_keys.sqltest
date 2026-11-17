@@ -386,11 +386,12 @@ SELECT g, max(f) AS max_f, max(f) + 1 AS next_f FROM measure GROUP BY g
 /**ASSERT UNIQUE(max_f)**/  --~ PROVED
 /**ASSERT UNIQUE(next_f)**/  --~ UNKNOWN
 
--- case: uk_pass_through_aggregate_where_arithmetic_wraps
+-- case: uk_pass_through_aggregate_where_overflow_does_not_raise
+-- Values are assumed to stay in range (ADR 0007), so `+ 1` is injective in SQLite too.
 -- dialect: sqlite
 SELECT sal, max(empno) AS max_emp, max(empno) + 1 AS next_emp FROM emp GROUP BY sal
 /**ASSERT UNIQUE(max_emp)**/  --~ PROVED
-/**ASSERT UNIQUE(next_emp)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(next_emp)**/  --~ PROVED
 
 -- case: uk_grouping_sets
 -- inspired by RelMetadataTest.testUniqueKeysWithConfOnAggregateWithGroupingSets

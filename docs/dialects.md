@@ -360,59 +360,66 @@ each `o` row, if the comparison loses nothing (`rules/join_cardinality.py`,
 no volatile or user-defined function, aggregate, window or subquery); it
 need not be injective, nor `x` compared by identity, since it is one row.
 `-m.c = o.y` or `m.c + 1 = o.y` fixes `c` too, only because the matched side
-is injective in one exact column (`Builtin.injective`, the
-`checked_arithmetic` dialects: DuckDB, PostgreSQL, Trino, BigQuery, Redshift,
-Spark and Databricks; `injective(op)` in `docs/dialect-provenance.json`).
+is injective in one exact column (`Builtin.injective`, in every dialect: values
+are assumed to stay in range, [ADR 0007](adr/0007-exact-comparisons-assume-values-in-range.md),
+so an engine that wraps or turns to a float on overflow is read as one that
+does not).
 A CAST is not injective, so `CAST(m.ts AS DATE) = o.day` binds nothing of `m`
 while `m.day = CAST(o.ts AS DATE)` binds `day`.
 
 Losing nothing is `exact_comparison` of the two operands
 (`rules/value_typing.py`), the one question every equality asks (what it pins,
 binds or merges, the dependencies it gives, and the Hazard `Lossy
-comparison`): both operands have a type, and either both are text compared by
-identity, or both have one type whose equal values are identical, or both are
-signed integers (of any width), or one is an integer or decimal literal and
-the other an integer or decimal. A float binds nothing in either direction
+comparison`), the same in every dialect (ADR 0007): both operands have a type,
+and either both are text compared by identity, or both have one type whose
+equal values are identical, or both are exact numbers (integers of any width,
+signed or unsigned, decimals of any precision or scale, exact literals: the
+engine widens both to a common type, which loses nothing in range, and each
+side has a fixed scale), or one is a string literal and the other a date, time
+or timestamp compared by identity (the literal is read as that type). A
+decimal declared without a scale where it keeps each value's own
+(`unscaled_decimal`) has no type. A float binds nothing in either direction
 (`-0.0 = 0.0`, and a BIGINT compared with a DOUBLE rounds: 2^53 and 2^53 + 1
-are equal there), and neither does anything of unknown type.
+are equal there), and neither does anything of unknown type. The Hazard
+`Lossy comparison` warns on a float whatever the other side, and on text
+compared with a number, a string literal included (`n = '5'`), in every
+dialect.
 
 An operand has a type where `scalar_typing` finds one: a column's declared
 type (or its expression's); a CAST's (`ir.Call.typing`, the claim of `Types of
 computed expressions` above); a literal's (below); `count(...)`, an integer;
-arithmetic: `+`, `-`, `*` and negation of integers is an integer where the
-dialect's arithmetic is checked (`Builtin.checked`: DuckDB, PostgreSQL,
-Trino, BigQuery, Redshift, Spark and Databricks), the negation of a decimal has
-its type, and a decimal with an integer or decimal literal added is a decimal
-whose precision is not claimed (compared only with a literal, since
-DECIMAL(10,2) + 1 is DECIMAL(13,2)); and any arithmetic with a float operand is
-a float, in every dialect. A quotient, a remainder, any other call, and
-anything of an operand with no type, is untyped. Probed on DuckDB 2.0.0 with
-`typeof`: `-x` is `x`'s type for TINYINT through HUGEINT, DECIMAL(10,2) and
-DOUBLE; `x + 1`, `10 - x` and `i * 2` keep an INTEGER and a BIGINT;
-`DECIMAL(10,2) + 1` is DECIMAL(13,2) and `+ 0.5` DECIMAL(11,2); `x / 2` of
-integers is a DOUBLE; `1e0 + 1` is a DOUBLE; `-i`, `i + 1`, `10 - i` and
-`i * 2` raise on the least or greatest INTEGER instead of wrapping. Every other
-engine, from memory: negation keeps the operand's integer or decimal type
-(PostgreSQL's NUMERIC drops the precision, a value compare either way), and
-integer arithmetic is an integer type. In a dialect that is not
-`checked_arithmetic` (MySQL, Snowflake, SQLite, ClickHouse, Hive, Oracle) no
-Builtin is injective or checked, so integer arithmetic is untyped and binds
-nothing; a float operand still makes a float.
+arithmetic, in every dialect (ADR 0007: overflow is not modelled): `+`, `-`,
+`*` and negation of integers is the widest integer, the negation of an exact
+number has its type, any other of these over exact numbers is a decimal whose
+precision is not claimed (an exact number, so it compares by value with any
+other), and any arithmetic with a float operand is a float. A quotient, a
+remainder, any other call, and anything of an operand with no type, is
+untyped. Probed on DuckDB 2.0.0 with `typeof`: `-x` is `x`'s type for TINYINT
+through HUGEINT, DECIMAL(10,2) and DOUBLE; `x + 1`, `10 - x` and `i * 2` keep
+an INTEGER and a BIGINT; `DECIMAL(10,2) + 1` is DECIMAL(13,2) and `+ 0.5`
+DECIMAL(11,2); `x / 2` of integers is a DOUBLE; `1e0 + 1` is a DOUBLE. Every
+other engine, from memory: integer arithmetic is an integer type or, past its
+range, an error, a wrapped value (ClickHouse), a DECIMAL (MySQL's `-x` of the
+least BIGINT) or a REAL (SQLite), none of which is modelled.
 
 A literal has a type from its kind (`IrParser._literal_typing`): a string is
-text compared by identity where the dialect's is (DuckDB `typeof`: VARCHAR);
+text (compared by identity where the dialect's is; DuckDB `typeof`: VARCHAR);
 a boolean a BOOLEAN; an integer an INT where it fits, else a BIGINT (DuckDB:
 INTEGER, BIGINT, then HUGEINT, which here is a decimal); a number of more than
 38 digits none (DuckDB turns it into a DOUBLE). A number written with a point
 (`0.1`) or an exponent (`1e0`) has the type `DialectSemantics.literal_types`
-claims for its kind, and none where it claims none (SQLite, Oracle): DuckDB
-probed (`0.1` is DECIMAL(2,1), `1e0` and `1.5e3` DOUBLE, `123456789012345678901234567890123456789.5`
-DOUBLE); from memory, the vendor documentation for the rest: a decimal and an
-exponent literal are exact and a DOUBLE in MySQL, Spark, Databricks, Trino and
-Snowflake (`1e0` FLOAT); PostgreSQL's NUMERIC constants take a point or an
-exponent (an unscaled NUMERIC, so neither identical nor exact in the sense of a
-column); Redshift's decimal is NUMERIC; BigQuery, ClickHouse and Hive read both
-as floating point. Not certified by `scripts/certify_dialects.py`.
+names for its kind, as the engine spells it, and none where it names none:
+an exact type makes it an exact number (one value, so its own scale does not
+matter), a float a float. Each is a fact of `scripts/certify_dialects.py`
+(`literal_type(kind)=TYPE`), probed with the engine's type function (`typeof`,
+`pg_typeof`, `toTypeName`, SQLite's storage class; for MySQL, the column of a
+table made from the literal): an exact type needs that probe or a cited doc; a
+float may be from memory, since a wrong one loses proofs and warns, never
+proves. Claimed: `0.1` exact and `1e0` a float in DuckDB, MySQL, Trino, Spark
+and Databricks; both exact in PostgreSQL (`numeric`) and Oracle (`NUMBER`);
+both floats in BigQuery, ClickHouse, Hive and SQLite. None in Snowflake (its
+docs name no type for `0.1`, and give `1e10` an exact NUMBER(11,0)) or
+Redshift (its docs call `0.1` both a floating-point and a decimal literal).
 
 IS NOT DISTINCT FROM also matches NULL to NULL, so it fixes a column non-null
 only where the other operand is never NULL: `ir.total` of it, over columns
@@ -571,9 +578,9 @@ would replace that check if another dialect is modelled.
 ## Certifying facts
 
 Every claim a dialect's flags make, every Builtin fact
-(`strict(op)`, `total(op)`, `injective(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
+(`strict(op)`, `total(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
 derives from them, and every function result type (`result_type(Node)=TYPE`,
-from `DialectSemantics.result_types`, `values_type(KIND)=TYPE`, from `values_types`, and `table_function(NAME)=COLUMNS`, from `table_functions`) has a provenance in `docs/dialect-provenance.json`:
+from `DialectSemantics.result_types`, `values_type(KIND)=TYPE`, from `values_types`, `literal_type(KIND)=TYPE`, from `literal_types`, and `table_function(NAME)=COLUMNS`, from `table_functions`) has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
 version or date}` when read in the engine's documentation, and, only for a
 dialect with no local engine, `{"tentative": why}` when stated from memory,
@@ -587,7 +594,7 @@ is certified on an engine, which Spark facts are (the rest of Spark's are
 
 `scripts/certify_dialects.py` (not part of the package) generates one probe
 per fact from the fact itself: the Builtin called with a typed NULL (strict),
-with overflowing, zero-dividing and badly cast arguments (total, injective),
+with overflowing, zero-dividing and badly cast arguments (total),
 with every argument NULL but one (skips_null), `sum` and `avg` of
 overflowing BIGINTs and DOUBLEs, infinities and NaN (`checked_sum`; vacuous
 where a DOUBLE holds no infinity or NaN),
@@ -606,10 +613,9 @@ when a later version supports the construct its probe runs there and
 decides. `--list` prints the probes without a connection; `--only` probes
 and records the facts it names, leaving the others' provenance as it is. A probe that expects an error
 (overflow, a failed cast, division by zero) declares the message it accepts as
-a regex; any other error fails, and so does a returned value that is not the
-exact result. An `injective` probe passes on the declared overflow error or on
-the exact result as text (DuckDB 2.0 widens `-x` of the least BIGINT to a
-HUGEINT); a wrapped, saturated, NULL or floating-point result fails.
+a regex; any other error fails. Injectivity is no fact: values are assumed
+to stay in range (ADR 0007), so `+`, `-` and negation are injective in every
+dialect and nothing is probed for it.
 
 Certification is one-off: rerun it when adding a dialect, changing a fact, or
 supporting a new major version. The engines it was run on:

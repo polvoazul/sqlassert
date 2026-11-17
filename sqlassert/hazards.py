@@ -15,17 +15,20 @@ the proof that would have pinned it, which failed:
   `count(*)` has no argument, so only a many-to-many join is a trap for it.
   Silent when the input whose rows are repeated has no known Unique Set.
 - A Lossy Comparison: an equality (`=`, `<>`, `IS [NOT] DISTINCT FROM`, an
-  IN list or subquery) whose two operands both have a known type
-  (`rules/value_typing.py`) and that is not an `exact_comparison`, because a
-  float is on either side (a column, an expression or a literal: floats
-  round, and a BIGINT beside a DOUBLE rounds too, so exact equality is wrong;
-  which values a float holds exactly is no rule to rely on), or because text
-  is compared with another type: the text is cast, so different strings may
-  match one value (`'01'` and `'1'` both equal 1), and no cardinality is
-  proved across it. Write the cast explicitly. In a join's ON, a WHERE or
-  HAVING, and the correlation of an IN or EXISTS subquery (its semi or anti
-  join). Silent for an ordering (`<`, `>`), an operand whose type is unknown,
-  and a string literal, which takes the other side's type.
+  IN list or subquery) that is not an `exact_comparison`
+  (`rules/value_typing.py`), because a float is on either side, whatever the
+  other side is (a column, an expression or a literal: floats round, and a
+  BIGINT beside a DOUBLE rounds too, so exact equality is wrong; which values
+  a float holds exactly is no rule to rely on), or because text, a string
+  literal included, is compared with a number or, for text that is not a
+  literal, with any other known type: the text is cast, so different strings
+  may match one value (`'01'` and `'1'` both equal 1), and no cardinality is
+  proved across it. Write the cast explicitly. The same in every dialect
+  (ADR 0007): where the engine raises on the cast instead, the SQL is wrong
+  either way. In a join's ON, a WHERE or HAVING, and the correlation of an IN
+  or EXISTS subquery (its semi or anti join). Silent for an ordering (`<`,
+  `>`), text against an operand whose type is unknown, and a string literal
+  beside a date, time or timestamp, which SQL has no other way to write.
 - A scalar subquery not proved to return at most one row (issue 38): more
   than one is a runtime error. Uncorrelated, its body must have at most one
   row; correlated, the columns its WHERE binds must reach its Row Identity.
@@ -404,34 +407,35 @@ def _lossy_comparisons(site: AttachmentSite, conjuncts: Iterable[ir.ScalarExpr],
 
 
 def _lossy_pair(left: ir.ScalarExpr, right: ir.ScalarExpr) -> tuple[str, Result] | None:
-    """Why `left = right` is lossy, with the failed `exact_comparison`: both
-    operands typed, the comparison not exact, and a float on a side or text
-    against another type. A string literal is no text here: it takes the type
-    of the other side."""
-    if any(isinstance(operand, ir.Constant) and operand.value is not None and operand.value.type == "string" for operand in (left, right)):
-        return None
+    """Why `left = right` is lossy, with the failed `exact_comparison`: a
+    float on a side, whatever the other; or text against a number, or text
+    that is not a string literal against any other known type."""
     first, second = scalar_typing(left).value, scalar_typing(right).value
-    if first is None or second is None:
-        return None
     exact = exact_comparison(left, right)
     if exact.value:
         return None
     for operand, typing in ((left, first), (right, second)):
-        if typing.floating:
+        if typing is not None and typing.floating:
             side = _described(operand)
             return (
                 f"{side} is {typing.comparison_type}, a floating-point type, so values that differ may compare equal; "
                 "compare within a tolerance or use an exact type",
                 Result(False, f"{side} is {typing.comparison_type}, a floating-point type, compared for exact equality", (left, right), [exact]),
             )
-    if first.binary_text != second.binary_text:
-        (text, _), (other, other_typing) = ((left, first), (right, second)) if first.binary_text else ((right, second), (left, first))
-        return (
-            f"{_described(text)} is text and {_described(other)} is {other_typing.comparison_type}: the text is cast, so different "
-            "strings may match one value ('01' and '1' both equal 1); cast explicitly",
-            Result(False, f"{_described(text)} is text compared with {other_typing.comparison_type}, which casts the text", (left, right), [exact]),
-        )
-    return None
+    if first is None or second is None or first.text == second.text:
+        return None
+    (text, _), (other, other_typing) = ((left, first), (right, second)) if first.text else ((right, second), (left, first))
+    if _string_literal(text) and not other_typing.exact_numeric:
+        return None  # A string literal beside a date, a boolean, a UUID: read as that type.
+    return (
+        f"{_described(text)} is text and {_described(other)} is {other_typing.comparison_type}: the text is cast, so different "
+        "strings may match one value ('01' and '1' both equal 1); cast explicitly",
+        Result(False, f"{_described(text)} is text compared with {other_typing.comparison_type}, which casts the text", (left, right), [exact]),
+    )
+
+
+def _string_literal(operand: ir.ScalarExpr) -> bool:
+    return isinstance(operand, ir.Constant) and operand.value is not None and operand.value.type == "string"
 
 
 def _described(operand: ir.ScalarExpr) -> str:

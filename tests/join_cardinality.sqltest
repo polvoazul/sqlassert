@@ -103,17 +103,17 @@ CREATE TABLE wide (id BIGINT PRIMARY KEY);
 SELECT * FROM chain /**ASSERT MANY TO ONE**/ JOIN wide ON wide.id = chain.parent + 1
 --~ PROVED
 
--- case: an_added_literal_is_not_typed_over_a_decimal
--- DuckDB's DECIMAL(10, 2) + 1 is a DECIMAL(13, 2): compared as a wider type.
+-- case: an_added_literal_over_a_decimal_binds
+-- DuckDB's DECIMAL(10, 2) + 1 is a DECIMAL(13, 2), compared by value with a DECIMAL(10, 2) (ADR 0007).
 CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
 SELECT * FROM ledger AS a /**ASSERT MANY TO ONE**/ JOIN ledger AS b ON b.amount = a.amount + 1
---~ UNKNOWN
+--~ PROVED
 
--- case: an_added_literal_over_a_decimal_on_the_matched_side_is_not_inverted
--- The same comparison as above, from the other side: a DECIMAL beside a computed decimal.
+-- case: an_added_literal_over_a_decimal_on_the_matched_side_is_inverted
+-- The same comparison as above, from the other side: `+ 1` is injective, so b.amount matches one a.
 CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
 SELECT * FROM ledger AS a /**ASSERT ONE TO MANY**/ JOIN ledger AS b ON b.amount = a.amount + 1
---~ UNKNOWN
+--~ PROVED
 
 -- case: an_on_equality_through_an_integer_expression_binds
 CREATE TABLE keyed (k BIGINT PRIMARY KEY);
@@ -287,8 +287,9 @@ CREATE TABLE b (k INTEGER UNIQUE);
 SELECT * FROM a /**ASSERT MANY TO ONE**/ LEFT JOIN b ON b.k = a.k + 1
 --~ PROVED
 
--- case: arithmetic_that_wraps_binds_nothing
+-- case: arithmetic_binds_where_overflow_does_not_raise
+-- Values are assumed to stay in range (ADR 0007): SQLite's overflow to REAL is not modelled.
 -- dialect: sqlite
 CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
 SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = child.parent + 1
---~ UNKNOWN
+--~ PROVED

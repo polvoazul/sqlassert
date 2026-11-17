@@ -238,8 +238,31 @@ def test_text_compared_with_another_type_is_a_hazard_in_a_where_too(sql: str):
     assert len(hazards) == 1 and "is text and" in hazards[0].message
 
 
-def test_a_string_literal_takes_the_other_sides_type_so_it_is_no_hazard():
-    assert suggest(CASTS + "SELECT n FROM codes WHERE n = '5' AND code = 'x'").hazards == ()
+def test_a_string_literal_beside_text_is_no_hazard():
+    assert suggest(CASTS + "SELECT n FROM codes WHERE code = 'x'").hazards == ()
+
+
+def test_a_string_literal_beside_a_number_is_a_hazard():
+    # '05' and '5' both equal 5: the literal is cast, in every dialect (ADR 0007).
+    hazards = suggest(CASTS + "SELECT n FROM codes WHERE n = '5'").hazards
+    assert [hazard.concern for hazard in hazards] == [Concern.LOSSY_COMPARISON]
+
+
+@pytest.mark.parametrize("column", ["d DATE", "ts TIMESTAMP"])
+def test_a_string_literal_beside_a_date_is_no_hazard(column: str):
+    name = column.split()[0]
+    assert suggest(f"CREATE TABLE days ({column}); SELECT {name} FROM days WHERE {name} = '2024-01-01'").hazards == ()
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "mysql", "snowflake"])
+def test_text_against_a_number_is_a_hazard_whatever_the_collation(dialect: str):
+    sql = "CREATE TABLE codes (code VARCHAR(10), n INTEGER); SELECT n FROM codes WHERE code = n"
+    assert [hazard.concern for hazard in suggest(sql, dialect=dialect).hazards] == [Concern.LOSSY_COMPARISON]
+
+
+def test_a_float_against_an_untyped_operand_is_a_hazard():
+    sql = "CREATE TABLE f (x DOUBLE); SELECT x FROM f WHERE x = external_value()"
+    assert [hazard.concern for hazard in suggest(sql).hazards] == [Concern.LOSSY_COMPARISON]
 
 
 # Mixed CASE types ---------------------------------------------------------------

@@ -1036,20 +1036,20 @@ class IrParser:
         kind = definition.args.get("kind")
         if not isinstance(kind, exp.DataType):
             return None
-        if kind.this in exp.DataType.TEXT_TYPES:
-            return kind.sql(dialect=self.dialect) if self._is_binary_text(definition) else None
         if self._unscaled_decimal(kind):
             return None
         return kind.sql(dialect=self.dialect)
 
     def _identity_comparison(self, definition: exp.ColumnDef) -> bool:
         """Declared with a type whose equal values are identical (text only
-        when compared by identity, which `_comparison_type` already checks)."""
+        when compared by identity)."""
         kind = definition.args.get("kind")
         if not (self._comparison_type(definition) is not None and isinstance(kind, exp.DataType)):
             return False
         if kind.this == exp.DataType.Type.TIMESTAMPTZ:
             return self.semantics.zoned_timestamp_is_instant
+        if kind.this in exp.DataType.TEXT_TYPES:
+            return self._is_binary_text(definition)
         return kind.this in _IDENTITY_TYPES
 
     def _exact_numeric(self, definition: exp.ColumnDef) -> bool:
@@ -2233,6 +2233,7 @@ class IrParser:
         return ir.ValueTyping(
             comparison_type, self._is_binary_text(definition), self._identity_comparison(definition), self._exact_numeric(definition),
             floating=kind.this in _FLOATS, integer=_INTEGER_RANK.get(kind.this),
+            text=kind.this in exp.DataType.TEXT_TYPES, temporal=kind.this in exp.DataType.TEMPORAL_TYPES,
         )
 
     def _cast_typing(self, cast: exp.Cast, value: ir.ScalarExpr) -> ir.ValueTyping | None:
@@ -2290,10 +2291,9 @@ class IrParser:
         declared = exp.DataType.build(name, dialect=self.dialect)
         if declared.this in _FLOATS:
             return self._declared_typing(declared)
-        # An exact number is compared by value: a decimal literal (PostgreSQL's NUMERIC with no scale)
-        # is no value of an unscaled type.
-        exact = not self._unscaled_decimal(declared)
-        return ir.ValueTyping("DECIMAL LITERAL", False, exact, exact)
+        # An exact number is compared by value. A literal is one value, so its
+        # scale (PostgreSQL's NUMERIC keeps the one written) does not matter.
+        return ir.ValueTyping("DECIMAL LITERAL", False, True, True)
 
     def _constant(self, origin: Origin, value: ir.LiteralValue | None) -> ir.Constant:
         return ir.Constant(origin=origin, value=value, typing=self._literal_typing(value))
@@ -3256,17 +3256,14 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     SQLite turns a NaN into NULL, MySQL a bad date CAST), and division and
     remainder only where division by zero raises too (`checked_division`).
     A CAST from JSON is not total anywhere (`convert._is_json`): JSON `null`
-    is a value that casts to NULL. `+`, `-` and negation are injective where exact arithmetic overflows into
-    an error. `||`, `concat()`, `concat_ws()`, `greatest()`, `least()` and
+    is a value that casts to NULL. `+`, `-` and negation are injective in every
+    dialect: values are assumed to stay in range (ADR 0007). `||`, `concat()`, `concat_ws()`, `greatest()`, `least()` and
     subscripts (`xs[1]`) as each dialect treats NULL (MySQL's `||` is OR)."""
     checked = meaning.checked_arithmetic
     casts = meaning.casts_raise
 
-    def builtin(name: str, arity: int, *, total: bool = True, injective: bool = False, arithmetic: bool = False) -> ir.Builtin:
-        return ir.Builtin(
-            name=name, strict=(True,) * arity, total=(True,) * arity if total else None, injective=injective,
-            checked=arithmetic and checked,
-        )
+    def builtin(name: str, arity: int, *, total: bool = True, injective: bool = False) -> ir.Builtin:
+        return ir.Builtin(name=name, strict=(True,) * arity, total=(True,) * arity if total else None, injective=injective)
 
     binary = {
         exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=", exp.Like: "LIKE", exp.ILike: "ILIKE",
@@ -3275,10 +3272,10 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     division = {exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%"}
     builtins: dict[type[Expr], tuple[ir.Builtin, tuple[str, ...]]] = {
         **{node: (builtin(name, 2, total=casts), ("this", "expression")) for node, name in binary.items()},
-        exp.Mul: (builtin("*", 2, total=checked, arithmetic=True), ("this", "expression")),
+        exp.Mul: (builtin("*", 2, total=checked), ("this", "expression")),
         **{node: (builtin(name, 2, total=meaning.checked_division), ("this", "expression")) for node, name in division.items()},
-        **{node: (builtin(name, 2, total=checked, injective=checked, arithmetic=True), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
-        exp.Neg: (builtin("unary -", 1, total=checked, injective=checked, arithmetic=True), ("this",)),
+        **{node: (builtin(name, 2, total=checked, injective=True), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
+        exp.Neg: (builtin("unary -", 1, total=checked, injective=True), ("this",)),
         exp.Not: (builtin("NOT", 1, total=casts), ("this",)),
         exp.BitwiseNot: (builtin("~", 1, total=casts), ("this",)),
         exp.Cast: (builtin("CAST", 1, total=checked), ("this",)),
@@ -3763,10 +3760,12 @@ def _result_expressions(expression: exp.Case | exp.If | exp.Coalesce | exp.Nulli
 
 
 def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
-    """The declared comparison type of the column `column` passes on."""
+    """The declared comparison type of the column `column` passes on; None for
+    text not compared by identity."""
     while column.typing is None and isinstance(column.scalar_expr, ir.ColumnRef):
         column = column.scalar_expr.column
-    return None if column.typing is None else column.typing.comparison_type
+    typing = column.typing
+    return None if typing is None or typing.text and not typing.binary_text else typing.comparison_type
 
 
 # The signed integer types, by width (`ir.ValueTyping.integer`).

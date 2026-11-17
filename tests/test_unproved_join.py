@@ -76,8 +76,8 @@ CASES = [
         UnprovedJoin("untyped-key", "values"),
     ),
     (
-        "typed VALUES key against a decimal",
-        "SELECT a.id FROM a JOIN (VALUES (1), (2)) AS v (k) ON a.amount = v.k",
+        "typed VALUES key against a float",
+        "SELECT a.id FROM a JOIN f ON a.k = f.k",
         UnprovedJoin("untyped-key", "type-mismatch"),
     ),
     ("typed VALUES key", "SELECT a.id FROM a JOIN (VALUES (1), (2)) AS v (k) ON a.k = v.k", None),
