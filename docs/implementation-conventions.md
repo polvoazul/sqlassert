@@ -138,8 +138,9 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   a USING column, only a qualified `a.*` or `a.k` reads): in standard SQL the
   USING columns first in USING order, then the left input's others, then the
   right's; where the dialect keeps a USING column at its left input's position
-  (`using_column_stays_in_place`: DuckDB, SQLite) each merged column stands in
-  its left column's place. A USING name that is not one column of each input
+  (`using_star_order`: DuckDB, SQLite) each merged column stands in
+  its left column's place, and in MySQL the merged columns come first in the
+  left input's column order. A USING name that is not one column of each input
   leaves the join's columns unknown. A lone `*` passes its input through
   unchanged except over a USING join, which needs a Project.
 - Each star of a select list expands on its own (`_expand_stars`): one that

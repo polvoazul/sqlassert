@@ -151,6 +151,7 @@ class IrParser:
     _sort_keys: dict[int, tuple[ir.OutputColumn, ...] | None] = field(default_factory=dict)
     _site_sort_keys: list[tuple[AttachmentSite, tuple[ir.OutputColumn, ...] | None]] = field(default_factory=list)
     _set_operations: list[tuple[AttachmentSite, ir.SetOperation]] = field(default_factory=list)
+    _last_operands: list[tuple[AttachmentSite, ir.RelationExpr, str]] = field(default_factory=list)
     _unsupported: list[tuple[ir.Node, str]] = field(default_factory=list)
     # Joins written inside a SELECT that lowered opaque, with its construct.
     _orphan_joins: list[tuple[ir.Join, str]] = field(default_factory=list)
@@ -242,7 +243,7 @@ class IrParser:
         program = ir.Program(
             named_relations=named_relations, root=root, assertions=tuple(self._assertions), declarations=tuple(self._declarations), attachment_sites=tuple(self._attachment_sites),
             scalar_subqueries=tuple(self._scalar_subqueries), sort_keys=tuple(self._site_sort_keys),
-            set_operations=tuple(self._set_operations), unsupported=tuple(self._unsupported),
+            set_operations=tuple(self._set_operations), last_operands=tuple(self._last_operands), unsupported=tuple(self._unsupported),
             mixed_cases=tuple(self._mixed_cases),
         )
         if self._orphan_joins:
@@ -606,14 +607,27 @@ class IrParser:
             self._register_column_markers(limited, query)
             end = marker_position(query)
             if end is not None:
-                self._attachment_sites = [
-                    (site, other) for site, other in self._attachment_sites if not (site.trailing and site.offset == end[0])
-                ]
+                ending = [other for site, other in self._attachment_sites if self._ends_at(site, end[0])]
+                self._attachment_sites = [(site, other) for site, other in self._attachment_sites if not self._ends_at(site, end[0])]
+                # The last operand's Hazards are reported at the site its
+                # query's end now belongs to: an operand already waiting at
+                # this end (the last of a nested right operand) moves with it.
+                whole = AttachmentSite(_select_label(query), end[1], end[0], True)
+                last, owner = right, relation  # Through INTERSECT, which binds first: `a UNION b INTERSECT c` ends with c.
+                while isinstance(last, ir.SetOperation):
+                    last, owner = last.right, last
+                operator = owner.operator.upper() + ("" if owner.distinct else " ALL")
+                self._last_operands = [(whole if self._ends_at(site, end[0]) else site, operand, named) for site, operand, named in self._last_operands]
+                self._last_operands.extend((whole, other, operator) for other in ending if other is last)
             self._add_attachment_site(query, _select_label(query), limited, trailing=True)
             return limited
         if not isinstance(query, exp.Select):
             return None
         return self._lower_select(query)
+
+    @staticmethod
+    def _ends_at(site: AttachmentSite, offset: int) -> bool:
+        return site.trailing and site.offset == offset
 
     def _note_recursion_base(self, query: exp.SetOperation, base: ir.RelationExpr) -> None:
         """`query` is the body of a CTE or view being resolved: its left input,
@@ -1208,8 +1222,9 @@ class IrParser:
         The bindings are in the order a star over the join selects them (the
         shadowed ones, which a star skips, stay for `a.k` and `a.*`): the
         merged columns first in USING order, then the left input's columns,
-        then the right's (standard SQL); or each at its left column's place
-        where the dialect keeps it there (`using_column_stays_in_place`). A
+        then the right's (standard SQL); or each at its left column's place, or
+        first in the left input's order, where the dialect does so
+        (`using_star_order`). A
         USING name that is not one column of each input leaves the join's
         columns unknown, as the engine's are then not these."""
         bindings = list(lowered.bindings)
@@ -1251,13 +1266,14 @@ class IrParser:
             column = values[position] if kind == "full" else bindings[theirs if kind == "right" else mine].column
             self._using_columns += 1
             merged.append((mine, _Binding(f"{_USING_QUALIFIER}{self._using_columns}", name, column)))
-        if self.semantics.using_column_stays_in_place:
+        order = self.semantics.using_star_order
+        if order == "left_position":
             at = dict(merged)
             ordered = []
             for index, binding in enumerate(bindings):
                 ordered.extend((at[index], binding) if index in at else (binding,))
         else:
-            ordered = [*(binding for _, binding in merged), *bindings]
+            ordered = [*(binding for _, binding in (sorted(merged, key=lambda item: item[0]) if order == "left_order" else merged)), *bindings]
         return _Lowered(relation, tuple(ordered))
 
     def _opaque_join(self, left: _Lowered, right: _Lowered, join: exp.Join, origin: Origin) -> _Lowered:

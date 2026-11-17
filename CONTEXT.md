@@ -285,7 +285,9 @@ A place in the SQL text where a Property Marker can be written: right before a
 JOIN, right after the last token of a Select Expression (of the whole query,
 for a set operation: its last operand ends there too, so it has none), or
 right before a simple `CASE`. Every marker attaches at one; `suggest` names each site by its
-line and what it marks.
+line and what it marks. The Hazards of a set operation's last operand are
+reported at that shared site, saying they are in the last operand of the
+operator (a parenthesised last operand has a site of its own).
 _Avoid_: Marker position, anchor
 
 **Rewrite**:

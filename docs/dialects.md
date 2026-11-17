@@ -433,8 +433,9 @@ matches and does not change `definite`; those are untyped anyway.
 
 Two facts about the names a SELECT's output has decide whether a column can be
 bound by name or position. DuckDB and SQLite are probed
-(`tests/test_using_star_probe.py`, DuckDB 2.0.0 and SQLite 3.50.4); every other
-engine is **from memory**, not probed, and the standard is assumed (an owner decision).
+(`tests/test_using_star_probe.py`, DuckDB 2.0.0 and SQLite 3.50.4), as are
+MySQL 8.4.13, Postgres 18.6 and Trino 484 for a star over a USING join; every
+other engine is **from memory**, not probed, and the standard is assumed (an owner decision).
 
 **Star over a USING join.** `*` over `a JOIN b USING (c1, c2)` has each USING
 column once, as the merged column (the left input's for INNER and LEFT, the
@@ -442,16 +443,14 @@ right's for RIGHT, `COALESCE(a.c, b.c)` for FULL), and then the inputs' other
 columns; `a.*` keeps all of a's columns, `a.k` included. Where the merged
 column sits is the engines' difference:
 
-| | DuckDB, SQLite | every other engine modelled |
-|---|---|---|
-| `*` over `a(x, k, m) JOIN b(y, m, k, z) USING (k)` | `x, k, m, y, m, z`: the column stays at its left input's position and the right input's is dropped (probed; `USING (m, k)` is `x, k, m, y, z`, the order of the inputs, not of the list; a nested `JOIN c USING (k)` merges the same `k`) | `k, x, m, y, m, z`: the USING columns first, in USING-list order, then the left input's others, then the right's (SQL standard; from memory) |
-| `DialectSemantics.using_column_stays_in_place` | `True` | `False` |
+| | DuckDB, SQLite | MySQL | every other engine modelled |
+|---|---|---|---|
+| `*` over `a(x, k, m) JOIN b(y, m, k, z) USING (k)` | `x, k, m, y, m, z`: the column stays at its left input's position and the right input's is dropped (probed; `USING (m, k)` is `x, k, m, y, z`, the order of the inputs, not of the list; a nested `JOIN c USING (k)` merges the same `k`) | `k, x, m, y, m, z` (probed, MySQL 8.4.13) | `k, x, m, y, m, z`: the USING columns first, in USING-list order, then the left input's others, then the right's (SQL standard; probed on Postgres 18.6 and Trino 484, from memory for the rest) |
+| `USING (m, k)` | `x, k, m, y, z` | `k, m, x, y, z`: the USING columns first, in the left input's order, not the list's (probed) | `m, k, x, y, z` (probed on Postgres and Trino) |
+| `DialectSemantics.using_star_order` | `"left_position"` | `"left_order"` | `"standard"` |
 
-MySQL's manual orders the coalesced columns by their order in the first table,
-which differs from the standard when the USING list is in another order (from
-memory; one more case where the two orders disagree, and only then). A USING
-name that is not one column of each input (or is a name an engine may have
-renamed, below) leaves the join's columns unknown: a star over it stays
+A USING name that is not one column of each input (or is a name an engine may
+have renamed, below) leaves the join's columns unknown: a star over it stays
 unexpanded.
 
 **Duplicate output names of a derived table.** A subquery, CTE, view or
@@ -500,10 +499,10 @@ warning, and the call is an `unsupported-construct`.
 
 | | Postgres | Trino |
 | --- | --- | --- |
-| `generate_series`, `unnest` of one array, `regexp_split_to_table` | one column named by the function, or by an alias with no column list (a function that returns a base type: `chooseScalarFunctionAlias`), renamed by a column list (from memory) | |
-| `jsonb_array_elements`, `json_array_elements` and their `_text` forms | the one column `value`, whatever the alias (a single named OUT parameter wins over the alias), renamed by a column list (from memory) | |
-| `jsonb_each`, `json_each` and their `_text` forms | the columns `key`, `value`: a record of the OUT parameters, so an alias with no column list names no column (from memory) | |
-| `UNNEST(xs) AS u(x)` of one array | (above) | the one column `x`; the column list must name every column, and without it the column is anonymous, so an alias alone names none (from memory) |
+| `generate_series`, `unnest` of one array, `regexp_split_to_table` | one column named by the function, or by an alias with no column list (a function that returns a base type: `chooseScalarFunctionAlias`), renamed by a column list (probed) | |
+| `jsonb_array_elements`, `json_array_elements` and their `_text` forms | the one column `value`, whatever the alias (a single named OUT parameter wins over the alias), renamed by a column list (probed) | |
+| `jsonb_each`, `json_each` and their `_text` forms | the columns `key`, `value`: a record of the OUT parameters, so an alias with no column list names no column (probed) | |
+| `UNNEST(xs) AS u(x)` of one array | (above) | the one column `x`; the column list must name every column, and without it the column is anonymous, so an alias alone names none (probed) |
 
 SQLGlot reads BigQuery's `UNNEST(xs) AS x` and Redshift's `t.xs AS x` as an
 UNNEST whose alias is a column list, so the column is named by it; unaliased,
@@ -513,16 +512,14 @@ in Redshift) over the struct's fields in a `SELECT *`, where this is one
 column: a field is then an unresolved name (opaque, as any name the schema
 does not have), never a wrong one, and a star's width differs, so a set
 operation pairs its columns only where the widths agree, and those are opaque.
-Provenance of every claim in those columns:
+Provenance of the BigQuery and Redshift claims in those columns:
 from memory, `tentative` in `docs/dialect-provenance.json`. No engine is
-probed (decision: claims beyond what is already probed are made from memory).
+probed for them (decision: claims beyond what is already probed are made from memory).
 
-Postgres and Trino are local engines, so each of their facts must be probed on
-an engine (`tests/test_dialect_certification.py`: a local engine's fact may not
-be `tentative` or `doc`), and these are `tentative` until it is: the test fails
-for both dialects until `scripts/certify_dialects.py postgres` and `trino` have
-run (it reads the columns of a table made `AS SELECT * FROM` each call, with and
-without an alias and with a column list). Postgres's and Trino's `unnest` of an
+Postgres's and Trino's table-function facts are certified on Postgres 18.6 and
+Trino 484 (`scripts/certify_dialects.py postgres` and `trino`: it reads the
+columns of a table made `AS SELECT * FROM` each call, with and without an alias
+and with a column list; `tests/test_dialect_certification.py`). Postgres's and Trino's `unnest` of an
 array of a composite type also spreads its fields over columns, where this is
 one column, as in BigQuery and Redshift above, and a Trino `UNNEST` of a map has
 `key` and `value`: an alias column list of more than one name reads as that and

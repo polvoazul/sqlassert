@@ -280,6 +280,52 @@ CREATE TABLE b (k1 INTEGER, k2 INTEGER, PRIMARY KEY (k1, k2));
 SELECT COALESCE(a.k1, b.k1) AS m1, COALESCE(a.k2, b.k2) AS m2
 FROM a FULL JOIN b ON a.k1 = b.k1 AND b.k2 = a.k2 /**ASSERT UNIQUE(m1, m2)**/  --~ PROVED
 
+-- IS NOT DISTINCT FROM pairs match NULL to NULL as well, and a NULL merges to
+-- the NULL a Unique Set allows; a non-NULL value matches as with `=`.
+-- case: the_coalesce_is_unique_on_is_not_distinct_from_pairs
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k IS NOT DISTINCT FROM b.k /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_coalesce_is_unique_on_is_not_distinct_from_with_nullable_keys
+CREATE TABLE a (k INTEGER UNIQUE);
+CREATE TABLE b (k INTEGER UNIQUE);
+
+SELECT COALESCE(b.k, a.k) AS k FROM a FULL JOIN b ON b.k IS NOT DISTINCT FROM a.k /**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_composite_key_is_unique_on_equal_and_is_not_distinct_from_pairs
+CREATE TABLE a (k1 INTEGER, k2 INTEGER, PRIMARY KEY (k1, k2));
+CREATE TABLE b (k1 INTEGER, k2 INTEGER, PRIMARY KEY (k1, k2));
+
+SELECT COALESCE(a.k1, b.k1) AS m1, COALESCE(a.k2, b.k2) AS m2
+FROM a FULL JOIN b ON a.k1 IS NOT DISTINCT FROM b.k1 AND b.k2 = a.k2 /**ASSERT UNIQUE(m1, m2)**/  --~ PROVED
+
+-- case: the_merged_column_is_unknown_when_is_not_distinct_from_has_another_conjunct
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k IS NOT DISTINCT FROM b.k AND a.x = b.y /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: the_merged_column_is_unknown_when_is_not_distinct_from_has_a_filter_conjunct
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k IS NOT DISTINCT FROM b.k AND a.x > 0 /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: the_merged_column_is_unknown_when_is_not_distinct_from_meets_a_key_of_one_input
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k IS NOT DISTINCT FROM b.k /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: the_merged_column_is_unknown_when_is_not_distinct_from_is_not_exact
+CREATE TABLE a (k DOUBLE PRIMARY KEY);
+CREATE TABLE b (k DOUBLE PRIMARY KEY);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k IS NOT DISTINCT FROM b.k /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
 -- A key of one input leaves the other input's rows repeating a key value.
 -- case: the_merged_column_is_unknown_unless_both_inputs_have_the_key
 CREATE TABLE a (k INTEGER PRIMARY KEY);

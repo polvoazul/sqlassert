@@ -108,3 +108,17 @@ Numbers are the ones used when the decisions were discussed.
 - [ ] **35. A lateral table-function input** (`a CROSS JOIN json_each(a.doc)`
   as a join input) reads `undeclared-key` (the project's), though nobody can
   declare a key there. A: keep. B: mark it ¹ (rec).
+
+## Bugs found on the way (not decisions; fix when picked up)
+
+- [ ] **A parenthesised root set operation crashes.**
+  `(SELECT a FROM t UNION ALL SELECT a FROM u)` as the root raises `KeyError`
+  in `convert._lower_source` (`self._table_symbols[id(source)]`): symbol
+  collection probably misses the Subquery-wrapped root.
+- [ ] **Arbitrary LIMIT says "no ORDER BY" when there is one.**
+  `SELECT a FROM t UNION ALL SELECT a FROM u ORDER BY 1 LIMIT 2`: the last
+  operand's removed site equals the whole query's site, so its empty sort
+  keys (`Program.sort_keys`, keyed by site) replace the set operation's.
+- [ ] **Duplicate output name in a non-first operand is harmless.** A set
+  operation's names come from its first operand, so the Hazard there could
+  be dropped (it is reported today, as decided).

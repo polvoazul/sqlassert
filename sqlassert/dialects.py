@@ -75,11 +75,13 @@ class DialectSemantics:
     greatest: GreatestMeaning = None
     # `xs[i]` (an element of a list, array, map or struct) is NULL when `xs` is.
     subscript_strict: bool = False
-    # `*` over `a JOIN b USING (k)` keeps the USING column at its left input's
-    # position (DuckDB, SQLite: probed). Standard SQL lists the USING columns
-    # first, in the USING list's order, then the left input's others, then the
-    # right's (docs/dialects.md, "Stars and names").
-    using_column_stays_in_place: bool = False
+    # The column order of `*` over `a JOIN b USING (k, ...)`. "standard": the
+    # USING columns first in the USING list's order, then the left input's
+    # others, then the right's. "left_position": each USING column stays at its
+    # left input's position (DuckDB, SQLite: probed). "left_order": the USING
+    # columns first, but in the left input's column order (MySQL: probed).
+    # docs/dialects.md, "Stars and names".
+    using_star_order: Literal["standard", "left_position", "left_order"] = "standard"
     unique_keys: KeyTrust = "enforced"
     foreign_keys: KeyTrust = "enforced"
     # CHECK constraints. Where the dialect has none (Snowflake, BigQuery,
@@ -206,7 +208,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         concat_ws="skips-null",
         greatest="skips-null",
         subscript_strict=True,
-        using_column_stays_in_place=True,
+        using_star_order="left_position",
         set_operations_all=True,
         result_types=(
             *((node, "VARCHAR") for node in (
@@ -243,14 +245,13 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         values_types=(("string", "text"), ("integer", "integer"), ("bigint", "bigint")),
         # A numeric constant with a point or an exponent is a NUMERIC (an unscaled one).
         literal_types=(("decimal", "numeric"), ("exponent", "numeric")),
-        # Tentative (from memory, no engine probed). A function returning a base
+        # Certified on Postgres 18.6 (docs/dialect-provenance.json). A function returning a base
         # type has one column, named by the function or, for an alias with no
         # column list, by the alias (`alias_named_table_functions`); one with a
         # single named OUT parameter has that name whatever the alias
         # (`jsonb_array_elements(x) AS r` is `value`), and one with several is
         # a record of them. Not an array of rows (`unnest` spreads its fields),
         # not several arguments (`unnest(a, b)`), not `WITH ORDINALITY`.
-        # TODO: confirm with probe that `jsonb_array_elements(x) AS r` names its column `value`, not `r`.
         table_functions=(
             ("generate_series", ("generate_series",)), ("unnest", ("unnest",)),
             ("regexp_split_to_table", ("regexp_split_to_table",)),
@@ -262,6 +263,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         alias_named_table_functions=("generate_series", "unnest", "regexp_split_to_table"),
     ),
     "mysql": DialectSemantics(
+        # `*` over USING: the USING columns first, in the left input's order (probed, 8.4).
+        using_star_order="left_order",
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
         # a comparison of non-null operands is non-null. Not `checked_arithmetic`:
         # `-x` of the least BIGINT is an exact DECIMAL rather than an error, and
@@ -354,7 +357,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "sqlite": DialectSemantics(
         pipes="strict",
         concat_ws="skips-null",
-        using_column_stays_in_place=True,
+        using_star_order="left_position",
         # Foreign keys are checked only under `PRAGMA foreign_keys = ON`, off by default.
         foreign_keys="unenforced",
         # Only an INTEGER PRIMARY KEY (the rowid) is never NULL.
@@ -404,7 +407,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # A string is `varchar(n)` for its longest value.
         values_types=(("string", "varchar"), ("integer", "integer"), ("bigint", "bigint"), ("decimal", "decimal")),
         literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
-        # Tentative (from memory, no engine probed). `UNNEST(xs) AS u(x)` of one
+        # Certified on Trino 484 (docs/dialect-provenance.json). `UNNEST(xs) AS u(x)` of one
         # array has the one column `x`: Trino requires a column list to name it
         # (an unaliased column has no name), and rejects one of another length.
         # Not an array of rows (one column per field), a map (`k`, `v`), several

@@ -36,7 +36,7 @@ ENGINES = [("duckdb", _duckdb), ("sqlite", _sqlite)]
 def test_a_using_column_stays_at_its_left_inputs_position(dialect, columns):
     """The standard would list `k` first: that is not what these engines do, and
     the flag says so."""
-    assert semantics(dialect).using_column_stays_in_place
+    assert semantics(dialect).using_star_order == "left_position"
     assert columns("SELECT * FROM a JOIN b USING (k)") == ["x", "k", "m", "y", "m", "z"]
     assert columns("SELECT * FROM a RIGHT JOIN b USING (k)") == ["x", "k", "m", "y", "m", "z"]
     assert columns("SELECT * FROM a JOIN b USING (m, k)") == ["x", "k", "m", "y", "z"]

@@ -762,6 +762,11 @@ class Program:
     # Each INTERSECT and EXCEPT, sited where its keyword follows its left
     # input's last Select (no marker attaches there).
     set_operations: tuple[tuple[AttachmentSite, SetOperation], ...] = ()
+    # Each unparenthesised last operand of a set operation, with the site of
+    # the whole query it ends (the operand has none of its own, so no marker
+    # reaches it) and the operator it is the last operand of (`UNION ALL`).
+    # Its select-level Hazards are reported there.
+    last_operands: tuple[tuple[AttachmentSite, RelationExpr, str], ...] = ()
     # Each node standing for a construct sqlassert does not support yet (an
     # opaque relation or value), with what it is: an assertion whose proof
     # reaches one says so when it stays UNKNOWN.

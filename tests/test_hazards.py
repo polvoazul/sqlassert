@@ -733,3 +733,187 @@ def test_duckdb_returns_a_repeated_name_at_the_root_and_renames_it_in_a_derived_
     assert [column[0] for column in derived.description] == ["id", "w", "w_1"]
     # A reference by the repeated name reads the first, the table's own column.
     assert connection.execute("SELECT s.w FROM (SELECT *, 10 AS w FROM d) AS s").fetchall() == [(2,)]
+
+
+# The last operand of a set operation -------------------------------------------------
+#
+# A Select Expression's Attachment Site is right after its last token, which for
+# the last operand of a set operation is where the whole query ends: the site
+# belongs to the whole result, and the operand has none (no marker reaches it).
+# Its select-level Hazards are reported at that shared site, saying so.
+
+OPERANDS = """
+CREATE TABLE t (id INTEGER PRIMARY KEY, w INTEGER, v INTEGER, d DOUBLE);
+CREATE TABLE u (id INTEGER PRIMARY KEY, w INTEGER);
+"""
+LEFT = "SELECT id, w, v FROM t"
+STAR = "SELECT *, 1 AS w FROM u"  # Three columns, `w` twice.
+
+
+def reported(sql: str) -> list[Hazard]:
+    return list(suggest(OPERANDS + sql).hazards)
+
+
+def last_operand_hazards(sql: str, operator: str) -> list[Hazard]:
+    """The Hazards at the end of `sql`, which must say they are in the last operand of `operator`."""
+    end = len(OPERANDS + sql)
+    found = [hazard for hazard in reported(sql) if hazard.site.offset == end]
+    prefix = f"in the last operand of {operator}: "
+    assert all(hazard.message.startswith(prefix) for hazard in found), [hazard.message for hazard in found]
+    return found
+
+
+@pytest.mark.parametrize(("operand", "concern"), [
+    (STAR, Concern.DUPLICATE_OUTPUT_NAME),
+    ("SELECT *, count(*) FROM u GROUP BY id", Concern.STAR_IN_GROUPING),
+    ("SELECT count(*), 1, 2 FROM t QUALIFY count(*) > 1", Concern.QUALIFY_BESIDE_AGGREGATE),
+    ("SELECT id, w, row_number() OVER (PARTITION BY 1) FROM t", Concern.CONSTANT_PARTITION),
+    ("SELECT id, w, row_number() OVER () FROM t QUALIFY row_number() OVER (PARTITION BY 1) = 1", Concern.CONSTANT_PARTITION),
+    ("SELECT w, count(*), 0 FROM t GROUP BY w, v", Concern.UNSELECTED_GROUPING),
+    ("SELECT id, w, count(*) FROM t JOIN u ON u.w = t.w GROUP BY id, w", Concern.FAN_TRAP),
+    ("SELECT id, w, v FROM t WHERE id IS NULL", Concern.ALWAYS_EMPTY),
+    ("SELECT id, w, v FROM t WHERE d = 0.1", Concern.LOSSY_COMPARISON),
+])
+@pytest.mark.parametrize("operator", ["UNION ALL", "UNION", "EXCEPT", "INTERSECT"])
+def test_a_hazard_in_the_last_operand_is_reported_at_the_end_of_the_query(operand: str, concern: Concern, operator: str):
+    found = last_operand_hazards(f"{LEFT} {operator} {operand}", operator)
+
+    assert concern in [hazard.concern for hazard in found]
+
+
+def test_the_last_operand_hazard_names_the_operator_and_keeps_the_hazards_own_message():
+    sql = f"{LEFT} UNION ALL {STAR}"
+    [hazard] = reported(sql)
+
+    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
+    assert hazard.message.startswith("in the last operand of UNION ALL: this SELECT outputs name 'w' more than once")
+    assert hazard.site.offset == len(OPERANDS + sql)
+    assert hazard.site.trailing
+
+
+def test_an_intersect_all_operand_says_all():
+    assert last_operand_hazards(f"{LEFT} INTERSECT ALL {STAR}", "INTERSECT ALL")
+
+
+def test_a_clean_last_operand_reports_nothing():
+    assert reported(f"{LEFT} UNION ALL SELECT id, w, v FROM t") == []
+
+
+def test_the_left_operand_keeps_reporting_at_its_own_site_without_the_phrase():
+    sql = f"{STAR} UNION ALL {LEFT}"
+    [hazard] = reported(sql)
+
+    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
+    assert hazard.site.offset == len(OPERANDS + STAR)
+    assert "last operand" not in hazard.message
+
+
+def test_the_left_operands_names_are_not_reported_again_at_the_end_of_the_query():
+    # The result's names are the left operand's: the shared site is the operand's, not the result's.
+    sql = f"{STAR} UNION ALL {LEFT}"
+
+    assert [hazard.site.offset for hazard in reported(sql)] == [len(OPERANDS + STAR)]
+
+
+def test_both_operands_report_each_at_its_own_site():
+    sql = f"{STAR} UNION ALL {STAR}"
+    first, second = reported(sql)
+
+    assert (first.site.offset, "last operand" in first.message) == (len(OPERANDS + STAR), False)
+    assert (second.site.offset, second.message.startswith("in the last operand of UNION ALL: ")) == (len(OPERANDS + sql), True)
+
+
+def test_a_chain_reports_its_last_operand_at_the_end_and_a_middle_one_at_its_own_site():
+    sql = f"{LEFT} UNION ALL {STAR} UNION ALL {STAR}"
+    middle, last = reported(sql)
+
+    assert middle.site.offset == len(OPERANDS + f"{LEFT} UNION ALL {STAR}")
+    assert "last operand" not in middle.message
+    assert last.site.offset == len(OPERANDS + sql)
+    assert last.message.startswith("in the last operand of UNION ALL: ")
+
+
+@pytest.mark.parametrize("sql", [
+    f"({LEFT} UNION {STAR}) EXCEPT {LEFT}",  # The inner operation's last operand, which shares its parenthesis' end.
+    f"({LEFT} UNION {LEFT}) EXCEPT {STAR}",  # The outer one's.
+    f"{LEFT} UNION {LEFT} INTERSECT {STAR}",  # INTERSECT binds first: c ends the INTERSECT, and the query.
+    f"{LEFT} EXCEPT ({LEFT} INTERSECT {STAR})",
+])
+def test_every_operand_without_a_site_of_its_own_is_reported(sql: str):
+    [hazard] = reported(sql)
+
+    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
+    assert "in the last operand of " in hazard.message
+
+
+def test_nested_operands_each_report_at_the_end_they_share():
+    inner = f"({LEFT} UNION {STAR})"
+    sql = f"{inner} EXCEPT {STAR}"
+    inner_hazard, outer_hazard = reported(sql)
+
+    assert inner_hazard.site.offset == len(OPERANDS + f"({LEFT} UNION {STAR}")  # Before the parenthesis closes.
+    assert inner_hazard.message.startswith("in the last operand of UNION: ")
+    assert outer_hazard.site.offset == len(OPERANDS + sql)
+    assert outer_hazard.message.startswith("in the last operand of EXCEPT: ")
+
+
+def test_intersect_binding_first_names_the_intersect_as_the_operator():
+    [hazard] = reported(f"{LEFT} UNION ALL {LEFT} INTERSECT ALL {STAR}")
+
+    assert hazard.message.startswith("in the last operand of INTERSECT ALL: ")
+    assert hazard.site.offset == len(OPERANDS + f"{LEFT} UNION ALL {LEFT} INTERSECT ALL {STAR}")
+
+
+@pytest.mark.parametrize("operand", [
+    "(SELECT *, count(*) FROM u GROUP BY id)",
+    "(SELECT id, w, row_number() OVER (PARTITION BY 1) FROM t)",
+    "(SELECT id, w, v FROM t WHERE id IS NULL)",
+    f"({STAR})",
+])
+def test_a_parenthesised_last_operand_reports_at_its_own_site(operand: str):
+    sql = f"{LEFT} UNION ALL {operand}"
+    [hazard] = reported(sql)
+
+    assert hazard.site.label == "subquery"
+    assert hazard.site.offset == len(OPERANDS + sql) - 1  # Right after its last token, before the `)`.
+    assert "last operand" not in hazard.message
+
+
+def test_a_parenthesised_left_operand_is_checked_like_an_unparenthesised_one():
+    [hazard] = reported(f"({STAR}) UNION ALL {LEFT}")
+
+    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
+    assert hazard.site.label == "subquery"
+
+
+@pytest.mark.parametrize("sql", [
+    f"WITH c AS ({LEFT} UNION ALL {STAR}) SELECT * FROM c",
+    f"SELECT * FROM ({LEFT} UNION ALL {STAR}) AS s",
+])
+def test_the_last_operand_of_a_cte_or_derived_table_is_reported_at_its_end(sql: str):
+    [hazard] = reported(sql)
+
+    assert hazard.message.startswith("in the last operand of UNION ALL: ")
+    assert hazard.site.label in ("CTE c", "subquery s")
+
+
+def test_the_last_operand_of_a_set_operation_read_only_for_existence_is_not_a_duplicate_name_hazard():
+    assert reported(f"SELECT id FROM t WHERE id IN (SELECT id FROM t UNION ALL {STAR})") == []
+
+
+def test_the_last_operand_does_not_get_a_marker_site():
+    # Markers stay where they were: the left operand's site and the whole result's, none of the operand's own.
+    sql = f"{LEFT} UNION ALL {STAR}"
+    sites = {suggestion.site.offset for suggestion in suggest(OPERANDS + sql).suggestions}
+
+    assert sites <= {len(OPERANDS + LEFT), len(OPERANDS + sql)}
+
+
+def test_duckdb_returns_a_repeated_name_in_the_last_operand_without_error():
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE t (id INTEGER, w INTEGER, v INTEGER); CREATE TABLE u (id INTEGER, w INTEGER)")
+    connection.execute("INSERT INTO t VALUES (1, 2, 3); INSERT INTO u VALUES (4, 5)")
+    result = connection.execute(f"{LEFT} UNION ALL {STAR} ORDER BY 1")
+
+    assert [column[0] for column in result.description] == ["id", "w", "v"]
+    assert result.fetchall() == [(1, 2, 3), (4, 5, 1)]

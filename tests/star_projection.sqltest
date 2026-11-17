@@ -271,6 +271,24 @@ SELECT c1, c2 FROM (SELECT * FROM a JOIN b USING (k)) AS s (c1, c2, c3, c4, c5, 
 /**ASSERT NOT NULL(c1)**/  --~ PROVED
 /**ASSERT NOT NULL(c2)**/  --~ UNKNOWN
 
+-- MySQL puts the USING columns first too, but in the left input's column order,
+-- not the list's (probed, 8.4): a(x, k, m), b(y, m, k) USING (m, k) is k, m, x, y.
+-- case: mysql_orders_the_using_columns_by_the_left_input
+-- dialect: mysql
+CREATE TABLE a (x INT, k INT NOT NULL, m INT);
+CREATE TABLE b (y INT NOT NULL, m INT NOT NULL, k INT NOT NULL);
+SELECT c1, c2 FROM (SELECT * FROM a LEFT JOIN b USING (m, k)) AS s (c1, c2, c3, c4)
+/**ASSERT NOT NULL(c1)**/  --~ PROVED
+/**ASSERT NOT NULL(c2)**/  --~ UNKNOWN
+
+-- case: postgres_orders_the_using_columns_by_the_list
+-- dialect: postgres
+CREATE TABLE a (x INTEGER, k INTEGER NOT NULL, m INTEGER);
+CREATE TABLE b (y INTEGER NOT NULL, m INTEGER NOT NULL, k INTEGER NOT NULL);
+SELECT c1, c2 FROM (SELECT * FROM a LEFT JOIN b USING (m, k)) AS s (c1, c2, c3, c4)
+/**ASSERT NOT NULL(c1)**/  --~ UNKNOWN
+/**ASSERT NOT NULL(c2)**/  --~ PROVED
+
 -- The alias of a parenthesized USING join has the star's columns too.
 -- case: an_aliased_using_join_has_each_column_once
 CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);

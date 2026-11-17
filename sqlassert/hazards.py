@@ -61,6 +61,12 @@ the proof that would have pinned it, which failed:
   renamed. A star that cannot be expanded leaves the names unknown, and the
   Select is left alone.
 
+The last operand of a set operation ends where the whole query does, so it has
+no Attachment Site of its own: its select-level Hazards (all of the above that
+are read from one Select) are reported at the query's site, with the message
+starting "in the last operand of UNION ALL:" (its operator). A parenthesised
+operand has a site and reports there.
+
 A hazard is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
 """
@@ -69,7 +75,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import ClassVar
 
@@ -128,16 +134,10 @@ def hazards(
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
     deduplicated = _deduplicated_joins(program)
     sort_keys = dict(program.sort_keys)
-    for site, relation in program.attachment_sites:
-        if not wanted(site):
-            continue
-        node = syntax.get((site.offset, site.trailing))
-        if isinstance(relation, ir.Limit) and relation in reachable and isinstance(node, exp.Select):
-            found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
-        if isinstance(relation, ir.Join) and relation in reachable and not site.trailing:
-            found.extend(_lossy_comparisons(site, relation.conjuncts, compared))
-            if isinstance(node, exp.Join) and assertion_span(node) is None and relation not in deduplicated:
-                found.extend(_many_to_many(site, relation))
+
+    def select_hazards(site: AttachmentSite, relation: ir.RelationExpr | ir.SimpleCase, node: exp.Join | exp.Select | None) -> list[Hazard]:
+        """The Hazards of the Select `node`, whose relation is `relation` and whose site is `site`."""
+        found: list[Hazard] = []
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
         grouped = _grouped(aggregate)
         if grouped is not None and grouped in reachable:
@@ -151,6 +151,27 @@ def hazards(
         if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
             found.extend(_lossy_comparisons(site, _filter_conjuncts(aggregate), compared))
+        return found
+
+    for site, relation in program.attachment_sites:
+        if not wanted(site):
+            continue
+        node = syntax.get((site.offset, site.trailing))
+        aggregate = relation.input if isinstance(relation, ir.Limit) else relation
+        if isinstance(relation, ir.Limit) and relation in reachable and isinstance(node, exp.Select):
+            found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
+        if isinstance(relation, ir.Join) and relation in reachable and not site.trailing:
+            found.extend(_lossy_comparisons(site, relation.conjuncts, compared))
+            if isinstance(node, exp.Join) and assertion_span(node) is None and relation not in deduplicated:
+                found.extend(_many_to_many(site, relation))
+        if not isinstance(aggregate, ir.SetOperation):  # The Select at a set operation's end is its last operand: below.
+            found.extend(select_hazards(site, relation, node))
+    for site, operand, operator in program.last_operands:
+        if wanted(site):
+            found.extend(
+                replace(hazard, message=f"in the last operand of {operator}: {hazard.message}")
+                for hazard in select_hazards(site, operand, syntax.get((site.offset, True)))
+            )
     for site, operation in program.set_operations:
         if operation in reachable and wanted(site) and operation.operator == "except":
             found.extend(_empty_except(site, operation, arena))
@@ -180,6 +201,8 @@ def _rows_are_read(select: exp.Select) -> bool:
     if select.find_ancestor(exp.In, exp.Exists) is not None:
         return False
     subquery = select.find_ancestor(exp.Subquery)
+    while subquery is not None and isinstance(subquery.parent, exp.SetOperation):
+        subquery = subquery.find_ancestor(exp.Subquery)  # A parenthesised operand: its rows are the set operation's.
     return subquery is None or isinstance(subquery.parent, exp.From | exp.Join)
 
 

@@ -900,7 +900,7 @@ def _merged_key_dependencies(project: ir.Project):
 
     `SELECT coalesce(a.k, b.k) AS k FROM a FULL JOIN b ON a.k = b.k` (the
     merged column of `USING (k)` is one): when the pairs of columns the ON
-    equates are every conjunct of it, a Unique Set of `a` on the left ones and
+    equates (`=` or `IS NOT DISTINCT FROM`) are every conjunct of it, a Unique Set of `a` on the left ones and
     of `b` on the right ones, the coalesced columns are a Unique Set of the
     join's rows, laxly: a row's non-NULL key value is that of its `a` row, of
     its `b` row, or of both, equal (the comparison loses nothing and the
@@ -908,7 +908,8 @@ def _merged_key_dependencies(project: ir.Project):
     row (excluded: each repeats only on a repeated key) or one is an unmatched
     row whose key equals one of the other, which ON would have matched. A row
     with a NULL key part is unmatched and coalesces to NULL, and the Unique Set
-    does not constrain it. Another ON conjunct would leave two unmatched rows
+    does not constrain it (`IS NOT DISTINCT FROM` also matches NULL to NULL,
+    which merges to the same NULL; a non-NULL value matches as with `=`). Another ON conjunct would leave two unmatched rows
     of one value, so it gives nothing. Rows a WHERE drops keep the property."""
     found = _full_join_beneath(project)
     if found is None:
@@ -918,7 +919,9 @@ def _merged_key_dependencies(project: ir.Project):
     pairs: list[tuple[ir.OutputColumn, ir.OutputColumn]] = []
     for conjunct in join.conjuncts:
         match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first) as one, right=ir.ColumnRef(column=second) as other):
+            case ir.Equality(left=ir.ColumnRef(column=first) as one, right=ir.ColumnRef(column=second) as other) | ir.NullSafeEquality(
+                left=ir.ColumnRef(column=first) as one, right=ir.ColumnRef(column=second) as other
+            ):
                 for left, right in ((first, second), (second, first)):
                     if left in join.left.output_columns and right in join.right.output_columns:
                         if not exact_comparison(one, other).value:
