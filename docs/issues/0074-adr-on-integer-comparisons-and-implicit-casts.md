@@ -45,6 +45,34 @@ recorded direction. Write an ADR that settles it, then align the code and
    and the new flags stay separate `DialectSemantics` fields, or become one
    per-dialect comparison profile the ADR defines.
 
+## Per engine today
+
+What `scalar_typing` and `exact_comparison` do now (`sqlassert/dialects.py`
+at commit `485c137`), and what each engine is believed to do. "Memory" marks
+a claim not yet probed or cited.
+
+| Engine | Integer `+ - *` typed | Text compares by identity | `0.1` literal | `1e0` literal | Known behaviour and open point |
+| --- | --- | --- | --- | --- | --- |
+| DuckDB | yes | yes | DECIMAL | DOUBLE | Probed. Overflow raises; `DECIMAL(10,2) + 1` is `DECIMAL(13,2)`. |
+| Postgres | yes | yes | DECIMAL | DECIMAL | Memory: `1e0` is an unscaled NUMERIC, so `d = 1e0` pins. Probe it. |
+| Trino | yes | yes | DECIMAL | DOUBLE | Memory. Overflow raises; VARCHAR compares by code point. |
+| Spark | yes | no | DECIMAL | DOUBLE | ANSI mode (its default) raises on overflow. Literal types from memory. |
+| Databricks | yes | no | DECIMAL | DOUBLE | As Spark, inherited; not probed. |
+| BigQuery | yes | no | DOUBLE | DOUBLE | Memory: `0.1` is FLOAT64, so decimal literals are lossy. Integers are `INT64`. |
+| Redshift | yes | no | DECIMAL | untyped | Memory. |
+| MySQL | **no** | no | DECIMAL | DOUBLE | Not `checked_arithmetic`: `-x` of the least BIGINT returns a DECIMAL, division by zero is NULL. `+` and `*` overflow raises in strict mode (memory), so `+ - *` could be typed without unary `-`. Unsigned types and `BIGINT UNSIGNED` arithmetic need a rule. |
+| Snowflake | **no** | no | DECIMAL | DOUBLE | Not `checked_arithmetic`: its docs never say integer overflow raises. Integers are `NUMBER(38,0)`, so widths do not exist. |
+| ClickHouse | **no** | no | DOUBLE | DOUBLE | Integer arithmetic wraps on overflow (memory), so it must stay untyped or be typed with wraparound. |
+| Hive | **no** | no | DOUBLE | DOUBLE | Memory. |
+| SQLite | **no** | no | untyped | untyped | Integer overflow converts to REAL (memory); columns are dynamically typed, yet declared columns and casts are typed today. |
+| Oracle | **no** | no | untyped | untyped | Memory: every number is `NUMBER`, exact to 38 digits. |
+
+Since the refactor, `b = a + 1` stops proving `a -> b` in the five "no"
+engines. Each row needs a probe (or a cited doc) for: overflow of `+`, `-`,
+`*` and unary `-` on the widest integer; the type of `int + 1`,
+`decimal + 1`, `0.1` and `1e0`; and whether text compared with a number
+casts the text or the number.
+
 ## Done when
 
 - An ADR in `docs/adr/` answers 1-6.
