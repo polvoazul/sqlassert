@@ -413,13 +413,12 @@ an exact type makes it an exact number (one value, so its own scale does not
 matter), a float a float. Each is a fact of `scripts/certify_dialects.py`
 (`literal_type(kind)=TYPE`), probed with the engine's type function (`typeof`,
 `pg_typeof`, `toTypeName`, SQLite's storage class; for MySQL, the column of a
-table made from the literal): an exact type needs that probe or a cited doc; a
-float may be from memory, since a wrong one loses proofs and warns, never
-proves. Claimed: `0.1` exact and `1e0` a float in DuckDB, MySQL, Trino, Spark
-and Databricks; both exact in PostgreSQL (`numeric`) and Oracle (`NUMBER`);
-both floats in BigQuery, ClickHouse, Hive and SQLite. None in Snowflake (its
-docs name no type for `0.1`, and give `1e10` an exact NUMBER(11,0)) or
-Redshift (its docs call `0.1` both a floating-point and a decimal literal).
+table made from the literal), else cited, else a best guess from memory
+marked tentative until probed. Claimed: `0.1` exact and `1e0` a float in
+DuckDB, MySQL, Trino, Spark, Databricks and Redshift (tentative); both exact in
+PostgreSQL (`numeric`), Oracle (`NUMBER`) and Snowflake (`NUMBER`: `1e10` is
+documented, `0.1` tentative); both floats in BigQuery, ClickHouse, Hive and
+SQLite.
 
 IS NOT DISTINCT FROM also matches NULL to NULL, so it fixes a column non-null
 only where the other operand is never NULL: `ir.total` of it, over columns

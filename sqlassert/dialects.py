@@ -121,8 +121,8 @@ class DialectSemantics:
     # written with a point (`0.1`), and "exponent", one written with an exponent
     # (`1e0`). An exact type compares by value; a float rounds. A literal of a
     # kind not listed has no type claimed, so it types and binds nothing.
-    # Certified with the engine's type function (`scripts/certify_dialects.py`);
-    # an exact type needs that probe or a cited doc (ADR 0007).
+    # Certified with the engine's type function (`scripts/certify_dialects.py`),
+    # else cited, else a best guess from memory marked tentative (ADR 0007).
     # An integer literal is an INT where it fits, else a BIGINT, in every dialect.
     literal_types: tuple[tuple[str, str], ...] = ()
     # The type a VALUES column has when every non-NULL value in it is a
@@ -281,7 +281,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative (docs/dialect-provenance.json). `md5_binary` is MD5Digest.
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR"), ("MD5Digest", "BINARY")),
         hash_functions=("MD5", "SHA", "MD5Digest"),
-        # No literal type is claimed: the docs state none for `1.5`, and give `1e10` an exact NUMBER(11,0).
+        # `0.1` is a NUMBER(1,1) (tentative, from memory); the docs give `1e10` an exact NUMBER(11,0).
+        literal_types=(("decimal", "NUMBER"), ("exponent", "NUMBER")),
     ),
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
@@ -314,7 +315,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative.
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR")),
         hash_functions=("MD5", "SHA"),
-        # No literal type is claimed: the docs call `1.5` both a floating-point and a decimal literal.
+        # Tentative, from memory: `0.1` is a NUMERIC as in PostgreSQL, `1e0` a DOUBLE PRECISION.
+        literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
         # Tentative. Unnesting a SUPER array, `FROM t, t.xs AS x`, has the one column `x` (SQLGlot reads it as an UNNEST).
         table_functions=(("unnest", ("unnest",)),),
     ),

@@ -634,6 +634,8 @@
   "redshift": {
     "empty_string_is_null=False": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_Nulls.html", "read": "read 2026-11-08"},
     "enum_members_only": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/c_Supported_data_types.html", "read": "cited 2026-11-08, not fetched"},
+    "literal_type(decimal)=DECIMAL": {"tentative": "from memory: a literal with a point is a NUMERIC, as in PostgreSQL; the docs call it both floating-point and decimal"},
+    "literal_type(exponent)=DOUBLE": {"tentative": "from memory: a literal with an exponent is a DOUBLE PRECISION; the docs name no type"},
     "result_type(MD5)=VARCHAR": {"tentative": "from memory: MD5 and SHA1 return a hex VARCHAR, NULL only for a NULL input"},
     "result_type(SHA)=VARCHAR": {"tentative": "from memory: MD5 and SHA1 return a hex VARCHAR, NULL only for a NULL input"},
     "strict(%)": {"doc": "https://docs.aws.amazon.com/redshift/latest/dg/r_Nulls.html", "read": "read 2026-11-08"},
@@ -710,6 +712,8 @@
   "snowflake": {
     "empty_string_is_null=False": {"doc": "https://docs.snowflake.com/en/sql-reference/ternary-logic", "read": "read 2026-11-08"},
     "enum_members_only": {"doc": "https://docs.snowflake.com/en/sql-reference/intro-summary-data-types", "read": "cited 2026-11-08, not fetched"},
+    "literal_type(decimal)=NUMBER": {"tentative": "from memory: SYSTEM$TYPEOF(0.1) is NUMBER(1,1); the docs state no type for a literal with a point"},
+    "literal_type(exponent)=NUMBER": {"doc": "https://docs.snowflake.com/en/sql-reference/functions/system_typeof", "read": "read 2026-11-17"},
     "result_type(MD5)=VARCHAR": {"tentative": "from memory: MD5/MD5_HEX and SHA1 return a hex VARCHAR, MD5_BINARY a BINARY, each NULL only for a NULL input"},
     "result_type(MD5Digest)=BINARY": {"tentative": "from memory: MD5/MD5_HEX and SHA1 return a hex VARCHAR, MD5_BINARY a BINARY, each NULL only for a NULL input"},
     "result_type(SHA)=VARCHAR": {"tentative": "from memory: MD5/MD5_HEX and SHA1 return a hex VARCHAR, MD5_BINARY a BINARY, each NULL only for a NULL input"},

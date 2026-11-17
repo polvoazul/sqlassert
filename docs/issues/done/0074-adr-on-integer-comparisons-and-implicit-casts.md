@@ -13,7 +13,8 @@ each engine's type function). Done: `exact_comparison`,
 `scalar_typing`, `DialectSemantics` and `docs/dialects.md` follow it;
 `literal_type(KIND)=TYPE` facts are probed (DuckDB, SQLite, PostgreSQL,
 MySQL, ClickHouse, Trino, Spark) or cited (Databricks, BigQuery, Hive,
-Oracle); Snowflake and Redshift claim none; `tests/exact_comparisons.sqltest`
+Oracle, Snowflake's exponent), or tentative from memory (Snowflake's decimal,
+Redshift, Hive's exponent); `tests/exact_comparisons.sqltest`
 covers each decision per dialect.
 
 `sqlassert/rules/value_typing.py` types every scalar expression
