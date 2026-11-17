@@ -7,7 +7,7 @@ import pytest
 
 from sqlassert import suggest
 from sqlassert.__main__ import main
-from sqlassert.hazards import Concern
+from sqlassert.hazards import Concern, Hazard
 
 SCHEMA = """
 CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR, score INTEGER);
@@ -517,9 +517,14 @@ def strange(sql: str) -> list[Concern]:
     "SELECT s.*, count(*) AS n FROM s GROUP BY k",
     "SELECT * FROM s GROUP BY k",
     "SELECT * FROM pair GROUP BY a",
-    "SELECT * EXCLUDE (b) FROM pair GROUP BY a, b",  # A modified star is not read as all keys.
+    "SELECT * EXCLUDE (b) FROM pair GROUP BY a, b",
     "SELECT * FROM unknown_table GROUP BY a",  # Its columns are unknown.
     "SELECT * FROM (SELECT *, count(*) AS n FROM s GROUP BY k) AS g",
+    # A star beside GROUP BY is one whatever it selects: every column grouped, or DuckDB's GROUP BY ALL.
+    "SELECT * FROM pair GROUP BY a, b",
+    "SELECT * FROM pair WHERE a > 0 GROUP BY a, b",
+    "SELECT *, count(*) AS n FROM s GROUP BY ALL",
+    "SELECT * FROM pair GROUP BY ALL",
 ])
 def test_a_star_in_a_group_by_select_is_a_hazard(sql: str):
     assert strange(sql) == [Concern.STAR_IN_GROUPING]
@@ -535,16 +540,13 @@ def test_a_star_in_a_group_by_select_says_what_is_odd_and_how_to_write_it():
 
 
 @pytest.mark.parametrize("sql", [
-    "SELECT * FROM pair GROUP BY a, b",  # Every column is a key: standard SQL.
-    "SELECT * FROM pair WHERE a > 0 GROUP BY a, b",
     "SELECT k, count(*) AS n FROM s GROUP BY k",
     "SELECT *, count(*) OVER () AS n FROM s",  # A star with no GROUP BY.
     "SELECT * FROM s",
-    # DuckDB's GROUP BY ALL groups by every item that is not an aggregate: a different construct.
-    "SELECT x, count(*) AS n FROM s GROUP BY ALL",
-    "SELECT *, count(*) AS n FROM s GROUP BY ALL",
+    "SELECT x, count(*) AS n FROM s GROUP BY ALL",  # GROUP BY ALL without a star.
+    "SELECT count(*) AS n FROM s",
 ])
-def test_a_star_with_every_column_grouped_or_no_star_in_group_by_is_not_a_hazard(sql: str):
+def test_no_star_beside_group_by_is_not_a_hazard(sql: str):
     assert strange(sql) == []
 
 
@@ -553,7 +555,7 @@ def test_duckdb_rejects_a_star_beside_group_by_even_when_a_key_determines_the_re
     connection.execute("CREATE TABLE s (k INTEGER PRIMARY KEY, x INTEGER); INSERT INTO s VALUES (1, 1)")
     with pytest.raises(duckdb.BinderException):
         connection.execute("SELECT *, count(*) FROM s GROUP BY k")
-    assert connection.execute("SELECT * FROM s GROUP BY k, x").fetchall() == [(1, 1)]
+    assert connection.execute("SELECT * FROM s GROUP BY k, x").fetchall() == [(1, 1)]  # Valid, and still a Hazard here.
 
 
 @pytest.mark.parametrize("sql", [
@@ -609,14 +611,37 @@ def test_a_constant_partition_key_in_a_qualify_is_a_hazard(sql: str, key: str):
     )
 
 
+@pytest.mark.parametrize(("sql", "key"), [
+    ("SELECT x, row_number() OVER (PARTITION BY 1 ORDER BY y) AS rn FROM s", "1"),
+    ("SELECT x, sum(y) OVER (PARTITION BY 'a') AS total FROM s", "'a'"),
+    ("SELECT x, count(*) OVER (PARTITION BY x, NULL) AS n FROM s", "NULL"),
+    ("SELECT x, rank() OVER (PARTITION BY TRUE ORDER BY y) + 1 AS r FROM s", "TRUE"),
+    ("SELECT x FROM (SELECT x, row_number() OVER (PARTITION BY 0 ORDER BY y) AS rn FROM s) AS w WHERE rn = 1", "0"),
+    ("SELECT x FROM s ORDER BY row_number() OVER (PARTITION BY 1 ORDER BY y)", "1"),
+])
+def test_a_constant_partition_key_in_a_select_item_window_is_a_hazard(sql: str, key: str):
+    [hazard] = suggest(STRANGE + sql).hazards
+    assert hazard.concern is Concern.CONSTANT_PARTITION
+    assert hazard.message == (
+        f"PARTITION BY {key} is a constant, so every row is in one partition and the window partitions nothing. "
+        "This is probably a mistake: partition by a column, or drop PARTITION BY"
+    )
+
+
+def test_each_constant_partition_key_of_a_select_is_a_hazard_of_its_own():
+    sql = "SELECT x, row_number() OVER (PARTITION BY 1 ORDER BY y) AS a, rank() OVER (PARTITION BY 'k') AS b FROM s QUALIFY row_number() OVER (PARTITION BY 2 ORDER BY y) = 1"
+    assert strange(sql) == [Concern.CONSTANT_PARTITION] * 3
+
+
 @pytest.mark.parametrize("sql", [
     "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x ORDER BY y) = 1",
     "SELECT x FROM s QUALIFY row_number() OVER (ORDER BY y) = 1",  # No partition: written plainly.
     "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x + 1 ORDER BY y) = 1",
     "SELECT x, count(*) AS n FROM s GROUP BY x QUALIFY row_number() OVER (PARTITION BY x ORDER BY n) = 1",
-    # A literal in the ORDER BY, or a window outside a QUALIFY, is not read as a partition key.
-    "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x ORDER BY 1) = 1",
-    "SELECT x, row_number() OVER (PARTITION BY 1 ORDER BY y) AS rn FROM s",
+    "SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY x ORDER BY 1) = 1",  # A literal in the ORDER BY is no partition key.
+    "SELECT x, row_number() OVER (PARTITION BY x ORDER BY y) AS rn FROM s",
+    "SELECT x, sum(y) OVER (ORDER BY 1) AS total FROM s",
+    "SELECT x FROM s WHERE x IN (SELECT x FROM s)",
 ])
 def test_a_partition_by_a_column_or_none_is_not_a_hazard(sql: str):
     assert strange(sql) == []
@@ -626,3 +651,85 @@ def test_duckdb_reads_a_constant_partition_as_one_partition():
     connection = duckdb.connect()
     connection.execute("CREATE TABLE s (x INTEGER); INSERT INTO s VALUES (1), (2), (3)")
     assert connection.execute("SELECT x FROM s QUALIFY row_number() OVER (PARTITION BY 1 ORDER BY x) = 1").fetchall() == [(1,)]
+
+
+# Duplicate output names -------------------------------------------------------------
+
+DUPLICATES = """
+CREATE TABLE d (id INTEGER PRIMARY KEY, w INTEGER, x INTEGER);
+CREATE TABLE e (id INTEGER PRIMARY KEY, w INTEGER);
+"""
+
+
+def duplicates(sql: str) -> list[Hazard]:
+    return [hazard for hazard in suggest(DUPLICATES + sql).hazards if hazard.concern is Concern.DUPLICATE_OUTPUT_NAME]
+
+
+@pytest.mark.parametrize(("sql", "names"), [
+    ("SELECT *, 1 AS w FROM d", "name 'w'"),  # A star's column and an item.
+    ("SELECT 1 AS w, w FROM d", "name 'w'"),  # Two items.
+    ("SELECT x, x FROM d", "name 'x'"),
+    ("SELECT w, W FROM d", "name 'w'"),  # Names compare without case.
+    ("SELECT * FROM d, e", "names 'id', 'w'"),  # Two stars.
+    ("SELECT d.*, e.* FROM d JOIN e ON d.id = e.id", "names 'id', 'w'"),
+    ("SELECT * FROM d JOIN e USING (id)", "name 'w'"),  # USING merges `id`, not `w`.
+    ("SELECT x, count(*) AS x FROM d GROUP BY x", "name 'x'"),
+    ("SELECT w, w, count(*) AS n FROM d GROUP BY w HAVING count(*) > 1", "name 'w'"),
+    ("SELECT DISTINCT *, 1 AS w FROM d", "name 'w'"),
+    ("SELECT *, 1 AS w FROM d LIMIT 3", "name 'w'"),
+])
+def test_a_select_that_outputs_a_name_twice_is_a_hazard(sql: str, names: str):
+    [hazard] = duplicates(sql)
+    assert hazard.site.label == "Root Select"
+    assert hazard.message == (
+        f"this SELECT outputs {names} more than once: a reference by {'that name' if names.startswith('name ') else 'those names'} reads only the first, "
+        "and the engine renames the others (DuckDB appends _1, _2, ...) or rejects them. Alias each output column with a name of its own"
+    )
+
+
+@pytest.mark.parametrize(("sql", "label"), [
+    ("WITH c AS (SELECT *, 1 AS w FROM d) SELECT id FROM c", "CTE c"),
+    ("SELECT id FROM (SELECT *, 1 AS w FROM d) AS s", "subquery s"),
+    ("CREATE VIEW v AS SELECT *, 1 AS w FROM d; SELECT id FROM v", "view v"),
+])
+def test_every_reachable_select_is_checked_for_a_name_it_outputs_twice(sql: str, label: str):
+    [hazard] = duplicates(sql)
+    assert hazard.site.label == label
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT *, 1 AS w FROM unknown_table",  # The star cannot be expanded: its names are unknown.
+    "SELECT * FROM unknown_table, d",
+    "SELECT unknown_table.*, w FROM unknown_table",
+    "SELECT *, count(*) AS n FROM d GROUP BY id",  # A star beside GROUP BY stays one item.
+    "SELECT * FROM d",
+    "SELECT * FROM d JOIN e USING (id, w)",
+    "SELECT id, w AS other_w FROM d",
+    "SELECT x + 1, x + 2 FROM d",  # Unnamed: the engine names them.
+    "SELECT count(*), count(*) FROM d",
+    "SELECT x FROM d WHERE EXISTS (SELECT * FROM d AS a JOIN e AS b ON a.id = b.id)",  # Only its rows' existence is read.
+    "SELECT x FROM d WHERE id IN (SELECT d2.id FROM d AS d2, e)",
+])
+def test_an_output_whose_names_are_unknown_or_unique_or_not_read_is_not_a_duplicate_name_hazard(sql: str):
+    assert duplicates(sql) == []
+
+
+def test_the_inner_select_of_a_derived_table_reports_the_repeat_and_the_outer_star_does_not():
+    [hazard] = duplicates("SELECT * FROM (SELECT *, 1 AS w FROM d) AS s")
+    assert hazard.site.label == "subquery s"
+
+
+def test_the_hazard_keeps_unrelated_names_out_of_its_message():
+    [hazard] = duplicates("SELECT *, 1 AS w FROM d")
+    assert "'id'" not in hazard.message and "'x'" not in hazard.message
+
+
+def test_duckdb_returns_a_repeated_name_at_the_root_and_renames_it_in_a_derived_table():
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE d (id INTEGER, w INTEGER); INSERT INTO d VALUES (1, 2)")
+    root = connection.execute("SELECT *, 10 AS w FROM d")
+    assert [column[0] for column in root.description] == ["id", "w", "w"]
+    derived = connection.execute("SELECT * FROM (SELECT *, 10 AS w FROM d) AS s")
+    assert [column[0] for column in derived.description] == ["id", "w", "w_1"]
+    # A reference by the repeated name reads the first, the table's own column.
+    assert connection.execute("SELECT s.w FROM (SELECT *, 10 AS w FROM d) AS s").fetchall() == [(2,)]

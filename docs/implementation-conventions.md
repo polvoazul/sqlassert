@@ -257,7 +257,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   sees every row first, and they only drop rows), so the key stays a Unique Set
   and nothing needing every row (Referential Coverage) survives. A literal
   PARTITION BY key is read as no partition and recorded as the construct
-  `a constant PARTITION BY key` (and a Hazard). Any other QUALIFY, or DISTINCT
+  `a constant PARTITION BY key` (and a Hazard, which a window of the select list gets too). Any other QUALIFY, or DISTINCT
   ON that cannot be read so, is an opaque `Filter` over the projection
   (`_row_subset`): a row subset keeps every fact
   that holds of each row or of any subset, and no fact that needs all of them

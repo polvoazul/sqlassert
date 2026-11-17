@@ -344,8 +344,9 @@ than one row, an equality that is not an Exact Comparison, because it casts
 text or involves a float (a Lossy Comparison), a CASE whose results have different types (the
 common-type cast may lose information), a query that never returns a row,
 a strange construct (a star beside GROUP BY, QUALIFY beside an aggregate with
-no GROUP BY, a constant PARTITION BY key: read from the syntax, with no proof
-to fail).
+no GROUP BY, a constant PARTITION BY key in any window: read from the syntax,
+with no proof to fail), a select that outputs one name twice (a reference reads
+only the first; the engine renames the others).
 The SQL may be what its author meant. `suggest` lists Hazards last; the
 suggestion's type (`SuggestType`) is rewrite, rewrite with caveat, marker or
 hazard.

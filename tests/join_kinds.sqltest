@@ -213,3 +213,123 @@ CREATE TABLE a (x INTEGER NOT NULL);
 CREATE TABLE b (y INTEGER NOT NULL);
 SELECT x, y FROM a POSITIONAL JOIN b /**ASSERT NOT NULL(x)**/  --~ UNKNOWN
 /**ASSERT NOT NULL(y)**/  --~ UNKNOWN
+
+-- A FULL join's merged key column. Each `a` row matches at most one `b` row on
+-- a key of both, and the other way round, so each key value is in at most one
+-- output row: a matched pair, an `a`-only row or a `b`-only row. A row with a NULL
+-- key part is unmatched and its merged column is NULL, which a Unique Set
+-- allows. The merged column is coalesce(a.k, b.k): USING's, or written out.
+
+-- case: the_merged_using_column_of_a_full_join_on_keys_is_unique
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+
+SELECT k FROM a FULL JOIN b USING (k) /**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(k)**/  --~ PROVED
+
+-- case: the_merged_column_is_unique_when_the_keys_are_nullable_unique_constraints
+CREATE TABLE a (k INTEGER UNIQUE);
+CREATE TABLE b (k INTEGER UNIQUE);
+
+SELECT k FROM a FULL JOIN b USING (k) /**ASSERT UNIQUE(k)**/  --~ PROVED
+/**ASSERT NOT NULL UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: the_coalesce_written_out_is_unique
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k = b.k /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_coalesce_is_unique_with_its_arguments_and_the_equality_the_other_way_round
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+SELECT COALESCE(b.k, a.k) AS k FROM a FULL JOIN b ON b.k = a.k /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_merged_column_is_unique_beside_other_columns_and_a_where
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+
+SELECT k, a.x, b.y FROM a FULL JOIN b USING (k) WHERE a.x > 0 OR b.y > 0 /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_merged_column_is_unique_through_a_cte
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+WITH merged AS (SELECT k FROM a FULL JOIN b USING (k))
+SELECT k FROM merged /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_merged_column_is_unique_across_integer_widths
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k BIGINT PRIMARY KEY);
+
+SELECT k FROM a FULL JOIN b USING (k) /**ASSERT UNIQUE(k)**/  --~ PROVED
+
+-- case: the_merged_columns_of_a_composite_key_are_unique_together
+CREATE TABLE a (k1 INTEGER, k2 INTEGER, x INTEGER, PRIMARY KEY (k1, k2));
+CREATE TABLE b (k1 INTEGER, k2 INTEGER, y INTEGER, PRIMARY KEY (k1, k2));
+
+SELECT k1, k2 FROM a FULL JOIN b USING (k1, k2) /**ASSERT UNIQUE(k1, k2)**/  --~ PROVED
+/**ASSERT UNIQUE(k1)**/  --~ UNKNOWN
+/**ASSERT UNIQUE(k2)**/  --~ UNKNOWN
+
+-- case: a_composite_key_written_out_is_unique_when_every_pair_is_selected
+CREATE TABLE a (k1 INTEGER, k2 INTEGER, PRIMARY KEY (k1, k2));
+CREATE TABLE b (k1 INTEGER, k2 INTEGER, PRIMARY KEY (k1, k2));
+
+SELECT COALESCE(a.k1, b.k1) AS m1, COALESCE(a.k2, b.k2) AS m2
+FROM a FULL JOIN b ON a.k1 = b.k1 AND b.k2 = a.k2 /**ASSERT UNIQUE(m1, m2)**/  --~ PROVED
+
+-- A key of one input leaves the other input's rows repeating a key value.
+-- case: the_merged_column_is_unknown_unless_both_inputs_have_the_key
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER);
+
+SELECT k FROM a FULL JOIN b USING (k) /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- Another ON conjunct leaves an `a` row and a `b` row of one key value both
+-- unmatched, so two output rows share it.
+-- case: the_merged_column_is_unknown_when_on_has_another_conjunct
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+
+SELECT k FROM a FULL JOIN b ON a.k = b.k AND a.x = b.y /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: the_merged_column_is_unknown_when_on_has_a_filter_conjunct
+CREATE TABLE a (k INTEGER PRIMARY KEY, x INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, y INTEGER);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k = b.k AND a.x > 0 /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- A pair of the ON the select does not merge is one more thing two rows may differ on.
+-- case: the_merged_column_is_unknown_when_a_pair_of_on_is_not_merged
+CREATE TABLE a (k INTEGER PRIMARY KEY, j INTEGER);
+CREATE TABLE b (k INTEGER PRIMARY KEY, j INTEGER);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k = b.k AND a.j = b.j /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: a_coalesce_with_a_constant_is_unknown
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+SELECT COALESCE(a.k, 0) AS k0 FROM a FULL JOIN b ON a.k = b.k /**ASSERT UNIQUE(k0)**/  --~ UNKNOWN
+
+-- case: a_coalesce_of_three_arguments_is_unknown
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+SELECT COALESCE(a.k, b.k, 0) AS k3 FROM a FULL JOIN b ON a.k = b.k /**ASSERT UNIQUE(k3)**/  --~ UNKNOWN
+
+-- A comparison that is not exact (a float, text beside a number) matches rows
+-- the keys do not tell apart, and the coalesced value is not one of them.
+-- case: the_merged_column_is_unknown_when_the_comparison_is_not_exact
+CREATE TABLE a (k DOUBLE PRIMARY KEY);
+CREATE TABLE b (k DOUBLE PRIMARY KEY);
+
+SELECT k FROM a FULL JOIN b USING (k) /**ASSERT UNIQUE(k)**/  --~ UNKNOWN
+
+-- case: the_merged_column_is_unknown_when_a_text_key_meets_a_number
+CREATE TABLE a (k VARCHAR PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+
+SELECT COALESCE(a.k, b.k) AS k FROM a FULL JOIN b ON a.k = b.k /**ASSERT UNIQUE(k)**/  --~ UNKNOWN

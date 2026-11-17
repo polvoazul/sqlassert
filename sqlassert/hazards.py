@@ -46,12 +46,20 @@ the proof that would have pinned it, which failed:
   duplicates. Silent for the values of an IN, EXISTS or scalar subquery.
 - A strange construct, one the SQL standard rejects or that no author means,
   which sqlassert lowers opaque or as a row subset: a star in a GROUP BY
-  select (the star selects columns that are neither grouped nor aggregated,
-  unless every one is a grouping key; DuckDB's `GROUP BY ALL` is another
-  construct), a QUALIFY beside an aggregate without GROUP BY (it keeps or
-  drops the one result row), and a constant PARTITION BY key in a QUALIFY's
-  window (a literal is one partition). Read from the syntax, so they are
-  reported wherever the Select is, with no proof to fail.
+  select (the star selects columns that are neither grouped nor aggregated;
+  whatever the star selects and DuckDB's `GROUP BY ALL` included), a QUALIFY
+  beside an aggregate without GROUP BY (it keeps or drops the one result
+  row), and a constant PARTITION BY key in any window of the Select, in its
+  list, QUALIFY or ORDER BY (a literal is one partition). Read from the
+  syntax, so they are reported wherever the Select is, with no proof to fail.
+- A name a Select outputs more than once (`SELECT *, 1 AS w` over a table
+  with a column `w`), when its output columns are all known: a reference by
+  the name reads only the first, and the engine renames the others (DuckDB's
+  `w_1`) or rejects them. Read from the lowered output columns, for every
+  reachable Select whose rows are read (not an IN, EXISTS or scalar
+  subquery's): the root's names reach its consumer, a derived table's are
+  renamed. A star that cannot be expanded leaves the names unknown, and the
+  Select is left alone.
 
 A hazard is reported only when sqlassert sees the whole Select Expression; an
 `ORDER BY` key it cannot map to a selected column keeps it silent.
@@ -59,6 +67,7 @@ A hazard is reported only when sqlassert sees the whole Select Expression; an
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -93,6 +102,7 @@ class Concern(Enum):
     STAR_IN_GROUPING = "Star with GROUP BY"
     QUALIFY_BESIDE_AGGREGATE = "QUALIFY beside an aggregate"
     CONSTANT_PARTITION = "Constant partition key"
+    DUPLICATE_OUTPUT_NAME = "Duplicate output name"
 
 
 @dataclass(frozen=True)
@@ -135,7 +145,9 @@ def hazards(
             if site.trailing and isinstance(node, exp.Select) and _rows_are_read(node) and not _has_star(node):
                 found.extend(_unselected_grouping(site, grouped))  # A star may select the key.
         if site.trailing and aggregate in reachable and isinstance(node, exp.Select):
-            found.extend(_strange_constructs(site, node, grouped))
+            found.extend(_strange_constructs(site, node))
+            if not isinstance(aggregate, ir.SimpleCase) and _rows_are_read(node):
+                found.extend(_duplicate_output_names(site, aggregate, node))
         if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
             found.extend(_lossy_comparisons(site, _filter_conjuncts(aggregate), compared))
@@ -175,13 +187,14 @@ def _has_star(select: exp.Select) -> bool:
     return any(_projection_star(item) is not None for item in select.expressions)
 
 
-def _strange_constructs(site: AttachmentSite, select: exp.Select, grouped: ir.Aggregate | None) -> list[Hazard]:
+def _strange_constructs(site: AttachmentSite, select: exp.Select) -> list[Hazard]:
     """The constructs `select` is written with that are odd whatever the
     schema: a star beside GROUP BY, a QUALIFY beside an aggregate without
-    GROUP BY, and a constant PARTITION BY key. Each is read from the syntax."""
+    GROUP BY, and a constant PARTITION BY key in a window of any clause.
+    Each is read from the syntax."""
     found: list[Hazard] = []
     group, qualify = select.args.get("group"), select.args.get("qualify")
-    if isinstance(group, exp.Group) and not group.args.get("all") and _has_star(select) and not _star_is_all_keys(select, group, grouped):
+    if isinstance(group, exp.Group) and _has_star(select):
         message = (
             "SELECT * with GROUP BY selects every column, and the SQL standard rejects any that is neither grouped nor aggregated. "
             "This is probably a mistake: list the grouped columns and the aggregates instead of the star"
@@ -193,25 +206,37 @@ def _strange_constructs(site: AttachmentSite, select: exp.Select, grouped: ir.Ag
             "This is probably a mistake: filter it with HAVING, or GROUP BY a key to rank the groups"
         )
         found.append(Hazard(site, Concern.QUALIFY_BESIDE_AGGREGATE, message, Result(True, "QUALIFY filters the one row of a scalar aggregate")))
-    if isinstance(qualify, exp.Qualify):
-        for key in _constant_partition_keys(qualify, select):
-            message = (
-                f"PARTITION BY {key.sql()} is a constant, so every row is in one partition and the window partitions nothing. "
-                "This is probably a mistake: partition by a column, or drop PARTITION BY"
-            )
-            found.append(Hazard(site, Concern.CONSTANT_PARTITION, message, Result(True, "a window partitions by a constant")))
+    for key in _constant_partition_keys(select, select):
+        message = (
+            f"PARTITION BY {key.sql()} is a constant, so every row is in one partition and the window partitions nothing. "
+            "This is probably a mistake: partition by a column, or drop PARTITION BY"
+        )
+        found.append(Hazard(site, Concern.CONSTANT_PARTITION, message, Result(True, "a window partitions by a constant")))
     return found
 
 
-def _star_is_all_keys(select: exp.Select, group: exp.Group, grouped: ir.Aggregate | None) -> bool:
-    """Whether every star of `select` is a plain `*` over input columns that are all
-    grouping keys written as column names: that select is standard SQL."""
-    stars = [item for item in select.expressions if _projection_star(item) is not None]
-    if grouped is None or not grouped.input.is_schema_complete or any(not isinstance(star, exp.Star) or any(star.args.values()) for star in stars):
-        return False
-    keys = {key.name.lower() for key in group.expressions if isinstance(key, exp.Column)}
-    columns = grouped.input.output_columns
-    return bool(columns) and all(column.name.lower() in keys for column in columns)
+def _duplicate_output_names(site: AttachmentSite, relation: ir.RelationExpr, select: exp.Select) -> list[Hazard]:
+    """The names `select` outputs more than once, when its output columns are
+    all known: a star left as one `*` column (its input's columns are unknown,
+    or it is beside GROUP BY) leaves them unknown, and no name is reported.
+    The lowering keeps the first and gives each repeat an internal name
+    (`ir/names.py`), so a later reference by that name reads only the first, as
+    the engine's renamed repeats do (DuckDB's `w_1`). `*` is no name: it is the
+    column a star or `count(*)` is written as, and the engine names it itself."""
+    if not relation.is_schema_complete or (_has_star(select) and any(column.name == "*" for column in relation.output_columns)):
+        return []
+    named = [column for column in relation.output_columns if column.name and column.name != "*"]
+    counts = Counter(column.name.lower() for column in named)
+    repeated = tuple(column for column in named if counts[column.name.lower()] > 1)
+    names = list({column.name.lower(): column.name for column in reversed(repeated)}.values())[::-1]  # Each once, as first written.
+    if not names:
+        return []
+    subject = f"name {quoted(names[0])}" if len(names) == 1 else f"names {quoted_all(names)}"
+    message = (
+        f"this SELECT outputs {subject} more than once: a reference by {'that name' if len(names) == 1 else 'those names'} reads only the first, "
+        "and the engine renames the others (DuckDB appends _1, _2, ...) or rejects them. Alias each output column with a name of its own"
+    )
+    return [Hazard(site, Concern.DUPLICATE_OUTPUT_NAME, message, Result(True, "an output name repeats", repeated))]
 
 
 def _unselected_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[Hazard]:

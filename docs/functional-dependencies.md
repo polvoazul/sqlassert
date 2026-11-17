@@ -119,7 +119,7 @@ an inclusion dependency whose right side is a key. Theory behind issues
 | Project | Input FDs restricted to surviving columns, computed through closure first (`a → b → c` with `b` dropped still yields `a → c`); plus `inputs → f(inputs)` for pure computed columns, and the reverse for injective ones. |
 | Inner join | Union of both sides' FDs, plus `l.x ↔ r.y` for each ON equality. |
 | Left join | See below. |
-| Full join | Input FDs survive only with η (below) on their side; one-sided ON conditions give nothing; cross-side ON dependencies are lax because unmatched rows pad the determinant side (Paulley Lemma 10, Thm 4, p.100). |
+| Full join | Input FDs survive only with η (below) on their side; one-sided ON conditions give nothing; cross-side ON dependencies are lax because unmatched rows pad the determinant side (Paulley Lemma 10, Thm 4, p.100). A Project above it that coalesces each ON pair (`USING`'s merged column, or `coalesce(a.k, b.k)`) gets the coalesced columns as a lax key of the rows, when ON is those equalities alone and each side has a Unique Set on its columns (`uniqueness._merged_key_dependencies`; beyond Paulley). |
 | Aggregate | See below. |
 | Set operations | See below. |
 

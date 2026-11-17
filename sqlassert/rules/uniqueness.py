@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from itertools import combinations
+from itertools import combinations, product
 from typing import assert_never
 
 from sqlassert.diagnostics import quoted
@@ -31,7 +31,7 @@ from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
 from sqlassert.rules.equality import _constant_value, _equal_columns, _predicate_constants, _predicate_equalities, _same_set_types, _typed_arms
-from sqlassert.rules.value_typing import _binary_text, _identity_comparison, _signed_integer, exact_comparison, exact_numeric
+from sqlassert.rules.value_typing import _binary_text, _identity_comparison, _signed_integer, exact_comparison, exact_numeric, scalar_typing
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -691,7 +691,10 @@ def _functional_dependencies(relation: ir.RelationExpr) -> Result[Dependencies]:
             add(relation.output_columns, identity, True, Result(True, f"{relation.operator.upper()} removes duplicate rows", (relation,)))
         case ir.Limit(count=int() as count) if count <= 1:
             add((), identity, True, Result(True, "LIMIT keeps at most one row", (relation,)))
-        case ir.Alias() | ir.NamedRelation() | ir.Project() | ir.Limit() | ir.SetOperation() | ir.OpaqueRelation():
+        case ir.Project():
+            for determinant, dependent, strict, evidence in _merged_key_dependencies(relation):
+                add(determinant, dependent, strict, evidence)
+        case ir.Alias() | ir.NamedRelation() | ir.Limit() | ir.SetOperation() | ir.OpaqueRelation():
             pass
         case _:
             assert_never(relation)
@@ -890,6 +893,81 @@ def _full_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outpu
                                 pass  # Within one side, or not a column: ON holds on matched rows only.
                 case _:
                     pass  # Other conjuncts hold on matched rows only.
+
+
+def _merged_key_dependencies(project: ir.Project):
+    """A FULL join on a key of both inputs, projected as the coalesced key.
+
+    `SELECT coalesce(a.k, b.k) AS k FROM a FULL JOIN b ON a.k = b.k` (the
+    merged column of `USING (k)` is one): when the pairs of columns the ON
+    equates are every conjunct of it, a Unique Set of `a` on the left ones and
+    of `b` on the right ones, the coalesced columns are a Unique Set of the
+    join's rows, laxly: a row's non-NULL key value is that of its `a` row, of
+    its `b` row, or of both, equal (the comparison loses nothing and the
+    coalesce keeps the value), so two rows with it share an `a` row or a `b`
+    row (excluded: each repeats only on a repeated key) or one is an unmatched
+    row whose key equals one of the other, which ON would have matched. A row
+    with a NULL key part is unmatched and coalesces to NULL, and the Unique Set
+    does not constrain it. Another ON conjunct would leave two unmatched rows
+    of one value, so it gives nothing. Rows a WHERE drops keep the property."""
+    found = _full_join_beneath(project)
+    if found is None:
+        return
+    join, outputs = found
+    inputs = {output: column for column, output in _join_outputs(join).items()}
+    pairs: list[tuple[ir.OutputColumn, ir.OutputColumn]] = []
+    for conjunct in join.conjuncts:
+        match conjunct:
+            case ir.Equality(left=ir.ColumnRef(column=first) as one, right=ir.ColumnRef(column=second) as other):
+                for left, right in ((first, second), (second, first)):
+                    if left in join.left.output_columns and right in join.right.output_columns:
+                        if not exact_comparison(one, other).value:
+                            return
+                        pairs.append((left, right))
+                        break
+                else:
+                    return  # An equality within one input holds on matched rows only.
+            case _:
+                return  # Any other conjunct leaves matched rows unrelated to equal keys.
+    if not pairs:
+        return
+    passed = _pass_through(project, project.input)
+    choices: list[list[ir.OutputColumn]] = [[] for _ in pairs]
+    for column in project.output_columns:
+        match column.scalar_expr:
+            case ir.Coalesce(arguments=(ir.ColumnRef(column=first), ir.ColumnRef(column=second))):
+                # USING's merged column reads the columns its own Project passes through.
+                first, second = passed.get(first, first), passed.get(second, second)
+                if first not in outputs or second not in outputs or scalar_typing(column.scalar_expr).value is None:
+                    continue
+                taken = (inputs[outputs[first]], inputs[outputs[second]])
+                for index, (left, right) in enumerate(pairs):
+                    if taken in ((left, right), (right, left)):
+                        choices[index].append(column)
+            case _:
+                pass
+    if not all(choices):
+        return
+    left_key, right_key = frozenset(left for left, _ in pairs), frozenset(right for _, right in pairs)
+    proof = unique_set(left_key) & unique_set(right_key)
+    if not proof.value:
+        return
+    evidence = Result(True, "A FULL join on a key of both inputs matches each key value once", (project,), [proof])
+    for determinant in product(*choices):
+        yield determinant, RowIdentity(project), False, evidence
+
+
+def _full_join_beneath(project: ir.Project) -> tuple[ir.Join, dict[ir.OutputColumn, ir.OutputColumn]] | None:
+    """The FULL join under `project`, through the filters between them, with
+    each column of the project's input mapped to the join's output column it
+    passes through."""
+    source = project.input
+    mapping: dict[ir.OutputColumn, ir.OutputColumn] = {column: column for column in source.output_columns}
+    while isinstance(source, ir.Filter):
+        through = _pass_through(source, source.input)
+        mapping = {column: through[passed] for column, passed in mapping.items() if passed in through}
+        source = source.input
+    return (source, mapping) if isinstance(source, ir.Join) and source.kind == "full" else None
 
 
 def minimal_keys(relation: ir.RelationExpr, max_size: int = 3) -> list[tuple[ir.OutputColumn, ...]]:
