@@ -250,6 +250,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # (`jsonb_array_elements(x) AS r` is `value`), and one with several is
         # a record of them. Not an array of rows (`unnest` spreads its fields),
         # not several arguments (`unnest(a, b)`), not `WITH ORDINALITY`.
+        # TODO: confirm with probe that `jsonb_array_elements(x) AS r` names its column `value`, not `r`.
         table_functions=(
             ("generate_series", ("generate_series",)), ("unnest", ("unnest",)),
             ("regexp_split_to_table", ("regexp_split_to_table",)),
