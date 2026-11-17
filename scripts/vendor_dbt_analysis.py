@@ -86,7 +86,7 @@ def join_statistics(models, dialect, analysis, ignored=frozenset(), *, intermedi
                 opaque_models["names"].append(relation.name if relation is not None else table.name)
                 continue
             columns = set(table.output_columns)
-            typed = sum(column.comparison_type is not None for column in columns)
+            typed = sum(column.typing is not None for column in columns)
             base_tables["tables"] += 1
             base_tables["columns"] += len(columns)
             base_tables["typed_columns"] += typed

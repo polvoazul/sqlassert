@@ -60,16 +60,29 @@ is through a join that is not proved to be a Unique Join; a Chasm Trap through
 a One To Many (or Many To One) Join whose argument is on the side with one row
 per key.
 
-**Float Equality**:
+**Exact Comparison**:
+An equality `left = right` whose operands both have a known type (the type of
+a scalar expression: a column's, a literal's, a CAST's, integer arithmetic's,
+the one a CASE's results share) and that compares their values without a
+lossy coercion: both text compared by identity, or both of one type whose
+equal values are identical, or both integers (any width), or an integer or
+decimal literal beside an integer or decimal. An unknown type is none. What
+an equality pins, binds, merges into an Equality Group or makes a Functional
+Dependency of, all ask this one question.
+_Avoid_: Same type, pins, lossless comparison
+
+**Lossy Comparison**:
 An equality comparison (`=`, `<>`, `IS [NOT] DISTINCT FROM`, an IN list or
-subquery) with an operand of a known floating type, REAL, FLOAT or DOUBLE
-in any spelling (a Hazard): floats round, so comparing one for exact
-equality is wrong, against another float, an integer, a decimal or a
-literal (`x = 0.1`). Which values a float holds exactly, and how each
-dialect converts the other side, are no rule to rely on. An ordering
-(`<`, `>`) is none, and so is an operand whose type is unknown.
-_Avoid_: Lossy comparison, float comparison (an ordering is fine), precision
-loss, rounding comparison, implicit cast (that Hazard is text)
+subquery) whose operands both have a known type and that is not an Exact
+Comparison because a float is on either side (a REAL, FLOAT or DOUBLE column,
+expression or literal: floats round, so `x = 0.1` misses a DOUBLE computed as
+`0.1 + 0.2 - 0.2`, and a BIGINT beside a DOUBLE matches two values above 2^53)
+or because text is compared with another type (the text is cast, so `'01'`
+and `'1'` both equal 1) (a Hazard). A string literal takes the type of the
+other side and is no text here. An ordering (`<`, `>`) is none, and so is an
+operand whose type is unknown.
+_Avoid_: Float equality, implicit cast, float comparison (an ordering is fine),
+precision loss, rounding comparison
 
 **Exactly One Join Assertion**:
 An assertion that every row of a join's left-hand input matches exactly one
@@ -252,7 +265,7 @@ database enum type, though a catalog's enum type could supply it as Knowledge.
 _Avoid_: Enum type, value set, check constraint
 
 **Equality Group**:
-An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE`, inner-join and semi-join `ON` `a = b`, or `a IS NOT DISTINCT FROM b`, NULL then being a shared value; a semi join's through the matched right row's columns) between known matching comparison types, never by an outer join's `ON`. Implicit casts and case-insensitive default collations (MySQL's) do not establish value identity; a `COLLATE` is unsupported. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
+An analysis-only set of one relation's output columns that carry the same value on every row: merged by strict equalities (`WHERE`, inner-join and semi-join `ON` `a = b`, or `a IS NOT DISTINCT FROM b`, NULL then being a shared value; a semi join's through the matched right row's columns) that are an Exact Comparison, never by an outer join's `ON`. Implicit casts and case-insensitive default collations (MySQL's) do not establish value identity; a `COLLATE` is unsupported. Stronger than a pair of Functional Dependencies, which an injective `a = f(b)` also satisfies. Value facts such as Enumerated Domains and Foreign Keys read it; uniqueness does not.
 _Avoid_: Equivalence class, alias set
 
 **Null Source**:
@@ -327,8 +340,8 @@ A place whose result the SQL leaves unspecified or likely wrong, with the
 failed Proof that would have pinned it: a Fan Trap or Chasm Trap, an unmarked
 join that may be many to many, a `LIMIT`
 that picks arbitrary rows among ties, a scalar subquery that may return more
-than one row, a join equality that casts, an exact equality of a float
-(a Float Equality), a CASE whose results have different types (the
+than one row, an equality that is not an Exact Comparison, because it casts
+text or involves a float (a Lossy Comparison), a CASE whose results have different types (the
 common-type cast may lose information), a query that never returns a row.
 The SQL may be what its author meant. `suggest` lists Hazards last; the
 suggestion's type (`SuggestType`) is rewrite, rewrite with caveat, marker or

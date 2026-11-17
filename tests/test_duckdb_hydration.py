@@ -190,4 +190,4 @@ def test_a_column_of_a_user_defined_type_is_lowered():
     parsed = SqlParser("duckdb").parse("CREATE TABLE t (id INTEGER, s mood); SELECT id, s FROM t")
     table, = IrParser("duckdb").parse(parsed).program.named_relations
 
-    assert [column.identity_comparison for column in table.output_columns] == [True, False]
+    assert [column.typing is not None and column.typing.identity_comparison for column in table.output_columns] == [True, False]

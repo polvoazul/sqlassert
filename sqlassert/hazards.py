@@ -14,17 +14,18 @@ the proof that would have pinned it, which failed:
   aggregate counts, `min` and `max` included: the join is wrong either way.
   `count(*)` has no argument, so only a many-to-many join is a trap for it.
   Silent when the input whose rows are repeated has no known Unique Set.
-- A join equality between text and another declared type: the text is cast,
-  so different strings may match one value (`'01'` and `'1'` both equal 1),
-  and no cardinality is proved across it. Write the cast explicitly.
-- A Float Equality: an equality (`=`, `<>`, `IS [NOT] DISTINCT FROM`, an
-  IN list or subquery) with an operand of a known floating type (REAL,
-  FLOAT, DOUBLE in any spelling), against another float, an integer, a
-  decimal or a literal. Floats round, so exact equality is wrong; which
-  values a float holds exactly is no rule to rely on. In a join's ON, a
-  WHERE or HAVING, and the correlation of an IN or EXISTS subquery (its
-  semi or anti join). Silent for an ordering (`<`, `>`) and an operand
-  whose type is unknown: a literal's type is the dialect's, never guessed.
+- A Lossy Comparison: an equality (`=`, `<>`, `IS [NOT] DISTINCT FROM`, an
+  IN list or subquery) whose two operands both have a known type
+  (`rules/value_typing.py`) and that is not an `exact_comparison`, because a
+  float is on either side (a column, an expression or a literal: floats
+  round, and a BIGINT beside a DOUBLE rounds too, so exact equality is wrong;
+  which values a float holds exactly is no rule to rely on), or because text
+  is compared with another type: the text is cast, so different strings may
+  match one value (`'01'` and `'1'` both equal 1), and no cardinality is
+  proved across it. Write the cast explicitly. In a join's ON, a WHERE or
+  HAVING, and the correlation of an IN or EXISTS subquery (its semi or anti
+  join). Silent for an ordering (`<`, `>`), an operand whose type is unknown,
+  and a string literal, which takes the other side's type.
 - A scalar subquery not proved to return at most one row (issue 38): more
   than one is a runtime error. Uncorrelated, its body must have at most one
   row; correlated, the columns its WHERE binds must reach its Row Identity.
@@ -60,7 +61,7 @@ from sqlassert.ir.convert import HIDDEN_GROUPING
 from sqlassert.rewrites import SuggestType, _syntax_at_sites
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
-from sqlassert.rules.equality import _binary_text, _comparison_type, _exact_arithmetic, _identity_comparison
+from sqlassert.rules.value_typing import _identity_comparison, exact_comparison, scalar_typing
 from sqlassert.rules.join_cardinality import _at_most_one_match, many_to_one_join, one_to_many_join, unique_join
 from sqlassert.properties import NonNullColumn, NonNullColumns, ReferentialCoverage
 from sqlassert.rules.exactly_one import _cross_equalities
@@ -73,8 +74,7 @@ class Concern(Enum):
     FAN_TRAP = "Fan trap"
     CHASM_TRAP = "Chasm trap"
     SCALAR_SUBQUERY = "Scalar subquery"
-    IMPLICIT_CAST = "Implicit cast"
-    FLOAT_EQUALITY = "Float equality"
+    LOSSY_COMPARISON = "Lossy comparison"
     ALWAYS_EMPTY = "Always empty"
     MANY_TO_MANY = "Many-to-many join"
     UNSELECTED_GROUPING = "Grouping key not selected"
@@ -93,12 +93,12 @@ class Hazard:
 
 
 def hazards(
-    ast: ParsedProgram, program: ir.Program, arena: Arena, dialect: str,
+    ast: ParsedProgram, program: ir.Program, arena: Arena,
     wanted: Callable[[AttachmentSite], bool] = lambda site: True,
 ) -> list[Hazard]:
     """Every Hazard in `program` at a site `wanted` accepts, in source order. `arena` must be active."""
     syntax = _syntax_at_sites(ast)
-    compared: set[ir.ScalarExpr] = set()  # Comparisons already checked for a float equality.
+    compared: set[ir.ScalarExpr] = set()  # Comparisons already checked for a lossy comparison.
     reachable = set(program.nodes())
     found: list[Hazard] = []
     join_labels = {relation: site.label for site, relation in program.attachment_sites if isinstance(relation, ir.Join)}
@@ -111,8 +111,7 @@ def hazards(
         if isinstance(relation, ir.Limit) and relation in reachable and isinstance(node, exp.Select):
             found.extend(_arbitrary_limit(site, relation, sort_keys.get(site)))
         if isinstance(relation, ir.Join) and relation in reachable and not site.trailing:
-            found.extend(_implicit_casts(site, relation))
-            found.extend(_float_equalities(site, relation.conjuncts, compared, dialect))
+            found.extend(_lossy_comparisons(site, relation.conjuncts, compared))
             if isinstance(node, exp.Join) and assertion_span(node) is None and relation not in deduplicated:
                 found.extend(_many_to_many(site, relation))
         aggregate = relation.input if isinstance(relation, ir.Limit) else relation
@@ -123,7 +122,7 @@ def hazards(
                 found.extend(_unselected_grouping(site, grouped))
         if site.trailing and aggregate in reachable and not isinstance(aggregate, ir.SimpleCase):
             found.extend(_always_empty(site, aggregate, arena))
-            found.extend(_float_equalities(site, _filter_conjuncts(aggregate), compared, dialect))
+            found.extend(_lossy_comparisons(site, _filter_conjuncts(aggregate), compared))
     for site, operation in program.set_operations:
         if operation in reachable and wanted(site) and operation.operator == "except":
             found.extend(_empty_except(site, operation, arena))
@@ -292,26 +291,6 @@ def _equates_a_key(join: ir.Join, side: ir.RelationExpr, other: ir.RelationExpr)
     return any(set(key) <= equated for key in minimal_keys(side))
 
 
-def _implicit_casts(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
-    """Each ON equality between a text column and a column of another known type."""
-    found = []
-    for conjunct in join.conjuncts:
-        match conjunct:
-            case ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second)):
-                types = (_comparison_type(first).value, _comparison_type(second).value)
-                if None in types or _binary_text(first).value == _binary_text(second).value:
-                    continue
-                message = (
-                    f"{quoted(first.name)} ({types[0]}) = {quoted(second.name)} ({types[1]}) compares text with another type: the text is cast, "
-                    "so different strings may match one value ('01' and '1' both equal 1): cast explicitly"
-                )
-                evidence = Result(False, "The comparison casts text", (conjunct,))
-                found.append(Hazard(site, Concern.IMPLICIT_CAST, message, evidence))
-            case _:
-                pass
-    return found
-
-
 def _filter_conjuncts(relation: ir.RelationExpr) -> list[ir.ScalarExpr]:
     """The conjuncts of a Select's WHERE and HAVING, and of the semi and anti
     joins its IN and EXISTS subqueries are, from its result down to its FROM."""
@@ -330,17 +309,14 @@ def _filter_conjuncts(relation: ir.RelationExpr) -> list[ir.ScalarExpr]:
                 return found
 
 
-_FLOATS = {exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE, exp.DataType.Type.UDOUBLE}
-
 # Call names that compare for equality, as their operands' values.
 _EQUALITY_CALLS = {"<>", "IS DISTINCT FROM"}
 
 
-def _float_equalities(
-    site: AttachmentSite, conjuncts: Iterable[ir.ScalarExpr], compared: set[ir.ScalarExpr], dialect: str,
-) -> list[Hazard]:
+def _lossy_comparisons(site: AttachmentSite, conjuncts: Iterable[ir.ScalarExpr], compared: set[ir.ScalarExpr]) -> list[Hazard]:
     """Each equality in `conjuncts`, at any depth (`x = 1 OR y = 2` is two),
-    with an operand column of a known floating type."""
+    that compares typed operands lossily (`_lossy_pair`); an IN list compares
+    its operand with each value."""
     found = []
     pending = list(conjuncts)
     while pending:
@@ -350,35 +326,65 @@ def _float_equalities(
         compared.add(node)
         match node:
             case ir.Equality(left=left, right=right) | ir.NullSafeEquality(left=left, right=right):
-                operands: tuple[ir.ScalarExpr, ...] = (left, right)
+                pairs = [(left, right)]
             case ir.Call(function=function, arguments=(left, right)) if function.name in _EQUALITY_CALLS:
-                operands = (left, right)
+                pairs = [(left, right)]
             case ir.InList(operand=operand, values=values):
-                operands = (operand, *values)
+                pairs = [(operand, value) for value in values]
             case _:
                 pending.extend(child for child in ir.children(node) if isinstance(child, ir.ScalarExpr))
                 continue
-        floats = [(operand.column, kind) for operand in operands if isinstance(operand, ir.ColumnRef) and (kind := _float_type(operand.column, dialect)) is not None]
-        if not floats:
-            continue
-        written = node.origin.detail
-        for operand in operands:
-            if isinstance(operand, ir.ColumnRef) and operand.origin.detail.startswith("__having."):
-                written = written.replace(operand.origin.detail, operand.column.name)  # HAVING reads the grouped columns.
-        message = f"{written} compares a floating-point value for exact equality; compare within a tolerance or use an exact type"
-        column, kind = floats[0]
-        evidence = Result(False, f"{quoted(column.name)} is {kind}, a floating-point type, compared for exact equality", (node,))
-        found.append(Hazard(site, Concern.FLOAT_EQUALITY, message, evidence))
+        for left, right in pairs:
+            if (reason := _lossy_pair(left, right)) is None:
+                continue
+            written = node.origin.detail
+            for operand in (left, right):
+                if isinstance(operand, ir.ColumnRef) and operand.origin.detail.startswith("__having."):
+                    written = written.replace(operand.origin.detail, operand.column.name)  # HAVING reads the grouped columns.
+            message, why = reason
+            found.append(Hazard(site, Concern.LOSSY_COMPARISON, f"{written} is a lossy comparison: {message}", why))
+            break  # One Hazard for the comparison.
     return found
 
 
-def _float_type(column: ir.OutputColumn, dialect: str) -> str | None:
-    """`column`'s declared floating type, or None when its type is not a
-    float or not known."""
-    declared = _comparison_type(column).value
-    if declared is None or exp.DataType.build(declared, dialect=dialect).this not in _FLOATS:
+def _lossy_pair(left: ir.ScalarExpr, right: ir.ScalarExpr) -> tuple[str, Result] | None:
+    """Why `left = right` is lossy, with the failed `exact_comparison`: both
+    operands typed, the comparison not exact, and a float on a side or text
+    against another type. A string literal is no text here: it takes the type
+    of the other side."""
+    if any(isinstance(operand, ir.Constant) and operand.value is not None and operand.value.type == "string" for operand in (left, right)):
         return None
-    return declared
+    first, second = scalar_typing(left).value, scalar_typing(right).value
+    if first is None or second is None:
+        return None
+    exact = exact_comparison(left, right)
+    if exact.value:
+        return None
+    for operand, typing in ((left, first), (right, second)):
+        if typing.floating:
+            side = _described(operand)
+            return (
+                f"{side} is {typing.comparison_type}, a floating-point type, so values that differ may compare equal; "
+                "compare within a tolerance or use an exact type",
+                Result(False, f"{side} is {typing.comparison_type}, a floating-point type, compared for exact equality", (left, right), [exact]),
+            )
+    if first.binary_text != second.binary_text:
+        (text, _), (other, other_typing) = ((left, first), (right, second)) if first.binary_text else ((right, second), (left, first))
+        return (
+            f"{_described(text)} is text and {_described(other)} is {other_typing.comparison_type}: the text is cast, so different "
+            "strings may match one value ('01' and '1' both equal 1); cast explicitly",
+            Result(False, f"{_described(text)} is text compared with {other_typing.comparison_type}, which casts the text", (left, right), [exact]),
+        )
+    return None
+
+
+def _described(operand: ir.ScalarExpr) -> str:
+    """`operand` for a message: a column by name, else as written."""
+    match operand:
+        case ir.ColumnRef(column=column):
+            return quoted(column.name)
+        case _:
+            return operand.origin.detail
 
 
 def _scalar_subquery(site: AttachmentSite, join: ir.Join) -> list[Hazard]:
@@ -574,7 +580,7 @@ def _arbitrary_limit(site: AttachmentSite, limit: ir.Limit, keys: tuple[ir.Outpu
 
 def _ties_identical(column: ir.OutputColumn) -> bool:
     """Whether rows ORDER BY ties on `column` hold identical values of it."""
-    return _identity_comparison(column).value or _exact_arithmetic(column)
+    return _identity_comparison(column).value
 
 
 def _needed(column: ir.OutputColumn) -> frozenset[ir.OutputColumn] | None:

@@ -103,10 +103,6 @@ class _Lowered:
     bindings: tuple[_Binding, ...]
 
 
-# How the values of a computed column or a CAST compare.
-_Typing = ir.ValueTyping
-
-
 @dataclass
 class IrParser:
     dialect: str
@@ -131,10 +127,7 @@ class IrParser:
     _reported_cycles: set[_Symbol] = field(default_factory=set)
     _attachment_sites: list[tuple[AttachmentSite, ir.RelationExpr | ir.SimpleCase]] = field(default_factory=list)
     _sited_cases: set[int] = field(default_factory=set)
-    _typed_cases: set[int] = field(default_factory=set)
-    # The type shared by the results of each CASE, IF, COALESCE and NULLIF
-    # lowered, by id (`_type_results`); absent when they share none.
-    _result_typings: dict[int, _Typing] = field(default_factory=dict)
+    _mixed_checked: set[int] = field(default_factory=set)
     _mixed_cases: list[tuple[AttachmentSite, str]] = field(default_factory=list)
     # Each scalar subquery lowered as a join, by id, and the qualifier of the
     # binding that holds its value.
@@ -917,11 +910,7 @@ class IrParser:
         kind = None if literals is None else self._values_type(literals)
         if kind is None:
             return column
-        definition = exp.ColumnDef(kind=kind)
-        return replace(
-            column, binary_text=self._is_binary_text(definition), comparison_type=self._comparison_type(definition),
-            identity_comparison=self._identity_comparison(definition), exact_numeric=self._exact_numeric(definition),
-        )
+        return replace(column, typing=self._declared_typing(kind))
 
     def _values_type(self, literals: list[ir.LiteralValue | None]) -> exp.DataType | None:
         """The type a VALUES column of these literals (None for NULL) has in
@@ -1015,13 +1004,8 @@ class IrParser:
         collated = {name for name, definition in by_name.items() if _collated(definition)}
         by_name = {name: definition for name, definition in by_name.items() if name not in collated}
         typed = tuple(
-            replace(
-                column, binary_text=self._is_binary_text(by_name[column.name]),
-                comparison_type=self._comparison_type(by_name[column.name]),
-                identity_comparison=self._identity_comparison(by_name[column.name]),
-                exact_numeric=self._exact_numeric(by_name[column.name]),
-            )
-            if column.name in by_name else column for column in columns
+            replace(column, typing=self._typing_of_declaration(by_name[column.name])) if column.name in by_name else column
+            for column in columns
         )
         for column in typed:
             kind = by_name[column.name].args.get("kind") if column.name in by_name else None
@@ -1709,7 +1693,7 @@ class IrParser:
         value = remapped[body.output_columns[-1]]
         if isinstance(value_expression, exp.Count):
             passed = _pass_output_columns(output_columns, origin)
-            zero = ir.Constant(origin=origin, value=ir.LiteralValue(type="numeric", text="0"))
+            zero = self._constant(origin, ir.LiteralValue(type="numeric", text="0"))
             counted = ir.OutputColumn(origin=origin, name="value", scalar_expr=ir.Coalesce(
                 origin=origin, arguments=(ir.ColumnRef(origin=origin, column=value), zero),
             ))
@@ -2131,51 +2115,41 @@ class IrParser:
             self._unsupported = [(node, construct) for node, construct in self._unsupported if node is not column.scalar_expr]
 
     def _output_column(self, item: Expr, expression: Expr, value: ir.ScalarExpr) -> ir.OutputColumn:
-        """The output column of a select item (`value` is `expression` lowered),
-        with the type its expression is known to have: a CAST, a call whose
-        type the dialect fixes (`_result_type`), a CASE, IF, COALESCE or NULLIF
-        whose results share one (`_type_results`). The column is typed as one
-        declared with that type, so its equalities bind where the type compares
-        by identity (a `row_number()` window is an integer). The type says how values compare, no more: an expression
-        that is not injective is no less typed. Whether it is a projected item
-        or a grouping key makes no difference."""
+        """The output column of a select item (`value` is `expression` lowered).
+        It has no declared type: it has its expression's (`rules/value_typing.py`),
+        whether it is a projected item or a grouping key. Only the declared
+        SQL type of a CAST, window or fixed-result call is recorded, for the
+        hazards that compare declared types (`_declared_type`)."""
         column = ir.OutputColumn(origin=self._origin(item), name=item.alias_or_name, scalar_expr=value)
         while isinstance(expression, exp.Paren):
             expression = expression.this
         kind: exp.DataType | None = None
-        typing: _Typing | None = None
         match expression:
             case exp.Cast():
                 kind = expression.to
-                typing = self._cast_typing(expression, value)
-            case exp.Case() | exp.If() | exp.Coalesce() | exp.Nullif():
-                typing = self._result_typings.get(id(expression))
             case exp.Window() if _row_number_window(expression) is not None:
-                kind = exp.DataType.build("BIGINT", dialect=self.dialect)  # An integer type in every engine, whichever.
-                typing = self._declared_typing(kind)
+                kind = exp.DataType.build("BIGINT", dialect=self.dialect)
             case _:
                 kind = self._result_type(expression)
-                typing = None if kind is None else self._declared_typing(kind)
-        if typing is not None:
-            column = replace(
-                column, comparison_type=typing.comparison_type, binary_text=typing.binary_text,
-                identity_comparison=typing.identity_comparison, exact_numeric=typing.exact_numeric,
-            )
         if kind is not None:
             self._declared_types[column] = kind
         return column
 
-    def _declared_typing(self, kind: exp.DataType) -> _Typing | None:
+    def _declared_typing(self, kind: exp.DataType) -> ir.ValueTyping | None:
         """How a column declared with `kind` compares; None when it has no comparison type."""
-        definition = exp.ColumnDef(kind=kind)
+        return self._typing_of_declaration(exp.ColumnDef(kind=kind))
+
+    def _typing_of_declaration(self, definition: exp.ColumnDef) -> ir.ValueTyping | None:
         comparison_type = self._comparison_type(definition)
         if comparison_type is None:
             return None
-        return _Typing(
+        kind = definition.args["kind"]
+        return ir.ValueTyping(
             comparison_type, self._is_binary_text(definition), self._identity_comparison(definition), self._exact_numeric(definition),
+            floating=kind.this in _FLOATS, integer=_INTEGER_RANK.get(kind.this),
         )
 
-    def _cast_typing(self, cast: exp.Cast, value: ir.ScalarExpr) -> _Typing | None:
+    def _cast_typing(self, cast: exp.Cast, value: ir.ScalarExpr) -> ir.ValueTyping | None:
         """A CAST (TRY_CAST too: a failure is NULL, which equals nothing) has the
         type it names. Not to text, unless the operand is a number of a
         declared type: a cast of text keeps the operand's collation (Postgres),
@@ -2187,6 +2161,56 @@ class IrParser:
         ):
             return None
         return self._declared_typing(cast.to)
+
+    def _fixed_typing(self, expression: Expr) -> ir.ValueTyping | None:
+        """The type of a call whose result type the dialect fixes (`_result_type`)."""
+        kind = self._result_type(expression)
+        return None if kind is None else self._declared_typing(kind)
+
+    def _literal_typing(self, literal: ir.LiteralValue | None) -> ir.ValueTyping | None:
+        """How a literal compares, from the type the dialect gives one of its kind.
+
+        A string is text (by identity where the dialect's is); a boolean a
+        BOOLEAN; an integer an INT where it fits, else a BIGINT, and a decimal
+        beyond BIGINT or written with a point, or an exponent, the type
+        `DialectSemantics.literal_types` names for it (a float is
+        `floating`), or none where the dialect's is not claimed. A number
+        of more than 38 digits is none: DuckDB turns it into a DOUBLE."""
+        if literal is None:
+            return None
+        match literal.type:
+            case "string":
+                return self._declared_typing(exp.DataType.build("TEXT", dialect=self.dialect))
+            case "boolean":
+                return self._declared_typing(exp.DataType.build("BOOLEAN", dialect=self.dialect))
+            case "numeric":
+                pass
+            case _:
+                assert_never(literal.type)
+        text = literal.text
+        if re.fullmatch(r"-?[0-9]+", text):
+            if -(2**31) <= int(text) < 2**31:
+                return self._declared_typing(exp.DataType.build("INT", dialect=self.dialect))
+            if -(2**63) <= int(text) < 2**63:
+                return self._declared_typing(exp.DataType.build("BIGINT", dialect=self.dialect))
+            kind = "decimal"
+        else:
+            kind = "exponent" if "e" in text.lower() else "decimal"
+        if sum(character.isdigit() for character in text.split("e")[0].split("E")[0]) > _EXACT_LITERAL_DIGITS:
+            return None
+        name = dict(self.semantics.literal_types).get(kind)
+        if name is None:
+            return None
+        declared = exp.DataType.build(name, dialect=self.dialect)
+        if declared.this in _FLOATS:
+            return self._declared_typing(declared)
+        # An exact number is compared by value: a decimal literal (PostgreSQL's NUMERIC with no scale)
+        # is no value of an unscaled type.
+        exact = not self._unscaled_decimal(declared)
+        return ir.ValueTyping("DECIMAL LITERAL", False, exact, exact)
+
+    def _constant(self, origin: Origin, value: ir.LiteralValue | None) -> ir.Constant:
+        return ir.Constant(origin=origin, value=value, typing=self._literal_typing(value))
 
     def _result_type(self, expression: Expr) -> exp.DataType | None:
         """The type the dialect returns for `expression`, a call of a function
@@ -2329,9 +2353,9 @@ class IrParser:
         def lower(node: Expr) -> ir.ScalarExpr:
             return self._lower_expression(node, bindings, schema_complete=schema_complete)
 
-        if isinstance(expression, exp.Case | exp.If | exp.Coalesce | exp.Nullif) and id(expression) not in self._typed_cases:
-            self._typed_cases.add(id(expression))
-            self._type_results(expression, lower)
+        if isinstance(expression, exp.Case | exp.If) and id(expression) not in self._mixed_checked:
+            self._mixed_checked.add(id(expression))
+            self._mixed_results(expression, lower)
         if isinstance(expression, exp.Subquery) and id(expression) in self._scalar_values:
             qualifier = self._scalar_values[id(expression)]
             value = next((binding.column for binding in bindings if binding.qualifier == qualifier), None)
@@ -2430,7 +2454,7 @@ class IrParser:
         if value == ir.LiteralValue(type="string", text="") and self.semantics.empty_string_is_null:
             return ir.NullLiteral(origin=origin)
         if value is not None or isinstance(expression, exp.Literal):
-            return ir.Constant(origin=origin, value=value)
+            return self._constant(origin, value)
         builtin = dialect_builtins(self.semantics).get(type(expression))
         if builtin is not None and not quantified:
             function, keys = builtin
@@ -2462,14 +2486,29 @@ class IrParser:
                     function, arguments = self._composite_comparison(expression, function, arguments, composites, self._origin(expression, line or _source_line(expression)))
                 call = ir.Call(origin=origin, function=function, arguments=arguments, description=description)
                 if type(expression) is exp.Cast:
-                    call = replace(call, typing=self._cast_typing(expression, call))
-                return call
+                    return replace(call, typing=self._cast_typing(expression, call))
+                return replace(call, typing=self._fixed_typing(expression))
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             opaque = ir.OpaqueExpression(origin=origin, description=description)
             if isinstance(expression, exp.Window):
+                if _row_number_window(expression) is not None:
+                    # An integer type in every engine, whichever (docs/dialects.md).
+                    opaque = replace(opaque, typing=self._declared_typing(exp.DataType.build("BIGINT", dialect=self.dialect)))
                 self._unsupported.append((opaque, "a window function (other than a row_number() select item or QUALIFY row_number() ... = 1)"))
             return opaque
-        return ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description)
+        if isinstance(expression, exp.Case) or isinstance(expression, exp.If):
+            # A searched CASE (a simple one is a SimpleCase) or IF: conditions and results, flat.
+            parts = _selection_parts(expression)
+            return ir.OpaquePureFunction(
+                origin=origin, arguments=tuple(lower(part) for part, _ in parts), description=description,
+                results=tuple(index for index, (_, is_result) in enumerate(parts) if is_result),
+            )
+        opaque_call = ir.OpaquePureFunction(
+            origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description,
+        )
+        if isinstance(expression, exp.Cast):
+            return replace(opaque_call, typing=self._cast_typing(expression, opaque_call))  # TRY_CAST.
+        return replace(opaque_call, typing=self._fixed_typing(expression))
 
     def _checked_comparison(self, comparison: exp.Binary, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
         """Whether `comparison` compares its operands' values as they are:
@@ -2595,98 +2634,43 @@ class IrParser:
             case _:
                 return False
 
-    def _type_results(self, expression: exp.Case | exp.If | exp.Coalesce | exp.Nullif, lower: Callable[[Expr], ir.ScalarExpr]) -> None:
-        """Read the results of a CASE, IF, COALESCE or NULLIF (the values it
-        may return, no condition) for what they say of its type.
-
-        Hazard: record a CASE or IF whose results have different declared
-        types: the engine casts them to a common type (or rejects the query),
-        and a cast may lose what told values apart (`'01'` and `'1'` both
-        become 1, a large BIGINT a rounded DOUBLE). Integer types only widen,
-        so they mix safely. A result whose type is not known is left out,
-        never guessed.
-
-        Type: when every result is NULL or has one type that compares by
-        identity (`_common_typing`), so does the expression, and
-        `_output_column` types the select item that is it. A result of any
-        other kind, or of an unknown type, leaves the expression untyped."""
-        results = [
-            result for result in _result_expressions(expression) if result is not None
-        ]
+    def _mixed_results(self, expression: exp.Case | exp.If, lower: Callable[[Expr], ir.ScalarExpr]) -> None:
+        """Read the results of a CASE or IF (the values it may return, no
+        condition) for a Hazard: when they have different declared types the
+        engine casts them to a common type (or rejects the query), and a cast
+        may lose what told values apart (`'01'` and `'1'` both become 1, a
+        large BIGINT a rounded DOUBLE). Integer types only widen, so they mix
+        safely. A result whose type is not known is left out, never guessed.
+        The type of the CASE itself is the type its results share
+        (`rules/value_typing.py`)."""
         kinds: dict[str, str] = {}
-        typings: list[_Typing] = []
-        text_literal = False
-        typed = True
-        for result in results:
+        for result in _result_expressions(expression):
             while isinstance(result, exp.Paren):
                 result = result.this
             kind: exp.DataType | None = None
-            typing: _Typing | None = None
             match result:
-                case exp.Null():
+                case None | exp.Null():
                     continue  # Takes the type of the other results.
                 case exp.Column():
-                    lowered = lower(result)
-                    kind = self._declared_type(lowered)
-                    typing = self._column_typing(lowered)
+                    kind = self._declared_type(lower(result))
                 case exp.Cast():
                     kind = result.to
-                    # Not to text: `_cast_typing` types it only by its operand's, lowered once with the select item.
-                    typing = None if kind.this in exp.DataType.TEXT_TYPES else self._declared_typing(kind)
                 case exp.Literal(is_string=True):
                     kinds.setdefault("text", "a text literal")
-                    text_literal = True
-                    continue
                 case _:
-                    typing = self._integer_literal_typing(literal_value(result))
-            if typing is None:
-                typed = False
-            else:
-                typings.append(typing)
+                    pass
             if kind is None:
                 continue
             family = "integer" if kind.this in exp.DataType.INTEGER_TYPES else "text" if kind.this in exp.DataType.TEXT_TYPES else kind.this.name
             kinds.setdefault(family, kind.sql(dialect=self.dialect))
-        shared = _common_typing(typings, text_literal=text_literal) if typed else None
-        if shared is not None:
-            self._result_typings[id(expression)] = shared
         select = expression.find_ancestor(exp.Select)
-        if (
-            not isinstance(expression, exp.Case | exp.If) or len(kinds) < 2 or select is None
-            or (position := marker_position(select)) is None
-        ):
+        if len(kinds) < 2 or select is None or (position := marker_position(select)) is None:
             return
         offset, line = position
         self._mixed_cases.append((
             AttachmentSite(_select_label(select), line, offset, True),
             f"{written_sql(expression, self.dialect)} mixes {' and '.join(kinds.values())}",
         ))
-
-    def _column_typing(self, value: ir.ScalarExpr) -> _Typing | None:
-        """How the column `value` reads compares, following the columns that
-        pass it on (and the value `min`, `max` or `any_value` picks of one) to
-        the one that is typed. None when that has no type, or on reaching a
-        set operation, whose output type is not its left input's."""
-        if not isinstance(value, ir.ColumnRef):
-            return None
-        column = value.column
-        while column not in self._set_outputs:
-            match column.scalar_expr:
-                case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)):
-                    column = source
-                case ir.Constant(value=literal):
-                    return self._integer_literal_typing(literal)
-                case _:
-                    if column.comparison_type is None:
-                        return None
-                    return _Typing(column.comparison_type, column.binary_text, column.identity_comparison, column.exact_numeric)
-        return None
-
-    def _integer_literal_typing(self, literal: ir.LiteralValue | None) -> _Typing | None:
-        """An integer literal that fits an INT (the width `rules.equality` gives it) is an exact integer."""
-        if literal is None or literal.type != "numeric" or re.fullmatch(r"-?[0-9]{1,10}", literal.text) is None:
-            return None
-        return self._declared_typing(exp.DataType.build("INT", dialect=self.dialect)) if -(2**31) <= int(literal.text) < 2**31 else None
 
     def _declared_type(self, expression: ir.ScalarExpr, *, through_sets: bool = True) -> exp.DataType | None:
         """The type a CREATE TABLE declares for the column `expression` reads,
@@ -3054,7 +3038,7 @@ class IrParser:
                 problem = f"{text} is not a function of the table's columns"
             elif not ir.total(lowered):
                 problem = f"{text} may be NULL where its columns are not, which exempts the row from the index"
-            elif not all(column in relation.output_columns and column.identity_comparison for column in inputs):
+            elif not all(column in relation.output_columns and column.typing is not None and column.typing.identity_comparison for column in inputs):
                 problem = f"{text} reads a column whose equal values may differ (a float, or text under a collation)"
             else:
                 found.update(dict.fromkeys(inputs))
@@ -3167,8 +3151,11 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     checked = meaning.checked_arithmetic
     casts = meaning.casts_raise
 
-    def builtin(name: str, arity: int, *, total: bool = True, injective: bool = False) -> ir.Builtin:
-        return ir.Builtin(name=name, strict=(True,) * arity, total=(True,) * arity if total else None, injective=injective)
+    def builtin(name: str, arity: int, *, total: bool = True, injective: bool = False, arithmetic: bool = False) -> ir.Builtin:
+        return ir.Builtin(
+            name=name, strict=(True,) * arity, total=(True,) * arity if total else None, injective=injective,
+            checked=arithmetic and checked,
+        )
 
     binary = {
         exp.NEQ: "<>", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=", exp.Like: "LIKE", exp.ILike: "ILIKE",
@@ -3177,10 +3164,10 @@ def dialect_builtins(meaning: DialectSemantics) -> dict[type[Expr], tuple[ir.Bui
     division = {exp.Div: "/", exp.IntDiv: "//", exp.Mod: "%"}
     builtins: dict[type[Expr], tuple[ir.Builtin, tuple[str, ...]]] = {
         **{node: (builtin(name, 2, total=casts), ("this", "expression")) for node, name in binary.items()},
-        exp.Mul: (builtin("*", 2, total=checked), ("this", "expression")),
+        exp.Mul: (builtin("*", 2, total=checked, arithmetic=True), ("this", "expression")),
         **{node: (builtin(name, 2, total=meaning.checked_division), ("this", "expression")) for node, name in division.items()},
-        **{node: (builtin(name, 2, total=checked, injective=checked), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
-        exp.Neg: (builtin("unary -", 1, total=checked, injective=checked), ("this",)),
+        **{node: (builtin(name, 2, total=checked, injective=checked, arithmetic=True), ("this", "expression")) for node, name in {exp.Add: "+", exp.Sub: "-"}.items()},
+        exp.Neg: (builtin("unary -", 1, total=checked, injective=checked, arithmetic=True), ("this",)),
         exp.Not: (builtin("NOT", 1, total=casts), ("this",)),
         exp.BitwiseNot: (builtin("~", 1, total=casts), ("this",)),
         exp.Cast: (builtin("CAST", 1, total=checked), ("this",)),
@@ -3630,6 +3617,23 @@ def _unsupported_source(source: Expr) -> str | None:
     return None
 
 
+def _selection_parts(expression: exp.Case | exp.If) -> list[tuple[Expr, bool]]:
+    """The expressions a searched CASE or an IF reads, in order, each with
+    whether it is a value the expression may return (not a condition)."""
+    match expression:
+        case exp.Case():
+            parts: list[tuple[Expr, bool]] = []
+            for arm in expression.args.get("ifs") or ():
+                parts.extend([(arm.this, False), (arm.args["true"], True)])
+            default = expression.args.get("default")
+            return [*parts, *([(default, True)] if default is not None else [])]
+        case exp.If():
+            false = expression.args.get("false")
+            return [(expression.this, False), (expression.args["true"], True), *([(false, True)] if false is not None else [])]
+        case _:
+            assert_never(expression)
+
+
 def _result_expressions(expression: exp.Case | exp.If | exp.Coalesce | exp.Nullif) -> list[Expr | None]:
     """The values `expression` may return (None: an absent ELSE, a NULL), not its conditions."""
     match expression:
@@ -3645,34 +3649,24 @@ def _result_expressions(expression: exp.Case | exp.If | exp.Coalesce | exp.Nulli
             assert_never(expression)
 
 
-# The signed integer types `rules.equality` recognizes by the name `sql` gives them, narrowest first.
-_INTEGER_WIDTH = {"TINYINT": 0, "SMALLINT": 1, "INT": 2, "INTEGER": 2, "BIGINT": 3, "HUGEINT": 4, "INT128": 4}
-
-
-def _common_typing(typings: Sequence[_Typing], *, text_literal: bool) -> _Typing | None:
-    """The type of an expression all of whose non-NULL results have `typings`
-    (a string literal beside them too, when `text_literal`): the one they
-    share, when it compares by identity; among signed integer types the
-    widest, an integer type being all that every engine promotes them to.
-    None for no typed result, a type that does not compare by identity, and
-    results of different types (the hazard `Mixed CASE types`), a string
-    literal beside anything but text compared by identity included."""
-    if not typings or not all(typing.identity_comparison for typing in typings):
-        return None
-    if text_literal and not all(typing.binary_text for typing in typings):
-        return None
-    if len(set(typings)) == 1:
-        return typings[0]
-    if all(typing.exact_numeric and typing.comparison_type in _INTEGER_WIDTH for typing in typings):
-        return max(typings, key=lambda typing: _INTEGER_WIDTH[typing.comparison_type])
-    return None
-
-
 def _traced_comparison_type(column: ir.OutputColumn) -> str | None:
     """The declared comparison type of the column `column` passes on."""
-    while column.comparison_type is None and isinstance(column.scalar_expr, ir.ColumnRef):
+    while column.typing is None and isinstance(column.scalar_expr, ir.ColumnRef):
         column = column.scalar_expr.column
-    return column.comparison_type
+    return None if column.typing is None else column.typing.comparison_type
+
+
+# The signed integer types, by width (`ir.ValueTyping.integer`).
+_INTEGER_RANK = {
+    exp.DataType.Type.TINYINT: 0, exp.DataType.Type.SMALLINT: 1, exp.DataType.Type.MEDIUMINT: 2, exp.DataType.Type.INT: 3,
+    exp.DataType.Type.BIGINT: 4, exp.DataType.Type.INT128: 5, exp.DataType.Type.INT256: 6,
+}
+
+# The floating-point types: REAL, FLOAT and DOUBLE in any spelling.
+_FLOATS = {exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE, exp.DataType.Type.UDOUBLE}
+
+# The digits of a number literal past which DuckDB's type for it is a DOUBLE.
+_EXACT_LITERAL_DIGITS = 38
 
 
 # Rows of a VALUES list past which its columns get no Enumerated Domain.

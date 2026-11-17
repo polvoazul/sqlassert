@@ -47,7 +47,7 @@ from sqlassert.properties import (
 from sqlassert.python_engine import Engine
 from sqlassert.reporting import Outcome, Report
 from sqlassert.rules.domain import _domain
-from sqlassert.rules.equality import _binary_text, _comparison_type, _identity_comparison
+from sqlassert.rules.value_typing import _binary_text, _comparison_type, _identity_comparison
 from sqlassert.rules.uniqueness import minimal_keys
 from sqlassert.hazards import Hazard
 from sqlassert.sql_parse import ParsedProgram, SqlParser, _marker_shapes

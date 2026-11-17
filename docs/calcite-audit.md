@@ -51,7 +51,7 @@ Compare contracts before answers:
   Calcite, we also reject a whole padded side at once (per padding, item 9).
 - **Comparison types.** Calcite's `EquivalenceFinder` and FD projection
   ignore types and collations. Ours require identity comparison
-  (`equality._identity_comparison`, `uniqueness._identity_inputs`).
+  (`value_typing._identity_comparison`, `uniqueness._identity_inputs`).
 - **Dialects.** Calcite types MOD/DIVIDE as non-null and GREATEST as strict;
   DuckDB's `1 % 0` is NULL and its `greatest` skips NULLs. We model these per
   dialect (`convert._CHECKED_DIVISION_DIALECTS`, Builtins).
@@ -76,7 +76,7 @@ below), **different** (on purpose), **missing** (issue 45 item, the open ones no
 | FD#getProjectionFD | Columns determine literals | literal is `∅ -> c` | fd_constants | agrees, ours stronger |
 | FD#getProjectionFD | Skips non-deterministic expressions | `convert._NOT_A_FUNCTION_OF_ITS_COLUMNS`; a key determines every column | fd_volatile_function | agrees; ours stronger on keys |
 | FD#getProjectionFD | Any deterministic call is a function of its inputs, any type | identity comparison required | fd_double_cast_to_text | Calcite unsound (C2) |
-| FD#getFilterFD | `col = col`, `IS NOT DISTINCT FROM` both ways | `uniqueness._equality_dependencies`, `equality._pins` | fd_equality_conditions, uk_filter_constant | agrees (11) |
+| FD#getFilterFD | `col = col`, `IS NOT DISTINCT FROM` both ways | `uniqueness._equality_dependencies`, `value_typing.exact_comparison` | fd_equality_conditions, uk_filter_constant | agrees (11) |
 | FD#getAggregateFD | Group FDs kept; group set determines aggregates | `_functional_dependencies`, `uniqueness._grouped` | fd_aggregate, fd_aggregate_double_pk | agrees; Calcite latently unsound (C8, C9) |
 | FD#getJoinFD INNER | Both sides plus ON equalities | `uniqueness._join_dependencies` | fd_inner_join | agrees |
 | FD#getJoinFD LEFT/RIGHT | Shared branch with INNER: ON equalities both ways | `_outer_on_dependencies`, `_join_side` (η, match status: a pure conjunct by the preserved columns it reads, `_match_status`) | fd_left_join, fd_left_join_extra_conjunct, fd_right_join, fd_right_join_extra_conjunct, fd_left_join_volatile_conjunct | Calcite unsound (C1); ours agrees on the sound part (20) |
@@ -124,7 +124,7 @@ below), **different** (on purpose), **missing** (issue 45 item, the open ones no
 |---|---|---|---|---|
 | PR#getPredicates(Project), #eqConstant | Literal columns are constants | `domain._expression_domain`: a strict Call of an always-NULL argument is empty, `IS [NOT] NULL` of a non-null or always-NULL operand a constant; `convert._cast_integer_literal` folds a plain integer CAST | pullup_project_constants, pullup_project_casts_folded_only_when_exact, pullup_project_is_null_of_constrained_column, pullup_project_is_null_of_nullable_column | agrees (16, 17) |
 | RexUtil#predicateConstants | `IS NOT DISTINCT FROM c`, `IS NULL` are constants | `NullSafeEquality`: a domain bound, a constant, and rejection of the other side of a non-null one | strong_is_not_distinct_from_a_literal, strong_is_not_distinct_from_a_non_null_column, strong_is_not_distinct_from_a_nullable_column, strong_is_not_distinct_from_a_literal_where_a_failed_cast_is_null, strong_is_not_distinct_from_a_literal_under_ansi_mode | agrees (11) |
-| JoinConditionBasedPredicateInference INNER | Equivalence closure; rewrites any predicate across it, any type | `equality._equality_groups`, `_same_type`; `domain._meet` | pullup_inner_join_transitive_constant, pullup_inner_join_on_nullable_column | agrees; Calcite ignores collation, which sqlassert does not support (`COLLATE` warns) |
+| JoinConditionBasedPredicateInference INNER | Equivalence closure; rewrites any predicate across it, any type | `equality._equality_groups`, `value_typing.exact_comparison`; `domain._meet` | pullup_inner_join_transitive_constant, pullup_inner_join_on_nullable_column | agrees; Calcite ignores collation, which sqlassert does not support (`COLLATE` warns) |
 | inferPredicates SEMI | Left predicates plus inferred from the right | `domain._narrowings`, `_matched_narrowings`; Equality Groups and `uniqueness._matched_dependencies` through the matched right row, same type only | pullup_semi_join_from_in_subquery, pullup_semi_join_from_exists_on_constant, pullup_semi_join_equates_two_left_columns, pullup_semi_join_null_safe_through_a_right_column, pullup_semi_join_through_a_wider_type, pullup_semi_join_through_a_right_column_only_or_bound | agrees (23); Calcite ignores types |
 | inferPredicates ANTI/LEFT/RIGHT | Preserved side only; never padded-side or ON predicates | `equality._strict_conjuncts`, `domain._narrowings` | pullup_anti_join_keeps_left_only, pullup_left_join_preserved_on_conjunct, pullup_left_join_padded_on_constant, pullup_left_join_preserved_domain_below_the_join, pullup_left_join_preserved_domain_above_the_join | agrees; ours stronger (padded-side domains); E4 in issue 37 |
 | inferPredicates FULL | Nothing | input domains survive | pullup_full_join_input_predicates | ours stronger |

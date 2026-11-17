@@ -7,7 +7,7 @@ of the first row's columns (a column, `-b.x`, `b.x + 1`, `CAST(b.ts AS DATE)`),
 which is one value for that row, or, for the one column an exact injective
 function of it is of (`-a.x`, `a.x + 1`), to such a value. Neither operand
 needs to be injective to bind the other's column; the comparison must lose
-nothing (`_pins`). IS NOT DISTINCT FROM binds them too, but matches NULL to
+nothing (`exact_comparison`). IS NOT DISTINCT FROM binds them too, but matches NULL to
 NULL, so those columns are non-null only where proved, or where the other side
 is a literal or an expression of non-null columns that is never NULL for them
 (`ir.total`), which no NULL equals. When those columns reach the
@@ -27,9 +27,9 @@ from typing import Literal
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, any_of, analysis, cache, current_arena
 from sqlassert.rules.column_set import Attribute, ColumnSet
-from sqlassert.rules.equality import _comparison_type, _identity_comparison, _pins, exact_numeric
 from sqlassert.rules.nullability import non_null_column
 from sqlassert.rules.uniqueness import _closure, _key_gaps, _reaches_row_identity
+from sqlassert.rules.value_typing import _comparison_type, _identity_comparison, exact_comparison, exact_numeric
 
 type Side = Literal["left", "right"]
 
@@ -90,7 +90,7 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[BoundColumns]:
     value. The other fixes a column of `matched`: the column itself, or the one
     column an injective function of it (`-a.x`, `a.x + 1`) is of, since that
     function takes that value at one column value only. Neither needs the
-    other to be injective, but the comparison must lose nothing (`_pins`).
+    other to be injective, but the comparison must lose nothing (`exact_comparison`).
     """
     relation, other = (join.right, join.left) if matched == "right" else (join.left, join.right)
     members = {}
@@ -107,7 +107,7 @@ def _bound_columns(join: ir.Join, matched: Side) -> Result[BoundColumns]:
             if column is None or inputs is None or not all(read in other.output_columns for read in inputs):
                 continue
             # An equality that casts pins nothing: '01' and '1' both equal 1.
-            if not _pins(column, value):
+            if not exact_comparison(bound, value).value:
                 continue
 
             evidence = Result(True, "Equality fixes the matched column for each row of the other input", (equality, column, value))
@@ -160,7 +160,7 @@ class UnprovedJoin:
       the type is lost (`TypeLoss`).
     - `expression-key`: every such equality compares an expression, and none
       binds a column (`_bound_columns`): the expression is not deterministic,
-      or has no type that compares without a lossy coercion (`_pins`), or the
+      or has no type that compares without a lossy coercion (`exact_comparison`), or the
       matched side is not an injective function of one exact column. `a.k =
       b.k * 2` is one, `a.k = b.k + 1` is not.
     - `no-unique-set`: the equalities bind columns that reach the Row
@@ -217,9 +217,7 @@ def unproved_join(join: ir.Join) -> UnprovedJoin | None:
     if any("opaque" in sides for _, _, sides in pairs):
         return UnprovedJoin("unresolved-key", construct=_unsupported_under(join.left) or _unsupported_under(join.right))
     for first, second, _ in pairs:
-        if isinstance(first, ir.ColumnRef) and isinstance(second, ir.ColumnRef) and not (
-            _pins(first.column, second) and _pins(second.column, first)
-        ):
+        if isinstance(first, ir.ColumnRef) and isinstance(second, ir.ColumnRef) and not exact_comparison(first, second).value:
             for column in (first.column, second.column):
                 if (loss := _type_loss(column)) is not None:
                     return UnprovedJoin("untyped-key", loss[0], _unsupported_under(loss[1]) if loss[0] == "opaque-relation" else None)

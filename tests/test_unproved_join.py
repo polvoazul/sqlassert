@@ -134,12 +134,12 @@ CASES = [
     ("cast key binds the matched column", "SELECT a.id FROM a JOIN b ON b.day = CAST(a.ts AS DATE)", UnprovedJoin("no-unique-set", "undeclared-key")),
     ("negated key binds both columns", "SELECT a.id FROM a JOIN b ON a.amount = -b.amount", UnprovedJoin("no-unique-set", "undeclared-key")),
     ("added literal key binds both columns", "SELECT a.id FROM a JOIN b ON a.k = b.k + 1", UnprovedJoin("no-unique-set", "undeclared-key")),
-    ("one equality that binds beside one that does not", "SELECT a.id FROM a JOIN b ON a.k = b.k + 1 AND a.id = b.k * 2", UnprovedJoin("no-unique-set", "undeclared-key")),
-    ("product key", "SELECT a.id FROM a JOIN b ON a.k = b.k * 2", UnprovedJoin("expression-key")),
+    ("one equality that binds beside one that does not", "SELECT a.id FROM a JOIN b ON a.k = b.k + 1 AND a.id = b.k / 2", UnprovedJoin("no-unique-set", "undeclared-key")),
+    ("quotient key", "SELECT a.id FROM a JOIN b ON a.k = b.k / 2", UnprovedJoin("expression-key")),
     ("cast to a type the column is not", "SELECT a.id FROM a JOIN b ON b.day = CAST(a.ts AS TIMESTAMP)", UnprovedJoin("expression-key")),
     ("cast to a lossy type", "SELECT a.id FROM a JOIN b ON a.k = CAST(b.amount AS DOUBLE)", UnprovedJoin("expression-key")),
-    ("expression that may be NULL for a value", "SELECT a.id FROM a JOIN b ON a.k = nullif(b.k, 0)", UnprovedJoin("expression-key")),
-    ("an injective function against a product", "SELECT a.id FROM a JOIN b ON a.k + 1 = b.k * 2", UnprovedJoin("expression-key")),
+    ("expression that may be NULL for a value", "SELECT a.id FROM a JOIN b ON a.k = nullif(b.k, 0.5)", UnprovedJoin("expression-key")),
+    ("an injective function against a product", "SELECT a.id FROM a JOIN b ON a.k + 1 = b.k / 2", UnprovedJoin("expression-key")),
     ("no unique set", "SELECT a.id FROM a JOIN b ON a.k = b.k", UnprovedJoin("no-unique-set", "undeclared-key")),
     # no-unique-set, by who can act: a cascade (ours), a partial key (nobody), an undeclared key (the project).
     (
@@ -164,7 +164,7 @@ CASES = [
     ),
     (
         "partial key boundary: an equality that binds nothing remains",
-        "SELECT a.id FROM a JOIN ranges ON a.k = ranges.k AND a.id = ranges.k * 2",
+        "SELECT a.id FROM a JOIN ranges ON a.k = ranges.k AND a.id = ranges.k / 2",
         UnprovedJoin("no-unique-set", "undeclared-key"),
     ),
     (

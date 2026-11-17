@@ -30,7 +30,8 @@ from sqlassert.diagnostics import quoted
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
-from sqlassert.rules.equality import _binary_text, _constant_value, _equal_columns, _identity_comparison, _pins, _predicate_constants, _predicate_equalities, _same_set_types, _signed_integer, _typed_arms, exact_numeric
+from sqlassert.rules.equality import _constant_value, _equal_columns, _predicate_constants, _predicate_equalities, _same_set_types, _typed_arms
+from sqlassert.rules.value_typing import _binary_text, _identity_comparison, _signed_integer, exact_comparison, exact_numeric
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -719,23 +720,23 @@ def _equality_dependencies(conjuncts: tuple[ir.ScalarExpr, ...], outputs: dict[i
                 ir.Equality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right)
                 | ir.NullSafeEquality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right)
             ) if first in outputs and second in outputs:
-                if _pins(second, left):
+                if exact_comparison(left, right).value:
                     yield (outputs[first],), outputs[second], evidence
-                if _pins(first, right):
                     yield (outputs[second],), outputs[first], evidence
             case (
-                ir.Equality(left=ir.ColumnRef(column=column), right=ir.Constant() as constant)
-                | ir.Equality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column))
-                | ir.NullSafeEquality(left=ir.ColumnRef(column=column), right=ir.Constant() as constant)
-                | ir.NullSafeEquality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column))
+                ir.Equality(left=ir.ColumnRef(column=column) as operand, right=ir.Constant() as constant)
+                | ir.Equality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column) as operand)
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=column) as operand, right=ir.Constant() as constant)
+                | ir.NullSafeEquality(left=ir.Constant() as constant, right=ir.ColumnRef(column=column) as operand)
             ) if column in outputs:
-                if _pins(column, constant):
+                if exact_comparison(operand, constant).value:
                     yield (), outputs[column], evidence
             case ir.IsNull(operand=ir.ColumnRef(column=column)) if column in outputs:
                 yield (), outputs[column], evidence
             case ir.Equality(left=left, right=right):
                 for target, value in ((left, right), (right, left)):
-                    if not (isinstance(target, ir.ColumnRef) and target.column in outputs and _identity_comparison(target.column).value):
+                    # The comparison must lose nothing, or `b` equals `f(x)` for values of `b` that differ.
+                    if not (isinstance(target, ir.ColumnRef) and target.column in outputs and exact_comparison(target, value).value):
                         continue
                     inputs = _identity_inputs(value, tuple(outputs))
                     if inputs is not None:
@@ -796,25 +797,26 @@ def _matched_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outpu
     column or a literal, that fixes it, and it fixes each left column ON pins
     to it. `d.deptno = e.mgr AND d.deptno = e.comm` gives mgr -> comm."""
     right = join.right.output_columns
-    pairs: list[tuple[ir.OutputColumn, ir.ScalarExpr, ir.ScalarExpr]] = []
+    pairs: list[tuple[ir.ColumnRef, ir.ScalarExpr, ir.ScalarExpr]] = []
     for conjunct in join.conjuncts:
         match conjunct:
             case ir.Equality(left=first, right=second) | ir.NullSafeEquality(left=first, right=second):
-                pairs.extend((other.column, value, conjunct) for other, value in ((first, second), (second, first)) if isinstance(other, ir.ColumnRef) and other.column in right)
+                pairs.extend((other, value, conjunct) for other, value in ((first, second), (second, first)) if isinstance(other, ir.ColumnRef) and other.column in right)
             case _:
                 pass  # Other conjuncts pin nothing.
-    for column, value, conjunct in pairs:
+    for matched, value, conjunct in pairs:
         # What fixes the right column: a left column or a literal it is pinned to.
         match value:
-            case ir.ColumnRef(column=source) if source in outputs and _pins(column, value):
+            case ir.ColumnRef(column=source) if source in outputs and exact_comparison(matched, value).value:
                 determinant: tuple[ir.OutputColumn, ...] = (outputs[source],)
-            case ir.Constant() if _pins(column, value):
+            case ir.Constant() if exact_comparison(matched, value).value:
                 determinant = ()
             case _:
                 continue
+        column = matched.column
         for other, bound, other_conjunct in pairs:
-            if other is column and other_conjunct is not conjunct and isinstance(bound, ir.ColumnRef) and bound.column in outputs:
-                if _pins(bound.column, ir.ColumnRef(origin=bound.origin, column=column)):
+            if other.column is column and other_conjunct is not conjunct and isinstance(bound, ir.ColumnRef) and bound.column in outputs:
+                if exact_comparison(bound, other).value:
                     evidence = Result(True, f"ON conjuncts equal through {quoted(column.name)} of the matched right row", (conjunct, other_conjunct))
                     yield determinant, outputs[bound.column], True, evidence
 
@@ -849,14 +851,13 @@ def _outer_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outp
                 continue
             match value:
                 case ir.ColumnRef(column=other) if other in padded.output_columns:
-                    if _pins(bound.column, value):
+                    if exact_comparison(bound, value).value:
                         yield (outputs[other],), outputs[bound.column], True, evidence
                 case ir.ColumnRef(column=other):
-                    if _pins(bound.column, value):
+                    if exact_comparison(bound, value).value:
                         yield status, outputs[bound.column], True, evidence
-                    if _pins(other, bound):
                         yield (outputs[bound.column],), outputs[other], False, evidence
-                case ir.Constant() if _pins(bound.column, value):
+                case ir.Constant() if exact_comparison(bound, value).value:
                     yield status, outputs[bound.column], True, evidence
                 case _:
                     pass  # A NULL, an unpinned constant, or an expression binds nothing.
@@ -882,7 +883,7 @@ def _full_on_dependencies(join: ir.Join, outputs: dict[ir.OutputColumn, ir.Outpu
                     for bound, value in ((first, second), (second, first)):
                         match bound, value:
                             case ir.ColumnRef(column=column), ir.ColumnRef(column=other) if (
-                                column in padded.output_columns and other not in padded.output_columns and _pins(column, value)
+                                column in padded.output_columns and other not in padded.output_columns and exact_comparison(bound, value).value
                             ):
                                 yield status | {outputs[other]}, outputs[column], False, evidence
                             case _:

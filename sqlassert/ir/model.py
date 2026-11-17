@@ -61,9 +61,13 @@ class ScalarExpr(Node, abstract=True):
 class OpaqueExpression(ScalarExpr):
     """An expression nothing is known about: not even which columns its value
     depends on. A user-defined or volatile function, an aggregate or window,
-    a subquery, or a column that does not resolve."""
+    a subquery, or a column that does not resolve.
+
+    `typing` is how its values compare, where the type is known though the
+    value is not: a `row_number()` window is an integer."""
 
     description: str
+    typing: ValueTyping | None = None
 
 
 @dataclass(frozen=True)
@@ -77,10 +81,12 @@ class Builtin:
     even then (`n % 0` in DuckDB). Unless `total` is None, a strict parameter
     is total.
 
+    A `checked` one is arithmetic that raises an error on overflow instead of
+    wrapping, saturating, or turning to a float: integers give an integer.
+
     An `injective` one is one-to-one in its single argument that is not an
     integer or decimal literal, when that argument is an integer or decimal:
-    `a + 1`, `10 - a`, `-a`. Only where exact arithmetic raises an error on
-    overflow instead of wrapping, saturating, or turning to a float.
+    `a + 1`, `10 - a`, `-a`. Only where the arithmetic is `checked`.
 
     A `rejecting` parameter makes the value never TRUE (FALSE or NULL)
     whenever its argument is NULL, though perhaps not NULL: `x > ANY (...)`
@@ -102,8 +108,10 @@ class Builtin:
     rejecting: tuple[bool, ...] = field(default=(), kw_only=True)
     skips_null: bool = field(default=False, kw_only=True)
     true_only_if_argument: bool = field(default=False, kw_only=True)
+    checked: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
+        assert self.checked or not self.injective, f"{self.name}: only checked arithmetic is injective"
         assert self.total is None or len(self.total) == len(self.strict), f"{self.name}: one total flag per parameter"
         assert not self.rejecting or len(self.rejecting) == len(self.strict), f"{self.name}: one rejecting flag per parameter"
         assert not self.skips_null or self.total is None, f"{self.name}: skipping NULLs, it is not total in each argument"
@@ -148,20 +156,34 @@ class BuiltinVariadic(Builtin):
 
 @dataclass(frozen=True)
 class ValueTyping:
-    """How the values of a typed expression compare: the four type fields of an
-    `OutputColumn`, as a column declared with that type would have them."""
+    """How the values of a typed expression compare, as a column declared with
+    that type would: its `comparison_type` (the type's SQL name, which two
+    values of one type share), whether it is `binary_text` (text compared by
+    identity: VARCHAR or TEXT in a dialect whose default collation is binary,
+    `DialectSemantics.text_is_binary`), whether `identity_comparison` holds
+    (equal values are identical: an integer, decimal, boolean, date, time,
+    timestamp, UUID or binary text; not a float, `-0.0 = 0.0`, an interval, or
+    text under a case-insensitive collation), whether it is `exact_numeric` (an
+    integer or decimal), whether it is `floating` (REAL, FLOAT, DOUBLE), and
+    its `integer` width rank when it is a signed integer type (TINYINT 0, up;
+    unsigned types are none). An expression whose type is not known has no
+    ValueTyping."""
 
     comparison_type: str
     binary_text: bool
     identity_comparison: bool
     exact_numeric: bool
+    floating: bool = False
+    integer: int | None = None
 
 
 class Call(ScalarExpr):
     """A Builtin applied to arguments: `n + 1`, `n > 0`, `CAST(n AS BIGINT)`, `NOT p`.
 
     `typing` is how its values compare, where the type is known from the call
-    itself: a CAST's (`IrParser._cast_typing`)."""
+    itself: a CAST's (`IrParser._cast_typing`) or a function the dialect gives
+    a fixed result type (`DialectSemantics.result_types`). Arithmetic and
+    NULLIF are typed by their operands (`rules/value_typing.py`)."""
 
     function: Builtin
     arguments: tuple[ScalarExpr, ...]
@@ -205,10 +227,17 @@ class Call(ScalarExpr):
 class OpaquePureFunction(ScalarExpr):
     """A built-in function or operator whose behaviour is not modelled: a pure
     function of its arguments, and nothing else is known about it. Searched
-    CASE, and `concat`, `||` or `greatest` where the dialect's is not modelled."""
+    CASE, and `concat`, `||` or `greatest` where the dialect's is not modelled.
+
+    `typing` is how its values compare, where the dialect fixes the result
+    type of the function (`DialectSemantics.result_types`). `results` are the
+    positions of the arguments it returns one of, or NULL, when it only
+    selects among them (a searched CASE, IF): its type is the type they share."""
 
     arguments: tuple[ScalarExpr, ...]
     description: str
+    typing: ValueTyping | None = None
+    results: tuple[int, ...] | None = None
 
 
 class Count(ScalarExpr):
@@ -247,9 +276,14 @@ class LiteralValue:
 
 
 class Constant(ScalarExpr):
-    """A non-null literal; `value` is None while its type is not modelled."""
+    """A non-null literal; `value` is None while its type is not modelled.
+
+    `typing` is how it compares, from the dialect's type for a literal of its
+    kind (`IrParser._literal_typing`); None where that is not known: a decimal
+    or exponent literal in a dialect whose type for it is not claimed."""
 
     value: LiteralValue | None = None
+    typing: ValueTyping | None = None
 
 
 class NullLiteral(ScalarExpr):
@@ -511,26 +545,15 @@ type AnyScalar = (
 class OutputColumn(Node):
     """One named output of one relational stage and the expression producing it.
 
-    `binary_text` marks a table column declared as text compared by identity:
-    VARCHAR or TEXT in a dialect whose default collation is binary
-    (`DialectSemantics.text_is_binary`). Equal to such a column, distinct
-    strings are distinct values.
-
-    `identity_comparison` marks a table column whose equal values are
-    identical: an integer, decimal, boolean, date, time, timestamp or UUID
-    type, or binary text. Not a float (`-0.0 = 0.0`), an interval, or text
-    under a case-insensitive default collation (MySQL's).
-
-    `exact_numeric` marks a table column declared as an integer or decimal.
+    `typing` is how the values of a column declared with a type compare: a
+    table column, or a VALUES column (`IrParser._declared_typing`). None for a
+    column whose type is not declared; one that computes or passes on a value
+    has the type of its expression (`rules/value_typing.py`).
     """
 
     name: str
     scalar_expr: ScalarExpr
-    binary_text: bool = False
-    # Declared SQL type where equality compares values without casts.
-    comparison_type: str | None = None
-    identity_comparison: bool = False
-    exact_numeric: bool = False
+    typing: ValueTyping | None = None
 
     def get_relation(self, program: Program) -> RelationExpr:
         """The one relation in ``program`` whose output includes this column."""

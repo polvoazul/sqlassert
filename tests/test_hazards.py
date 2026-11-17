@@ -198,7 +198,7 @@ def test_a_left_join_that_may_be_many_to_many_is_a_hazard():
     assert joins("SELECT o.id FROM orders o LEFT JOIN payments p ON p.customer_id = o.customer_id") == [Concern.MANY_TO_MANY]
 
 
-# Implicit cast -------------------------------------------------------------------
+# Lossy comparison: text against another type ------------------------------------
 
 CASTS = """
 CREATE TABLE codes (code VARCHAR PRIMARY KEY, n INTEGER);
@@ -208,7 +208,9 @@ CREATE TABLE nums (v INTEGER);
 
 def test_a_join_equality_that_casts_is_a_hazard_and_repeats_rows_on_data():
     sql = "SELECT * FROM nums JOIN codes ON codes.code = nums.v"
-    assert [hazard.concern for hazard in suggest(CASTS + sql).hazards] == [Concern.IMPLICIT_CAST]
+    hazard, = suggest(CASTS + sql).hazards
+    assert hazard.concern is Concern.LOSSY_COMPARISON
+    assert "'code' is text and 'v' is INT: the text is cast" in hazard.message
     connection = duckdb.connect()
     connection.execute(CASTS + "INSERT INTO codes VALUES ('01', 0), ('1', 0); INSERT INTO nums VALUES (1);")
     assert connection.execute("SELECT count(*) FROM nums JOIN codes ON codes.code = nums.v").fetchone() == (2,)
@@ -221,6 +223,23 @@ def test_a_join_equality_that_casts_is_a_hazard_and_repeats_rows_on_data():
 )
 def test_a_join_equality_without_an_implicit_cast_is_not_a_hazard(on: str):
     assert suggest(CASTS + f"SELECT * FROM nums JOIN codes ON {on}").hazards == ()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT n FROM codes WHERE code = n",
+        "SELECT code FROM codes WHERE n IN (1) AND code IN (n)",
+    ],
+    ids=["where", "in list"],
+)
+def test_text_compared_with_another_type_is_a_hazard_in_a_where_too(sql: str):
+    hazards = [hazard for hazard in suggest(CASTS + sql).hazards if hazard.concern is Concern.LOSSY_COMPARISON]
+    assert len(hazards) == 1 and "is text and" in hazards[0].message
+
+
+def test_a_string_literal_takes_the_other_sides_type_so_it_is_no_hazard():
+    assert suggest(CASTS + "SELECT n FROM codes WHERE n = '5' AND code = 'x'").hazards == ()
 
 
 # Mixed CASE types ---------------------------------------------------------------
@@ -269,7 +288,7 @@ def test_a_case_whose_results_share_a_type_is_not_a_hazard(case: str):
     assert mixed_cases(f"SELECT {case} AS v FROM m") == []
 
 
-# Float equality -------------------------------------------------------------------
+# Lossy comparison: floats ---------------------------------------------------------
 
 FLOATS = """
 CREATE TABLE a (id BIGINT PRIMARY KEY, i INTEGER, s SMALLINT, d DECIMAL(10, 2), w DECIMAL(18, 3));
@@ -277,17 +296,18 @@ CREATE TABLE d (x DOUBLE, y DOUBLE, r REAL, b BIGINT, e DECIMAL(10, 2));
 """
 
 
-def float_equality(sql: str, dialect: str = "duckdb") -> list[str]:
-    return [hazard.message for hazard in suggest(FLOATS + sql, dialect=dialect).hazards if hazard.concern is Concern.FLOAT_EQUALITY]
+def lossy(sql: str, dialect: str = "duckdb") -> list[str]:
+    return [hazard.message for hazard in suggest(FLOATS + sql, dialect=dialect).hazards if hazard.concern is Concern.LOSSY_COMPARISON]
 
 
 def test_a_join_equality_with_a_double_is_a_hazard_and_matches_two_ids_on_data():
     sql = "SELECT * FROM a JOIN d ON a.id = d.x"
     hazard, = suggest(FLOATS + sql).hazards
-    assert hazard.concern is Concern.FLOAT_EQUALITY
+    assert hazard.concern is Concern.LOSSY_COMPARISON
     assert hazard.site.label == "JOIN d"
     assert hazard.message == (
-        "a.id = d.x compares a floating-point value for exact equality; compare within a tolerance or use an exact type"
+        "a.id = d.x is a lossy comparison: 'x' is DOUBLE, a floating-point type, so values that differ may compare equal; "
+        "compare within a tolerance or use an exact type"
     )
     connection = duckdb.connect()
     connection.execute(FLOATS + "INSERT INTO a (id) VALUES (9007199254740992), (9007199254740993); INSERT INTO d (x) VALUES (9007199254740992);")
@@ -296,8 +316,8 @@ def test_a_join_equality_with_a_double_is_a_hazard_and_matches_two_ids_on_data()
 
 def test_a_double_equal_to_a_decimal_literal_is_a_hazard_and_misses_on_data():
     sql = "SELECT x FROM d WHERE x = 0.3"
-    found, = float_equality(sql)
-    assert found.startswith("x = 0.3 compares a floating-point value for exact equality")
+    found, = lossy(sql)
+    assert found.startswith("x = 0.3 is a lossy comparison: 'x' is DOUBLE, a floating-point type")
     connection = duckdb.connect()
     connection.execute(FLOATS + "INSERT INTO d (x) VALUES (0.1::DOUBLE + 0.2::DOUBLE);")
     assert connection.execute(sql).fetchall() == []
@@ -326,17 +346,17 @@ def test_a_double_equal_to_a_decimal_literal_is_a_hazard_and_misses_on_data():
     ("SELECT x FROM d GROUP BY x HAVING x = 1", "x = 1"),
 ])
 def test_an_equality_with_a_float_operand_is_a_hazard(sql: str, written: str):
-    found = float_equality(sql)
-    assert f"{written} compares a floating-point value for exact equality; compare within a tolerance or use an exact type" in found
+    found = lossy(sql)
+    assert any(message.startswith(f"{written} is a lossy comparison: ") and "a floating-point type" in message for message in found)
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "sqlite", "clickhouse", "mysql"])
 def test_float_equality_is_a_hazard_in_every_dialect(dialect: str):
-    assert len(float_equality("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect=dialect)) == 1
+    assert len(lossy("SELECT a.id FROM a JOIN d ON a.id = d.x", dialect=dialect)) == 1
 
 
 def test_each_float_equality_in_a_condition_is_one_hazard():
-    assert len(float_equality("SELECT x FROM d WHERE x = 1 OR y = 2")) == 2
+    assert len(lossy("SELECT x FROM d WHERE x = 1 OR y = 2")) == 2
 
 
 @pytest.mark.parametrize("sql", [
@@ -346,11 +366,31 @@ def test_each_float_equality_in_a_condition_is_one_hazard():
     "SELECT d.x FROM d WHERE d.x < d.y",  # an ordering, not an equality
     "SELECT d.x FROM d WHERE d.x >= 0.1",
     "SELECT a.id FROM a JOIN f ON a.id = f.x",  # f's types are unknown
-    "SELECT a.id FROM a WHERE a.i = 1e0",  # a literal's type is the dialect's: not guessed
     "SELECT a.id FROM a JOIN d ON a.id = CAST(d.x AS BIGINT)",  # compared in an exact type
 ])
 def test_a_comparison_with_no_known_float_operand_or_no_equality_is_not_a_hazard(sql: str):
-    assert float_equality(sql) == []
+    assert lossy(sql) == []
+
+
+@pytest.mark.parametrize(("sql", "written", "side"), [
+    # A float on either side, whatever it is: a column, an expression, a literal.
+    ("SELECT a.id FROM a WHERE a.d = 1e0", "a.d = 1e0", "an exponent literal is DOUBLE"),
+    ("SELECT a.id FROM a WHERE a.i = 1e0", "a.i = 1e0", "an exponent literal is DOUBLE"),
+    ("SELECT a.id FROM a WHERE a.id = a.i + 1e0", "a.id = a.i + 1e0", "a float operand makes arithmetic a float"),
+    ("SELECT a.id FROM a JOIN d ON d.b = a.id + d.x", "d.b = a.id + d.x", "a float operand makes arithmetic a float"),
+    ("SELECT a.id FROM a WHERE a.id = CAST(a.i AS DOUBLE)", "a.id = CAST(a.i AS DOUBLE)", "an explicit cast to a float"),
+    ("SELECT a.id FROM a WHERE a.id = CAST(a.i AS DOUBLE) + 1", "a.id = CAST(a.i AS DOUBLE) + 1", "a float expression plus an integer"),
+])
+def test_a_float_expression_or_literal_on_either_side_is_a_lossy_comparison(sql: str, written: str, side: str):
+    found = lossy(sql)
+    assert len(found) == 1 and found[0].startswith(f"{written} is a lossy comparison: ") and "DOUBLE" in found[0], side
+
+
+def test_a_bigint_against_a_double_expression_loses_its_value_on_data():
+    # The repro: both b = 2^53 and b = 2^53 + 1 pass `b = a + 1e0` for a = 2^53 - 1.
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE t (a BIGINT, b BIGINT); INSERT INTO t VALUES (9007199254740991, 9007199254740992), (9007199254740991, 9007199254740993);")
+    assert connection.execute("SELECT count(*) FROM t WHERE b = a + 1e0").fetchone() == (2,)
 
 
 # Always empty -----------------------------------------------------------------

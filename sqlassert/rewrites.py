@@ -52,7 +52,8 @@ from sqlassert import ir
 from sqlassert.dialects import semantics
 from sqlassert.properties import ExactlyOneJoin, ManyToOneJoin, NonNullColumn, NonNullColumns, NonNullUniqueSet
 from sqlassert.rules.domain import _domain
-from sqlassert.rules.equality import _comparison_type, _identity_comparison, _pins, _same_set_types, _same_type
+from sqlassert.rules.equality import _same_set_types
+from sqlassert.rules.value_typing import _comparison_type, column_ref, exact_comparison
 from sqlassert.rules.exactly_one import _cross_equalities
 from sqlassert.provenance import AttachmentSite
 from sqlassert.python_engine import Arena, Result
@@ -1369,7 +1370,7 @@ def _implication(
             if _chained(first, second, others):
                 return "the other equalities chain its sides", False
             pinned = _pinned(first, others), _pinned(second, others)
-            comparable = _same_type(first, second) and _identity_comparison(first).value and _identity_comparison(second).value
+            comparable = exact_comparison(column_ref(first), column_ref(second)).value
             if comparable and pinned[0] is not None and pinned[0] == pinned[1]:
                 return f"both sides are {pinned[0].text}", False
             if isinstance(relation, ir.Join) and _same_row_column(first, second, others, relation, program, arena):
@@ -1393,8 +1394,8 @@ def _chained(first: ir.OutputColumn, second: ir.OutputColumn, others: list[ir.Sc
     edges = []
     for other in others:
         match other:
-            case ir.Equality(left=ir.ColumnRef(column=left), right=ir.ColumnRef(column=right)) if (
-                _same_type(left, right) and _identity_comparison(left).value and _identity_comparison(right).value
+            case ir.Equality(left=ir.ColumnRef(column=left) as left_ref, right=ir.ColumnRef(column=right) as right_ref) if (
+                exact_comparison(left_ref, right_ref).value
             ):
                 edges.append((left, right))
             case _:
@@ -1414,7 +1415,7 @@ def _pinned(column: ir.OutputColumn, others: list[ir.ScalarExpr]) -> ir.LiteralV
     """The one value another conjunct, or the column's domain, holds it to."""
     for other in others:
         match other:
-            case ir.Equality(left=ir.ColumnRef(column=pinned), right=ir.Constant(value=value) as literal) | ir.Equality(left=ir.Constant(value=value) as literal, right=ir.ColumnRef(column=pinned)) if pinned is column and value is not None and _pins(column, literal):
+            case ir.Equality(left=ir.ColumnRef(column=pinned) as operand, right=ir.Constant(value=value) as literal) | ir.Equality(left=ir.Constant(value=value) as literal, right=ir.ColumnRef(column=pinned) as operand) if pinned is column and value is not None and exact_comparison(operand, literal).value:
                 return value
             case _:
                 pass

@@ -160,13 +160,22 @@ def test_equality_groups_sit_above_null_sources():
     assert Stratum.NON_NULL < Stratum.EQUALITY_GROUP < Stratum.FUNCTIONAL_DEPENDENCY
 
 
-@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b BIGINT"])
+@pytest.mark.parametrize("columns", ["a VARCHAR, b INTEGER", "a INTEGER, b DOUBLE", "a BIGINT, b DECIMAL(10, 2)"])
 def test_equalities_requiring_casts_do_not_merge(columns: str):
     parsed = IrParser("duckdb").parse(SqlParser("duckdb").parse(
         f"CREATE TABLE values_ ({columns}); SELECT a, b FROM values_ WHERE a = b"
     )).program
     with Engine().session(parsed):
         assert all(len(group) == 1 for group in _equality_groups(parsed.root).value.groups)
+
+
+def test_integers_of_different_widths_merge():
+    # An integer compares by value with any other integer: no value is lost.
+    parsed = IrParser("duckdb").parse(SqlParser("duckdb").parse(
+        "CREATE TABLE values_ (a INTEGER, b BIGINT); SELECT a, b FROM values_ WHERE a = b"
+    )).program
+    with Engine().session(parsed):
+        assert [len(group) for group in _equality_groups(parsed.root).value.groups] == [2]
 
 
 def test_columns_of_unknown_type_do_not_merge():

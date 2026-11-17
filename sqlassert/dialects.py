@@ -110,6 +110,13 @@ class DialectSemantics:
     # `sha2(x, n)` where `n` is free is NULL for an unsupported `n` in MySQL,
     # Spark and Hive, so `SHA2` is claimed only where the length is fixed.
     hash_functions: tuple[str, ...] = ()
+    # The type of a number literal that is not an integer, by kind, as the
+    # engine names the type (`literal_type(KIND)=TYPE`): "decimal", a literal
+    # written with a point (`0.1`), and "exponent", one written with an exponent
+    # (`1e0`). An exact type compares by value; a float rounds. A literal of a
+    # kind not listed has no type claimed, so it types and binds nothing.
+    # An integer literal is an INT where it fits, else a BIGINT, in every dialect.
+    literal_types: tuple[tuple[str, str], ...] = ()
     # The type a VALUES column has when every non-NULL value in it is a
     # literal of one kind (NULL does not change it), by kind, as the engine
     # names the type (`values_type(KIND)=TYPE`): "string"; "integer", each
@@ -162,6 +169,7 @@ _SPARK = DialectSemantics(
     result_types=(("MD5", "STRING"), ("SHA", "STRING")),
     hash_functions=("MD5", "SHA"),
     values_types=(("string", "string"), ("integer", "int"), ("bigint", "bigint"), ("decimal", "decimal")),
+    literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
 )
 
 # What `json_each` and `json_tree` return, in DuckDB and SQLite alike.
@@ -187,6 +195,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         ),
         hash_functions=("MD5", "SHA", "SHA2"),
         values_types=(("string", "VARCHAR"), ("integer", "INTEGER"), ("bigint", "BIGINT"), ("decimal", "DECIMAL")),
+        literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
         table_functions=(
             ("json_each", _JSON_TABLE_COLUMNS), ("json_tree", _JSON_TABLE_COLUMNS),
             ("range", ("range",)), ("generate_series", ("generate_series",)), ("unnest", ("unnest",)),
@@ -210,6 +219,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         hash_functions=("MD5", "SHA2Digest"),
         # A numeric literal with a point is an unscaled NUMERIC: no decimal is claimed.
         values_types=(("string", "text"), ("integer", "integer"), ("bigint", "bigint")),
+        # A numeric constant with a point or an exponent is a NUMERIC (an unscaled one).
+        literal_types=(("decimal", "DECIMAL"), ("exponent", "DECIMAL")),
     ),
     "mysql": DialectSemantics(
         # MySQL under its default strict sql_mode only (docs/dialects.md), so
@@ -234,6 +245,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         hash_functions=("MD5", "SHA"),
         # Every integer literal is a BIGINT. MySQL spells a row `ROW(...)`, which is not lowered.
         values_types=(("string", "varchar"), ("integer", "bigint"), ("bigint", "bigint"), ("decimal", "decimal")),
+        literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
     ),
     "snowflake": DialectSemantics(
         # Not `checked_arithmetic`: its docs never say integer overflow raises.
@@ -247,6 +259,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative (docs/dialect-provenance.json). `md5_binary` is MD5Digest.
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR"), ("MD5Digest", "BINARY")),
         hash_functions=("MD5", "SHA", "MD5Digest"),
+        literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
     ),
     "bigquery": DialectSemantics(
         checked_arithmetic=True,
@@ -262,6 +275,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative. `md5` and `sha256` return BYTES; `to_hex(md5(x))` parses as MD5.
         result_types=(("MD5", "STRING"), ("MD5Digest", "BYTES"), ("SHA1Digest", "BYTES"), ("SHA2Digest", "BYTES")),
         hash_functions=("MD5", "MD5Digest", "SHA1Digest", "SHA2Digest"),
+        # A decimal is written `NUMERIC '0.1'`: `0.1` is a FLOAT64.
+        literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
     ),
     "redshift": DialectSemantics(
         checked_arithmetic=True,
@@ -275,6 +290,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative.
         result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR")),
         hash_functions=("MD5", "SHA"),
+        literal_types=(("decimal", "DECIMAL"),),
     ),
     "databricks": replace(
         _SPARK, checked_division=True, casts_raise=True,
@@ -287,6 +303,8 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         # Tentative. Not SHA2: `sha2(x, n)` is NULL for an unsupported `n`.
         result_types=(("MD5", "STRING"), ("SHA", "STRING")),
         hash_functions=("MD5", "SHA"),
+        # A decimal literal is a DOUBLE unless it has a `BD` suffix.
+        literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
     ),
     "sqlite": DialectSemantics(
         pipes="strict",
@@ -303,6 +321,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     # type is claimed.
     "clickhouse": DialectSemantics(
         concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced", hash_functions=("MD5Digest", "SHA", "SHA2"),
+        literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
     ),
     "oracle": DialectSemantics(empty_string_is_null=True),
     # Trino has no constraint but NOT NULL: its CREATE TABLE rejects a key, so
@@ -332,6 +351,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         hash_functions=("MD5Digest", "SHA", "SHA2Digest"),
         # A string is `varchar(n)` for its longest value.
         values_types=(("string", "varchar"), ("integer", "integer"), ("bigint", "bigint"), ("decimal", "decimal")),
+        literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
     ),
 }
 

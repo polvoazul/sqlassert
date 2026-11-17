@@ -148,6 +148,59 @@ SELECT id, a, b FROM f WHERE id = a + b /**ASSERT DETERMINES(a, b -> id)**/  --~
 -- case: a_column_equal_to_a_function_is_determined_by_its_arguments__coalesce
 SELECT a, b FROM f WHERE b = coalesce(a, 0) /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
 
+-- A column equal to an expression is determined by its arguments only where the
+-- comparison loses nothing: one `exact_comparison` decides every equality.
+-- case: an_equality_through_a_float_expression_loses_values__bigint_plus_a_double_literal
+-- 9007199254740992 and 9007199254740993 both equal 9007199254740991 + 1e0, a DOUBLE.
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = a + 1e0 /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__reversed
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = a + 1e0 /**ASSERT DETERMINES(b -> a)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__bigint_plus_one
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = a + 1 /**ASSERT DETERMINES(a -> b)**/  --~ PROVED
+
+-- case: an_equality_through_a_float_expression_loses_values__bigint_plus_one_reversed
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = a + 1 /**ASSERT DETERMINES(b -> a)**/  --~ PROVED
+
+-- case: an_equality_through_a_float_expression_loses_values__cast_to_double
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = CAST(a AS DOUBLE) /**ASSERT DETERMINES(a -> b)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__cast_to_double_reversed
+CREATE TABLE wide (a BIGINT, b BIGINT);
+SELECT a, b FROM wide WHERE b = CAST(a AS DOUBLE) /**ASSERT DETERMINES(b -> a)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__cast_to_bigint
+CREATE TABLE wide (a BIGINT, b BIGINT, i INTEGER);
+SELECT i, b FROM wide WHERE b = CAST(i AS BIGINT) /**ASSERT DETERMINES(i -> b)**/  --~ PROVED
+
+-- case: an_equality_through_a_float_expression_loses_values__text_against_an_integer
+-- '01' and '1' both equal 1: the integer does not determine the text, nor the text a unique integer.
+CREATE TABLE mixed (n INTEGER, t VARCHAR);
+SELECT n, t FROM mixed WHERE t = n /**ASSERT DETERMINES(n -> t)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__text_against_an_integer_expression
+CREATE TABLE mixed (n INTEGER, t VARCHAR);
+SELECT n, t FROM mixed WHERE t = n + 1 /**ASSERT DETERMINES(n -> t)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__text_function_of_text
+CREATE TABLE mixed (n INTEGER, t VARCHAR);
+SELECT n, t FROM mixed WHERE t = upper(CAST(n AS VARCHAR)) /**ASSERT DETERMINES(n -> t)**/  --~ PROVED
+
+-- case: an_equality_through_a_float_expression_loses_values__float_literal_against_a_decimal
+-- DECIMAL(10, 2) and the DOUBLE 1e0 compare as DOUBLE, so the filter pins no price.
+CREATE TABLE priced (id INTEGER PRIMARY KEY, price DECIMAL(10, 2), qty INTEGER);
+SELECT price, qty FROM priced WHERE price = 1e0 /**ASSERT DETERMINES(qty -> price)**/  --~ UNKNOWN
+
+-- case: an_equality_through_a_float_expression_loses_values__decimal_literal_against_a_decimal
+CREATE TABLE priced (id INTEGER PRIMARY KEY, price DECIMAL(10, 2), qty INTEGER);
+SELECT price, qty FROM priced WHERE price = 1.5 /**ASSERT DETERMINES(qty -> price)**/  --~ PROVED
+
 -- case: a_column_equal_to_a_function_is_determined_by_its_arguments__among_other_conjuncts
 SELECT a, b FROM f WHERE id > 0 AND b = a - 1 /**ASSERT DETERMINES(a -> b)**/
 --~ PROVED

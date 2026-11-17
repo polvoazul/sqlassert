@@ -118,11 +118,19 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   name (`_alias_join`); a name two columns share is opaque, since DuckDB
   renames the second and other dialects leave it ambiguous, and so is every
   name when a source's columns are not all known.
-- Table columns carry a plain `comparison_type` when their declared type has
-  value equality without collation. Equality Groups merge only known matching
-  types, followed through pass-through columns; unknown and mixed types do not
-  rely on SQL's implicit casts. Column-to-column domain narrowing uses the same
-  check. Set operations do not supply comparison types from their left arm.
+- Table columns carry a `typing` (`ir.ValueTyping`: comparison type, text by
+  identity, identity comparison, exact numeric, floating) when their declared
+  type has value equality without collation. `rules/value_typing.py` decides
+  the type of every scalar expression, once: `scalar_typing(expression)` reads
+  what convert records of one node (a column's declared typing, a literal's
+  kind, a CAST's target, a dialect-fixed result type, a row number) and derives
+  the rest (integer arithmetic, a float contaminating arithmetic, the common
+  type of a CASE, COALESCE or NULLIF's results, a set operation's columns).
+  `exact_comparison(left, right)` is the one question every equality asks:
+  what it pins or binds, which Equality Groups it merges, which Functional
+  Dependencies it gives, and the Lossy Comparison Hazard. Unknown and mixed
+  types do not rely on SQL's implicit casts. Set operations do not supply
+  comparison types from their left arm.
   A DuckDB `UNION [ALL] BY NAME` is lowered to a positional set operation
   (`_align_by_name`: each input read as the output's columns in order, a
   missing one as a NULL literal), so its columns pair, type and null like any
@@ -137,15 +145,16 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   not recorded. A join written inside a SELECT that lowered opaque is no part
   of the program; it is recorded under that construct when the program is
   built, if nothing else reaches it (`_name_orphan_joins`).
-  A computed select item is typed the same way when its expression has a known
-  type (`IrParser._output_column`): a CAST, a call with a dialect-fixed result
-  type, a CASE, IF, COALESCE or NULLIF whose results share one type
-  (`_type_results`), whether it is projected or a grouping key. The type is how
+  A computed select item has no declared type: it has its expression's
+  (`scalar_typing`), whether it is projected or a grouping key. The type is how
   values compare and implies no uniqueness or dependency (docs/dialects.md).
-  A CAST is typed the same way wherever it is written (`ir.Call.typing`), so a
-  join's ON can bind a column through it; `rules/equality._expression_typing`
-  gives the types of the other operands an ON equality binds through
-  (docs/dialects.md, "Expressions an ON equality binds").
+  Convert records what one node says of its type, wherever it is written, so
+  a join's ON can bind a column through it: a CAST (`ir.Call.typing`), a call
+  with a dialect-fixed result type, a `row_number()` window
+  (`ir.OpaqueExpression.typing`), a literal (`ir.Constant.typing`, from
+  `DialectSemantics.literal_types`), and which arguments a searched CASE or IF
+  returns (`ir.OpaquePureFunction.results`); everything else is derived in
+  `rules/value_typing.py` (docs/dialects.md, "Types of computed expressions").
 - `python_engine.py` evaluates Python analysis functions with an analysis-scoped
   arena, caching, and trusted declarations. An analysis function returns
   `Result[Value]`: `.value` is its computed Value and its direct fields carry
@@ -277,8 +286,7 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   internals in the same arena -- null sources and null-rejected conjuncts
   for an outer join that cannot pad, the strict (`definite = ∅`) closure for
   `DISTINCT` and grouping columns, Enumerated Domains (`_domain`) and the
-  comparison checks Equality Groups use (`_same_type`,
-  `_identity_comparison`) for implied conditions, cross-input equalities
+  comparison check every equality uses (`exact_comparison`) for implied conditions, cross-input equalities
   for self-joins -- besides `Arena.prove` for Unique and Exactly One Joins. Whether a join's columns are used, and whether a CTE is
   referenced, is read from the SQLGlot AST, matched to each IR site by its
   marker position: the IR keeps neither ORDER BY nor the columns inside an

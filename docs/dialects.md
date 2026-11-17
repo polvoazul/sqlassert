@@ -282,13 +282,14 @@ keys), the dialect proves a subset of what DuckDB would, so the DuckDB
 oracle's judgement of the same rules covers it. The `.sqltest` cases in each dialect
 (`tests/dialect_*.sqltest`) pin each flag's effect.
 
-## Types of computed columns
+## Types of computed expressions
 
-A select item (projected, a grouping key, a DISTINCT or QUALIFY item) has the
-type of a column declared with it when its expression's type is known. The
-type says how values compare, never that the expression is injective. These
-claims have no flag: they hold under every setting of every dialect, or the
-construct stays untyped. Provenance: DuckDB 2.0.0, probed with `typeof` (the
+An expression has the type of a column declared with it when it is known
+(`rules/value_typing.py`, `scalar_typing`): a select item (projected, a
+grouping key, a DISTINCT or QUALIFY item) has its expression's, and so does an
+operand of any equality. The type says how values compare, never that the
+expression is injective. Where a claim has no flag it holds under every
+setting of every dialect, or the construct stays untyped. Provenance: DuckDB 2.0.0, probed with `typeof` (the
 cases are in `tests/computed_select_item_types.sqltest`); every other engine
 "from memory". None is in `docs/dialect-provenance.json`: no flag is
 certified by `scripts/certify_dialects.py`.
@@ -305,22 +306,24 @@ certified by `scripts/certify_dialects.py`.
   rule, so the claim is no weaker there than for columns.
 - `CASE`, `IF`, `COALESCE` (`NVL`, `IFNULL`) and `NULLIF` whose non-NULL
   results (a missing ELSE and a NULL literal are none) are all of one type
-  that compares by identity are of that type: the standard's union type of
-  identical types, in every dialect. Results that are signed integer types of
-  different widths, or integer literals (within INT) beside them, are an
+  are of that type: the standard's union type of identical types, in every
+  dialect. Their results are typed the same way, so a nested CASE, or a
+  literal of a type the dialect claims (below), is a typed result. Results
+  that are signed integer types of different widths, or integer literals (within INT) beside them, are an
   integer type, labelled by the widest (DuckDB: `CASE WHEN c THEN smallint_col
   ELSE 0 END` is SMALLINT and `COALESCE(int_col, bigint_col)` BIGINT, both an
   integer type; engines differ in which, none in being exact). A string literal
   beside text compared by identity is text: DuckDB VARCHAR (probed); Postgres
   resolves the literal as the column's type and Trino as `varchar(n)`, from
   memory, and no other dialect is `text_is_binary`. Results of different
-  types, a decimal or boolean literal, a nested CASE, and a cast to text stay
-  untyped: the hazard `Mixed CASE types` is for the differing ones.
+  types and a cast to text stay untyped: the hazard `Mixed CASE types` is for
+  the differing ones.
   `NULLIF(a, b)` is read as a CASE over `a` and `b`: DuckDB returns the type of
   `a` (`NULLIF(int, 1.5)` is INTEGER), but another engine may compare in the
   common type.
-- `row_number() OVER (...)`, written exactly so (not inside a larger
-  expression), is an integer type that is never NULL, typed as `BIGINT` (an
+- `row_number() OVER (...)`, written exactly so (its Unique Set with the
+  partition keys needs that), is an integer type that is never NULL, typed
+  as `BIGINT` wherever it is written (an
   integer, not claimed to be that one: DuckDB `typeof` gives BIGINT; SQLite
   `typeof` gives `integer`; from memory, Postgres, Trino and Redshift BIGINT,
   MySQL BIGINT UNSIGNED, Spark, Databricks and Hive INT, BigQuery INT64,
@@ -344,26 +347,53 @@ Spark and Databricks; `injective(op)` in `docs/dialect-provenance.json`).
 A CAST is not injective, so `CAST(m.ts AS DATE) = o.day` binds nothing of `m`
 while `m.day = CAST(o.ts AS DATE)` binds `day`.
 
-Losing nothing is `_pins` of the bound column against the other operand's
-type (`equality._expression_typing`): the column compares by identity (or is
-a signed integer), and the operand is of its comparison type or a signed
-integer beside one. An operand has a type only where the IR says: a column's;
-a CAST's (`ir.Call.typing`, the claim of `Types of computed columns` above);
-a signed integer plus or minus an integer literal (`id + 1`, `10 - id`),
-which is a signed integer; the negation of a signed integer or a decimal,
-which has its type. A decimal plus a literal, a product, and every other call
-are untyped and bind nothing. A float binds nothing in either direction
+Losing nothing is `exact_comparison` of the two operands
+(`rules/value_typing.py`), the one question every equality asks (what it pins,
+binds or merges, the dependencies it gives, and the Hazard `Lossy
+comparison`): both operands have a type, and either both are text compared by
+identity, or both have one type whose equal values are identical, or both are
+signed integers (of any width), or one is an integer or decimal literal and
+the other an integer or decimal. A float binds nothing in either direction
 (`-0.0 = 0.0`, and a BIGINT compared with a DOUBLE rounds: 2^53 and 2^53 + 1
-are equal there). Probed on DuckDB 2.0.0 with `typeof`: `-x` is `x`'s type for
-TINYINT through HUGEINT, DECIMAL(10,2) and DOUBLE; `x + 1`, `10 - x` keep an
-INTEGER and a BIGINT; `DECIMAL(10,2) + 1` is DECIMAL(13,2) and `+ 0.5`
-DECIMAL(11,2) (untyped here); `i * 2` is INTEGER (untyped); `-i`, `i + 1` and
-`10 - i` raise on the least or greatest INTEGER instead of wrapping. Every
-other engine, from memory: negation keeps the operand's integer or decimal
-type (PostgreSQL's NUMERIC drops the precision, a value compare either way),
-and integer arithmetic with an integer literal is an integer type. In a
-dialect that is not `checked_arithmetic` (MySQL, Snowflake, SQLite, ClickHouse,
-Hive, Oracle) no Builtin is injective, so no arithmetic is typed or binds.
+are equal there), and neither does anything of unknown type.
+
+An operand has a type where `scalar_typing` finds one: a column's declared
+type (or its expression's); a CAST's (`ir.Call.typing`, the claim of `Types of
+computed expressions` above); a literal's (below); `count(...)`, an integer;
+arithmetic: `+`, `-`, `*` and negation of integers is an integer where the
+dialect's arithmetic is checked (`Builtin.checked`: DuckDB, PostgreSQL,
+Trino, BigQuery, Redshift, Spark and Databricks), the negation of a decimal has
+its type, and a decimal with an integer or decimal literal added is a decimal
+whose precision is not claimed (compared only with a literal, since
+DECIMAL(10,2) + 1 is DECIMAL(13,2)); and any arithmetic with a float operand is
+a float, in every dialect. A quotient, a remainder, any other call, and
+anything of an operand with no type, is untyped. Probed on DuckDB 2.0.0 with
+`typeof`: `-x` is `x`'s type for TINYINT through HUGEINT, DECIMAL(10,2) and
+DOUBLE; `x + 1`, `10 - x` and `i * 2` keep an INTEGER and a BIGINT;
+`DECIMAL(10,2) + 1` is DECIMAL(13,2) and `+ 0.5` DECIMAL(11,2); `x / 2` of
+integers is a DOUBLE; `1e0 + 1` is a DOUBLE; `-i`, `i + 1`, `10 - i` and
+`i * 2` raise on the least or greatest INTEGER instead of wrapping. Every other
+engine, from memory: negation keeps the operand's integer or decimal type
+(PostgreSQL's NUMERIC drops the precision, a value compare either way), and
+integer arithmetic is an integer type. In a dialect that is not
+`checked_arithmetic` (MySQL, Snowflake, SQLite, ClickHouse, Hive, Oracle) no
+Builtin is injective or checked, so integer arithmetic is untyped and binds
+nothing; a float operand still makes a float.
+
+A literal has a type from its kind (`IrParser._literal_typing`): a string is
+text compared by identity where the dialect's is (DuckDB `typeof`: VARCHAR);
+a boolean a BOOLEAN; an integer an INT where it fits, else a BIGINT (DuckDB:
+INTEGER, BIGINT, then HUGEINT, which here is a decimal); a number of more than
+38 digits none (DuckDB turns it into a DOUBLE). A number written with a point
+(`0.1`) or an exponent (`1e0`) has the type `DialectSemantics.literal_types`
+claims for its kind, and none where it claims none (SQLite, Oracle): DuckDB
+probed (`0.1` is DECIMAL(2,1), `1e0` and `1.5e3` DOUBLE, `123456789012345678901234567890123456789.5`
+DOUBLE); from memory, the vendor documentation for the rest: a decimal and an
+exponent literal are exact and a DOUBLE in MySQL, Spark, Databricks, Trino and
+Snowflake (`1e0` FLOAT); PostgreSQL's NUMERIC constants take a point or an
+exponent (an unscaled NUMERIC, so neither identical nor exact in the sense of a
+column); Redshift's decimal is NUMERIC; BigQuery, ClickHouse and Hive read both
+as floating point. Not certified by `scripts/certify_dialects.py`.
 
 IS NOT DISTINCT FROM also matches NULL to NULL, so it fixes a column non-null
 only where the other operand is never NULL: `ir.total` of it, over columns
@@ -522,8 +552,8 @@ when credentials do.
   NULL there, so it is left unmodelled.
 - MySQL compares a number with a string as DOUBLE, so an integer column above
   2^53 (or a DECIMAL with more than 15 significant digits) is not pinned by a
-  string; neither, in any dialect, by a DOUBLE. `_pins` does not yet look at
-  the other side's type.
+  string; neither, in any dialect, by a DOUBLE. A string literal beside a
+  number is not an `exact_comparison`, so nothing is pinned by it.
 - MySQL `ANSI_QUOTES` makes `"x"` an identifier rather than a string, and
   `NO_BACKSLASH_ESCAPES` changes string literals; both are read as the default.
 - SQLite's column types are affinities, not types: an `INTEGER` column may hold

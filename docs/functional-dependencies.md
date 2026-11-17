@@ -515,8 +515,10 @@ propagation ask. Each group's evidence cites every equality that merged it,
 with its line.
 
 - A union-find over **strict** equalities only: `WHERE` and inner-join `ON`
-  conjuncts `a = b` between columns of known matching comparison types,
-  without collation. Implicit casts and unknown types never merge groups.
+  conjuncts `a = b` that are an Exact Comparison (`rules/value_typing.py`:
+  known types, text compared by identity or one type compared by identity or
+  integers of any width), without collation. Implicit casts, floats and unknown
+  types never merge groups.
   A semi join's ON merges too, through the
   columns of the matched right row, which no output carries: `d.deptno =
   e.mgr AND d.deptno = e.comm` merges mgr and comm. An outer join's ON never

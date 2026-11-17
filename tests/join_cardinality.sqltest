@@ -109,14 +109,47 @@ CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
 SELECT * FROM ledger AS a /**ASSERT MANY TO ONE**/ JOIN ledger AS b ON b.amount = a.amount + 1
 --~ UNKNOWN
 
--- case: an_added_literal_over_a_decimal_on_the_matched_side_is_inverted
+-- case: an_added_literal_over_a_decimal_on_the_matched_side_is_not_inverted
+-- The same comparison as above, from the other side: a DECIMAL beside a computed decimal.
 CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2) UNIQUE);
 SELECT * FROM ledger AS a /**ASSERT ONE TO MANY**/ JOIN ledger AS b ON b.amount = a.amount + 1
+--~ UNKNOWN
+
+-- case: an_on_equality_through_an_integer_expression_binds
+CREATE TABLE keyed (k BIGINT PRIMARY KEY);
+CREATE TABLE refs (r BIGINT);
+SELECT * FROM refs /**ASSERT MANY TO ONE**/ JOIN keyed ON keyed.k = refs.r + 1
 --~ PROVED
 
--- case: a_product_is_not_typed
+-- case: an_on_equality_through_a_double_expression_binds_nothing
+-- k = r + 1e0 compares in DOUBLE: 2^53 and 2^53 + 1 are both equal to 2^53 - 1 + 1e0.
+CREATE TABLE keyed (k BIGINT PRIMARY KEY);
+CREATE TABLE refs (r BIGINT);
+SELECT * FROM refs /**ASSERT MANY TO ONE**/ JOIN keyed ON keyed.k = refs.r + 1e0
+--~ UNKNOWN
+
+-- case: an_on_equality_through_a_cast_to_double_binds_nothing
+CREATE TABLE keyed (k BIGINT PRIMARY KEY);
+CREATE TABLE refs (r BIGINT);
+SELECT * FROM refs /**ASSERT MANY TO ONE**/ JOIN keyed ON keyed.k = CAST(refs.r AS DOUBLE)
+--~ UNKNOWN
+
+-- case: an_on_equality_through_a_text_to_integer_comparison_binds_nothing
+CREATE TABLE keyed (k VARCHAR PRIMARY KEY);
+CREATE TABLE refs (r INTEGER);
+SELECT * FROM refs /**ASSERT MANY TO ONE**/ JOIN keyed ON keyed.k = refs.r + 1
+--~ UNKNOWN
+
+-- case: a_product_of_integers_is_an_integer
+-- Checked arithmetic over integers is an integer, compared by value with another (DuckDB `typeof`: INTEGER).
 CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
 SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = child.parent * 2
+--~ PROVED
+
+-- case: a_quotient_is_not_typed
+-- DuckDB's `/` of integers is a DOUBLE; no engine's is claimed.
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = child.parent / 2
 --~ UNKNOWN
 
 -- case: a_product_on_the_matched_side_is_not_inverted
@@ -203,16 +236,24 @@ CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
 SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = CAST(child.parent + random() AS INTEGER)
 --~ UNKNOWN
 
--- case: an_expression_that_may_be_null_for_a_value_binds_nothing_untyped
+-- case: nullif_of_one_type_binds
+-- NULL equals nothing: a value that is NULL only removes a match.
 CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
 SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = nullif(child.parent, 0)
+--~ PROVED
+
+-- case: nullif_of_two_types_binds_nothing
+-- DuckDB returns the type of `a` (`NULLIF(int, 1.5)` is INTEGER), but another engine may compare in the common type.
+CREATE TABLE chain (id INTEGER PRIMARY KEY, parent INTEGER UNIQUE);
+SELECT * FROM chain AS child /**ASSERT MANY TO ONE**/ JOIN chain AS p ON p.id = nullif(child.parent, 0.5)
 --~ UNKNOWN
 
--- case: a_try_cast_binds_nothing_untyped
+-- case: a_try_cast_binds_through_its_type
+-- A failed TRY_CAST is NULL, and NULL equals nothing: it has the type it names.
 CREATE TABLE events (id INTEGER PRIMARY KEY, ts TIMESTAMP UNIQUE);
 CREATE TABLE days (day DATE PRIMARY KEY);
 SELECT * FROM events /**ASSERT MANY TO ONE**/ JOIN days ON days.day = TRY_CAST(events.ts AS DATE)
---~ UNKNOWN
+--~ PROVED
 
 -- IS NOT DISTINCT FROM also matches NULL to NULL: the bound column is non-null
 -- only when the function is never NULL, here of a NOT NULL column.

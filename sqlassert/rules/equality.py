@@ -24,10 +24,10 @@ from dataclasses import dataclass
 from itertools import combinations
 from collections.abc import Callable, Iterable, Mapping
 from typing import assert_never
-import re
 
 from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, analysis, current_arena
+from sqlassert.rules.value_typing import _column_typing, exact_comparison
 
 type _Group = tuple[ir.OutputColumn, ...]
 
@@ -151,9 +151,9 @@ def _predicate_equalities(conjuncts: tuple[ir.ScalarExpr, ...]) -> Equalities:
             case ir.Or():
                 pairs.update(dict.fromkeys(_in_every_branch(conjunct, _predicate_equalities), conjunct))
             case (
-                ir.Equality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
-                | ir.NullSafeEquality(left=ir.ColumnRef(column=first), right=ir.ColumnRef(column=second))
-            ) if _same_type(first, second):
+                ir.Equality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right)
+                | ir.NullSafeEquality(left=ir.ColumnRef(column=first) as left, right=ir.ColumnRef(column=second) as right)
+            ) if exact_comparison(left, right).value:
                 pairs[first, second] = pairs[second, first] = conjunct
     return pairs
 
@@ -194,7 +194,7 @@ def _pinned_values(conjuncts: tuple[ir.ScalarExpr, ...]) -> dict[tuple[ir.Output
             case ir.Equality(left=left, right=right) | ir.NullSafeEquality(left=left, right=right):
                 for column, literal in ((left, right), (right, left)):
                     if isinstance(column, ir.ColumnRef) and isinstance(literal, ir.Constant) and literal.value is not None:
-                        if _pins(column.column, literal):
+                        if exact_comparison(column, literal).value:
                             pinned[column.column, literal.value] = conjunct
             case ir.IsNull(operand=ir.ColumnRef(column=column)):
                 pinned[column, None] = conjunct
@@ -240,169 +240,6 @@ def _constant_value(column: ir.OutputColumn) -> Result[tuple[ir.LiteralValue | N
             assert_never(relation)
 
 
-def _same_type(first: ir.OutputColumn, second: ir.OutputColumn) -> bool:
-    """Equalities are value identities only for known, matching comparison types."""
-    first_type = _comparison_type(first).value
-    return first is second or first_type is not None and first_type == _comparison_type(second).value
-
-
-@analysis(Stratum.COMPARISON)
-def _comparison_type(column: ir.OutputColumn) -> Result[str | None]:
-    relation = column.get_relation(current_arena().program)
-    if isinstance(relation, ir.SetOperation) and (arms := relation.arms(column)) is not None:
-        # Both inputs of one type: the output is that type.
-        left, right = (_comparison_type(arm) for arm in arms)
-        if left.value is not None and left.value == right.value:
-            return Result(left.value, "Both inputs of the set operation share the comparison type", (column,), [left, right])
-    match column.scalar_expr:
-        case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)) if not isinstance(relation, ir.SetOperation):
-            return _comparison_type(source)
-        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)) if _small_integer(text):
-            return Result("INT", "Integer literal", (column,))
-        case _:
-            return Result(column.comparison_type, "Declared comparison type", (column,))
-
-
-@analysis(Stratum.COMPARISON)
-def _identity_comparison(column: ir.OutputColumn) -> Result[bool]:
-    """Whether equal values of `column` are identical, from its declared type."""
-    relation = column.get_relation(current_arena().program)
-    if (both := _both_inputs(column, relation, _identity_comparison)) is not None:
-        return both
-    match column.scalar_expr:
-        case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)) if not isinstance(relation, ir.SetOperation):
-            # A picked value (min, max, any_value) is a value of its column.
-            return _identity_comparison(source)
-        case _:
-            return Result(column.identity_comparison, "Declared type compares by identity", (column,))
-
-
-def _both_inputs(
-    column: ir.OutputColumn, relation: ir.RelationExpr | None, fact: Callable[[ir.OutputColumn], Result[bool]]
-) -> Result[bool] | None:
-    """A set operation's column has a type fact when both its input columns
-    have one comparison type and the fact: its type is theirs, not widened.
-    None when that is not shown, and the column's own declaration decides."""
-    if not isinstance(relation, ir.SetOperation) or (arms := relation.arms(column)) is None or not _same_type(*arms):
-        return None
-    left, right = (fact(arm) for arm in arms)
-    if not (left.value and right.value):
-        return None
-    return Result(True, "Both inputs of the set operation have it", (column,), [left, right])
-
-
-def _pins(column: ir.OutputColumn, value: ir.ScalarExpr) -> bool:
-    """Whether equality can pin the column without a lossy coercion: `value`
-    is a literal, a column, or an expression of known type (`_expression_typing`)."""
-    if _binary_text(column).value:
-        match value:
-            case ir.Constant(value=ir.LiteralValue(type="string")):
-                return True
-            case ir.ColumnRef(column=other):
-                return _binary_text(other).value
-            case ir.Call():
-                typing = _expression_typing(value)
-                return typing is not None and typing.binary_text
-            case _:
-                return False
-    if not (_identity_comparison(column).value or _signed_integer(column)):
-        return False
-    match value:
-        case ir.ColumnRef(column=other):
-            return _same_type(column, other) or (
-                _signed_integer(column) and _signed_integer(other)
-            )
-        case ir.Call():
-            typing = _expression_typing(value)
-            return typing is not None and (
-                typing.comparison_type == _comparison_type(column).value
-                or _signed_integer(column) and typing.comparison_type in _SIGNED_INTEGERS
-            )
-        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)):
-            return "e" not in text.lower() and (exact_numeric(column).value or _exact_arithmetic(column))
-        case ir.Constant(value=ir.LiteralValue(type="boolean")):
-            return _comparison_type(column).value == "BOOLEAN"
-        case _:
-            return False
-
-
-_SIGNED_INTEGERS = {"TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT", "HUGEINT", "INT128"}
-
-
-def _small_integer(text: str) -> bool:
-    return re.fullmatch(r"-?[0-9]{1,10}", text) is not None and -(2**31) <= int(text) < 2**31
-
-
-def _signed_integer(column: ir.OutputColumn) -> bool:
-    if _comparison_type(column).value in _SIGNED_INTEGERS:
-        return True
-    program = current_arena().program
-    while isinstance(column.scalar_expr, ir.ColumnRef) and not isinstance(column.get_relation(program), ir.SetOperation):
-        column = column.scalar_expr.column
-    if isinstance(column.scalar_expr, ir.Count):
-        return True
-    if not isinstance(column.scalar_expr, ir.Call):
-        return False
-    argument = column.scalar_expr.injective_argument
-    return isinstance(argument, ir.ColumnRef) and _comparison_type(argument.column).value in _SIGNED_INTEGERS and all(
-        node is argument or isinstance(node, ir.Constant) and node.value is not None
-        and node.value.type == "numeric" and _small_integer(node.value.text)
-        for node in column.scalar_expr.arguments
-    )
-
-
-def _expression_typing(expression: ir.ScalarExpr) -> ir.ValueTyping | None:
-    """How the values of a call compare, where what the IR keeps of it says: a
-    CAST has the type it names (`ir.Call.typing`); exact arithmetic over a
-    signed integer column with integer literals (`id + 1`, `10 - id`) is a
-    signed integer, and the negation of a signed integer or a decimal has its
-    type. A decimal with a literal added is wider and a float is no exact
-    value: neither is typed, nor is any other call.
-
-    Provenance: DuckDB 2.0.0 `typeof` (`-x` is `x`'s type; `x + 1` of an
-    integer type keeps it; `DECIMAL(10,2) + 1` is `DECIMAL(13,2)`); other
-    engines from memory (docs/dialects.md, "Types of computed expressions")."""
-    match expression:
-        case ir.Call(typing=ir.ValueTyping() as typing):
-            return typing
-        case ir.Call(injective_argument=ir.ScalarExpr() as operand, arguments=arguments):
-            typing = _operand_typing(operand)
-            if typing is None:
-                return None
-            if typing.comparison_type in _SIGNED_INTEGERS and all(argument is operand or _small_integer_constant(argument) for argument in arguments):
-                return typing
-            if len(arguments) == 1 and typing.exact_numeric and typing.comparison_type.startswith("DECIMAL"):
-                return typing  # Negation.
-            return None
-        case _:
-            return None
-
-
-def _operand_typing(operand: ir.ScalarExpr) -> ir.ValueTyping | None:
-    """`_expression_typing` of a call, else of a column its declared type; a
-    signed integer a computation gives (`count(*)`, `id + 1`) is a BIGINT."""
-    match operand:
-        case ir.ColumnRef(column=column):
-            comparison_type = _comparison_type(column).value
-            if comparison_type is None and _signed_integer(column):
-                return ir.ValueTyping("BIGINT", False, True, True)
-            if comparison_type is None:
-                return None
-            return ir.ValueTyping(comparison_type, _binary_text(column).value, _identity_comparison(column).value, exact_numeric(column).value)
-        case ir.Call():
-            return _expression_typing(operand)
-        case _:
-            return None
-
-
-def _small_integer_constant(expression: ir.ScalarExpr) -> bool:
-    match expression:
-        case ir.Constant(value=ir.LiteralValue(type="numeric", text=text)):
-            return _small_integer(text)
-        case _:
-            return False
-
-
 def _same_set_types(operation: ir.SetOperation, columns: Iterable[ir.OutputColumn]) -> bool:
     """Whether set output columns retain the same types as their inputs."""
     return all(_typed_arms(operation, column) is not None for column in columns)
@@ -411,47 +248,7 @@ def _same_set_types(operation: ir.SetOperation, columns: Iterable[ir.OutputColum
 def _typed_arms(operation: ir.SetOperation, column: ir.OutputColumn) -> tuple[ir.OutputColumn, ir.OutputColumn] | None:
     """`column`'s input columns, when it keeps their type: its values are theirs."""
     arms = operation.arms(column)
-    return arms if arms is not None and _same_type(*arms) else None
-
-
-def _exact_arithmetic(column: ir.OutputColumn) -> bool:
-    """Whether `column` is an integer or decimal it computes: a `count`, or
-    exact arithmetic over an integer or decimal (`id + 7`)."""
-    program = current_arena().program
-    while isinstance(column.scalar_expr, ir.ColumnRef) and not isinstance(column.get_relation(program), ir.SetOperation):
-        column = column.scalar_expr.column
-    if isinstance(column.scalar_expr, ir.Count):
-        return True
-    if not isinstance(column.scalar_expr, ir.Call):
-        return False
-    source = ir.injective_input(column.scalar_expr)
-    return source is not None and exact_numeric(source).value
-
-
-@analysis(Stratum.COMPARISON)
-def _binary_text(column: ir.OutputColumn) -> Result[bool]:
-    """Whether `column` is text compared by identity, from its declared type."""
-    relation = column.get_relation(current_arena().program)
-    if (both := _both_inputs(column, relation, _binary_text)) is not None:
-        return both
-    match column.scalar_expr:
-        case ir.ColumnRef(column=source) if not isinstance(relation, ir.SetOperation):
-            return _binary_text(source)
-        case _:
-            return Result(column.binary_text, "Declared as text compared by identity", (column,))
-
-
-@analysis(Stratum.COMPARISON)
-def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
-    """Whether `column` is an integer or decimal, from its declared type."""
-    relation = column.get_relation(current_arena().program)
-    if (both := _both_inputs(column, relation, exact_numeric)) is not None:
-        return both
-    match column.scalar_expr:
-        case ir.ColumnRef(column=source) | ir.AnyAggregate(input=ir.ColumnRef(column=source)) if not isinstance(relation, ir.SetOperation):
-            return exact_numeric(source)
-        case _:
-            return Result(column.exact_numeric, "Declared an integer or decimal", (column,))
+    return arms if arms is not None and _column_typing(column).value is not None else None
 
 
 def _inputs(relation: ir.RelationExpr) -> tuple[ir.RelationExpr, ...]:

@@ -39,7 +39,8 @@ from sqlassert import ir
 from sqlassert import properties as props
 from sqlassert.properties import EnumeratedDomain
 from sqlassert.python_engine import Result, Stratum, analysis, any_of, current_arena, unknown
-from sqlassert.rules.equality import _equal_columns, _lax_equalities, _same_type
+from sqlassert.rules.equality import _equal_columns, _lax_equalities
+from sqlassert.rules.value_typing import _binary_text as _typed_binary_text, column_ref, exact_comparison
 from sqlassert.rules.nullability import _non_null_expression, non_null_column
 
 # A finite set of possible non-null values, or None when any value is possible.
@@ -317,7 +318,7 @@ def _matched_narrowings(join: ir.Join, column: ir.OutputColumn, source: ir.Outpu
                 other = second if first is source else first
             case _:
                 continue
-        if other not in join.right.output_columns or not _same_type(source, other):
+        if other not in join.right.output_columns or not exact_comparison(column_ref(source), column_ref(other)).value:
             continue
         bounds = [bound for part in join.conjuncts if part is not conjunct and (bound := _conjunct_bound(part, other)) is not None]
         if bounds:
@@ -366,7 +367,7 @@ def _bound_domain(column: ir.OutputColumn, expression: ir.ScalarExpr) -> Result[
             return Result(None, "An approximate numeric comparison may collapse distinct values", (expression,))
         case ir.Constant() | ir.NullLiteral():
             return _expression_domain(expression)
-        case ir.ColumnRef(column=source) if _same_type(column, source):
+        case ir.ColumnRef(column=source) if exact_comparison(column_ref(column), expression).value:
             return _expression_domain(expression)
         case _:
             return Result(None, "The comparison may cast its operands, so no value domain is transferred", (expression,))
@@ -406,7 +407,7 @@ def _binary_text(column: ir.OutputColumn) -> bool:
                 if not _binary_text(source):
                     return False
             case _:
-                if not member.binary_text:
+                if not _typed_binary_text(member).value:
                     return False
     return True
 
