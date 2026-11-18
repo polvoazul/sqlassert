@@ -56,8 +56,9 @@ def test_every_fact_has_a_provenance(dialect: str):
         if probed:
             assert entry.keys() <= {"engine", "undefined"} and all(entry.values()), name
         elif "tentative" in entry:
-            # From memory, neither probed nor read: only where no engine runs locally.
-            assert entry.keys() == {"tentative"} and entry["tentative"] and not local, name
+            # From memory, neither probed nor read, until a probe promotes it (AGENTS.md).
+            assert entry.keys() == {"tentative"} and entry["tentative"], name
+            continue
         else:
             assert entry.keys() == {"doc", "read"} and entry["doc"].startswith("https://"), name
         assert probed == (local or (dialect, name) in ENGINE_CERTIFIED), name

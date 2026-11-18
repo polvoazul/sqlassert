@@ -604,15 +604,25 @@ Every claim a dialect's flags make, every Builtin fact
 derives from them, and every function result type (`result_type(Node)=TYPE`,
 from `DialectSemantics.result_types`, `result_type(Node,ARGTYPE)=TYPE`, from `argument_result_types`, `values_type(KIND)=TYPE`, from `values_types`, `literal_type(KIND)=TYPE`, from `literal_types`, and `table_function(NAME)=COLUMNS`, from `table_functions`) has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
-version or date}` when read in the engine's documentation, and, only for a
-dialect with no local engine, `{"tentative": why}` when stated from memory,
+version or date}` when read in the engine's documentation, and
+`{"tentative": why}` when stated from memory,
 neither probed nor read: a claim to verify, recorded rather than left out.
 A probe that passes replaces a `doc` or `tentative` provenance. A weak setting (unchecked arithmetic, text not
 compared by identity, unenforced keys) claims nothing and has none.
 `tests/test_dialect_certification.py` checks that every fact has one, that
 every fact of a local engine (DuckDB, SQLite, PostgreSQL, MySQL, ClickHouse, Trino)
-is certified on an engine, which Spark facts are (the rest of Spark's are
-`doc`), and reruns the DuckDB and SQLite probes.
+that is not tentative is certified on an engine, which Spark facts are (the
+rest of Spark's are `doc`), and reruns the DuckDB and SQLite probes.
+
+### Every engine at once
+
+Anything added to `sqlassert/dialects.py` (a flag, a Builtin fact, a result
+type, a table function) is added for every modelled dialect where the
+construct exists, in the same change, not only for the engine at hand. What
+is not probed or read in the docs yet goes in from memory, `{"tentative":
+why}`: being wrong there is fine, leaving an engine out is not, and a probe
+promotes it later. A dialect is left out only where the function or construct
+does not exist in it, with a comment saying so.
 
 `scripts/certify_dialects.py` (not part of the package) generates one probe
 per fact from the fact itself: the Builtin called with a typed NULL (strict),
