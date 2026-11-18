@@ -206,3 +206,46 @@ def test_a_wide_join_chain_prunes_the_search_after_finding_its_only_key(monkeypa
     assert report.proved
     assert report.facts.unique_sets(source) == (("id",),)
     assert probes <= 2 * (payload_width + 1)
+
+
+def test_a_wide_join_chain_finds_its_only_composite_key_without_searching_combinations(monkeypatch: MonkeyPatch):
+    payload_width = 36
+    payload = ", ".join(f"value_{index} INTEGER" for index in range(payload_width))
+    sql = f"""
+        CREATE TABLE events (id INTEGER NOT NULL, part INTEGER NOT NULL, {payload});
+        CREATE TABLE labels (id INTEGER PRIMARY KEY);
+        CREATE VIEW upstream AS SELECT * FROM events /**DECLARE UNIQUE(id, part)**/;
+    """
+    source = "upstream"
+    for index in range(3):
+        stage = f"stage_{index}"
+        sql += f"CREATE VIEW {stage} AS SELECT a.* FROM {source} a JOIN labels b ON a.id = b.id;\n"
+        source = stage
+    sql += f"SELECT * FROM {source} /**ASSERT UNIQUE(id, part)**/;"
+
+    closure = uniqueness._closure
+    probes = 0
+
+    def count_probes(relation, columns, definite):
+        nonlocal probes
+        if isinstance(relation, ir.NamedRelation) and relation.name == source:
+            probes += 1
+        return closure(relation, columns, definite)
+
+    monkeypatch.setattr(uniqueness, "_closure", count_probes)
+    report = analyze(sql)
+
+    assert report.proved
+    assert report.facts.unique_sets(source) == (("id", "part"),)
+    assert probes <= 3 * (payload_width + 2)
+
+
+def test_composite_keys_that_share_a_column_are_all_reported():
+    report = analyze(
+        """
+        CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, d INTEGER, UNIQUE (a, b), UNIQUE (a, c));
+        SELECT * FROM t
+        """
+    )
+
+    assert report.facts.unique_sets("t") == (("a", "b"), ("a", "c"))

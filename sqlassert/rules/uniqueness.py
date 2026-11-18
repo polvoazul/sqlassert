@@ -988,6 +988,7 @@ def minimal_keys(relation: ir.RelationExpr, max_size: int = 3) -> list[tuple[ir.
         return []
     keys: list[tuple[ir.OutputColumn, ...]] = [(column,) for column in columns if max_size >= 1 and unique((column,))]
     candidates = columns
+    required: tuple[ir.OutputColumn, ...] = ()
     if max_size > 1 and keys:
         singletons = {key[0] for key in keys}
         candidates = tuple(column for column in columns if column not in singletons)
@@ -995,10 +996,22 @@ def minimal_keys(relation: ir.RelationExpr, max_size: int = 3) -> list[tuple[ir.
         # cannot determine the row, neither can any subset of it.
         if len(candidates) < 2 or not unique(candidates):
             return keys
-    for size in range(2, min(max_size, len(candidates)) + 1):
-        for members in combinations(candidates, size):
+    elif max_size > 1:
+        # Every Unique Set holds each column the others cannot do without: a set
+        # lacking it is a subset of those others, so not unique either. When
+        # those columns alone are unique, they are the only minimal Unique Set.
+        required = tuple(column for column in columns if not unique(tuple(other for other in columns if other is not column)))
+        if required and unique(required):
+            return [required]
+        candidates = tuple(column for column in columns if column not in required)
+    position = {column: index for index, column in enumerate(columns)}
+    for size in range(max(2, len(required) + 1), min(max_size, len(required) + len(candidates)) + 1):
+        found = []
+        for extra in combinations(candidates, size - len(required)):
+            members = tuple(sorted((*required, *extra), key=position.__getitem__))
             if not any(set(key) <= set(members) for key in keys) and unique(members):
-                keys.append(members)
+                found.append(members)
+        keys.extend(sorted(found, key=lambda members: [position[column] for column in members]))
     if keys:
         return keys
     members = columns
