@@ -60,6 +60,8 @@ def scalar_typing(expression: ir.ScalarExpr) -> Result[ir.ValueTyping | None]:
             return scalar_typing(value)
         case ir.Call(typing=ir.ValueTyping() as typing) | ir.OpaquePureFunction(typing=ir.ValueTyping() as typing):
             return Result(typing, "The type of a CAST or of a function the dialect gives a fixed result type", (expression,))
+        case ir.Call(typed_by=ir.ArgumentTyping() as by, arguments=arguments) | ir.OpaquePureFunction(typed_by=ir.ArgumentTyping() as by, arguments=arguments):
+            return _argument_typing(expression, by, arguments[by.argument])
         case ir.Call(function=ir.Builtin(name="nullif"), arguments=arguments):
             return _common_typing(expression, arguments)
         case ir.Call():
@@ -77,6 +79,21 @@ def scalar_typing(expression: ir.ScalarExpr) -> Result[ir.ValueTyping | None]:
             return _unknown(expression)
         case _:
             assert_never(expression)
+
+
+def _argument_typing(expression: ir.ScalarExpr, by: ir.ArgumentTyping, argument: ir.ScalarExpr) -> Result[ir.ValueTyping | None]:
+    """The type of a call that follows its argument's (`ir.ArgumentTyping`):
+    the one the dialect gives for the argument's type, or the argument's own
+    where it keeps it; unknown for any other type."""
+    typed = scalar_typing(argument)
+    if typed.value is None:
+        return _unknown(expression, "The argument its type follows has no known type")
+    result = dict(by.results).get(typed.value.comparison_type)
+    if result is not None:
+        return Result(result, "The type the dialect gives for its argument's type", (expression,), [typed])
+    if by.keeps:
+        return Result(typed.value, "The type of its argument", (expression,), [typed])
+    return _unknown(expression, "The dialect gives no type for its argument's type")
 
 
 @analysis(Stratum.COMPARISON)

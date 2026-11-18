@@ -1,8 +1,10 @@
 -- A select item computed by a function whose result type the dialect fixes
 -- (`DialectSemantics.result_types`) is typed as a column declared with that
 -- type: an equality on it binds, and its values compare by identity where the
--- type does. A function whose type follows its arguments stays untyped, and so
--- does every function in a dialect that certifies none.
+-- type does. A function whose type follows an argument's is typed by that
+-- argument's type (`DialectSemantics.argument_result_types`), and stays untyped
+-- for an argument type the dialect does not list; every function stays untyped
+-- in a dialect that certifies none.
 
 CREATE TABLE people (name VARCHAR, code VARCHAR, born DATE);
 CREATE TABLE badges (code VARCHAR, size INTEGER, issued TIMESTAMP);
@@ -28,11 +30,87 @@ SELECT *
 FROM badges
 /**ASSERT MANY TO ONE**/ JOIN keys ON badges.size = keys.k  --~ UNKNOWN
 
--- case: date_trunc_follows_its_argument_so_stays_untyped
+-- case: date_trunc_of_a_date_is_a_timestamp_so_does_not_bind_a_date
+WITH months AS (SELECT DISTINCT date_trunc('month', born) AS m FROM people)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN months ON dim.month = months.m  --~ UNKNOWN
+
+-- case: date_trunc_of_a_date_binds_a_timestamp
 WITH months AS (SELECT DISTINCT date_trunc('month', born) AS m FROM people)
 SELECT *
 FROM badges
+/**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ PROVED
+
+-- case: date_trunc_of_a_timestamp_binds_a_timestamp
+WITH months AS (SELECT DISTINCT date_trunc('month', ts) AS m FROM events)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ PROVED
+
+-- case: date_trunc_of_a_zoned_timestamp_keeps_the_zone
+WITH months AS (SELECT DISTINCT date_trunc('month', seen) AS m FROM dim)
+SELECT *
+FROM badges
 /**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ UNKNOWN
+
+-- case: lpad_keys_join_as_varchar
+WITH codes AS (SELECT DISTINCT lpad(code, 3, '0') AS c FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ PROVED
+
+-- case: regexp_replace_keys_join_as_varchar
+WITH codes AS (SELECT DISTINCT regexp_replace(code, '[^0-9]', '', 'g') AS c FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ PROVED
+
+-- case: a_case_over_regexp_replace_is_varchar
+WITH codes AS (
+  SELECT DISTINCT CASE WHEN length(regexp_replace(code, '[^0-9]', '', 'g')) = 8 THEN regexp_replace(code, '[^0-9]', '', 'g') END AS c
+  FROM people
+)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ PROVED
+
+-- case: concatenation_onto_text_is_varchar
+WITH codes AS (SELECT DISTINCT 'F:' || code AS c FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ PROVED
+
+-- case: regexp_extract_stays_untyped
+-- A list of group names makes it a STRUCT.
+WITH codes AS (SELECT DISTINCT regexp_extract(code, '[0-9]+') AS c FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ UNKNOWN
+
+-- case: abs_keeps_its_argument_type
+WITH levels AS (SELECT DISTINCT abs(level) AS l FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN levels ON dim.level = levels.l  --~ PROVED
+
+-- case: abs_of_a_double_does_not_compare_by_identity
+WITH scores AS (SELECT DISTINCT abs(amount) AS a FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN scores ON dim.score = scores.a  --~ UNKNOWN
+
+-- case: an_anonymous_function_the_dialect_types_binds
+WITH sizes AS (SELECT DISTINCT strlen(name) AS n FROM people)
+SELECT *
+FROM events
+/**ASSERT MANY TO ONE**/ JOIN sizes ON events.big = sizes.n  --~ PROVED
+
+-- case: sign_is_a_tinyint_that_binds_an_integer
+WITH signs AS (SELECT DISTINCT sign(amount) AS s FROM events)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN signs ON dim.level = signs.s  --~ PROVED
 
 -- case: a_dialect_that_claims_no_result_type_leaves_md5_untyped
 -- Oracle has no md5 function: SQLGlot parses one, but nothing is claimed.

@@ -455,8 +455,72 @@ _RESULT_TYPE_CALLS: dict[str, tuple[str, ...]] = {
     "StrPosition": ("strpos('abc', 'b')",),
     "Year": ("year(DATE '2020-01-01')", "year(TIMESTAMP '2020-01-01')", "year(TIMESTAMPTZ '2020-01-01 00:00+00')"),
     "Month": ("month(DATE '2020-01-01')", "month(TIMESTAMP '2020-01-01')"),
-    "Day": ("day(DATE '2020-01-01')", "day(TIMESTAMP '2020-01-01')"),
+    "Day": ("day(DATE '2020-01-01')", "day(TIMESTAMP '2020-01-01')", "day(INTERVAL 3 DAY)"),
+    "Pad": ("lpad('a', 3, '0')", "rpad('a', 3, '0')", "lpad(CAST('a' AS BLOB), 3, '0')", "lpad([1], 3, [0])"),
+    "RegexpReplace": ("regexp_replace('a', 'a', 'b')", "regexp_replace('a', 'a', 'b', 'g')", "regexp_replace(CAST('a' AS BLOB), 'a', 'b')"),
+    "Reverse": ("reverse('ab')", "reverse([1, 2])"),
+    "SplitPart": ("split_part('a-b', '-', 1)",),
+    "Translate": ("translate('ab', 'a', 'c')",),
+    "Overlay": ("overlay('abc' PLACING 'x' FROM 1)", "overlay('abc' PLACING 'x' FROM 1 FOR 2)"),
+    "Chr": ("chr(65)",),
+    "TimeToStr": ("strftime(DATE '2020-01-01', '%Y')", "strftime(TIMESTAMP '2020-01-01', '%Y')", "strftime(TIMESTAMPTZ '2020-01-01 00:00+00', '%Y')"),
+    "ArrayToString": ("array_to_string([1, 2], ',')", "array_to_string(['a'], ',')"),
+    "Format": ("format('{}', 1)",),
+    "Anonymous:nfc_normalize": ("nfc_normalize('a')",),
+    "Hour": ("hour(TIMESTAMP '2020-01-01 10:00')", "hour(TIME '10:00')", "hour(INTERVAL 3 HOUR)", "hour(TIMESTAMPTZ '2020-01-01 10:00+00')"),
+    "Minute": ("minute(TIMESTAMP '2020-01-01 10:00')", "minute(INTERVAL 3 MINUTE)"),
+    "Second": ("second(TIMESTAMP '2020-01-01 10:00')", "second(INTERVAL 3 SECOND)"),
+    "Quarter": ("quarter(DATE '2020-01-01')", "quarter(INTERVAL 3 MONTH)"),
+    "Week": ("week(DATE '2020-01-01')", "week(TIMESTAMP '2020-01-01')"),
+    "DayOfWeek": ("dayofweek(DATE '2020-01-01')", "dayofweek(TIMESTAMP '2020-01-01')"),
+    "DayOfYear": ("dayofyear(DATE '2020-01-01')",),
+    "DayOfWeekIso": ("isodow(DATE '2020-01-01')",),
+    "DateDiff": (
+        "date_diff('day', DATE '2020-01-01', DATE '2020-02-01')", "date_diff('day', TIMESTAMP '2020-01-01', TIMESTAMP '2020-02-01')",
+        "date_diff('hour', TIME '10:00', TIME '11:00')",
+    ),
+    "BitLength": ("bit_length('a')", "bit_length(CAST('1' AS BIT))", "bit_length(CAST('a' AS BLOB))"),
+    "Anonymous:octet_length": ("octet_length(CAST('a' AS BLOB))", "octet_length(CAST('1' AS BIT))", "octet_length(CAST('a' AS VARCHAR))"),
+    "Anonymous:strlen": ("strlen('a')",),
+    "Ln": ("ln(2)", "ln(2.5)", "ln(CAST(2 AS DECIMAL(10, 2)))", "ln(CAST(2 AS HUGEINT))"),
+    "Exp": ("exp(2)", "exp(CAST(2 AS DECIMAL(4, 1)))"),
+    "Sqrt": ("sqrt(2)", "sqrt(CAST(2 AS DECIMAL(4, 1)))"),
+    "Pow": ("power(2, 2)", "power(CAST(2 AS DECIMAL(4, 1)), 2)"),
+    "Log": ("log(2)", "log10(2)", "log2(2)", "log(2, 8)", "log(CAST(2 AS DECIMAL(4, 1)))"),
+    **{name: (f"{name.lower()}(0.5)", f"{name.lower()}(CAST(1 AS DECIMAL(4, 1)))") for name in ("Sin", "Cos", "Tan", "Asin", "Acos", "Atan")},
+    "Atan2": ("atan2(1, 2)",),
+    "RegexpLike": ("regexp_matches('a', 'a')", "regexp_matches('a', 'a', 'i')"),
+    "RegexpFullMatch": ("regexp_full_match('a', 'a')",),
+    "StartsWith": ("starts_with('ab', 'a')",),
+    "EndsWith": ("ends_with('ab', 'b')",),
+    "Contains": ("contains('ab', 'a')", "contains([1], 1)", "contains(MAP {1: 2}, 1)"),
+    "Anonymous:prefix": ("prefix('ab', 'a')",),
+    "Anonymous:suffix": ("suffix('ab', 'b')",),
+    "Ascii": ("ascii('a')",),
+    "Sign": ("sign(1)", "sign(1.5)", "sign(CAST(1 AS HUGEINT))", "sign(CAST(1 AS DOUBLE))"),
+    "LastDay": ("last_day(DATE '2020-01-01')", "last_day(TIMESTAMP '2020-01-01')", "last_day(TIMESTAMPTZ '2020-01-01 00:00+00')"),
+    "DateFromParts": ("make_date(2020, 1, 1)", "make_date(CAST(2020 AS BIGINT), 1, 1)"),
 }
+# Calls of a function whose result type follows an argument's
+# (`DialectSemantics.argument_result_types`), with `{}` for that argument
+# (DuckDB spelling, read as the dialect's); and literals of each argument type.
+_ARGUMENT_RESULT_CALLS: dict[str, str] = {
+    "TimestampTrunc": "date_trunc('month', {})",
+    "DPipe": "{} || 'b'",
+    "Repeat": "repeat({}, 2)",
+    "Abs": "abs({})",
+}
+_ARGUMENT_VALUES: dict[str, str] = {
+    "DATE": "DATE '2020-01-15'", "TIMESTAMP": "TIMESTAMP '2020-01-15 10:00'", "TIMESTAMP_S": "CAST('2020-01-15' AS TIMESTAMP_S)",
+    "TIMESTAMP_MS": "CAST('2020-01-15' AS TIMESTAMP_MS)", "TIMESTAMP_NS": "CAST('2020-01-15' AS TIMESTAMP_NS)",
+    "TIMESTAMP WITH TIME ZONE": "CAST('2020-01-15 10:00+00' AS TIMESTAMP WITH TIME ZONE)", "INTERVAL": "INTERVAL 3 DAY",
+    "VARCHAR": "CAST('a' AS VARCHAR)", "BLOB": "CAST('a' AS BLOB)",
+}
+# Argument types a function keeping its argument's type (`("*", "=")`) is probed over.
+_KEPT_VALUES = (
+    "CAST(1 AS INTEGER)", "CAST(1 AS BIGINT)", "CAST(1 AS SMALLINT)", "CAST(1 AS TINYINT)", "CAST(1 AS HUGEINT)", "CAST(1 AS UTINYINT)",
+    "CAST(1.5 AS DECIMAL(10, 2))", "CAST(1.5 AS DOUBLE)", "CAST(1.5 AS FLOAT)", "INTERVAL 3 DAY",
+)
 # The engine's function naming a value's type, as a template.
 _TYPE_OF = {"duckdb": "typeof({})", "postgres": "pg_typeof({})::text", "trino": "typeof({})", "spark": "typeof({})", "databricks": "typeof({})"}
 # An engine rejecting a call's argument types at bind time: no program has that call.
@@ -475,7 +539,7 @@ def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact
             calls.append(getattr(exp, node)(this=shape.ordinary[0], **dict(shape.extra)))
         for call in _RESULT_TYPE_CALLS.get(node, ()):
             parsed = sqlglot.parse_one(call, read="duckdb")
-            if type(parsed).__name__ == node:
+            if (f"Anonymous:{parsed.name.lower()}" if isinstance(parsed, exp.Anonymous) else type(parsed).__name__) == node:
                 calls.append(parsed)
         if dialect not in _TYPE_OF or not calls:
             yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", (
@@ -490,6 +554,33 @@ def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact
             for index, call in enumerate(calls)
         )
         yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", checks)
+    for node, _, mapping in meaning.argument_result_types:
+        template = _ARGUMENT_RESULT_CALLS.get(node)
+        for argument_type, type_name in mapping:
+            name = f"result_type({node},{argument_type})={type_name}"
+            remedy = f"drop {argument_type} of {node} from argument_result_types in dialects.py"
+            if dialect not in _TYPE_OF or template is None or (argument_type != "*" and argument_type not in _ARGUMENT_VALUES):
+                yield Fact(name, remedy, (Check("", "true", problem=f"{dialect} has no type function, or there is no probe call for {node}"),))
+                continue
+            if argument_type == "*":
+                # Keeps its argument's type: the same type name, over each type the engine accepts.
+                checks = tuple(
+                    Check(
+                        f"SELECT CASE WHEN {_TYPE_OF[dialect].format(_dialect_sql(template.format(value), dialect))}"
+                        f" = {_TYPE_OF[dialect].format(_dialect_sql(value, dialect))} THEN 1 ELSE 0 END",
+                        "true", accepted_error=_BIND_ERROR if index else "",
+                    )
+                    for index, value in enumerate(_KEPT_VALUES)
+                )
+            else:
+                call = _dialect_sql(template.format(_ARGUMENT_VALUES[argument_type]), dialect)
+                checks = (Check(f"SELECT CASE WHEN lower({_TYPE_OF[dialect].format(call)}) = lower('{type_name}') THEN 1 ELSE 0 END", "true"),)
+            yield Fact(name, remedy, checks)
+
+
+def _dialect_sql(sql: str, dialect: str) -> str:
+    """`sql`, written in DuckDB's spelling, as `dialect` writes it."""
+    return sqlglot.parse_one(sql, read="duckdb").sql(dialect=sqlassert_dialect(dialect))
 
 
 # The literal rows of a VALUES column, by kind of literal (`DialectSemantics.values_types`):

@@ -177,18 +177,33 @@ class ValueTyping:
     temporal: bool = False
 
 
+@dataclass(frozen=True)
+class ArgumentTyping:
+    """The type of a call that depends on one argument's type
+    (`DialectSemantics.argument_result_types`): `results` by the argument's
+    `comparison_type`, and, when `keeps`, any other type is the argument's
+    own. A type not listed, or an argument of unknown type, leaves the call
+    untyped."""
+
+    argument: int
+    results: tuple[tuple[str, ValueTyping], ...]
+    keeps: bool = False
+
+
 class Call(ScalarExpr):
     """A Builtin applied to arguments: `n + 1`, `n > 0`, `CAST(n AS BIGINT)`, `NOT p`.
 
     `typing` is how its values compare, where the type is known from the call
     itself: a CAST's (`IrParser._cast_typing`) or a function the dialect gives
     a fixed result type (`DialectSemantics.result_types`). Arithmetic and
-    NULLIF are typed by their operands (`rules/value_typing.py`)."""
+    NULLIF are typed by their operands (`rules/value_typing.py`), and a
+    function whose type follows an argument's by `typed_by`."""
 
     function: Builtin
     arguments: tuple[ScalarExpr, ...]
     description: str
     typing: ValueTyping | None = None
+    typed_by: ArgumentTyping | None = None
 
     def __post_init__(self) -> None:
         assert self.function.accepts(len(self.arguments)), f"{self.function.name} takes no {len(self.arguments)} arguments"
@@ -232,12 +247,14 @@ class OpaquePureFunction(ScalarExpr):
     `typing` is how its values compare, where the dialect fixes the result
     type of the function (`DialectSemantics.result_types`). `results` are the
     positions of the arguments it returns one of, or NULL, when it only
-    selects among them (a searched CASE, IF): its type is the type they share."""
+    selects among them (a searched CASE, IF): its type is the type they share.
+    `typed_by`: its type follows an argument's (`ArgumentTyping`)."""
 
     arguments: tuple[ScalarExpr, ...]
     description: str
     typing: ValueTyping | None = None
     results: tuple[int, ...] | None = None
+    typed_by: ArgumentTyping | None = None
 
 
 class Count(ScalarExpr):

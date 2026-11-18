@@ -2340,8 +2340,30 @@ class IrParser:
     def _result_type(self, expression: Expr) -> exp.DataType | None:
         """The type the dialect returns for `expression`, a call of a function
         whose result type does not depend on its arguments' (`DialectSemantics.result_types`)."""
-        name = dict(self.semantics.result_types).get(type(expression).__name__)
+        name = dict(self.semantics.result_types).get(_function_key(expression))
         return exp.DataType.build(name, dialect=self.dialect) if name is not None else None
+
+    def _argument_typing(self, expression: Expr, arguments: Sequence[Expr]) -> ir.ArgumentTyping | None:
+        """How the type of `expression` follows one of its `arguments` (the
+        SQLGlot nodes lowered, in order), where the dialect says it does
+        (`DialectSemantics.argument_result_types`)."""
+        key = _function_key(expression)
+        for node, argument, mapping in self.semantics.argument_result_types:
+            value = expression.args.get(argument)
+            if node != key or not isinstance(value, Expr):
+                continue
+            position = next((index for index, candidate in enumerate(arguments) if candidate is value), None)
+            if position is None:
+                return None
+            results = []
+            for argument_type, result_type in mapping:
+                if argument_type == "*":
+                    continue
+                typing = self._declared_typing(exp.DataType.build(result_type, dialect=self.dialect))
+                if typing is not None:
+                    results.append((exp.DataType.build(argument_type, dialect=self.dialect).sql(dialect=self.dialect), typing))
+            return ir.ArgumentTyping(position, tuple(results), keeps=("*", "=") in mapping)
+        return None
 
     def _aggregate_output_columns(self, items: list[Expr], source: _Lowered, grouped_items: set[int]) -> tuple[ir.OutputColumn, ...]:
         """Each item of a grouped select. A column outside every aggregate must
@@ -2633,9 +2655,10 @@ class IrParser:
                 call = ir.Call(origin=origin, function=function, arguments=arguments, description=description)
                 if type(expression) is exp.Cast:
                     return replace(call, typing=self._cast_typing(expression))
-                return replace(call, typing=self._fixed_typing(expression))
+                return replace(call, typing=self._fixed_typing(expression), typed_by=self._argument_typing(expression, values))
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
-            opaque = ir.OpaqueExpression(origin=origin, description=description)
+            # A function SQLGlot does not know has the type the dialect gives it, if any.
+            opaque = ir.OpaqueExpression(origin=origin, description=description, typing=self._fixed_typing(expression) if isinstance(expression, exp.Anonymous) else None)
             if isinstance(expression, exp.Window):
                 if _row_number_window(expression) is not None:
                     # An integer type in every engine, whichever (docs/dialects.md).
@@ -2649,12 +2672,11 @@ class IrParser:
                 origin=origin, arguments=tuple(lower(part) for part, _ in parts), description=description,
                 results=tuple(index for index, (_, is_result) in enumerate(parts) if is_result),
             )
-        opaque_call = ir.OpaquePureFunction(
-            origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description,
-        )
+        children = list(expression.iter_expressions())
+        opaque_call = ir.OpaquePureFunction(origin=origin, arguments=tuple(lower(child) for child in children), description=description)
         if isinstance(expression, exp.Cast):
             return replace(opaque_call, typing=self._cast_typing(expression))  # TRY_CAST.
-        return replace(opaque_call, typing=self._fixed_typing(expression))
+        return replace(opaque_call, typing=self._fixed_typing(expression), typed_by=self._argument_typing(expression, children))
 
     def _checked_comparison(self, comparison: exp.Binary, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:
         """Whether `comparison` compares its operands' values as they are:
@@ -3627,6 +3649,14 @@ _SUPPORTED_CREATE_KINDS = {"TABLE", "VIEW"}
 _TEXT_TYPES = {exp.DataType.Type.VARCHAR, exp.DataType.Type.TEXT}
 
 
+def _function_key(expression: Expr) -> str:
+    """The key of a function call in `DialectSemantics.result_types`: its
+    SQLGlot node, or `Anonymous:<lowercase name>` for one SQLGlot does not know."""
+    if isinstance(expression, exp.Anonymous):
+        return f"Anonymous:{expression.name.lower()}"
+    return type(expression).__name__
+
+
 def _collated(definition: exp.ColumnDef) -> bool:
     """Whether a column is declared with a `COLLATE`."""
     return any(isinstance(constraint.args.get("kind"), exp.CollateColumnConstraint) for constraint in definition.constraints)
@@ -4260,6 +4290,9 @@ _IDENTITY_TYPES = {
     *exp.DataType.INTEGER_TYPES, *exp.DataType.TEXT_TYPES,
     exp.DataType.Type.DECIMAL, exp.DataType.Type.BOOLEAN, exp.DataType.Type.DATE, exp.DataType.Type.TIME,
     exp.DataType.Type.TIMESTAMP, exp.DataType.Type.UUID,
+    # Timestamps without a zone, as each dialect spells them (DuckDB's TIMESTAMP is TIMESTAMPNTZ).
+    exp.DataType.Type.TIMESTAMPNTZ, exp.DataType.Type.TIMESTAMP_S, exp.DataType.Type.TIMESTAMP_MS, exp.DataType.Type.TIMESTAMP_NS,
+    exp.DataType.Type.DATETIME, exp.DataType.Type.DATETIME64,
 }
 # TIMESTAMPTZ is too, where it holds an instant only (`zoned_timestamp_is_instant`).
 

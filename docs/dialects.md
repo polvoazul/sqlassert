@@ -321,6 +321,19 @@ certified by `scripts/certify_dialects.py`.
   `NULLIF(a, b)` is read as a CASE over `a` and `b`: DuckDB returns the type of
   `a` (`NULLIF(int, 1.5)` is INTEGER), but another engine may compare in the
   common type.
+- A call of a function whose result type the dialect fixes, whatever its
+  arguments' types (`DialectSemantics.result_types`, `result_type(Node)=TYPE`),
+  has that type; one whose type follows one argument's
+  (`argument_result_types`, `result_type(Node,ARGTYPE)=TYPE`, or
+  `result_type(Node,*)==` where it keeps any argument type) has the type the
+  dialect gives for that argument's, and stays untyped for an argument of a
+  type not listed or of unknown type. A function SQLGlot does not know is keyed
+  `Anonymous:<name>`. Each is certified on the engine
+  (`docs/dialect-provenance.json`), probed over every argument type the
+  engine accepts: a function whose type depends on an argument's shape is
+  not claimed (DuckDB's `regexp_extract` is a STRUCT for a list of group
+  names, `concat` and `repeat` of lists are lists). DuckDB's `date_trunc` of a
+  DATE is a TIMESTAMP, of a TIMESTAMPTZ a TIMESTAMPTZ.
 - `row_number() OVER (...)`, written exactly so (its Unique Set with the
   partition keys needs that), is an integer type that is never NULL, typed
   as `BIGINT` wherever it is written (an
@@ -589,7 +602,7 @@ would replace that check if another dialect is modelled.
 Every claim a dialect's flags make, every Builtin fact
 (`strict(op)`, `total(op)`, `skips_null(op)`) `ir/convert.dialect_builtins`
 derives from them, and every function result type (`result_type(Node)=TYPE`,
-from `DialectSemantics.result_types`, `values_type(KIND)=TYPE`, from `values_types`, `literal_type(KIND)=TYPE`, from `literal_types`, and `table_function(NAME)=COLUMNS`, from `table_functions`) has a provenance in `docs/dialect-provenance.json`:
+from `DialectSemantics.result_types`, `result_type(Node,ARGTYPE)=TYPE`, from `argument_result_types`, `values_type(KIND)=TYPE`, from `values_types`, `literal_type(KIND)=TYPE`, from `literal_types`, and `table_function(NAME)=COLUMNS`, from `table_functions`) has a provenance in `docs/dialect-provenance.json`:
 `{"engine": [versions]}` when probed on a real engine, `{"doc": url, "read":
 version or date}` when read in the engine's documentation, and, only for a
 dialect with no local engine, `{"tentative": why}` when stated from memory,

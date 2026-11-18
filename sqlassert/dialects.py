@@ -109,7 +109,15 @@ class DialectSemantics:
     # the engine accepts gives the same result type (`date_trunc` keeps its
     # input's type, so it is not here). Certified with the engine's own type
     # function (`scripts/certify_dialects.py`); a dialect without one claims none.
+    # A function SQLGlot parses as `Anonymous` is keyed `Anonymous:<lowercase name>`.
     result_types: tuple[tuple[str, str], ...] = ()
+    # The type of a function whose result type follows one argument's, by the
+    # SQLGlot node, the argument's key in the node, and the result type for
+    # each argument type (`result_type(Node,ARGTYPE)=TYPE`), as the engine
+    # names them; `("*", "=")` makes any other argument type the result's
+    # (`result_type(Node,*)==`). An argument of a type not listed, or of
+    # unknown type, leaves the call untyped. Certified like `result_types`.
+    argument_result_types: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = ()
     # Hash functions modelled as strict and total, by SQLGlot node: NULL
     # exactly when the argument is. SQLGlot parses a hex-text hash as `MD5`,
     # `SHA` (sha1) or `SHA2` and a raw-bytes one as `MD5Digest`, `SHA1Digest`
@@ -214,8 +222,28 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         result_types=(
             *((node, "VARCHAR") for node in (
                 "MD5", "SHA", "SHA2", "Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "ConcatWs", "Dayname", "Monthname",
+                "Pad", "RegexpReplace", "Reverse", "SplitPart", "Translate", "Overlay", "Chr", "TimeToStr", "ArrayToString", "Format",
+                "Anonymous:nfc_normalize",
             )),
-            *((node, "BIGINT") for node in ("Length", "StrPosition", "Year", "Month", "Day")),
+            *((node, "BIGINT") for node in (
+                "Length", "StrPosition", "Year", "Month", "Day", "Hour", "Minute", "Second", "Quarter", "Week", "DayOfWeek",
+                "DayOfYear", "DayOfWeekIso", "DateDiff", "BitLength", "Anonymous:octet_length", "Anonymous:strlen",
+            )),
+            *((node, "DOUBLE") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2")),
+            *((node, "BOOLEAN") for node in (
+                "RegexpLike", "RegexpFullMatch", "StartsWith", "EndsWith", "Contains", "Anonymous:prefix", "Anonymous:suffix",
+            )),
+            ("Ascii", "INTEGER"), ("Sign", "TINYINT"), ("LastDay", "DATE"), ("DateFromParts", "DATE"),
+        ),
+        # Not `regexp_extract` (a STRUCT for a list of group names), `concat` or `repeat` of a list.
+        argument_result_types=(
+            ("TimestampTrunc", "this", (
+                *((source, "TIMESTAMP") for source in ("DATE", "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS")),
+                ("TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH TIME ZONE"), ("INTERVAL", "INTERVAL"),
+            )),
+            ("DPipe", "this", (("VARCHAR", "VARCHAR"),)),
+            ("Repeat", "this", (("VARCHAR", "VARCHAR"), ("BLOB", "BLOB"))),
+            ("Abs", "this", (("*", "="),)),
         ),
         hash_functions=("MD5", "SHA", "SHA2"),
         values_types=(("string", "VARCHAR"), ("integer", "INTEGER"), ("bigint", "BIGINT"), ("decimal", "DECIMAL")),
