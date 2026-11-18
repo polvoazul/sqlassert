@@ -290,7 +290,8 @@ class IrParser:
 
         role = ir.RelationRole.TABLE if kind == "TABLE" else ir.RelationRole.VIEW
         body = statement.args.get("expression")
-        query = _unwrap_query(body)
+        # The body keeps its parentheses: a LIMIT written after them is part of it.
+        query = body if _unwrap_query(body) is not None else None
         aliases = tuple(column.name for column in statement.this.expressions) if role is ir.RelationRole.VIEW and isinstance(statement.this, exp.Schema) else ()
         symbol = _Symbol(name=name, role=role, origin=origin, body=query, statement=statement, column_aliases=aliases)
         self._global_symbols[key] = symbol
@@ -415,7 +416,7 @@ class IrParser:
                     name=cte.alias,
                     role=ir.RelationRole.CTE,
                     origin=Origin(SQL, cte.sql(dialect=self.dialect)),
-                    body=body,
+                    body=cte.this if body is not None else None,
                     column_aliases=_column_aliases(cte),
                 )
                 scope[cte.alias.lower()] = symbol
@@ -428,6 +429,12 @@ class IrParser:
                 self._discover_query(body, scope)
 
         self._query_scopes[id(query)] = scope
+        if isinstance(query, exp.Subquery):
+            # A parenthesised query: its body is what lowers (`_lower_query`).
+            inner = _unwrap_query(query)
+            if inner is not None:
+                self._discover_query(inner, scope)
+            return
         if isinstance(query, exp.SetOperation):
             # SQLGlot 30 wraps a nested set operation in a Subquery.
             for side in (query.this, query.expression):
@@ -541,8 +548,9 @@ class IrParser:
         while changed:
             before = sum(len(symbol.required_columns) for symbol in self._symbols) + sum(len(columns) for columns in self._source_required.values())
             for symbol in self._symbols:
-                if isinstance(symbol.body, exp.Select) and _star_only(symbol.body):
-                    sources = _direct_sources(symbol.body)
+                body = _unwrap_query(symbol.body)
+                if isinstance(body, exp.Select) and _star_only(body):
+                    sources = _direct_sources(body)
                     if len(sources) == 1:
                         aliases = {name.lower() for name in symbol.column_aliases}
                         for column in symbol.required_columns:
@@ -565,10 +573,11 @@ class IrParser:
 
     def _lower_query(self, query: exp.Query) -> ir.RelationExpr | None:
         """A Root Select, view, CTE, and FROM-subquery body all lower the same way."""
-        unwrapped = _unwrap_query(query)
-        if unwrapped is None:
-            return None
-        query = unwrapped
+        if isinstance(query, exp.Subquery):
+            # Parentheses add no rows, but a LIMIT or OFFSET written after them
+            # (`(SELECT ...) LIMIT 2`) keeps a subset of the body's rows.
+            inner = self._lower_query(query.this) if isinstance(query.this, exp.Query) else None
+            return self._lower_limit(inner, query) if inner is not None else None
         if isinstance(query, exp.SetOperation):
             left = self._lower_arm(query.this)
             self._note_recursion_base(query, left)

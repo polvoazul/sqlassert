@@ -196,3 +196,55 @@ CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER);
 WITH u AS (SELECT * FROM a UNION ALL BY NAME SELECT * FROM unk)
 --~ undeclared-table "unk"
 SELECT * FROM u /**ASSERT NOT NULL(k)**/  --~ UNKNOWN
+
+-- case: a_parenthesised_root_set_operation_is_analyzed__union_all_operands
+-- A marker before `)` marks the last operand, so the operands are the places to
+-- state a fact of the whole root.
+CREATE TABLE t (a INTEGER PRIMARY KEY);
+CREATE TABLE u (a INTEGER NOT NULL);
+(SELECT a FROM t /**ASSERT UNIQUE(a)**/  --~ PROVED
+UNION ALL
+SELECT a FROM u /**ASSERT NOT NULL(a)**/)  --~ PROVED
+
+-- case: a_parenthesised_root_set_operation_proves_nothing_beyond_its_operands
+CREATE TABLE t (a INTEGER PRIMARY KEY);
+CREATE TABLE u (a INTEGER NOT NULL);
+(SELECT a FROM t UNION ALL SELECT a FROM u /**ASSERT UNIQUE(a)**/)  --~ UNKNOWN
+
+-- case: a_parenthesised_root_set_operation_with_order_by_and_limit_outside_is_analyzed
+CREATE TABLE t (a INTEGER NOT NULL);
+CREATE TABLE u (a INTEGER NOT NULL);
+(SELECT a FROM t UNION ALL SELECT a FROM u /**ASSERT NOT NULL(a)**/)  --~ PROVED
+ORDER BY 1 LIMIT 2
+
+-- case: a_doubly_parenthesised_root_set_operation_is_analyzed
+CREATE TABLE t (a INTEGER PRIMARY KEY);
+CREATE TABLE u (a INTEGER NOT NULL);
+((SELECT a FROM t /**ASSERT UNIQUE(a)**/  --~ PROVED
+UNION
+SELECT a FROM u))
+
+-- case: parenthesised_operands_inside_a_parenthesised_root_are_analyzed
+CREATE TABLE t (a INTEGER PRIMARY KEY);
+CREATE TABLE u (a INTEGER NOT NULL);
+((SELECT a FROM t /**ASSERT UNIQUE(a)**/)  --~ PROVED
+UNION ALL
+(SELECT a FROM u /**ASSERT NOT NULL(a)**/))  --~ PROVED
+
+-- case: a_join_in_an_operand_of_a_parenthesised_root_set_operation_proves
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+CREATE TABLE orders (user_id INTEGER);
+(SELECT sessions.user_id FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id
+UNION ALL
+SELECT orders.user_id FROM orders
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON orders.user_id = users.id)
+
+-- case: a_parenthesised_set_operation_body_of_a_view_keeps_its_facts
+CREATE TABLE t (a INTEGER NOT NULL);
+CREATE TABLE u (a INTEGER NOT NULL);
+CREATE VIEW v AS (SELECT a FROM t UNION SELECT a FROM u);
+(SELECT a FROM v /**ASSERT NOT NULL UNIQUE(a)**/)  --~ PROVED

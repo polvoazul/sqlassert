@@ -233,6 +233,34 @@ def test_a_case_not_provably_exhaustive_or_not_markable_is_not_suggested(case: s
     assert not any(isinstance(s.property, ExhaustiveCase) for s in suggest(sql).suggestions)
 
 
+PARENTHESISED_ROOTS = [
+    "(SELECT a FROM t)",
+    "((SELECT a FROM t))",
+    "(SELECT a FROM t UNION ALL SELECT a FROM u)",
+    "(SELECT a FROM t UNION SELECT a FROM u) ORDER BY 1 LIMIT 2",
+    "((SELECT a FROM t) UNION (SELECT a FROM u))",
+    "((SELECT a FROM t UNION ALL SELECT a FROM u))",
+    "(SELECT a FROM t UNION ALL SELECT a FROM u /**ASSERT NOT NULL(a)**/)",
+    "(WITH c AS (SELECT a FROM t) SELECT a FROM c UNION SELECT a FROM u)",
+    "CREATE VIEW v AS (SELECT a FROM t UNION SELECT a FROM u); (SELECT a FROM v) LIMIT 2",
+]
+
+
+@pytest.mark.parametrize("root", PARENTHESISED_ROOTS)
+def test_a_parenthesised_root_is_analyzed_and_suggested_for_without_crashing(root: str):
+    sql = "CREATE TABLE t (a INTEGER NOT NULL); CREATE TABLE u (a INTEGER NOT NULL);\n" + root
+
+    report = suggest(sql)
+
+    assert report.diagnostics == ()
+    not_null = [s for s in report.suggestions if s.marker == "/**ASSERT NOT NULL(a)**/"]
+    assert not_null or "/**ASSERT" in root
+    # Each pasted marker proves: the relation inside the parentheses is analyzed.
+    pasted = analyze(annotate(sql, not_null))
+    assert pasted.diagnostics == ()
+    assert pasted.assertions and all(assertion.outcome is Outcome.PROVED for assertion in pasted.assertions)
+
+
 ROUND_TRIP_PROGRAMS = [
     SCHEMA + "SELECT * FROM sessions LEFT JOIN users ON sessions.user_id = users.id",
     SCHEMA + "SELECT id, email, name, nick, coalesce(nick, 'x') AS label FROM users WHERE id > 0",
@@ -266,6 +294,9 @@ ROUND_TRIP_PROGRAMS = [
     CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER, PRIMARY KEY (a, b));
     SELECT a, b, c, d, max(e) AS m FROM t GROUP BY a, b, c, d
     """,
+    SCHEMA + "(SELECT id, name FROM users)",
+    SCHEMA + "((SELECT id, name FROM users)) ORDER BY 1 LIMIT 2",
+    SCHEMA + "CREATE VIEW ids AS (SELECT id FROM users); (SELECT id FROM ids)",
     ORDERS + """
     WITH o AS (SELECT id, status, qty FROM orders WHERE status IN ('new', 'paid') AND qty IN (1, 2.5))
     SELECT id, status,

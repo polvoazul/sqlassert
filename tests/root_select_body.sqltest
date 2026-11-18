@@ -99,3 +99,77 @@ UNION ALL SELECT id FROM b
 CREATE TABLE a (id INTEGER PRIMARY KEY);
 CREATE TABLE b (id INTEGER PRIMARY KEY);
 SELECT id FROM a INTERSECT SELECT id FROM b ORDER BY id LIMIT 3 /**ASSERT NOT NULL UNIQUE(id)**/  --~ PROVED
+
+-- case: a_parenthesised_root_select_is_analyzed_like_an_unparenthesised_one
+-- Parentheses add no rows: the tables inside are read, and a join inside proves.
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+(SELECT sessions.user_id FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id)
+
+-- case: a_doubly_parenthesised_root_select_is_analyzed
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+((SELECT sessions.user_id FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id))
+
+-- case: a_parenthesised_root_select_still_proves_what_it_reads_through_a_view
+CREATE TABLE a (k INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER NOT NULL);
+CREATE VIEW ks AS SELECT k FROM a UNION SELECT k FROM b;
+(SELECT k FROM ks /**ASSERT UNIQUE(k)**/)  --~ PROVED
+
+-- case: a_parenthesised_root_select_proves_nothing_beyond_what_its_rows_hold
+CREATE TABLE a (k INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER NOT NULL);
+CREATE VIEW ks AS SELECT k FROM a UNION ALL SELECT k FROM b;
+(SELECT k FROM ks /**ASSERT UNIQUE(k)**/)  --~ UNKNOWN
+
+-- case: a_parenthesised_root_select_with_order_by_and_limit_outside_is_analyzed
+CREATE TABLE users (id INTEGER PRIMARY KEY);
+CREATE TABLE sessions (user_id INTEGER);
+
+(SELECT sessions.user_id FROM sessions
+/**ASSERT MANY TO ONE**/ JOIN users  --~ PROVED
+    ON sessions.user_id = users.id) ORDER BY 1 LIMIT 2
+
+-- case: a_view_body_in_parentheses_keeps_its_facts
+CREATE TABLE a (k INTEGER NOT NULL);
+CREATE TABLE b (k INTEGER NOT NULL);
+CREATE VIEW ks AS (SELECT k FROM a UNION SELECT k FROM b);
+SELECT k FROM ks /**ASSERT NOT NULL UNIQUE(k)**/  --~ PROVED
+
+-- case: a_limit_after_parentheses_keeps_a_subset_so_a_join_to_it_is_not_exactly_one
+-- Every `c.x` is a `p.a`, but the LIMIT may keep a row no `c.x` equals.
+CREATE TABLE p (a INTEGER PRIMARY KEY);
+CREATE TABLE c (x INTEGER NOT NULL REFERENCES p(a));
+SELECT c.x FROM c
+/**ASSERT EXACTLY ONE**/ JOIN ((SELECT a FROM p) LIMIT 1) q  --~ UNKNOWN
+    ON c.x = q.a
+
+-- case: parentheses_without_a_limit_keep_every_row_so_a_join_to_it_is_exactly_one
+CREATE TABLE p (a INTEGER PRIMARY KEY);
+CREATE TABLE c (x INTEGER NOT NULL REFERENCES p(a));
+SELECT c.x FROM c
+/**ASSERT EXACTLY ONE**/ JOIN ((SELECT a FROM p)) q  --~ PROVED
+    ON c.x = q.a
+
+-- case: a_limit_after_a_view_body_in_parentheses_keeps_a_subset
+CREATE TABLE p (a INTEGER PRIMARY KEY);
+CREATE TABLE c (x INTEGER NOT NULL REFERENCES p(a));
+CREATE VIEW v AS (SELECT a FROM p) LIMIT 1;
+SELECT c.x FROM c
+/**ASSERT EXACTLY ONE**/ JOIN v  --~ UNKNOWN
+    ON c.x = v.a
+
+-- case: a_limit_after_a_cte_body_in_parentheses_keeps_a_subset
+CREATE TABLE p (a INTEGER PRIMARY KEY);
+CREATE TABLE c (x INTEGER NOT NULL REFERENCES p(a));
+WITH q AS ((SELECT a FROM p) LIMIT 1)
+SELECT c.x FROM c
+/**ASSERT EXACTLY ONE**/ JOIN q  --~ UNKNOWN
+    ON c.x = q.a

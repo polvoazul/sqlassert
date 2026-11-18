@@ -103,7 +103,10 @@ domain language in `CONTEXT.md` and the semantic MVP boundary in
   (`nullability._row_lineage`).
 - `ir.Limit` retains a subset of its input rows, after the Select's other
   operations or a set operation. Its optional `count` records a known hard
-  bound; percentages, ties, and unknown bounds supply none. OFFSET needs no
+  bound; percentages, ties, and unknown bounds supply none. A LIMIT or OFFSET
+  written after parentheses, `(SELECT ...) LIMIT 2`, limits the parenthesised
+  body (`_lower_query`; a root, view, CTE or FROM body keeps its parentheses
+  for that), and its ORDER BY is not modelled. OFFSET needs no
   separate node: it is the same subset boundary. Input facts follow retained
   rows; incoming Referential Coverage stops at this boundary.
 - `ir/convert.py` is the only boundary that reads SQLGlot ASTs and lowers them
