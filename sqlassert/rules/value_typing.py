@@ -250,6 +250,11 @@ def exact_numeric(column: ir.OutputColumn) -> Result[bool]:
     return Result(typing.value is not None and typing.value.exact_numeric, "An integer or decimal", (column,), [typing])
 
 
+def _boolean(column: ir.OutputColumn) -> bool:
+    typing = _column_typing(column).value
+    return typing is not None and typing.comparison_type == "BOOLEAN"
+
+
 def _signed_integer(column: ir.OutputColumn) -> bool:
     typing = _column_typing(column).value
     return typing is not None and typing.integer is not None

@@ -31,7 +31,7 @@ from sqlassert import ir
 from sqlassert.python_engine import Result, Stratum, all_of, analysis, any_of, current_arena, unknown
 from sqlassert.rules.column_set import Attribute, Closure, RowIdentity
 from sqlassert.rules.equality import _constant_value, _equal_columns, _predicate_constants, _predicate_equalities, _same_set_types, _typed_arms
-from sqlassert.rules.value_typing import _binary_text, _identity_comparison, _signed_integer, exact_comparison, exact_numeric, scalar_typing
+from sqlassert.rules.value_typing import _binary_text, _boolean, _identity_comparison, _signed_integer, exact_comparison, exact_numeric, scalar_typing
 from sqlassert.rules.nullability import Padding, _null_sources, _padded_sides, non_null_column, non_null_columns
 
 
@@ -243,6 +243,8 @@ def _distinct_tags(arms: tuple[ir.OutputColumn, ir.OutputColumn], first: ir.Lite
     if first is None or second is None:
         return first != second
     if first.type == second.type == "string" and all(_binary_text(arm).value for arm in arms):
+        return first != second
+    if first.type == second.type == "boolean" and all(_boolean(arm) for arm in arms):
         return first != second
     if first.type == second.type == "numeric":
         return (

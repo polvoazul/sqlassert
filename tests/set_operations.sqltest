@@ -248,3 +248,21 @@ CREATE TABLE t (a INTEGER NOT NULL);
 CREATE TABLE u (a INTEGER NOT NULL);
 CREATE VIEW v AS (SELECT a FROM t UNION SELECT a FROM u);
 (SELECT a FROM v /**ASSERT NOT NULL UNIQUE(a)**/)  --~ PROVED
+
+-- A boolean constant different in each UNION ALL input tags the rows of each
+-- input, as a numeric or string one does: TRUE never equals FALSE.
+
+-- case: a_boolean_tag_separates_union_all_inputs
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+SELECT * FROM (SELECT k, FALSE AS f FROM a UNION ALL SELECT k, TRUE AS f FROM b) /**ASSERT UNIQUE(k, f)**/  --~ PROVED
+
+-- case: a_boolean_tag_separates_union_all_by_name_inputs
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+SELECT * FROM (SELECT k, FALSE AS f FROM a UNION ALL BY NAME SELECT TRUE AS f, k FROM b) /**ASSERT UNIQUE(k, f)**/  --~ PROVED
+
+-- case: the_same_boolean_in_both_inputs_separates_nothing
+CREATE TABLE a (k INTEGER PRIMARY KEY);
+CREATE TABLE b (k INTEGER PRIMARY KEY);
+SELECT * FROM (SELECT k, TRUE AS f FROM a UNION ALL SELECT k, TRUE AS f FROM b) /**ASSERT UNIQUE(k, f)**/  --~ UNKNOWN
