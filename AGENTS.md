@@ -31,10 +31,6 @@ off), and no meaning for SQL the standard rejects but a flavor tolerates
 (a column neither grouped nor aggregated): make it opaque and warn
 `unsupported-construct`. Simpler code beats supporting outdated SQL.
 
-A dialect fact added for one engine is added for every engine where the
-construct exists, from memory (tentative) if need be ("Every engine at once"
-in `docs/dialects.md`).
-
 ## Where things are
 
 - Domain language: `CONTEXT.md`. Use its terms; it lists terms to avoid.

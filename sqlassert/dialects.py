@@ -1,5 +1,9 @@
 """What each SQL dialect means by the constructs the analysis depends on.
 
+Before editing, read docs/dialects.md, "Every engine at once": a fact added
+for one engine is added for every engine where the construct exists, in the
+same change, tentative (from memory) where it is neither probed nor read.
+
 One `DialectSemantics` per dialect name (SQLGlot's), read by `ir/convert.py`
 while it lowers SQL: which Builtins raise an error rather than return NULL,
 which text compares by identity, what `||`, `concat()`, `greatest()` and
