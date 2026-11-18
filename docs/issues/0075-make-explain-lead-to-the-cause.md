@@ -176,5 +176,23 @@ UNIQUE(transaction_id, account_id, is_card, user_id) on the final SELECT is UNKN
   instead of "Any alternative suffices" / "All premises required".
 - [ ] Print each relation once by name, not its whole `CREATE TABLE` on
   every line that cites it.
+- [ ] For `untyped-key`, name where the type is lost: the column, its
+  expression, the relation and line (`_type_loss` walks down to it, then
+  keeps only the label). Seen on a real project: 23 joins said `computed`,
+  and all came down to two causes: `x::varchar` on the key columns (a cast
+  to text has no type, `_cast_typing`) and calls lowered without a result
+  type (`lpad`, `regexp_replace`, `date_trunc`, and a CASE over them).
+  Finding that took a monkeypatched analysis; the explanation should say
+  it.
+- [ ] When a premise needs a column's type and it is unknown, say why, from
+  the reason `scalar_typing` already returns (for example "a cast of text
+  keeps the operand's collation").
+- [ ] Warn `unknown-function` (a Diagnostic) when a call lowers with no
+  result type the dialect fixes, naming the function, so a gap in
+  `_result_type` shows where it is written instead of as an unknown type
+  further down.
+- [ ] The dbt audit report gives, for each unproved join, the cause the
+  explanation names, grouped by cause, so one pattern behind many joins
+  shows at a glance.
 - [ ] Keep this case as a test: the explanation names lines 33 and 35, and
   after fixing them, the next cause.
