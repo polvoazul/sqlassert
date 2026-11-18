@@ -27,6 +27,7 @@ Open work, one file per issue. Finished issues move to [`done/`](done/) instead 
 - [70. Hidden Join Fanout: decide whether many-to-many joins should be a Hazard by default](0070-decide-whether-to-warn-on-hidden-join-fanout-by-default.md) — open (P2, blocked by M11)
 - [68. Name suggestion types by what they mean to the user](0068-name-suggestion-types-by-severity.md) — not planned (P4: a hazard reads softer than it is)
 - [73. Pending lowering and classification decisions](0073-pending-lowering-and-classification-decisions.md) — open (P3, needs decisions: QUALIFY and windows, VALUES, computed types, table functions, set operations, join keys, Unproved Join Reason)
+- [75. Make `--explain` lead to the cause](0075-make-explain-lead-to-the-cause.md) — open (P3: follow an uncovered Unique Set to the join or table that loses it; standalone repro inline)
 - [46. Certify dialect facts against real engines](0046-certify-dialect-facts.md) — open (probes, runner and provenance done; DuckDB, SQLite, Postgres, MySQL, ClickHouse, Trino certified; Spark 4.3 partly: CAST and zoned-timestamp probes left)
 
 ## Order
@@ -42,7 +43,7 @@ reasoning; its **Theme** and **Blocked by** bullets place it on the local tracke
   public dbt projects, VeriEQL's LeetCode pairs, run through the oracle
   unchanged), which unblocks #11
   and #27 Part 2.
-- **P3:** #39 (smaller lowering gaps).
+- **P3:** #39 (smaller lowering gaps), #75 (`--explain` leads to the cause).
 - **P3, needs decisions:** #73 (pending lowering and classification
   decisions, each with alternatives).
 - **P3, provisional (not prioritized yet):** #60-67.
