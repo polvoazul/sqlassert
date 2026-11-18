@@ -248,6 +248,8 @@ def _duplicate_output_names(site: AttachmentSite, relation: ir.RelationExpr, sel
     column a star or `count(*)` is written as, and the engine names it itself."""
     if not relation.is_schema_complete or (_has_star(select) and any(column.name == "*" for column in relation.output_columns)):
         return []
+    if not _names_read(select):
+        return []
     named = [column for column in relation.output_columns if column.name and column.name != "*"]
     counts = Counter(column.name.lower() for column in named)
     repeated = tuple(column for column in named if counts[column.name.lower()] > 1)
@@ -260,6 +262,23 @@ def _duplicate_output_names(site: AttachmentSite, relation: ir.RelationExpr, sel
         "and the engine renames the others (DuckDB appends _1, _2, ...) or rejects them. Alias each output column with a name of its own"
     )
     return [Hazard(site, Concern.DUPLICATE_OUTPUT_NAME, message, Result(True, "an output name repeats", repeated))]
+
+
+def _names_read(select: exp.Select) -> bool:
+    """Whether anything reads `select`'s output names. A positional set
+    operation (UNION, EXCEPT, INTERSECT) takes its names from its first
+    operand and pairs the others by position, so a later operand's names are
+    never read; `BY NAME` pairs them by name, so every operand's are."""
+    node: exp.Expr = select
+    while True:
+        parent = node.parent
+        while isinstance(parent, exp.Subquery | exp.Paren):
+            node, parent = parent, parent.parent
+        if not isinstance(parent, exp.SetOperation):
+            return True
+        if parent.expression is node and not parent.args.get("by_name"):
+            return False
+        node = parent
 
 
 def _unselected_grouping(site: AttachmentSite, aggregate: ir.Aggregate) -> list[Hazard]:

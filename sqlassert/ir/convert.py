@@ -629,6 +629,12 @@ class IrParser:
                 self._last_operands = [(whole if self._ends_at(site, end[0]) else site, operand, named) for site, operand, named in self._last_operands]
                 self._last_operands.extend((whole, other, operator) for other in ending if other is last)
             self._add_attachment_site(query, _select_label(query), limited, trailing=True)
+            if end is not None:
+                # The ORDER BY after the last operand sorts the whole result:
+                # the last operand's own (none) must not stand for it.
+                self._site_sort_keys = [(site, keys) for site, keys in self._site_sort_keys if not self._ends_at(site, end[0])]
+                site = AttachmentSite(_select_label(query), end[1], end[0], True)
+                self._site_sort_keys.append((site, _set_operation_order(query, relation)))
             return limited
         if not isinstance(query, exp.Select):
             return None
@@ -3755,6 +3761,27 @@ def _unlowered_source(source: Expr) -> str:
     if isinstance(source, exp.Subquery):
         return _unlowered_query(source)
     return f"a {source.key.upper()} source in FROM"
+
+
+def _set_operation_order(query: exp.SetOperation, relation: ir.SetOperation) -> tuple[ir.OutputColumn, ...] | None:
+    """The ORDER BY of a set operation as its output columns: a name, the
+    first operand's, or a position. None when a key is anything else."""
+    order = query.args.get("order")
+    if order is None:
+        return ()
+    outputs = relation.output_columns
+    names = [column.name.lower() for column in outputs]
+    keys: list[ir.OutputColumn] = []
+    for ordered in order.expressions:
+        expression = ordered.this if isinstance(ordered, exp.Ordered) else ordered
+        match expression:
+            case exp.Literal(is_int=True) if 1 <= int(expression.this) <= len(outputs):
+                keys.append(outputs[int(expression.this) - 1])
+            case exp.Column(table="") if names.count(expression.name.lower()) == 1:
+                keys.append(outputs[names.index(expression.name.lower())])
+            case _:
+                return None
+    return tuple(keys)
 
 
 def _unsupported_source(source: Expr) -> str | None:

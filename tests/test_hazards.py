@@ -748,6 +748,7 @@ CREATE TABLE u (id INTEGER PRIMARY KEY, w INTEGER);
 """
 LEFT = "SELECT id, w, v FROM t"
 STAR = "SELECT *, 1 AS w FROM u"  # Three columns, `w` twice.
+EMPTY = "SELECT id, w, v FROM t WHERE id IS NULL"  # Always empty.
 
 
 def reported(sql: str) -> list[Hazard]:
@@ -764,7 +765,6 @@ def last_operand_hazards(sql: str, operator: str) -> list[Hazard]:
 
 
 @pytest.mark.parametrize(("operand", "concern"), [
-    (STAR, Concern.DUPLICATE_OUTPUT_NAME),
     ("SELECT *, count(*) FROM u GROUP BY id", Concern.STAR_IN_GROUPING),
     ("SELECT count(*), 1, 2 FROM t QUALIFY count(*) > 1", Concern.QUALIFY_BESIDE_AGGREGATE),
     ("SELECT id, w, row_number() OVER (PARTITION BY 1) FROM t", Concern.CONSTANT_PARTITION),
@@ -782,17 +782,17 @@ def test_a_hazard_in_the_last_operand_is_reported_at_the_end_of_the_query(operan
 
 
 def test_the_last_operand_hazard_names_the_operator_and_keeps_the_hazards_own_message():
-    sql = f"{LEFT} UNION ALL {STAR}"
+    sql = f"{LEFT} UNION ALL {EMPTY}"
     [hazard] = reported(sql)
 
-    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
-    assert hazard.message.startswith("in the last operand of UNION ALL: this SELECT outputs name 'w' more than once")
+    assert hazard.concern is Concern.ALWAYS_EMPTY
+    assert hazard.message.startswith("in the last operand of UNION ALL: ")
     assert hazard.site.offset == len(OPERANDS + sql)
     assert hazard.site.trailing
 
 
 def test_an_intersect_all_operand_says_all():
-    assert last_operand_hazards(f"{LEFT} INTERSECT ALL {STAR}", "INTERSECT ALL")
+    assert last_operand_hazards(f"{LEFT} INTERSECT ALL {EMPTY}", "INTERSECT ALL")
 
 
 def test_a_clean_last_operand_reports_nothing():
@@ -816,59 +816,58 @@ def test_the_left_operands_names_are_not_reported_again_at_the_end_of_the_query(
 
 
 def test_both_operands_report_each_at_its_own_site():
-    sql = f"{STAR} UNION ALL {STAR}"
+    sql = f"{EMPTY} UNION ALL {EMPTY}"
     first, second = reported(sql)
 
-    assert (first.site.offset, "last operand" in first.message) == (len(OPERANDS + STAR), False)
+    assert (first.site.offset, "last operand" in first.message) == (len(OPERANDS + EMPTY), False)
     assert (second.site.offset, second.message.startswith("in the last operand of UNION ALL: ")) == (len(OPERANDS + sql), True)
 
 
 def test_a_chain_reports_its_last_operand_at_the_end_and_a_middle_one_at_its_own_site():
-    sql = f"{LEFT} UNION ALL {STAR} UNION ALL {STAR}"
+    sql = f"{LEFT} UNION ALL {EMPTY} UNION ALL {EMPTY}"
     middle, last = reported(sql)
 
-    assert middle.site.offset == len(OPERANDS + f"{LEFT} UNION ALL {STAR}")
+    assert middle.site.offset == len(OPERANDS + f"{LEFT} UNION ALL {EMPTY}")
     assert "last operand" not in middle.message
     assert last.site.offset == len(OPERANDS + sql)
     assert last.message.startswith("in the last operand of UNION ALL: ")
 
 
 @pytest.mark.parametrize("sql", [
-    f"({LEFT} UNION {STAR}) EXCEPT {LEFT}",  # The inner operation's last operand, which shares its parenthesis' end.
-    f"({LEFT} UNION {LEFT}) EXCEPT {STAR}",  # The outer one's.
-    f"{LEFT} UNION {LEFT} INTERSECT {STAR}",  # INTERSECT binds first: c ends the INTERSECT, and the query.
-    f"{LEFT} EXCEPT ({LEFT} INTERSECT {STAR})",
+    f"({LEFT} UNION {EMPTY}) EXCEPT {LEFT}",  # The inner operation's last operand, which shares its parenthesis' end.
+    f"({LEFT} UNION {LEFT}) EXCEPT {EMPTY}",  # The outer one's.
+    f"{LEFT} UNION {LEFT} INTERSECT {EMPTY}",  # INTERSECT binds first: c ends the INTERSECT, and the query.
+    f"{LEFT} EXCEPT ({LEFT} INTERSECT {EMPTY})",
 ])
 def test_every_operand_without_a_site_of_its_own_is_reported(sql: str):
     [hazard] = reported(sql)
 
-    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
+    assert hazard.concern is Concern.ALWAYS_EMPTY
     assert "in the last operand of " in hazard.message
 
 
 def test_nested_operands_each_report_at_the_end_they_share():
-    inner = f"({LEFT} UNION {STAR})"
-    sql = f"{inner} EXCEPT {STAR}"
+    inner = f"({LEFT} UNION {EMPTY})"
+    sql = f"{inner} EXCEPT {EMPTY}"
     inner_hazard, outer_hazard = reported(sql)
 
-    assert inner_hazard.site.offset == len(OPERANDS + f"({LEFT} UNION {STAR}")  # Before the parenthesis closes.
+    assert inner_hazard.site.offset == len(OPERANDS + f"({LEFT} UNION {EMPTY}")  # Before the parenthesis closes.
     assert inner_hazard.message.startswith("in the last operand of UNION: ")
     assert outer_hazard.site.offset == len(OPERANDS + sql)
     assert outer_hazard.message.startswith("in the last operand of EXCEPT: ")
 
 
 def test_intersect_binding_first_names_the_intersect_as_the_operator():
-    [hazard] = reported(f"{LEFT} UNION ALL {LEFT} INTERSECT ALL {STAR}")
+    [hazard] = reported(f"{LEFT} UNION ALL {LEFT} INTERSECT ALL {EMPTY}")
 
     assert hazard.message.startswith("in the last operand of INTERSECT ALL: ")
-    assert hazard.site.offset == len(OPERANDS + f"{LEFT} UNION ALL {LEFT} INTERSECT ALL {STAR}")
+    assert hazard.site.offset == len(OPERANDS + f"{LEFT} UNION ALL {LEFT} INTERSECT ALL {EMPTY}")
 
 
 @pytest.mark.parametrize("operand", [
     "(SELECT *, count(*) FROM u GROUP BY id)",
     "(SELECT id, w, row_number() OVER (PARTITION BY 1) FROM t)",
     "(SELECT id, w, v FROM t WHERE id IS NULL)",
-    f"({STAR})",
 ])
 def test_a_parenthesised_last_operand_reports_at_its_own_site(operand: str):
     sql = f"{LEFT} UNION ALL {operand}"
@@ -887,8 +886,8 @@ def test_a_parenthesised_left_operand_is_checked_like_an_unparenthesised_one():
 
 
 @pytest.mark.parametrize("sql", [
-    f"WITH c AS ({LEFT} UNION ALL {STAR}) SELECT * FROM c",
-    f"SELECT * FROM ({LEFT} UNION ALL {STAR}) AS s",
+    f"WITH c AS ({LEFT} UNION ALL {EMPTY}) SELECT * FROM c",
+    f"SELECT * FROM ({LEFT} UNION ALL {EMPTY}) AS s",
 ])
 def test_the_last_operand_of_a_cte_or_derived_table_is_reported_at_its_end(sql: str):
     [hazard] = reported(sql)
@@ -917,3 +916,58 @@ def test_duckdb_returns_a_repeated_name_in_the_last_operand_without_error():
 
     assert [column[0] for column in result.description] == ["id", "w", "v"]
     assert result.fetchall() == [(1, 2, 3), (4, 5, 1)]
+
+
+# A positional set operation takes its names from its first operand and pairs
+# the others by position, so a repeated name elsewhere is never read; BY NAME
+# pairs every operand by name.
+
+@pytest.mark.parametrize("sql", [
+    f"{LEFT} UNION ALL {STAR}",
+    f"{LEFT} EXCEPT {STAR}",
+    f"{LEFT} UNION ALL ({STAR})",
+    f"{LEFT} UNION ALL {STAR} UNION ALL {LEFT}",
+    f"{LEFT} UNION ALL ({LEFT} INTERSECT {STAR})",
+])
+def test_a_repeated_name_outside_the_first_operand_is_not_a_hazard(sql: str):
+    assert reported(sql) == []
+
+
+@pytest.mark.parametrize("sql", [
+    f"({STAR} UNION ALL {LEFT}) UNION ALL {LEFT}",
+    f"(({STAR}) UNION ALL {LEFT}) EXCEPT {LEFT}",
+])
+def test_a_repeated_name_in_the_first_operand_of_a_nested_set_operation_is_a_hazard(sql: str):
+    assert [hazard.concern for hazard in reported(sql)] == [Concern.DUPLICATE_OUTPUT_NAME]
+
+
+def test_a_repeated_name_in_any_operand_of_by_name_is_a_hazard():
+    [hazard] = reported(f"{LEFT} UNION ALL BY NAME {STAR}")
+
+    assert hazard.concern is Concern.DUPLICATE_OUTPUT_NAME
+
+
+# The ORDER BY and LIMIT written after a set operation's last operand sort and
+# limit the whole result, not that operand.
+
+@pytest.mark.parametrize(("sql", "hazard"), [
+    ("SELECT id FROM t UNION ALL SELECT id FROM u ORDER BY 1 LIMIT 2", None),  # Tied rows are identical.
+    ("SELECT id FROM t UNION SELECT id FROM u ORDER BY id LIMIT 2", None),
+    ("SELECT id, w FROM t UNION SELECT id, w FROM u ORDER BY id, w LIMIT 2", None),
+    ("SELECT id, w FROM t UNION ALL SELECT id, w FROM u ORDER BY id LIMIT 2", "the ORDER BY does not determine ('w')"),
+    ("SELECT id, w FROM t UNION ALL SELECT id, w FROM u LIMIT 2", "with no ORDER BY"),
+])
+def test_a_set_operations_order_by_sorts_the_whole_result(sql: str, hazard: str | None):
+    found = [found.message for found in reported(sql) if found.concern is Concern.ARBITRARY_LIMIT]
+
+    if hazard is None:
+        assert found == []
+    else:
+        [message] = found
+        assert hazard in message
+
+
+def test_an_order_by_after_a_set_operation_suggests_no_rewrite_of_the_last_operand():
+    sql = "SELECT id, w FROM t UNION ALL SELECT id, w FROM u ORDER BY id, w LIMIT 2"
+
+    assert not [rewrite for rewrite in suggest(OPERANDS + sql).rewrites if "ORDER BY" in rewrite.message]

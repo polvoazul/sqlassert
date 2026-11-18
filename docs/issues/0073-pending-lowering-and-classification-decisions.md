@@ -115,11 +115,11 @@ Numbers are the ones used when the decisions were discussed.
   `(SELECT a FROM t UNION ALL SELECT a FROM u)` as the root raises `KeyError`
   in `convert._lower_source` (`self._table_symbols[id(source)]`): symbol
   collection probably misses the Subquery-wrapped root.
-- [ ] **Arbitrary LIMIT says "no ORDER BY" when there is one.**
+- [x] **Arbitrary LIMIT says "no ORDER BY" when there is one.** Fixed: a set operation's ORDER BY is its own sort keys.
   `SELECT a FROM t UNION ALL SELECT a FROM u ORDER BY 1 LIMIT 2`: the last
   operand's removed site equals the whole query's site, so its empty sort
   keys (`Program.sort_keys`, keyed by site) replace the set operation's.
-- [ ] **Duplicate output name in a non-first operand is harmless.** A set
+- [x] **Duplicate output name in a non-first operand is harmless.** Fixed: reported only where names are read (the first operand, or any operand of BY NAME). A set
   operation's names come from its first operand, so the Hazard there could
   be dropped (it is reported today, as decided).
 - [ ] **No marker on a whole parenthesised set operation.** A marker before

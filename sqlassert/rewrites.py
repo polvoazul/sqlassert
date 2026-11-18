@@ -423,8 +423,8 @@ def _redundant_sort_keys(
     edit deletes the key and the comma before it."""
     from sqlassert.hazards import _ties_identical
 
-    if not keys:
-        return []
+    if not keys or select.args.get("order") is None:
+        return []  # A set operation's site maps to its last operand, whose ORDER BY is the whole's.
     items = select.args["order"].expressions
     clause = source.tokens_of(span(select.args["order"]))
     parts = source.split(clause[0] + 1, clause[1], TokenType.COMMA) if clause is not None else []
