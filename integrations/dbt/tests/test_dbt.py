@@ -434,14 +434,28 @@ def test_unique_combination_is_proved_by_a_non_null_unique_set_and_declares_a_un
     ("expect_column_values_to_not_be_null", {"column_name": "customer_id"}, ("not_null", ("customer_id",))),
     ("expect_column_values_to_be_in_set", {"column_name": "first_name", "value_set": ["a", "b"]}, ("enum", ("first_name",))),
 ])
-def test_dbt_expectations_tests_map_like_their_core_twins(copy_project, test, kwargs, expected):
-    expectation = manifest_with_test(copy_project, test, kwargs, namespace="dbt_expectations")
+@pytest.mark.parametrize("namespace", ["dbt_expectations", None])  # None: written without the package, or overridden by the project.
+def test_dbt_expectations_tests_map_like_their_core_twins(copy_project, test, kwargs, expected, namespace):
+    expectation = manifest_with_test(copy_project, test, kwargs, namespace=namespace)
     assert (expectation.asserted, expectation.columns) == expected
+
+
+def test_a_compound_test_over_the_rows_with_no_null_still_maps_to_a_key(copy_project):
+    # `any_value_is_missing` checks exactly the tuples a Unique Set does not exempt.
+    expectation = manifest_with_test(
+        copy_project, "expect_compound_columns_to_be_unique", {"column_list": ["customer_id"], "ignore_row_if": "any_value_is_missing"},
+    )
+    assert (expectation.asserted, expectation.declared) == ("key", "unique")
+
+
+def test_another_packages_test_of_the_same_name_maps_to_no_property(copy_project):
+    expectation = manifest_with_test(copy_project, "expect_compound_columns_to_be_unique", {"column_list": ["customer_id"]}, namespace="other")
+    assert expectation.asserted is None
 
 
 @pytest.mark.parametrize("kwargs", [
     {"column_list": ["customer_id"], "row_condition": "customer_id > 0"},
-    {"column_list": ["customer_id"], "ignore_row_if": "any_value_is_missing"},
+    {"column_list": ["customer_id"], "ignore_row_if": "never"},
 ])
 def test_a_filtered_dbt_expectations_test_maps_to_no_property(copy_project, kwargs):
     expectation = manifest_with_test(copy_project, "expect_compound_columns_to_be_unique", kwargs, namespace="dbt_expectations")

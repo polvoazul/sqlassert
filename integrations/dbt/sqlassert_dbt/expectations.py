@@ -92,11 +92,15 @@ def _test(test: Test, relations: Mapping[str, Relation]) -> Expectation | None:
     unprovable = _threshold_unprovable(test)
     name = test.test_name if test.namespace is None else f"{test.namespace}.{test.test_name}"
     kwargs = test.kwargs
-    if name in _DBT_EXPECTATIONS:
+    # Written with or without its package's name, and whether the project
+    # overrides it or not: an override that keeps the name and signature is
+    # taken to keep the meaning.
+    expectation = f"dbt_expectations.{test.test_name}" if test.namespace in (None, "dbt_expectations") else None
+    if expectation in _DBT_EXPECTATIONS:
         # The same checks as the core tests, unless a filter or ignored rows narrow them.
-        if kwargs.get("row_condition") or kwargs.get("ignore_row_if", "all_values_are_missing") != "all_values_are_missing":
+        if kwargs.get("row_condition") or kwargs.get("ignore_row_if", "all_values_are_missing") not in _CHECKED_ROWS[expectation]:
             return replace(base, asserted=None, declared=None, unprovable="it checks only the rows its row_condition or ignore_row_if keeps")
-        name, kwargs = _DBT_EXPECTATIONS[name], {**kwargs, **_expectation_kwargs(kwargs)}
+        name, kwargs = _DBT_EXPECTATIONS[expectation], {**kwargs, **_expectation_kwargs(kwargs)}
     match name:
         case None:
             return replace(base, asserted=None, declared=None, unprovable="a singular test states no Property")
@@ -141,15 +145,22 @@ def _test(test: Test, relations: Mapping[str, Relation]) -> Expectation | None:
             )
 
 
-# dbt_expectations tests that check what a core or dbt_utils test checks:
-# compound uniqueness over the rows not all NULL (rows with some NULL are
-# checked too, which only adds rows to compare), uniqueness, non-null, and a
-# value set that, like accepted_values, lets NULL pass.
+# dbt_expectations tests that check at least what a core or dbt_utils test
+# checks: compound uniqueness over the rows not all NULL (rows with some NULL
+# are checked too, which only adds rows to compare) or over the rows with no
+# NULL (a Unique Set exempts the others too), uniqueness, non-null, and a
+# value set (which also rejects NULL, more than accepted_values asks).
 _DBT_EXPECTATIONS = {
     "dbt_expectations.expect_compound_columns_to_be_unique": "dbt_utils.unique_combination_of_columns",
     "dbt_expectations.expect_column_values_to_be_unique": "unique",
     "dbt_expectations.expect_column_values_to_not_be_null": "not_null",
     "dbt_expectations.expect_column_values_to_be_in_set": "accepted_values",
+}
+# The `ignore_row_if` each leaves checking enough rows for its Property.
+_CHECKED_ROWS = {
+    name: ("all_values_are_missing", "any_value_is_missing") if name.endswith("compound_columns_to_be_unique")
+    else ("all_values_are_missing",)
+    for name in _DBT_EXPECTATIONS
 }
 
 
