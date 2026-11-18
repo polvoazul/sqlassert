@@ -5,9 +5,9 @@
 -- Knowledge: where the dialect has `RELY` (Snowflake, Databricks / Spark) a
 -- key marked `RELY` is a Property Declaration, and `trust_unenforced_keys`
 -- makes every unenforced one a Property Declaration (`test_dialects.py`).
--- Otherwise it is reported and ignored. Their default collations can be
--- changed per database, schema or table, so text is never compared by
--- identity.
+-- Otherwise it is reported and ignored. Text compares by identity under
+-- the shipped default collation (a setting that changes it is out of scope),
+-- except in Redshift, whose comparisons ignore trailing spaces.
 
 -- case: snowflake_a_primary_key_without_rely_is_not_knowledge
 -- trust_unenforced_keys: false
@@ -51,10 +51,16 @@ SELECT o.id AS oid FROM t LEFT JOIN t AS o ON o.id = t.m WHERE o.r || 'x' = 'ax'
 CREATE TABLE t (n INT NOT NULL);
 SELECT n % 2 AS v FROM t /**ASSERT NOT NULL(v)**/  --~ PROVED
 
--- case: snowflake_text_is_not_compared_by_identity
+-- case: snowflake_text_is_compared_by_identity
 -- dialect: snowflake
 CREATE TABLE t (s VARCHAR);
-SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'B' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
+SELECT s FROM t WHERE s IN ('a', 'b') AND s = 'a' /**ASSERT ENUM(s IN ('a'))**/  --~ PROVED
+
+-- case: redshift_text_is_not_compared_by_identity
+-- Its comparisons ignore trailing spaces: 'a' = 'a ' is true.
+-- dialect: redshift
+CREATE TABLE t (s VARCHAR);
+SELECT s FROM t WHERE s IN ('a', 'a ') AND s = 'a' /**ASSERT ENUM(s IN ('a'))**/  --~ UNKNOWN
 
 -- case: bigquery_keys_are_not_enforced
 -- trust_unenforced_keys: false

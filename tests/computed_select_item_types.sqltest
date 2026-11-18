@@ -158,12 +158,12 @@ SELECT *
 FROM dim
 /**ASSERT MANY TO ONE**/ JOIN labels ON dim.level = labels.s  --~ UNKNOWN
 
--- case: a_cast_of_text_to_text_stays_untyped
--- A cast of text may keep the operand's collation, which is not modelled.
+-- case: a_cast_of_text_to_text_binds_text
+-- A cast has the type it names: text compares under the default collation.
 WITH labels AS (SELECT DISTINCT CAST(tag AS VARCHAR) AS s FROM events)
 SELECT *
 FROM dim
-/**ASSERT MANY TO ONE**/ JOIN labels ON dim.tag = labels.s  --~ UNKNOWN
+/**ASSERT MANY TO ONE**/ JOIN labels ON dim.tag = labels.s  --~ PROVED
 
 -- case: a_cast_to_a_zoned_timestamp_binds_where_it_is_an_instant
 WITH seen AS (SELECT DISTINCT CAST(ts AS TIMESTAMP WITH TIME ZONE) AS at FROM events)

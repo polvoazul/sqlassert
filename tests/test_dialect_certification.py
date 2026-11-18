@@ -27,7 +27,7 @@ ENGINE_CERTIFIED = {
     ("spark", name) for name in (
         "checked_sum", "skips_null(greatest)", "skips_null(least)", "strict([])",
         "values_type(string)=string", "values_type(integer)=int", "values_type(bigint)=bigint", "values_type(decimal)=decimal",
-        "literal_type(decimal)=DECIMAL", "literal_type(exponent)=DOUBLE",
+        "literal_type(decimal)=DECIMAL", "literal_type(exponent)=DOUBLE", "text_is_binary",
     )
 }
 

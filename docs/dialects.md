@@ -40,7 +40,7 @@ before dialects were listed; see "Not done").
 | `/ // %` never NULL (`checked_division`) | no (`n % 0` is NULL) | yes | no | yes | yes | Databricks yes; Spark no (its docs: `div` by zero is NULL) | yes | yes |
 | `sum`, `avg` of non-null values never NULL (`checked_sum`) | yes | yes | yes (an integer sum is an exact DECIMAL; no infinity or NaN) | no (not documented) | yes | Spark yes; Databricks no (NaN not documented) | no (not documented) | yes |
 | comparisons never NULL (`casts_raise`) | yes | yes | yes (strict `sql_mode`) | yes | yes | Databricks yes; Spark no (not documented) | yes | yes (no implicit casts) |
-| text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | no (not yet certified) | no (not yet certified) | no (not yet certified) | no (`CASE_INSENSITIVE` databases) | yes (no collations) |
+| text without `COLLATE` compared by identity (`text_is_binary`) | yes | yes | no (`_ci`) | yes (UTF-8 by default) | yes (binary by default) | yes (`UTF8_BINARY` by default) | no (trailing spaces ignored) | yes (no collations) |
 | zoned timestamp compared by identity (`zoned_timestamp_is_instant`) | yes | yes | yes (`TIMESTAMP`) | no (`TIMESTAMP_TZ` keeps the zone) | yes (`TIMESTAMP`) | yes (`TIMESTAMP`) | yes | no (keeps the zone) |
 | `\|\|` | strict | lenient (`ARRAY[1] \|\| NULL` is `{1}`) | OR | strict | strict | strict | strict | strict (arrays too) |
 | `concat()` | skips NULL | skips NULL | strict | strict | strict | strict | not modelled | strict |
@@ -298,9 +298,9 @@ certified by `scripts/certify_dialects.py`.
   type `T`, as a column declared `T` is: identity comparison, binary text and
   exact numeric follow `DialectSemantics` (`text_is_binary`, `unscaled_decimal`,
   `zoned_timestamp_is_instant`), so a cast to TIMESTAMP WITH TIME ZONE is
-  identical only where it is an instant (not Trino, Snowflake, Oracle). To
-  text, only the cast of a number of a declared type: a cast of text may keep
-  the operand's collation (Postgres), which is not modelled. Standard SQL in
+  identical only where it is an instant (not Trino, Snowflake, Oracle). A cast
+  to text is text whatever its operand: text compares under the default
+  collation, the only one supported. Standard SQL in
   every dialect; SQLite has no column types (a declared one is an affinity, a
   cast to `DATE` is `NUMERIC`), where a declared column is typed by the same
   rule, so the claim is no weaker there than for columns.
@@ -315,9 +315,9 @@ certified by `scripts/certify_dialects.py`.
   integer type; engines differ in which, none in being exact). A string literal
   beside text compared by identity is text: DuckDB VARCHAR (probed); Postgres
   resolves the literal as the column's type and Trino as `varchar(n)`, from
-  memory, and no other dialect is `text_is_binary`. Results of different
-  types and a cast to text stay untyped: the hazard `Mixed CASE types` is for
-  the differing ones.
+  memory, as are Snowflake, BigQuery, Spark and Databricks (their text type). Results of
+  different types stay untyped: the hazard `Mixed CASE types` is for them. A
+  CAST, to text too, has the type it names.
   `NULLIF(a, b)` is read as a CASE over `a` and `b`: DuckDB returns the type of
   `a` (`NULLIF(int, 1.5)` is INTEGER), but another engine may compare in the
   common type.

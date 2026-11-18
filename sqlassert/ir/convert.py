@@ -2282,17 +2282,10 @@ class IrParser:
             text=kind.this in exp.DataType.TEXT_TYPES, temporal=kind.this in exp.DataType.TEMPORAL_TYPES,
         )
 
-    def _cast_typing(self, cast: exp.Cast, value: ir.ScalarExpr) -> ir.ValueTyping | None:
+    def _cast_typing(self, cast: exp.Cast) -> ir.ValueTyping | None:
         """A CAST (TRY_CAST too: a failure is NULL, which equals nothing) has the
-        type it names. Not to text, unless the operand is a number of a
-        declared type: a cast of text keeps the operand's collation (Postgres),
-        which sqlassert does not model, so its values may compare in a way
-        text compared by identity does not."""
-        if cast.to.this in exp.DataType.TEXT_TYPES and not (
-            isinstance(value, ir.Call) and (source := self._declared_type(value.arguments[0])) is not None
-            and source.this in exp.DataType.NUMERIC_TYPES
-        ):
-            return None
+        type it names, text included: text compares under the engine's default
+        collation (docs/dialects.md), whatever the operand was."""
         return self._declared_typing(cast.to)
 
     def _fixed_typing(self, expression: Expr) -> ir.ValueTyping | None:
@@ -2639,7 +2632,7 @@ class IrParser:
                     function, arguments = self._composite_comparison(expression, function, arguments, composites, self._origin(expression, line or _source_line(expression)))
                 call = ir.Call(origin=origin, function=function, arguments=arguments, description=description)
                 if type(expression) is exp.Cast:
-                    return replace(call, typing=self._cast_typing(expression, call))
+                    return replace(call, typing=self._cast_typing(expression))
                 return replace(call, typing=self._fixed_typing(expression))
         if isinstance(expression, _NOT_A_FUNCTION_OF_ITS_COLUMNS):
             opaque = ir.OpaqueExpression(origin=origin, description=description)
@@ -2660,7 +2653,7 @@ class IrParser:
             origin=origin, arguments=tuple(lower(child) for child in expression.iter_expressions()), description=description,
         )
         if isinstance(expression, exp.Cast):
-            return replace(opaque_call, typing=self._cast_typing(expression, opaque_call))  # TRY_CAST.
+            return replace(opaque_call, typing=self._cast_typing(expression))  # TRY_CAST.
         return replace(opaque_call, typing=self._fixed_typing(expression))
 
     def _checked_comparison(self, comparison: exp.Binary, lower: Callable[[Expr], ir.ScalarExpr]) -> bool:

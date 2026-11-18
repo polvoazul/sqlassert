@@ -170,6 +170,7 @@ class DialectSemantics:
 _SPARK = DialectSemantics(
     checked_arithmetic=True,
     casts_raise=False,
+    text_is_binary=True,  # UTF8_BINARY is the default collation.
     zoned_timestamp_is_instant=True,
     pipes="strict",
     concat="strict",
@@ -292,6 +293,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "snowflake": DialectSemantics(
         # Not `checked_arithmetic`: its docs never say integer overflow raises.
         checked_division=True,
+        text_is_binary=True,  # With no COLLATE, text compares by its UTF-8 representation.
         pipes="strict",
         concat="strict",
         concat_ws="strict",  # `concat_ws(',', 'a', NULL)` is NULL.
@@ -309,6 +311,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         checked_division=True,
         # Its docs: overflow raises, and NaN or an infinity makes NaN or an infinity.
         checked_sum=True,
+        text_is_binary=True,  # With no collation specification, binary collation.
         zoned_timestamp_is_instant=True,
         pipes="strict",
         concat="strict",
@@ -327,6 +330,7 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         checked_arithmetic=True,
         checked_division=True,
         # Not `checked_sum`: its docs say nothing of a sum that overflows or meets NaN.
+        # Not `text_is_binary`: a comparison ignores trailing spaces, in VARCHAR too.
         zoned_timestamp_is_instant=True,
         pipes="strict",
         unique_keys="unenforced",
