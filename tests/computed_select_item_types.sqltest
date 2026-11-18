@@ -392,3 +392,53 @@ WITH numbered AS (SELECT k, row_number() OVER (ORDER BY ts) AS n FROM events)
 SELECT *
 FROM dim
 /**ASSERT MANY TO ONE**/ JOIN numbered ON dim.tag = numbered.n  --~ UNKNOWN
+
+-- case: postgres_date_trunc_of_a_date_is_zoned_so_does_not_bind_a_timestamp
+-- dialect: postgres
+WITH months AS (SELECT DISTINCT date_trunc('month', born) AS m FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ UNKNOWN
+
+-- case: postgres_date_trunc_of_a_date_binds_a_zoned_timestamp
+-- dialect: postgres
+WITH months AS (SELECT DISTINCT date_trunc('month', born) AS m FROM people)
+SELECT *
+FROM dim
+/**ASSERT MANY TO ONE**/ JOIN months ON dim.seen = months.m  --~ PROVED
+
+-- case: postgres_lpad_keys_join_as_text
+-- dialect: postgres
+WITH codes AS (SELECT DISTINCT lpad(code, 3, '0') AS c FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ PROVED
+
+-- case: spark_date_trunc_is_a_timestamp_whatever_its_argument
+-- dialect: spark
+WITH months AS (SELECT DISTINCT date_trunc('month', born) AS m FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN months ON badges.issued = months.m  --~ PROVED
+
+-- case: bigquery_string_functions_keep_their_argument_type
+-- dialect: bigquery
+WITH codes AS (SELECT DISTINCT upper(code) AS c FROM people)
+SELECT *
+FROM badges
+/**ASSERT MANY TO ONE**/ JOIN codes ON badges.code = codes.c  --~ PROVED
+
+-- case: trino_length_binds_a_bigint
+-- dialect: trino
+WITH sizes AS (SELECT DISTINCT length(name) AS n FROM people)
+SELECT *
+FROM events
+/**ASSERT MANY TO ONE**/ JOIN sizes ON events.big = sizes.n  --~ PROVED
+
+-- case: clickhouse_unsigned_length_binds_a_bigint_by_value
+-- Exact numbers compare by value whatever their width or sign.
+-- dialect: clickhouse
+WITH sizes AS (SELECT DISTINCT length(name) AS n FROM people)
+SELECT *
+FROM events
+/**ASSERT MANY TO ONE**/ JOIN sizes ON events.big = sizes.n  --~ PROVED

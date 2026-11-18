@@ -197,7 +197,22 @@ _SPARK = DialectSemantics(
     check_constraints="unenforced",
     set_operations_all=True,
     # Tentative. Not SHA2: `sha2(x, n)` is NULL for an unsupported `n`.
-    result_types=(("MD5", "STRING"), ("SHA", "STRING")),
+    # Not `concat`, `||` or `reverse` of arrays (arrays), nor `datediff`
+    # (INT for two arguments, BIGINT for three).
+    result_types=(
+        ("MD5", "STRING"), ("SHA", "STRING"),
+        *((node, "STRING") for node in ("Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "Pad", "Repeat", "Initcap", "SplitPart", "Translate", "Overlay", "Chr", "ConcatWs", "RegexpReplace", "RegexpExtract", "RegexpSubstr", "Dayname", "Monthname", "TimeToStr", "ToChar",)),
+        *((node, "INT") for node in ("Length", "StrPosition", "Ascii", "BitLength", "Anonymous:octet_length", "Year", "Month", "Day", "Hour", "Minute", "Second", "Quarter", "DayOfWeek", "DayOfYear", "Week",)),
+        *((node, "BOOLEAN") for node in ("RegexpLike", "StartsWith", "EndsWith", "Contains",)),
+        *((node, "DOUBLE") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2", "Sign",)),
+        *((node, "DATE") for node in ("LastDay", "DateTrunc",)),
+        *((node, "TIMESTAMP") for node in ("TimestampTrunc",)),
+    ),
+    argument_result_types=(
+        ("DPipe", "this", (("STRING", "STRING"),)),
+        ("Reverse", "this", (("STRING", "STRING"),)),
+        ("Abs", "this", (("*", "="),)),
+    ),
     hash_functions=("MD5", "SHA"),
     values_types=(("string", "string"), ("integer", "int"), ("bigint", "bigint"), ("decimal", "decimal")),
     literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
@@ -272,7 +287,26 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         subscript_strict=True,
         set_operations_all=True,
         # `sha256(x)` returns bytea: SHA2Digest. No Postgres SQL parses to SHA or SHA2.
-        result_types=(("MD5", "TEXT"), ("SHA2Digest", "BYTEA")),
+        # Tentative beyond the hashes (probed by hand on 18.6, not certified).
+        # No `year`, `last_day`, `datediff` or `dayname`: Postgres has none.
+        result_types=(
+            ("MD5", "TEXT"), ("SHA2Digest", "BYTEA"),
+            *((node, "TEXT") for node in ("Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "Pad", "Repeat", "Reverse", "Initcap", "SplitPart", "Translate", "Overlay", "Normalize", "Chr", "Concat", "ConcatWs", "Format", "ArrayToString", "RegexpReplace", "RegexpSubstr", "TimeToStr",)),
+            *((node, "INTEGER") for node in ("Length", "StrPosition", "BitLength", "Ascii", "Anonymous:octet_length",)),
+            *((node, "DOUBLE PRECISION") for node in ("Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "BOOLEAN") for node in ("RegexpLike", "StartsWith",)),
+            *((node, "DATE") for node in ("Anonymous:make_date",)),
+        ),
+        # `date_trunc` of a DATE is a TIMESTAMPTZ; `ln` and the like keep a NUMERIC.
+        argument_result_types=(
+            ("TimestampTrunc", "this", (("DATE", "TIMESTAMP WITH TIME ZONE"), ("TIMESTAMP", "TIMESTAMP"), ("TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH TIME ZONE"), ("INTERVAL", "INTERVAL"),)),
+            ("DPipe", "this", (("TEXT", "TEXT"), ("VARCHAR", "TEXT"),)),
+            ("Abs", "this", (("*", "="),)),
+            ("Ln", "this", (("SMALLINT", "DOUBLE PRECISION"), ("INTEGER", "DOUBLE PRECISION"), ("BIGINT", "DOUBLE PRECISION"), ("REAL", "DOUBLE PRECISION"), ("DOUBLE PRECISION", "DOUBLE PRECISION"), ("NUMERIC", "NUMERIC"),)),
+            ("Exp", "this", (("SMALLINT", "DOUBLE PRECISION"), ("INTEGER", "DOUBLE PRECISION"), ("BIGINT", "DOUBLE PRECISION"), ("REAL", "DOUBLE PRECISION"), ("DOUBLE PRECISION", "DOUBLE PRECISION"), ("NUMERIC", "NUMERIC"),)),
+            ("Sqrt", "this", (("SMALLINT", "DOUBLE PRECISION"), ("INTEGER", "DOUBLE PRECISION"), ("BIGINT", "DOUBLE PRECISION"), ("REAL", "DOUBLE PRECISION"), ("DOUBLE PRECISION", "DOUBLE PRECISION"), ("NUMERIC", "NUMERIC"),)),
+            ("Sign", "this", (("SMALLINT", "DOUBLE PRECISION"), ("INTEGER", "DOUBLE PRECISION"), ("BIGINT", "DOUBLE PRECISION"), ("REAL", "DOUBLE PRECISION"), ("DOUBLE PRECISION", "DOUBLE PRECISION"), ("NUMERIC", "NUMERIC"),)),
+        ),
         hash_functions=("MD5", "SHA2Digest"),
         # A numeric literal with a point is an unscaled NUMERIC: no decimal is claimed.
         values_types=(("string", "text"), ("integer", "integer"), ("bigint", "bigint")),
@@ -318,6 +352,20 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         set_operations_all=True,  # Since 8.0.31.
         # No type function to certify result types with. Not SHA2: its length is free.
         hash_functions=("MD5", "SHA"),
+        # Tentative (probed by hand on 8.4, not certified). A text result
+        # carries its argument's length and collation, so only `regexp_replace`
+        # (always LONGTEXT) is claimed among them. `year()` is a YEAR.
+        result_types=(
+            *((node, "INT") for node in ("Length", "BitLength", "StrPosition", "Ascii", "Anonymous:octet_length", "Month", "Day", "Hour", "Minute", "Second", "Quarter", "Week", "DayOfWeek", "DayOfYear", "DateDiff", "RegexpLike",)),
+            *((node, "DOUBLE") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "BIGINT") for node in ("Sign",)),
+            *((node, "YEAR") for node in ("Year",)),
+            *((node, "DATE") for node in ("LastDay",)),
+            *((node, "LONGTEXT") for node in ("RegexpReplace",)),
+        ),
+        argument_result_types=(
+            ("Abs", "this", (("*", "="),)),
+        ),
         # Every integer literal is a BIGINT. MySQL spells a row `ROW(...)`, which is not lowered.
         values_types=(("string", "varchar"), ("integer", "bigint"), ("bigint", "bigint"), ("decimal", "decimal")),
         literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
@@ -333,7 +381,26 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="rely",
         check_constraints="unenforced",
         # Tentative (docs/dialect-provenance.json). `md5_binary` is MD5Digest.
-        result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR"), ("MD5Digest", "BINARY")),
+        # Tentative, from its docs. `ln` and the like are FLOAT but for a DECFLOAT.
+        result_types=(
+            ("MD5", "VARCHAR"), ("SHA", "VARCHAR"), ("MD5Digest", "BINARY"),
+            *((node, "VARCHAR") for node in ("Lower", "Upper", "Trim", "Replace", "Repeat", "Translate", "Initcap", "SplitPart", "RegexpReplace", "RegexpExtract", "Chr", "Dayname", "Monthname", "ToChar",)),
+            *((node, "NUMBER") for node in ("Length", "StrPosition", "Ascii", "Year", "Month", "Day", "DateDiff",)),
+            *((node, "FLOAT") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "BOOLEAN") for node in ("RegexpLike", "StartsWith", "EndsWith", "Contains",)),
+            *((node, "DATE") for node in ("LastDay",)),
+        ),
+        # VARCHAR or BINARY, as the argument is.
+        argument_result_types=(
+            ("Pad", "this", (("*", "="),)),
+            ("Substring", "this", (("*", "="),)),
+            ("Left", "this", (("*", "="),)),
+            ("Right", "this", (("*", "="),)),
+            ("Reverse", "this", (("*", "="),)),
+            ("TimestampTrunc", "this", (("*", "="),)),
+            ("Abs", "this", (("*", "="),)),
+            ("DPipe", "this", (("VARCHAR", "VARCHAR"),)),
+        ),
         hash_functions=("MD5", "SHA", "MD5Digest"),
         # `0.1` is a NUMBER(1,1) (tentative, from memory); the docs give `1e10` an exact NUMBER(11,0).
         literal_types=(("decimal", "NUMBER"), ("exponent", "NUMBER")),
@@ -351,7 +418,36 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         check_constraints="unenforced",
         # Tentative. `md5` and `sha256` return BYTES; `to_hex(md5(x))` parses as MD5.
-        result_types=(("MD5", "STRING"), ("MD5Digest", "BYTES"), ("SHA1Digest", "BYTES"), ("SHA2Digest", "BYTES")),
+        # Tentative, from its docs. String functions return STRING or BYTES as
+        # their argument is; `floor` and the like of an INT64 are a FLOAT64.
+        result_types=(
+            ("MD5", "STRING"), ("MD5Digest", "BYTES"), ("SHA1Digest", "BYTES"), ("SHA2Digest", "BYTES"),
+            *((node, "INT64") for node in ("Length", "StrPosition", "Ascii", "DateDiff",)),
+            *((node, "STRING") for node in ("Chr", "Normalize", "Initcap", "TimeToStr",)),
+            *((node, "BOOL") for node in ("RegexpLike", "StartsWith", "EndsWith",)),
+            *((node, "FLOAT64") for node in ("Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "DATE") for node in ("LastDay",)),
+        ),
+        argument_result_types=(
+            ("Lower", "this", (("*", "="),)),
+            ("Upper", "this", (("*", "="),)),
+            ("Trim", "this", (("*", "="),)),
+            ("Pad", "this", (("*", "="),)),
+            ("Reverse", "this", (("*", "="),)),
+            ("Left", "this", (("*", "="),)),
+            ("Right", "this", (("*", "="),)),
+            ("Replace", "this", (("*", "="),)),
+            ("Substring", "this", (("*", "="),)),
+            ("RegexpReplace", "this", (("*", "="),)),
+            ("RegexpExtract", "this", (("*", "="),)),
+            ("DPipe", "this", (("*", "="),)),
+            ("Abs", "this", (("*", "="),)),
+            ("Sign", "this", (("*", "="),)),
+            ("DateTrunc", "this", (("*", "="),)),
+            ("Ln", "this", (("INT64", "FLOAT64"), ("FLOAT64", "FLOAT64"), ("NUMERIC", "NUMERIC"), ("BIGNUMERIC", "BIGNUMERIC"),)),
+            ("Exp", "this", (("INT64", "FLOAT64"), ("FLOAT64", "FLOAT64"), ("NUMERIC", "NUMERIC"), ("BIGNUMERIC", "BIGNUMERIC"),)),
+            ("Sqrt", "this", (("INT64", "FLOAT64"), ("FLOAT64", "FLOAT64"), ("NUMERIC", "NUMERIC"), ("BIGNUMERIC", "BIGNUMERIC"),)),
+        ),
         hash_functions=("MD5", "MD5Digest", "SHA1Digest", "SHA2Digest"),
         # A decimal is written `NUMERIC '0.1'`: `0.1` is a FLOAT64.
         literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
@@ -369,7 +465,22 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         foreign_keys="unenforced",
         check_constraints="unenforced",
         # Tentative.
-        result_types=(("MD5", "VARCHAR"), ("SHA", "VARCHAR")),
+        # Tentative, from its docs and memory. A CHAR argument may give a CHAR.
+        # `datediff` parses as TsOrDsDiff.
+        result_types=(
+            ("MD5", "VARCHAR"), ("SHA", "VARCHAR"),
+            *((node, "VARCHAR") for node in ("Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "Pad", "Repeat", "Reverse", "Initcap", "SplitPart", "RegexpReplace", "RegexpExtract", "Concat", "TimeToStr",)),
+            *((node, "INTEGER") for node in ("Length", "StrPosition", "Ascii", "Anonymous:octet_length",)),
+            *((node, "DOUBLE PRECISION") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "DATE") for node in ("LastDay",)),
+            *((node, "BIGINT") for node in ("TsOrDsDiff",)),
+        ),
+        argument_result_types=(
+            ("Abs", "this", (("*", "="),)),
+            ("Sign", "this", (("*", "="),)),
+            ("DPipe", "this", (("VARCHAR", "VARCHAR"),)),
+            ("TimestampTrunc", "this", (("DATE", "TIMESTAMP"), ("TIMESTAMP", "TIMESTAMP"), ("TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH TIME ZONE"),)),
+        ),
         hash_functions=("MD5", "SHA"),
         # Tentative, from memory: `0.1` is a NUMERIC as in PostgreSQL, `1e0` a DOUBLE PRECISION.
         literal_types=(("decimal", "DECIMAL"), ("exponent", "DOUBLE")),
@@ -385,11 +496,24 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     "hive": DialectSemantics(casts_raise=False, pipes="strict", concat="strict", unique_keys="unenforced", foreign_keys="unenforced",
         check_constraints="unenforced",
         # Tentative. Not SHA2: `sha2(x, n)` is NULL for an unsupported `n`.
-        result_types=(("MD5", "STRING"), ("SHA", "STRING")),
+        # Tentative, from its docs and memory. Not `concat` (BINARY of BINARY);
+        # `last_day` is a STRING.
+        result_types=(
+            ("MD5", "STRING"), ("SHA", "STRING"),
+            *((node, "STRING") for node in ("Lower", "Upper", "Trim", "Replace", "Substring", "Pad", "Repeat", "Reverse", "Initcap", "Translate", "Chr", "ConcatWs", "RegexpReplace", "RegexpExtract", "TimeToStr", "LastDay",)),
+            *((node, "INT") for node in ("Length", "StrPosition", "Ascii", "Year", "Month", "Day", "Hour", "Minute", "Second", "Quarter", "DateDiff",)),
+            *((node, "BOOLEAN") for node in ("RegexpLike",)),
+            *((node, "DOUBLE") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan",)),
+        ),
+        argument_result_types=(
+            ("Abs", "this", (("*", "="),)),
+        ),
         hash_functions=("MD5", "SHA"),
         # A decimal literal is a DOUBLE unless it has a `BD` suffix.
         literal_types=(("decimal", "DOUBLE"), ("exponent", "DOUBLE")),
     ),
+    # SQLite claims no function result type: a value's type is its own
+    # (storage class), not its expression's.
     "sqlite": DialectSemantics(
         pipes="strict",
         concat_ws="skips-null",
@@ -408,10 +532,53 @@ _SEMANTICS: dict[str, DialectSemantics] = {
     # type is claimed.
     "clickhouse": DialectSemantics(
         concat_ws="strict", unique_keys="unenforced", foreign_keys="unenforced", hash_functions=("MD5Digest", "SHA", "SHA2"),
+        # Tentative (probed by hand on 26.10, not certified): of a Nullable or
+        # LowCardinality argument, the result is wrapped alike. Not `abs`
+        # (Int32 gives UInt32) or `date_trunc` (by the unit).
+        result_types=(
+            *((node, "UInt64") for node in ("Length", "StrPosition", "Anonymous:octet_length",)),
+            *((node, "String") for node in ("Lower", "Upper", "Trim", "Replace", "Left", "Right", "Substring", "Pad", "Repeat", "Reverse", "Initcap", "Translate", "Overlay", "Concat", "ConcatWs", "DPipe", "RegexpReplace", "RegexpExtract", "Monthname", "TimeToStr",)),
+            *((node, "UInt8") for node in ("RegexpLike", "Month", "Day",)),
+            *((node, "UInt16") for node in ("Year",)),
+            *((node, "Int32") for node in ("Ascii",)),
+            *((node, "Float64") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "Int8") for node in ("Sign",)),
+            *((node, "Date") for node in ("LastDay",)),
+            *((node, "Int64") for node in ("DateDiff",)),
+        ),
         literal_types=(("decimal", "Float64"), ("exponent", "Float64")),
     ),
     "oracle": DialectSemantics(
         empty_string_is_null=True,
+        # Tentative, from its docs and memory: text functions return VARCHAR2
+        # or CLOB as their argument is, math functions keep NUMBER or a binary float.
+        result_types=(
+            *((node, "NUMBER") for node in ("Length", "StrPosition", "Ascii", "Sign",)),
+            *((node, "VARCHAR2") for node in ("Chr", "ToChar",)),
+            *((node, "DATE") for node in ("LastDay", "DateTrunc",)),
+        ),
+        argument_result_types=(
+            ("Lower", "this", (("*", "="),)),
+            ("Upper", "this", (("*", "="),)),
+            ("Initcap", "this", (("*", "="),)),
+            ("Trim", "this", (("*", "="),)),
+            ("Pad", "this", (("*", "="),)),
+            ("Replace", "this", (("*", "="),)),
+            ("Substring", "this", (("*", "="),)),
+            ("Translate", "this", (("*", "="),)),
+            ("RegexpReplace", "this", (("*", "="),)),
+            ("RegexpSubstr", "this", (("*", "="),)),
+            ("Abs", "this", (("*", "="),)),
+            ("Ln", "this", (("*", "="),)),
+            ("Exp", "this", (("*", "="),)),
+            ("Sqrt", "this", (("*", "="),)),
+            ("Sin", "this", (("*", "="),)),
+            ("Cos", "this", (("*", "="),)),
+            ("Tan", "this", (("*", "="),)),
+            ("Asin", "this", (("*", "="),)),
+            ("Acos", "this", (("*", "="),)),
+            ("Atan", "this", (("*", "="),)),
+        ),
         # A number literal without an `f` or `d` suffix is a NUMBER, point or exponent alike.
         literal_types=(("decimal", "NUMBER"), ("exponent", "NUMBER")),
     ),
@@ -438,7 +605,25 @@ _SEMANTICS: dict[str, DialectSemantics] = {
         check_constraints="unenforced",
         set_operations_all=True,
         # `md5`/`sha1`/`sha256` take and return VARBINARY.
-        result_types=(("MD5Digest", "VARBINARY"), ("SHA", "VARBINARY"), ("SHA2Digest", "VARBINARY")),
+        # Beyond the hashes, tentative (probed by hand on 484, not certified).
+        # A text result keeps its argument's length, so only those that lose it
+        # are fixed; `repeat` is an array function.
+        result_types=(
+            ("MD5Digest", "VARBINARY"), ("SHA", "VARBINARY"), ("SHA2Digest", "VARBINARY"),
+            *((node, "BIGINT") for node in ("Length", "StrPosition", "Year", "Month", "Day", "Hour", "Minute", "Second", "Quarter", "DayOfWeek", "DayOfYear", "DateDiff",)),
+            *((node, "VARCHAR") for node in ("Pad", "Translate", "Concat", "ConcatWs", "Normalize", "TimeToStr",)),
+            *((node, "BOOLEAN") for node in ("RegexpLike", "StartsWith",)),
+            *((node, "DOUBLE") for node in ("Ln", "Exp", "Sqrt", "Pow", "Log", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Atan2",)),
+            *((node, "DATE") for node in ("LastDay",)),
+        ),
+        argument_result_types=(
+            ("Abs", "this", (("*", "="),)),
+            ("TimestampTrunc", "this", (("*", "="),)),
+            ("Upper", "this", (("*", "="),)),
+            ("Lower", "this", (("*", "="),)),
+            ("Reverse", "this", (("*", "="),)),
+            ("DPipe", "this", (("VARCHAR", "VARCHAR"),)),
+        ),
         hash_functions=("MD5Digest", "SHA", "SHA2Digest"),
         # A string is `varchar(n)` for its longest value.
         values_types=(("string", "varchar"), ("integer", "integer"), ("bigint", "bigint"), ("decimal", "decimal")),

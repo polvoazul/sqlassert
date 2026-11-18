@@ -328,12 +328,20 @@ certified by `scripts/certify_dialects.py`.
   `result_type(Node,*)==` where it keeps any argument type) has the type the
   dialect gives for that argument's, and stays untyped for an argument of a
   type not listed or of unknown type. A function SQLGlot does not know is keyed
-  `Anonymous:<name>`. Each is certified on the engine
-  (`docs/dialect-provenance.json`), probed over every argument type the
-  engine accepts: a function whose type depends on an argument's shape is
+  `Anonymous:<name>`. DuckDB's are certified on the engine, probed over every
+  argument type it accepts; every other dialect's are tentative
+  (`docs/dialect-provenance.json`: probed by hand on Postgres 18.6, MySQL 8.4,
+  ClickHouse 26.10, Trino 484 and Spark 4.3, read in the docs for the
+  warehouses, Hive and Oracle, Databricks taken as Spark), until a probe
+  certifies them. A function whose type depends on an argument's shape is
   not claimed (DuckDB's `regexp_extract` is a STRUCT for a list of group
-  names, `concat` and `repeat` of lists are lists). DuckDB's `date_trunc` of a
-  DATE is a TIMESTAMP, of a TIMESTAMPTZ a TIMESTAMPTZ.
+  names, `concat` and `repeat` of lists are lists, as Spark's `concat`, `||`
+  and `reverse`), nor where a text result carries its argument's length
+  (MySQL, Trino). `date_trunc` of a DATE is a TIMESTAMP in DuckDB and Spark, a
+  TIMESTAMPTZ in Postgres; it keeps the argument's type in Trino, Snowflake
+  and BigQuery. SQLite claims none: a value's type is its own. ClickHouse
+  wraps a result in Nullable or LowCardinality as its argument is, which the
+  bare type claimed misses.
 - `row_number() OVER (...)`, written exactly so (its Unique Set with the
   partition keys needs that), is an integer type that is never NULL, typed
   as `BIGINT` wherever it is written (an

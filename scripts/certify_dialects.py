@@ -539,7 +539,7 @@ def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact
             calls.append(getattr(exp, node)(this=shape.ordinary[0], **dict(shape.extra)))
         for call in _RESULT_TYPE_CALLS.get(node, ()):
             parsed = sqlglot.parse_one(call, read="duckdb")
-            if (f"Anonymous:{parsed.name.lower()}" if isinstance(parsed, exp.Anonymous) else type(parsed).__name__) == node:
+            if (f"Anonymous:{parsed.name.lower()}" if isinstance(parsed, exp.Anonymous) else type(parsed).__name__) == node and _writable(parsed, dialect):
                 calls.append(parsed)
         if dialect not in _TYPE_OF or not calls:
             yield Fact(f"result_type({node})={type_name}", f"drop {node} from result_types in dialects.py", (
@@ -576,6 +576,15 @@ def _result_type_facts(dialect: str, meaning: DialectSemantics) -> Iterable[Fact
                 call = _dialect_sql(template.format(_ARGUMENT_VALUES[argument_type]), dialect)
                 checks = (Check(f"SELECT CASE WHEN lower({_TYPE_OF[dialect].format(call)}) = lower('{type_name}') THEN 1 ELSE 0 END", "true"),)
             yield Fact(name, remedy, checks)
+
+
+def _writable(call: Expr, dialect: str) -> bool:
+    """Whether SQLGlot writes `call` in `dialect` (a DuckDB MAP literal has no Spark spelling)."""
+    try:
+        call.sql(dialect=sqlassert_dialect(dialect))
+    except ValueError:
+        return False
+    return True
 
 
 def _dialect_sql(sql: str, dialect: str) -> str:
