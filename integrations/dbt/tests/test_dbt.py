@@ -428,6 +428,38 @@ def test_unique_combination_is_proved_by_a_non_null_unique_set_and_declares_a_un
     assert (expectation.asserted, expectation.declared, expectation.columns) == ("key", "unique", ("customer_id", "first_name"))
 
 
+@pytest.mark.parametrize(("test", "kwargs", "expected"), [
+    ("expect_compound_columns_to_be_unique", {"column_list": ["customer_id", "first_name"]}, ("key", ("customer_id", "first_name"))),
+    ("expect_column_values_to_be_unique", {"column_name": "customer_id"}, ("unique", ("customer_id",))),
+    ("expect_column_values_to_not_be_null", {"column_name": "customer_id"}, ("not_null", ("customer_id",))),
+    ("expect_column_values_to_be_in_set", {"column_name": "first_name", "value_set": ["a", "b"]}, ("enum", ("first_name",))),
+])
+def test_dbt_expectations_tests_map_like_their_core_twins(copy_project, test, kwargs, expected):
+    expectation = manifest_with_test(copy_project, test, kwargs, namespace="dbt_expectations")
+    assert (expectation.asserted, expectation.columns) == expected
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"column_list": ["customer_id"], "row_condition": "customer_id > 0"},
+    {"column_list": ["customer_id"], "ignore_row_if": "any_value_is_missing"},
+])
+def test_a_filtered_dbt_expectations_test_maps_to_no_property(copy_project, kwargs):
+    expectation = manifest_with_test(copy_project, "expect_compound_columns_to_be_unique", kwargs, namespace="dbt_expectations")
+    assert expectation.asserted is None and "row_condition" in expectation.unprovable
+
+
+@pytest.mark.parametrize(("quote", "values"), [
+    (True, (LiteralValue("string", "1"),)),
+    (False, (LiteralValue("numeric", "1"),)),
+])
+def test_in_set_values_are_strings_unless_unquoted(copy_project, quote, values):
+    expectation = manifest_with_test(
+        copy_project, "expect_column_values_to_be_in_set", {"column_name": "first_name", "value_set": [1], "quote_values": quote},
+        namespace="dbt_expectations",
+    )
+    assert expectation.values == values
+
+
 @pytest.mark.parametrize(("quote", "values"), [
     (True, (LiteralValue("string", "1"), LiteralValue("string", "a"))),
     (False, None),

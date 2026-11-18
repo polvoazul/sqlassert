@@ -91,18 +91,24 @@ def _test(test: Test, relations: Mapping[str, Relation]) -> Expectation | None:
     weakness = _weakness(test)
     unprovable = _threshold_unprovable(test)
     name = test.test_name if test.namespace is None else f"{test.namespace}.{test.test_name}"
+    kwargs = test.kwargs
+    if name in _DBT_EXPECTATIONS:
+        # The same checks as the core tests, unless a filter or ignored rows narrow them.
+        if kwargs.get("row_condition") or kwargs.get("ignore_row_if", "all_values_are_missing") != "all_values_are_missing":
+            return replace(base, asserted=None, declared=None, unprovable="it checks only the rows its row_condition or ignore_row_if keeps")
+        name, kwargs = _DBT_EXPECTATIONS[name], {**kwargs, **_expectation_kwargs(kwargs)}
     match name:
         case None:
             return replace(base, asserted=None, declared=None, unprovable="a singular test states no Property")
         case "unique" | "not_null" | "accepted_values" | "relationships":
-            column = _column(test.kwargs.get("column_name") or test.column_name)
+            column = _column(kwargs.get("column_name") or test.column_name)
             if column is None:
                 return replace(
                     base,
-                    unprovable=f"it tests the expression {test.kwargs.get('column_name') or test.column_name!r}, not a column",
+                    unprovable=f"it tests the expression {kwargs.get('column_name') or test.column_name!r}, not a column",
                 )
         case "dbt_utils.unique_combination_of_columns":
-            names = test.kwargs.get("combination_of_columns")
+            names = kwargs.get("combination_of_columns")
             columns = tuple(_column(name) for name in names) if isinstance(names, list) and names else (None,)
             if None in columns:
                 return replace(base, asserted=None, declared=None, unprovable="its columns are not all plain columns")
@@ -118,21 +124,45 @@ def _test(test: Test, relations: Mapping[str, Relation]) -> Expectation | None:
         case "not_null":
             return replace(base, asserted="not_null", declared="not_null", columns=(column,), unprovable=unprovable, not_a_fact=weakness)
         case "accepted_values":
-            values = _accepted_values(test.kwargs.get("values"), test.kwargs.get("quote", True))
+            values = _accepted_values(kwargs.get("values"), kwargs.get("quote", True))
             if values is None:
                 return replace(base, asserted=None, declared=None, unprovable="its values are not all string, numeric or boolean literals")
             return replace(
                 base, asserted="enum", declared="enum", columns=(column,), values=values, unprovable=unprovable, not_a_fact=weakness,
             )
         case _:
-            target = _resolve_call(test.kwargs.get("to"), test.depends_on, relations)
-            field = _column(test.kwargs.get("field"))
+            target = _resolve_call(kwargs.get("to"), test.depends_on, relations)
+            field = _column(kwargs.get("field"))
             if target is None or field is None:
                 return replace(base, asserted=None, declared=None, unprovable="its `to` or `field` cannot be resolved")
             return replace(
                 base, asserted="coverage", declared="coverage", columns=(column,), referenced=target, referenced_columns=(field,),
                 unprovable=unprovable, not_a_fact=weakness,
             )
+
+
+# dbt_expectations tests that check what a core or dbt_utils test checks:
+# compound uniqueness over the rows not all NULL (rows with some NULL are
+# checked too, which only adds rows to compare), uniqueness, non-null, and a
+# value set that, like accepted_values, lets NULL pass.
+_DBT_EXPECTATIONS = {
+    "dbt_expectations.expect_compound_columns_to_be_unique": "dbt_utils.unique_combination_of_columns",
+    "dbt_expectations.expect_column_values_to_be_unique": "unique",
+    "dbt_expectations.expect_column_values_to_not_be_null": "not_null",
+    "dbt_expectations.expect_column_values_to_be_in_set": "accepted_values",
+}
+
+
+def _expectation_kwargs(kwargs: Mapping[str, object]) -> dict[str, object]:
+    """A dbt_expectations test's arguments under the names its core twin reads."""
+    renamed: dict[str, object] = {}
+    if "column_list" in kwargs:
+        renamed["combination_of_columns"] = kwargs["column_list"]
+    if "value_set" in kwargs:
+        renamed["values"] = kwargs["value_set"]
+    if "quote_values" in kwargs:
+        renamed["quote"] = kwargs["quote_values"]
+    return renamed
 
 
 def _attached(test: Test, relations: Mapping[str, Relation]) -> str | None:
