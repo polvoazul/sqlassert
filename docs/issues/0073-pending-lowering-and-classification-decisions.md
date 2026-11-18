@@ -111,7 +111,7 @@ Numbers are the ones used when the decisions were discussed.
 
 ## Bugs found on the way (not decisions; fix when picked up)
 
-- [ ] **A parenthesised root set operation crashes.**
+- [x] **A parenthesised root set operation crashes.** Fixed in 2fe2e12 (it also dropped a LIMIT after parentheses).
   `(SELECT a FROM t UNION ALL SELECT a FROM u)` as the root raises `KeyError`
   in `convert._lower_source` (`self._table_symbols[id(source)]`): symbol
   collection probably misses the Subquery-wrapped root.
@@ -122,3 +122,11 @@ Numbers are the ones used when the decisions were discussed.
 - [ ] **Duplicate output name in a non-first operand is harmless.** A set
   operation's names come from its first operand, so the Hazard there could
   be dropped (it is reported today, as decided).
+- [ ] **No marker on a whole parenthesised set operation.** A marker before
+  `)` marks the last operand; one after `)`, `(SELECT ... UNION SELECT ...)
+  /**ASSERT UNIQUE(a)**/`, fails with `sql-parse-failed`.
+- [ ] **`suggest` offers a whole-union marker that pastes onto the last
+  operand** for a parenthesised set operation (a CTE, FROM subquery or view
+  body): pasted before `)` it marks the last operand and is UNKNOWN.
+- [ ] **No Arbitrary LIMIT Hazard for a LIMIT after parentheses**
+  (`(SELECT a FROM t) LIMIT 2`): the wrapper has no site.
